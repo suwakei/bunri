@@ -1,0 +1,519 @@
+/* bunri DAW — メインスタイル */
+:root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-panel: #1f2b47;
+    --bg-track: #253352;
+    --accent: #0f96e4;
+    --accent-hover: #3db4ff;
+    --text: #e0e0e0;
+    --text-dim: #8892a4;
+    --border: #2a3a5c;
+    --note-color: #0f96e4;
+    --note-selected: #ff6b6b;
+    --grid-line: rgba(255,255,255,0.06);
+    --grid-beat: rgba(255,255,255,0.15);
+    --automation-line: #ff9f43;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Segoe UI', 'Noto Sans JP', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+}
+
+/* ---- ヘッダー ---- */
+#header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 48px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+}
+
+#header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* ---- トランスポート ---- */
+#transport {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#transport button {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+#transport button:hover { background: var(--accent); }
+#transport button.active { background: var(--accent); }
+
+#transport input, #transport select {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    width: 70px;
+    font-size: 13px;
+}
+
+#transport label {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+/* ---- メインレイアウト ---- */
+#main {
+    display: flex;
+    height: calc(100vh - 48px);
+}
+
+/* ---- 左パネル（タブ切替） ---- */
+#left-panel {
+    width: 300px;
+    min-width: 250px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#panel-tabs {
+    display: flex;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+}
+
+#panel-tabs button {
+    flex: 1;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    padding: 8px 4px;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+}
+
+#panel-tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.panel-content {
+    display: none;
+    padding: 12px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.panel-content.active { display: block; }
+
+.panel-content h3 {
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: var(--accent);
+}
+
+.panel-content label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin: 6px 0 2px;
+}
+
+.panel-content input, .panel-content select, .panel-content textarea {
+    width: 100%;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.panel-content textarea { resize: vertical; min-height: 60px; }
+
+.panel-content button.action-btn {
+    width: 100%;
+    padding: 8px;
+    margin-top: 8px;
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.panel-content button.action-btn:hover { background: var(--accent-hover); }
+
+.param-row {
+    display: flex;
+    gap: 8px;
+}
+
+.param-row > div { flex: 1; }
+
+/* ---- 中央エリア（タイムライン + ピアノロール） ---- */
+#center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* タイムライン */
+#timeline-area {
+    flex: 1;
+    position: relative;
+    overflow: auto;
+    min-height: 200px;
+}
+
+#timeline-header {
+    height: 24px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.track-row {
+    display: flex;
+    align-items: stretch;
+    height: 60px;
+    border-bottom: 1px solid var(--border);
+}
+
+.track-header {
+    width: 120px;
+    min-width: 120px;
+    background: var(--bg-secondary);
+    padding: 4px 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-right: 1px solid var(--border);
+    font-size: 12px;
+}
+
+.track-header .track-name {
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.track-header .track-controls {
+    display: flex;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.track-header .track-controls button {
+    font-size: 10px;
+    padding: 1px 6px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+.track-header .track-controls button.muted { background: #c0392b; color: #fff; }
+.track-header .track-controls button.soloed { background: #f39c12; color: #fff; }
+
+.track-canvas-wrap {
+    flex: 1;
+    position: relative;
+    background: var(--bg-track);
+    overflow: hidden;
+}
+
+/* クリップ */
+.clip {
+    position: absolute;
+    height: 50px;
+    top: 5px;
+    background: rgba(15, 150, 228, 0.3);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    cursor: grab;
+    font-size: 10px;
+    color: var(--text);
+    padding: 2px 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.clip:hover { background: rgba(15, 150, 228, 0.5); }
+.clip.selected { border-color: var(--note-selected); }
+
+/* ---- ピアノロール ---- */
+#piano-roll-area {
+    height: 300px;
+    min-height: 150px;
+    border-top: 2px solid var(--border);
+    position: relative;
+    display: flex;
+}
+
+#piano-keys {
+    width: 48px;
+    min-width: 48px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+}
+
+.piano-key {
+    height: 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 8px;
+    display: flex;
+    align-items: center;
+    padding-left: 4px;
+    color: var(--text-dim);
+}
+
+.piano-key.black {
+    background: #111;
+    color: #666;
+}
+
+#piano-grid-wrap {
+    flex: 1;
+    overflow: auto;
+    position: relative;
+}
+
+#piano-grid {
+    position: relative;
+    cursor: crosshair;
+}
+
+.note-block {
+    position: absolute;
+    height: 13px;
+    background: var(--note-color);
+    border-radius: 2px;
+    cursor: pointer;
+    opacity: 0.85;
+    border: 1px solid rgba(255,255,255,0.2);
+}
+
+.note-block.selected {
+    background: var(--note-selected);
+}
+
+/* ---- オートメーション ---- */
+#automation-area {
+    height: 100px;
+    border-top: 2px solid var(--border);
+    position: relative;
+    background: var(--bg-track);
+}
+
+#automation-canvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* ---- エリアラベル ---- */
+.area-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    padding: 2px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.area-hint {
+    font-weight: 400;
+    font-size: 10px;
+    color: rgba(255,255,255,0.25);
+}
+
+/* ---- パネル説明テキスト ---- */
+.panel-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+/* ---- ステータスバー ---- */
+#status-bar {
+    height: 28px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+#hint-text {
+    color: var(--accent);
+    font-size: 11px;
+    max-width: 60%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* ---- リサイズハンドル ---- */
+.resize-handle {
+    height: 4px;
+    cursor: ns-resize;
+    background: var(--border);
+}
+
+.resize-handle:hover { background: var(--accent); }
+
+/* ---- ウェルカムガイド ---- */
+#guide-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+#guide-overlay.hidden { display: none; }
+
+#guide-modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 520px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+#guide-modal h2 {
+    color: var(--accent);
+    font-size: 20px;
+    margin-bottom: 20px;
+}
+
+.guide-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.guide-step {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.guide-num {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.guide-step strong {
+    font-size: 13px;
+    color: var(--text);
+}
+
+.guide-step p {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    line-height: 1.5;
+}
+
+.guide-tip {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(15, 150, 228, 0.1);
+    border: 1px solid rgba(15, 150, 228, 0.2);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+}
+
+#guide-modal .action-btn {
+    font-size: 14px;
+    padding: 10px;
+}
+
+/* ---- プログレスバー ---- */
+#global-progress {
+    position: fixed;
+    top: 48px;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 999;
+    background: transparent;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+#global-progress.active {
+    opacity: 1;
+}
+
+#global-progress .bar {
+    height: 100%;
+    width: 30%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    border-radius: 0 2px 2px 0;
+    animation: progress-slide 1.2s ease-in-out infinite;
+    box-shadow: 0 0 8px rgba(15, 150, 228, 0.5);
+}
+
+@keyframes progress-slide {
+    0%   { transform: translateX(-100%); width: 30%; }
+    50%  { width: 50%; }
+    100% { transform: translateX(400%); width: 30%; }
+}
+
+.action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#transport button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

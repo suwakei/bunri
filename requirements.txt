@@ -3,3 +3,8 @@ gradio
 torch
 torchaudio
 soundfile
+fastapi
+uvicorn[standard]
+python-multipart
+pyfluidsynth
+librosa

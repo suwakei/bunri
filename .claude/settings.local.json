@@ -1,5 +1,20 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(taskkill //F //PID 26908)",
+      "Bash(python run_web.py)",
+      "Bash(pip install:*)",
+      "Bash(curl -L -o /tmp/fluidsynth.zip \"https://github.com/FluidSynth/fluidsynth/releases/download/v2.4.1/fluidsynth-2.4.1-win10-x64.zip\")",
+      "Bash(mkdir -p /c/tools/fluidsynth)",
+      "Bash(cd /tmp)",
+      "Bash(unzip -o fluidsynth.zip -d fluidsynth_extract)",
+      "Bash(cp -r /tmp/fluidsynth_extract/bin /c/tools/fluidsynth/)",
+      "Bash(cp -r /tmp/fluidsynth_extract/lib /c/tools/fluidsynth/)",
+      "Read(//c/tools/fluidsynth/**)",
+      "Bash(python -c \"import fluidsynth; print\\('FluidSynth OK'\\)\")",
+      "Bash(python -c \"f=open\\(r'c:\\\\Users\\\\ns072\\\\dev\\\\etc\\\\bunri\\\\soundfonts\\\\FluidR3_GM.sf2','rb'\\);print\\(f.read\\(4\\)\\);f.close\\(\\)\")",
+      "Read(//c/Users/ns072/**)"
+    ],
     "additionalDirectories": [
       "c:\\Users\\ns072\\dev\\etc\\bunri"
     ]

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bunri DAW</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ヘッダー + トランスポート -->
+<div id="header">
+    <h1>bunri DAW</h1>
+    <div id="transport">
+        <label>BPM</label>
+        <input type="number" id="bpm" value="120" min="20" max="300" data-hint="テンポ（Beats Per Minute）。曲の速さを指定します。120が標準的">
+        <label>拍子</label>
+        <select id="time-sig" data-hint="1小節の拍数。4/4が最も一般的">
+            <option value="4">4/4</option>
+            <option value="3">3/4</option>
+            <option value="6">6/8</option>
+        </select>
+        <button id="btn-play" title="再生" data-hint="全トラックを同時に再生します">▶</button>
+        <button id="btn-stop" title="停止" data-hint="再生を停止して先頭に戻ります">■</button>
+        <button id="btn-record" title="録音" data-hint="マイクから録音しながら再生します。もう一度押すと停止">●</button>
+        <button id="btn-metronome" title="メトロノーム" data-hint="再生中にBPMに合わせたクリック音を鳴らします">🔔</button>
+        <span id="time-display">0:00.0</span>
+    </div>
+    <div>
+        <button id="btn-save-project" data-hint="現在のプロジェクト（トラック配置・ピアノロール・オートメーション）を保存します">保存</button>
+        <button id="btn-load-project" data-hint="最後に保存したプロジェクトを読み込みます">読込</button>
+        <button id="btn-export" data-hint="全トラックをミックスしてWAVファイルとしてダウンロードします">書出</button>
+        <button id="btn-help" data-hint="簡易ガイドを表示します">❓</button>
+        <a href="/tools" target="_blank" style="background:var(--bg-panel);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:4px;font-size:13px;text-decoration:none;cursor:pointer;" data-hint="音源分離・編集・変換などのツールを別タブで開きます">ツール</a>
+        <a href="/help" target="_blank" style="background:var(--bg-panel);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:4px;font-size:13px;text-decoration:none;cursor:pointer;" data-hint="詳しい使い方ガイドを別タブで開きます">使い方</a>
+    </div>
+</div>
+
+<!-- メインエリア -->
+<div id="main">
+
+    <!-- 左パネル -->
+    <div id="left-panel">
+        <div id="panel-tabs">
+            <button class="active" data-panel="synth-panel">シンセ</button>
+            <button data-panel="drum-panel">ドラム</button>
+            <button data-panel="fx-panel">FX</button>
+            <button data-panel="file-panel">ファイル</button>
+        </div>
+
+        <!-- シンセパネル -->
+        <div id="synth-panel" class="panel-content active">
+            <h3>シンセサイザー</h3>
+            <p class="panel-desc">下のピアノロールにノートを配置してからレンダリングすると、音声が生成されてトラックに追加されます。</p>
+            <label>楽器（GM音源）</label>
+            <select id="synth-gm" data-hint="GM音源の楽器。リアルなサンプル音で再生されます。「カスタム波形」を選ぶと下の波形/簡易楽器設定が使われます">
+                <option value="none">カスタム波形（下で選択）</option>
+            </select>
+            <details style="margin-top:4px">
+                <summary style="font-size:11px;color:var(--text-dim);cursor:pointer">カスタム波形設定（GM音源未選択時）</summary>
+                <label>簡易楽器</label>
+                <select id="synth-instrument" data-hint="簡易合成の楽器プリセット。GM音源より軽量ですが音質は劣ります">
+                    <option value="">基本波形（下で選択）</option>
+                    <option value="guitar">ギター</option>
+                    <option value="violin">バイオリン</option>
+                    <option value="chorus">コーラス</option>
+                    <option value="flute">フルート</option>
+                    <option value="bass">ベース</option>
+                    <option value="organ">オルガン</option>
+                </select>
+                <label>波形</label>
+                <select id="synth-wave" data-hint="音色の種類。Sine=まろやか、Square=ファミコン風、Sawtooth=ギラギラ、Triangle=柔らかい">
+                    <option value="sine">Sine（まろやか）</option>
+                    <option value="square">Square（ファミコン風）</option>
+                    <option value="sawtooth">Sawtooth（鋭い）</option>
+                    <option value="triangle">Triangle（柔らかい）</option>
+                </select>
+            </details>
+            <div class="param-row">
+                <div><label>Attack</label><input type="range" id="synth-a" min="0.001" max="1" step="0.001" value="0.01" data-hint="音が立ち上がるまでの時間（秒）。0に近いほど即座に鳴る"></div>
+                <div><label>Decay</label><input type="range" id="synth-d" min="0.001" max="1" step="0.001" value="0.1" data-hint="最大音量からSustainレベルまで下がる時間（秒）"></div>
+            </div>
+            <div class="param-row">
+                <div><label>Sustain</label><input type="range" id="synth-s" min="0" max="1" step="0.05" value="0.6" data-hint="鍵盤を押し続けている間の音量レベル（0〜1）"></div>
+                <div><label>Release</label><input type="range" id="synth-r" min="0.001" max="2" step="0.001" value="0.2" data-hint="鍵盤を離してから音が消えるまでの時間（秒）"></div>
+            </div>
+            <label>音量</label>
+            <input type="range" id="synth-vol" min="0" max="1" step="0.05" value="0.5" data-hint="シンセ全体の音量">
+            <label>追加先トラック</label>
+            <select id="synth-track" data-hint="レンダリング結果を追加するトラックを選択します"></select>
+            <button class="action-btn" id="btn-render-seq" data-hint="ピアノロールのノートをシンセで音声化し、選択したトラックに追加します">シーケンスをレンダリング</button>
+        </div>
+
+        <!-- ドラムパネル -->
+        <div id="drum-panel" class="panel-content">
+            <h3>ドラムマシン</h3>
+            <p class="panel-desc">プリセットパターンからドラムトラックを自動生成します。</p>
+            <label>パターン</label>
+            <select id="drum-pattern" data-hint="ドラムパターンのプリセット。8ビートが最もポピュラー">
+                <option value="8ビート">8ビート（ポップス/ロック定番）</option>
+                <option value="4つ打ち">4つ打ち（ダンス/テクノ）</option>
+                <option value="ボサノバ">ボサノバ</option>
+                <option value="レゲエ">レゲエ</option>
+            </select>
+            <label>小節数</label>
+            <input type="number" id="drum-bars" value="4" min="1" max="32" data-hint="生成する小節の数。4小節が一般的な1フレーズ">
+            <label>音量</label>
+            <input type="range" id="drum-vol" min="0" max="1" step="0.05" value="0.7">
+            <label>追加先トラック</label>
+            <select id="drum-track" data-hint="ドラムを追加するトラックを選択します。「新規作成」で専用トラックが作られます">
+                <option value="__new__">新規作成（Drum）</option>
+            </select>
+            <button class="action-btn" id="btn-gen-drum" data-hint="BPMとパターンからドラムの音声を生成し、選択したトラックに追加します">ドラム生成 → トラックに追加</button>
+        </div>
+
+        <!-- FXパネル -->
+        <div id="fx-panel" class="panel-content">
+            <h3>エフェクト</h3>
+            <label>対象トラック</label>
+            <select id="fx-track"></select>
+            <label>エフェクト</label>
+            <select id="fx-type">
+                <option value="eq">EQ (3バンド)</option>
+                <option value="compressor">コンプレッサー</option>
+                <option value="reverb">リバーブ</option>
+                <option value="delay">ディレイ</option>
+                <option value="normalize">ノーマライズ</option>
+                <option value="pitch_shift">ピッチシフト</option>
+                <option value="time_stretch">タイムストレッチ</option>
+            </select>
+            <div id="fx-params"></div>
+            <button class="action-btn" id="btn-apply-fx">エフェクト適用</button>
+        </div>
+
+        <!-- ファイルパネル -->
+        <div id="file-panel" class="panel-content">
+            <h3>ファイル読み込み</h3>
+            <p class="panel-desc">WAVファイルをトラックに追加します。タイムライン上に直接ドラッグ&ドロップもできます。</p>
+            <input type="file" id="file-import" accept=".wav" multiple data-hint="WAVファイルを選択してください。複数ファイル可">
+            <label>追加先トラック</label>
+            <select id="file-track" data-hint="ファイルを追加するトラックを選択します"></select>
+            <button class="action-btn" id="btn-import" data-hint="選択したファイルを指定トラックにクリップとして追加します">選択したトラックに追加</button>
+            <hr style="border-color:var(--border);margin:12px 0">
+            <h3>WAV解析 → ピアノロール</h3>
+            <p class="panel-desc">WAVファイルの音程を解析し、ピアノロールにノートとして自動配置します。メロディやボーカルの耳コピに。</p>
+            <input type="file" id="analyze-file" accept=".wav" data-hint="解析するWAVファイルを選択（単音メロディやボーカルが最適）">
+            <label>感度</label>
+            <input type="range" id="analyze-sensitivity" min="0.1" max="1" step="0.05" value="0.5" data-hint="ピッチ検出の感度。高いほど多くのノートを検出（ノイズも拾いやすくなる）">
+            <button class="action-btn" id="btn-analyze" data-hint="WAVの音程を解析してピアノロールにノートを自動配置します">解析してピアノロールに配置</button>
+            <hr style="border-color:var(--border);margin:12px 0">
+            <h3>録音</h3>
+            <p class="panel-desc">マイクから音声を録音してトラックに追加します。</p>
+            <button class="action-btn" id="btn-mic-record" data-hint="PCのマイクから録音を開始します">マイク録音開始</button>
+            <button class="action-btn" id="btn-mic-stop" style="display:none">録音停止</button>
+        </div>
+    </div>
+
+    <!-- 中央 -->
+    <div id="center">
+        <!-- タイムライン -->
+        <div id="timeline-area" data-hint="タイムライン: 各トラックに音声クリップを配置するエリア。WAVファイルをドラッグ&ドロップで追加できます">
+            <div class="area-label">タイムライン <span class="area-hint">（WAVをD&D / クリップをドラッグで移動 / 右クリックで削除）</span></div>
+            <canvas id="timeline-header-canvas"></canvas>
+            <div id="tracks-container"></div>
+            <button id="btn-add-track" data-hint="新しいトラック（横一列のレーン）を追加します" style="margin:8px;font-size:12px;padding:4px 12px;background:var(--bg-panel);border:1px solid var(--border);color:var(--text);border-radius:3px;cursor:pointer;">+ トラック追加</button>
+        </div>
+
+        <!-- ピアノロール -->
+        <div class="resize-handle" id="resize-piano" data-hint="ドラッグで高さを調整"></div>
+        <div id="piano-roll-area" data-hint="ピアノロール: ダブルクリックでノートを配置、ドラッグで移動、右端ドラッグで長さ変更、Deleteキーで削除">
+            <div class="area-label">ピアノロール <span class="area-hint">（ダブルクリックでノート追加 / ドラッグで移動 / Deleteで削除）</span></div>
+            <div id="piano-keys"></div>
+            <div id="piano-grid-wrap">
+                <canvas id="piano-grid-canvas"></canvas>
+                <div id="note-layer"></div>
+            </div>
+        </div>
+
+        <!-- オートメーション -->
+        <div class="resize-handle" id="resize-auto" data-hint="ドラッグで高さを調整"></div>
+        <div id="automation-area" data-hint="オートメーション: ダブルクリックでポイント追加、ドラッグで移動、右クリックで削除">
+            <div class="area-label">オートメーション <span class="area-hint">（ダブルクリックでポイント追加 / ドラッグで移動 / 右クリックで削除）</span></div>
+            <canvas id="automation-canvas"></canvas>
+        </div>
+    </div>
+</div>
+
+<div id="global-progress"><div class="bar"></div></div>
+<div id="status-bar">
+    <span id="status-text">準備完了</span>
+    <span id="hint-text"></span>
+</div>
+
+<!-- ウェルカムガイド -->
+<div id="guide-overlay">
+    <div id="guide-modal">
+        <h2>bunri DAW へようこそ</h2>
+        <div class="guide-steps">
+            <div class="guide-step">
+                <div class="guide-num">1</div>
+                <div>
+                    <strong>音声を追加する</strong>
+                    <p>左の「ファイル」タブからWAVを読み込むか、タイムライン上にドラッグ&ドロップします。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">2</div>
+                <div>
+                    <strong>音を作る</strong>
+                    <p>「シンセ」タブで波形を選び、下のピアノロールにダブルクリックでノートを配置。「シーケンスをレンダリング」で音声化されます。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">3</div>
+                <div>
+                    <strong>ドラムを追加する</strong>
+                    <p>「ドラム」タブでパターンとBPMを選んで生成。自動でDrumトラックに追加されます。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">4</div>
+                <div>
+                    <strong>タイムラインで配置する</strong>
+                    <p>クリップをドラッグして好きな位置に移動。各トラックの M（ミュート）S（ソロ）で聴き比べ。</p>
+                </div>
+            </div>
+            <div class="guide-step">
+                <div class="guide-num">5</div>
+                <div>
+                    <strong>再生・書き出し</strong>
+                    <p>▶で再生、「書出」ボタンで全トラックをミックスしたWAVをダウンロードできます。</p>
+                </div>
+            </div>
+        </div>
+        <p class="guide-tip">💡 各ボタンやスライダーにマウスを乗せると、画面下部に説明が表示されます。</p>
+        <button id="btn-close-guide" class="action-btn">はじめる</button>
+    </div>
+</div>
+
+<script src="/static/engine.js"></script>
+<script src="/static/pianoroll.js"></script>
+<script src="/static/timeline.js"></script>
+<script src="/static/automation.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
