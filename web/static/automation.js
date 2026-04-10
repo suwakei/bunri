@@ -1,26 +1,35 @@
 /**
  * bunri DAW — オートメーション曲線エディタ
  * Canvas 上にベジェ曲線でパラメータ変化を描画・編集
+ * Vue.js コンポーネントから init() で初期化して使う
  */
 class AutomationEditor {
     constructor() {
-        this.canvas = document.getElementById('automation-canvas');
-        this.ctx = this.canvas.getContext('2d');
+        this.canvas = null;
+        this.ctx = null;
 
         // オートメーションデータ: trackId → paramName → [{time, value}]
-        // time: 秒, value: 0.0 ~ 1.0（正規化値）
         this.data = {};
 
         this.activeTrackId = null;
-        this.activeParam = 'volume'; // 'volume' | 'pan'
+        this.activeParam = 'volume';
         this.draggingPoint = null;
         this.pixelsPerSecond = 80;
+    }
+
+    /**
+     * DOM要素を受け取って初期化する（Vue の onMounted から呼ぶ）
+     */
+    init(elements) {
+        this.canvas = elements.canvas;
+        this.ctx = this.canvas.getContext('2d');
 
         this._resize();
         this._bindEvents();
     }
 
     _resize() {
+        if (!this.canvas) return;
         const rect = this.canvas.parentElement.getBoundingClientRect();
         this.canvas.width = rect.width;
         this.canvas.height = rect.height;
@@ -46,6 +55,7 @@ class AutomationEditor {
     }
 
     draw() {
+        if (!this.canvas) return;
         this._resize();
         const { ctx, canvas } = this;
         const w = canvas.width;
@@ -93,7 +103,6 @@ class AutomationEditor {
         ctx.lineWidth = 2;
         ctx.beginPath();
 
-        // 開始点（左端）
         const firstY = h - points[0].value * h;
         ctx.moveTo(0, firstY);
 
@@ -104,7 +113,6 @@ class AutomationEditor {
             if (i === 0) {
                 ctx.lineTo(px, py);
             } else {
-                // 前の点とのスムーズ補間
                 const prev = points[i - 1];
                 const prevX = prev.time * this.pixelsPerSecond;
                 const prevY = h - prev.value * h;
@@ -113,7 +121,6 @@ class AutomationEditor {
             }
         }
 
-        // 末端を右端まで延長
         const lastY = h - points[points.length - 1].value * h;
         ctx.lineTo(w, lastY);
         ctx.stroke();
@@ -143,7 +150,6 @@ class AutomationEditor {
     }
 
     _bindEvents() {
-        // ダブルクリックでポイント追加
         this.canvas.addEventListener('dblclick', (e) => {
             if (!this.activeTrackId) return;
             const rect = this.canvas.getBoundingClientRect();
@@ -159,7 +165,6 @@ class AutomationEditor {
             this.draw();
         });
 
-        // ドラッグでポイント移動
         this.canvas.addEventListener('mousedown', (e) => {
             if (!this.activeTrackId) return;
             const rect = this.canvas.getBoundingClientRect();
@@ -197,7 +202,6 @@ class AutomationEditor {
             }
         });
 
-        // 右クリックでポイント削除
         this.canvas.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             if (!this.activeTrackId) return;
@@ -226,4 +230,4 @@ class AutomationEditor {
     fromJSON(data) { this.data = data || {}; this.draw(); }
 }
 
-window.automation = new AutomationEditor();
+// Vue側で初期化するため、自動インスタンス化しない
