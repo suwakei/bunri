@@ -13,10 +13,14 @@
       "Read(//c/tools/fluidsynth/**)",
       "Bash(python -c \"import fluidsynth; print\\('FluidSynth OK'\\)\")",
       "Bash(python -c \"f=open\\(r'c:\\\\Users\\\\ns072\\\\dev\\\\etc\\\\bunri\\\\soundfonts\\\\FluidR3_GM.sf2','rb'\\);print\\(f.read\\(4\\)\\);f.close\\(\\)\")",
-      "Read(//c/Users/ns072/**)"
+      "Read(//c/Users/ns072/**)",
+      "Bash(ls *.json)",
+      "Bash(ls *.toml)",
+      "Bash(ls *.cfg)"
     ],
     "additionalDirectories": [
-      "c:\\Users\\ns072\\dev\\etc\\bunri"
+      "c:\\Users\\ns072\\dev\\etc\\bunri",
+      "C:\\Users\\ns072\\dev\\etc\\bunri\\.claude"
     ]
   }
 }

@@ -23,7 +23,7 @@ class Timeline {
         this.headerCanvas.style.width = w + 'px';
 
         const ctx = this.headerCtx;
-        ctx.fillStyle = '#16213e';
+        ctx.fillStyle = '#17171e';
         ctx.fillRect(0, 0, w, 24);
 
         const bpm = engine.bpm;

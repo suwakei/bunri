@@ -89,7 +89,7 @@ class AutomationEditor {
         }
 
         // 曲線描画
-        ctx.strokeStyle = '#ff9f43';
+        ctx.strokeStyle = '#4ecdc4';
         ctx.lineWidth = 2;
         ctx.beginPath();
 
@@ -123,7 +123,7 @@ class AutomationEditor {
             const px = points[i].time * this.pixelsPerSecond;
             const py = h - points[i].value * h;
 
-            ctx.fillStyle = '#ff9f43';
+            ctx.fillStyle = '#4ecdc4';
             ctx.beginPath();
             ctx.arc(px, py, 5, 0, Math.PI * 2);
             ctx.fill();
