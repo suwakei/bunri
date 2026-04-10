@@ -205,6 +205,110 @@ async def api_edit(
         raise HTTPException(400, str(e))
 
 
+# ---- バッチ編集 API ----
+
+@app.post("/api/batch/edit")
+async def api_batch_edit(
+    files: list[UploadFile] = File(...),
+    action: str = Form("trim"),
+    params: str = Form("{}"),
+):
+    """複数ファイルに同じ編集操作を一括適用"""
+    import edit
+    p = json.loads(params)
+
+    dispatch_fn = {
+        "trim": lambda src: edit.trim_audio(src, p["start"], p["end"]),
+        "cut": lambda src: edit.cut_audio(src, p["start"], p["end"]),
+        "silence": lambda src: edit.insert_silence(src, p["position"], p["length"]),
+        "loop": lambda src: edit.loop_range(src, p["start"], p["end"], p["count"]),
+        "reverse": lambda src: edit.reverse_audio(src),
+        "normalize": lambda src: edit.normalize_audio(src),
+        "volume": lambda src: edit.change_volume(src, p.get("db", 0)),
+        "fade_in": lambda src: edit.fade_in(src, p.get("duration", 3)),
+        "fade_out": lambda src: edit.fade_out(src, p.get("duration", 3)),
+        "speed": lambda src: edit.change_speed(src, p.get("speed", 1.0)),
+    }
+    if action not in dispatch_fn:
+        raise HTTPException(400, f"不明なアクション: {action}")
+
+    results = []
+    for upload in files:
+        src = _save_upload(upload)
+        try:
+            out = dispatch_fn[action](str(src))
+            dst_name = f"batch_{action}_{upload.filename}"
+            dst = RESULTS_DIR / dst_name
+            shutil.copy2(out, str(dst))
+            results.append({
+                "filename": upload.filename,
+                "url": f"/api/download/{dst_name}",
+                "status": "ok",
+            })
+        except Exception as e:
+            results.append({
+                "filename": upload.filename,
+                "url": None,
+                "status": f"error: {e}",
+            })
+    return JSONResponse(results)
+
+
+@app.post("/api/batch/effects")
+async def api_batch_effects(
+    files: list[UploadFile] = File(...),
+    effect_name: str = Form("normalize"),
+    params: str = Form("{}"),
+):
+    """複数ファイルに同じエフェクトを一括適用"""
+    import effects
+    import edit
+    import pitch_time
+
+    p = json.loads(params)
+
+    dispatch_fn = {
+        "eq": lambda src: effects.eq_3band(src, p.get("low", 0), p.get("mid", 0), p.get("high", 0)),
+        "compressor": lambda src: effects.compressor(src, p.get("threshold", -20), p.get("ratio", 4),
+                                                      p.get("attack", 10), p.get("release", 100)),
+        "reverb": lambda src: effects.reverb(src, p.get("room_size", 0.5), p.get("wet", 0.3)),
+        "delay": lambda src: effects.delay_effect(src, p.get("delay_ms", 300),
+                                                    p.get("feedback", 0.4), p.get("wet", 0.3)),
+        "volume": lambda src: edit.change_volume(src, p.get("db", 0)),
+        "normalize": lambda src: edit.normalize_audio(src),
+        "fade_in": lambda src: edit.fade_in(src, p.get("duration", 3)),
+        "fade_out": lambda src: edit.fade_out(src, p.get("duration", 3)),
+        "pan": lambda src: edit.pan_audio(src, p.get("pan", 0)),
+        "reverse": lambda src: edit.reverse_audio(src),
+        "pitch_shift": lambda src: pitch_time.pitch_shift(src, p.get("semitones", 0)),
+        "time_stretch": lambda src: pitch_time.time_stretch(src, p.get("rate", 1.0)),
+        "speed": lambda src: edit.change_speed(src, p.get("speed", 1.0)),
+    }
+    if effect_name not in dispatch_fn:
+        raise HTTPException(400, f"不明なエフェクト: {effect_name}")
+
+    results = []
+    for upload in files:
+        src = _save_upload(upload)
+        try:
+            out = dispatch_fn[effect_name](str(src))
+            dst_name = f"batch_{effect_name}_{upload.filename}"
+            dst = RESULTS_DIR / dst_name
+            shutil.copy2(out, str(dst))
+            results.append({
+                "filename": upload.filename,
+                "url": f"/api/download/{dst_name}",
+                "status": "ok",
+            })
+        except Exception as e:
+            results.append({
+                "filename": upload.filename,
+                "url": None,
+                "status": f"error: {e}",
+            })
+    return JSONResponse(results)
+
+
 # ---- ミキサー API ----
 
 @app.post("/api/mixer")

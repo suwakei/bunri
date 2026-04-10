@@ -1,6 +1,6 @@
 /**
- * bunri DAW — ピアノロール
- * Canvas ベースのノート配置・編集UI
+ * bunri DAW — ピアノロール（トラック独立対応）
+ * 各トラックが独自のノートデータを持ち、選択トラック切替で表示を切り替える
  */
 class PianoRoll {
     constructor() {
@@ -17,7 +17,11 @@ class PianoRoll {
         this.noteNames = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
         this.blackKeys = new Set(['A#','G#','F#','D#','C#']);
 
+        // 現在選択中のトラックID（null = なし）
+        this.activeTrackId = null;
+
         // ノートデータ: [{note, octave, step, length, element}]
+        // → engine.tracks[].pianoNotes を参照するが、内部キャッシュも持つ
         this.notes = [];
         this.selectedNote = null;
         this.isDragging = false;
@@ -33,6 +37,67 @@ class PianoRoll {
         this._resize();
         this._drawGrid();
         this._bindEvents();
+    }
+
+    // ---- トラック切替 ----
+
+    /**
+     * 指定トラックのピアノロールに切り替える
+     */
+    switchToTrack(trackId) {
+        // 現在のノートをエンジンに保存
+        this._saveToEngine();
+
+        this.activeTrackId = trackId !== null ? Number(trackId) : null;
+        this.selectedNote = null;
+
+        // エンジンからノートを読み込み
+        this._loadFromEngine();
+        this._renderNotes();
+        this._updateLabel();
+    }
+
+    /**
+     * 現在のノートデータをエンジンのトラックに保存
+     */
+    _saveToEngine() {
+        if (this.activeTrackId === null) return;
+        const track = engine.getTrack(this.activeTrackId);
+        if (!track) return;
+        track.pianoNotes = this.notes.map(n => ({
+            note: n.note, octave: n.octave, step: n.step, length: n.length,
+        }));
+    }
+
+    /**
+     * エンジンのトラックからノートデータを読み込み
+     */
+    _loadFromEngine() {
+        if (this.activeTrackId === null) {
+            this.notes = [];
+            return;
+        }
+        const track = engine.getTrack(this.activeTrackId);
+        if (!track) {
+            this.notes = [];
+            return;
+        }
+        this.notes = (track.pianoNotes || []).map(n => ({ ...n }));
+    }
+
+    /**
+     * ピアノロール上部のラベルを更新
+     */
+    _updateLabel() {
+        const label = document.querySelector('#piano-roll-area .area-label');
+        if (!label) return;
+        if (this.activeTrackId === null) {
+            label.innerHTML = 'ピアノロール <span class="area-hint">（トラックをクリックして選択）</span>';
+        } else {
+            const track = engine.getTrack(this.activeTrackId);
+            const name = track ? track.name : '?';
+            label.innerHTML = `ピアノロール — <strong style="color:var(--accent)">${name}</strong> <span class="area-hint">（ダブルクリックでノート追加 / ドラッグで移動 / Deleteで削除）</span>`;
+        }
     }
 
     _buildKeys() {
@@ -65,19 +130,16 @@ class PianoRoll {
         const h = canvas.height;
         ctx.clearRect(0, 0, w, h);
 
-        // 行（ノート）
         for (let row = 0; row < this.totalRows; row++) {
             const y = row * this.noteHeight;
             const noteIdx = row % 12;
             const noteName = this.noteNames[noteIdx];
 
-            // 黒鍵の行は暗く
             if (this.blackKeys.has(noteName)) {
                 ctx.fillStyle = 'rgba(0,0,0,0.2)';
                 ctx.fillRect(0, y, w, this.noteHeight);
             }
 
-            // 横線
             ctx.strokeStyle = noteIdx === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
             ctx.beginPath();
             ctx.moveTo(0, y);
@@ -85,7 +147,6 @@ class PianoRoll {
             ctx.stroke();
         }
 
-        // 列（ステップ）
         for (let step = 0; step <= this.totalSteps; step++) {
             const x = step * this.stepWidth;
             const isBeat = step % 4 === 0;
@@ -104,6 +165,7 @@ class PianoRoll {
     _bindEvents() {
         // ダブルクリックでノート追加
         this.canvas.addEventListener('dblclick', (e) => {
+            if (this.activeTrackId === null) return;
             const rect = this.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left + this.wrap.scrollLeft;
             const y = e.clientY - rect.top + this.wrap.scrollTop;
@@ -121,7 +183,6 @@ class PianoRoll {
                 const idx = parseInt(e.target.dataset.index);
                 this._selectNote(idx);
 
-                // リサイズハンドル（右端10px）
                 const rect = e.target.getBoundingClientRect();
                 if (e.clientX > rect.right - 10) {
                     this.isResizing = true;
@@ -156,6 +217,10 @@ class PianoRoll {
         });
 
         document.addEventListener('mouseup', () => {
+            if (this.isDragging || this.isResizing) {
+                // ドラッグ終了時にエンジンに保存
+                this._saveToEngine();
+            }
             this.isDragging = false;
             this.isResizing = false;
         });
@@ -182,12 +247,14 @@ class PianoRoll {
 
     _addNote(note, octave, step, length) {
         this.notes.push({ note, octave, step, length });
+        this._saveToEngine();
         this._renderNotes();
     }
 
     _removeNote(idx) {
         this.notes.splice(idx, 1);
         this.selectedNote = null;
+        this._saveToEngine();
         this._renderNotes();
     }
 
@@ -198,6 +265,16 @@ class PianoRoll {
 
     _renderNotes() {
         this.noteLayer.innerHTML = '';
+
+        if (this.activeTrackId === null) {
+            // 未選択メッセージ
+            const msg = document.createElement('div');
+            msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--text-dim);font-size:13px;pointer-events:none;';
+            msg.textContent = 'トラックをクリックしてピアノロールを開く';
+            this.noteLayer.appendChild(msg);
+            return;
+        }
+
         this.notes.forEach((n, i) => {
             const row = this._noteToRow(n.note, n.octave);
             const el = document.createElement('div');
@@ -212,26 +289,39 @@ class PianoRoll {
         });
     }
 
-    // 外部から使うメソッド
+    // ---- 外部インターフェース ----
 
+    /**
+     * 現在アクティブなトラックのノートを取得
+     */
     getNotes() {
+        this._saveToEngine();
         return this.notes.map(n => ({
-            note: n.note,
-            octave: n.octave,
-            step: n.step,
-            length: n.length,
+            note: n.note, octave: n.octave, step: n.step, length: n.length,
         }));
     }
 
+    /**
+     * 現在アクティブなトラックにノートを設定
+     */
     setNotes(notes) {
         this.notes = notes.map(n => ({ ...n }));
         this.selectedNote = null;
+        this._saveToEngine();
         this._renderNotes();
+    }
+
+    /**
+     * 現在のアクティブトラックID
+     */
+    getActiveTrackId() {
+        return this.activeTrackId;
     }
 
     clear() {
         this.notes = [];
         this.selectedNote = null;
+        this._saveToEngine();
         this._renderNotes();
     }
 

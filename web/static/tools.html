@@ -160,6 +160,7 @@ body {
     <button data-tab="analyze">解析</button>
     <button data-tab="edit">編集</button>
     <button data-tab="effects">エフェクト</button>
+    <button data-tab="batch">一括編集</button>
     <button data-tab="overlay">音源合成</button>
     <button data-tab="convert">変換</button>
 </div>
@@ -308,6 +309,50 @@ body {
     <div class="result-area" id="fx-tool-result">
         <h3>処理結果</h3>
         <div id="fx-tool-result-items"></div>
+    </div>
+</div>
+
+<!-- ===== 一括編集 ===== -->
+<div id="batch" class="tool-panel">
+    <h2>一括編集（複数ファイル並列処理）</h2>
+    <p class="desc">
+        複数の音声ファイルに同じ操作を一括適用します。<br>
+        分離後の各レイヤーに同じエフェクトをかけたい場合などに便利です。
+    </p>
+
+    <div class="form-group">
+        <label>音声ファイル（複数選択可）</label>
+        <input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple>
+    </div>
+    <div id="batch-file-list" style="font-size:12px;color:var(--text-dim);margin-bottom:12px;"></div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>カテゴリ</label>
+            <select id="batch-category">
+                <option value="edit">編集</option>
+                <option value="effects">エフェクト</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>操作</label>
+            <select id="batch-action">
+                <option value="normalize">ノーマライズ</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="batch-params"></div>
+
+    <div class="hint" id="batch-hint">
+        複数ファイルを選択し、同じ操作を全ファイルに適用します。結果はファイルごとに試聴・ダウンロードできます。
+    </div>
+    <button class="btn" id="btn-batch">一括実行</button>
+    <div class="progress-bar" id="batch-progress"><div class="fill"></div></div>
+    <div class="status" id="batch-status"></div>
+    <div class="result-area" id="batch-result">
+        <h3>処理結果</h3>
+        <div id="batch-result-items"></div>
     </div>
 </div>
 
@@ -683,6 +728,175 @@ document.getElementById('btn-fx-tool').addEventListener('click', async () => {
         setStatus('fx-tool-status', '完了');
     } catch (e) {
         setStatus('fx-tool-status', 'エラー: ' + e.message, 'error');
+    }
+});
+
+// ---- 一括編集 ----
+const BATCH_ACTIONS = {
+    edit: {
+        trim:      { label: 'トリム', params: `<div class="form-row"><div class="form-group"><label>開始（秒）</label><input type="number" id="bp-start" value="0" min="0" step="0.1"></div><div class="form-group"><label>終了（秒）</label><input type="number" id="bp-end" value="10" min="0" step="0.1"></div></div>` },
+        cut:       { label: 'カット', params: `<div class="form-row"><div class="form-group"><label>開始（秒）</label><input type="number" id="bp-start" value="0" min="0" step="0.1"></div><div class="form-group"><label>終了（秒）</label><input type="number" id="bp-end" value="10" min="0" step="0.1"></div></div>` },
+        normalize: { label: 'ノーマライズ', params: '' },
+        volume:    { label: '音量変更', params: `<div class="form-group"><label>音量（dB）</label><input type="number" id="bp-db" value="0" min="-20" max="20" step="1"></div>` },
+        fade_in:   { label: 'フェードイン', params: `<div class="form-group"><label>時間（秒）</label><input type="number" id="bp-dur" value="3" min="0.1" step="0.1"></div>` },
+        fade_out:  { label: 'フェードアウト', params: `<div class="form-group"><label>時間（秒）</label><input type="number" id="bp-dur" value="3" min="0.1" step="0.1"></div>` },
+        reverse:   { label: 'リバース', params: '' },
+        speed:     { label: '速度変更', params: `<div class="form-group"><label>速度倍率</label><input type="number" id="bp-speed" value="1.0" min="0.25" max="4" step="0.05"></div>` },
+        loop:      { label: 'ループ', params: `<div class="form-row"><div class="form-group"><label>開始（秒）</label><input type="number" id="bp-start" value="0" min="0" step="0.1"></div><div class="form-group"><label>終了（秒）</label><input type="number" id="bp-end" value="10" min="0" step="0.1"></div></div><div class="form-group"><label>回数</label><input type="number" id="bp-count" value="3" min="2" max="50"></div>` },
+        silence:   { label: '無音挿入', params: `<div class="form-row"><div class="form-group"><label>位置（秒）</label><input type="number" id="bp-pos" value="0" min="0" step="0.1"></div><div class="form-group"><label>長さ（秒）</label><input type="number" id="bp-len" value="2" min="0.1" step="0.1"></div></div>` },
+    },
+    effects: {
+        normalize:    { label: 'ノーマライズ', params: '' },
+        eq:           { label: 'EQ（3バンド）', params: `<div class="form-row"><div class="form-group"><label>Low (dB)</label><input type="number" id="bp-eq-low" value="0" min="-12" max="12"></div><div class="form-group"><label>Mid (dB)</label><input type="number" id="bp-eq-mid" value="0" min="-12" max="12"></div><div class="form-group"><label>High (dB)</label><input type="number" id="bp-eq-high" value="0" min="-12" max="12"></div></div>` },
+        compressor:   { label: 'コンプレッサー', params: `<div class="form-row"><div class="form-group"><label>Threshold (dB)</label><input type="number" id="bp-comp-thresh" value="-20" min="-40" max="0"></div><div class="form-group"><label>Ratio</label><input type="number" id="bp-comp-ratio" value="4" min="1" max="20" step="0.5"></div></div>` },
+        reverb:       { label: 'リバーブ', params: `<div class="form-row"><div class="form-group"><label>Room Size</label><input type="number" id="bp-rv-size" value="0.5" min="0" max="1" step="0.05"></div><div class="form-group"><label>Wet</label><input type="number" id="bp-rv-wet" value="0.3" min="0" max="1" step="0.05"></div></div>` },
+        delay:        { label: 'ディレイ', params: `<div class="form-row"><div class="form-group"><label>Time (ms)</label><input type="number" id="bp-dl-ms" value="300" min="50" max="2000"></div><div class="form-group"><label>Feedback</label><input type="number" id="bp-dl-fb" value="0.4" min="0" max="0.9" step="0.05"></div><div class="form-group"><label>Wet</label><input type="number" id="bp-dl-wet" value="0.3" min="0" max="1" step="0.05"></div></div>` },
+        volume:       { label: '音量変更', params: `<div class="form-group"><label>音量（dB）</label><input type="number" id="bp-db" value="0" min="-20" max="20" step="1"></div>` },
+        fade_in:      { label: 'フェードイン', params: `<div class="form-group"><label>時間（秒）</label><input type="number" id="bp-dur" value="3" min="0.1" step="0.1"></div>` },
+        fade_out:     { label: 'フェードアウト', params: `<div class="form-group"><label>時間（秒）</label><input type="number" id="bp-dur" value="3" min="0.1" step="0.1"></div>` },
+        pan:          { label: 'パン', params: `<div class="form-group"><label>パン（-1=左、1=右）</label><input type="number" id="bp-pan" value="0" min="-1" max="1" step="0.1"></div>` },
+        reverse:      { label: 'リバース', params: '' },
+        pitch_shift:  { label: 'ピッチシフト', params: `<div class="form-group"><label>半音数</label><input type="number" id="bp-ps-semi" value="0" min="-12" max="12"></div>` },
+        time_stretch: { label: 'タイムストレッチ', params: `<div class="form-group"><label>倍率</label><input type="number" id="bp-ts-rate" value="1.0" min="0.25" max="3" step="0.05"></div>` },
+        speed:        { label: '速度変更', params: `<div class="form-group"><label>速度倍率</label><input type="number" id="bp-speed" value="1.0" min="0.25" max="4" step="0.05"></div>` },
+    },
+};
+
+function batchUpdateActions() {
+    const cat = document.getElementById('batch-category').value;
+    const sel = document.getElementById('batch-action');
+    sel.innerHTML = '';
+    for (const [key, info] of Object.entries(BATCH_ACTIONS[cat])) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = info.label;
+        sel.appendChild(opt);
+    }
+    batchUpdateParams();
+}
+
+function batchUpdateParams() {
+    const cat = document.getElementById('batch-category').value;
+    const action = document.getElementById('batch-action').value;
+    const info = BATCH_ACTIONS[cat]?.[action];
+    document.getElementById('batch-params').innerHTML = info?.params || '';
+}
+
+document.getElementById('batch-category').addEventListener('change', batchUpdateActions);
+document.getElementById('batch-action').addEventListener('change', batchUpdateParams);
+batchUpdateActions();
+
+// ファイル選択時にリスト表示
+document.getElementById('batch-files').addEventListener('change', (e) => {
+    const list = document.getElementById('batch-file-list');
+    const files = e.target.files;
+    if (files.length === 0) { list.textContent = ''; return; }
+    list.textContent = `${files.length}個のファイルを選択: ` +
+        [...files].map(f => f.name).join(', ');
+});
+
+function getBatchParams() {
+    const cat = document.getElementById('batch-category').value;
+    const action = document.getElementById('batch-action').value;
+
+    if (cat === 'edit') {
+        switch (action) {
+            case 'trim': case 'cut':
+                return { start: +document.getElementById('bp-start')?.value||0, end: +document.getElementById('bp-end')?.value||10 };
+            case 'volume':
+                return { db: +document.getElementById('bp-db')?.value||0 };
+            case 'fade_in': case 'fade_out':
+                return { duration: +document.getElementById('bp-dur')?.value||3 };
+            case 'speed':
+                return { speed: +document.getElementById('bp-speed')?.value||1 };
+            case 'loop':
+                return { start: +document.getElementById('bp-start')?.value||0, end: +document.getElementById('bp-end')?.value||10, count: +document.getElementById('bp-count')?.value||3 };
+            case 'silence':
+                return { position: +document.getElementById('bp-pos')?.value||0, length: +document.getElementById('bp-len')?.value||2 };
+            default: return {};
+        }
+    } else {
+        switch (action) {
+            case 'eq': return { low: +document.getElementById('bp-eq-low')?.value||0, mid: +document.getElementById('bp-eq-mid')?.value||0, high: +document.getElementById('bp-eq-high')?.value||0 };
+            case 'compressor': return { threshold: +document.getElementById('bp-comp-thresh')?.value||-20, ratio: +document.getElementById('bp-comp-ratio')?.value||4 };
+            case 'reverb': return { room_size: +document.getElementById('bp-rv-size')?.value||0.5, wet: +document.getElementById('bp-rv-wet')?.value||0.3 };
+            case 'delay': return { delay_ms: +document.getElementById('bp-dl-ms')?.value||300, feedback: +document.getElementById('bp-dl-fb')?.value||0.4, wet: +document.getElementById('bp-dl-wet')?.value||0.3 };
+            case 'volume': return { db: +document.getElementById('bp-db')?.value||0 };
+            case 'fade_in': case 'fade_out': return { duration: +document.getElementById('bp-dur')?.value||3 };
+            case 'pan': return { pan: +document.getElementById('bp-pan')?.value||0 };
+            case 'pitch_shift': return { semitones: +document.getElementById('bp-ps-semi')?.value||0 };
+            case 'time_stretch': return { rate: +document.getElementById('bp-ts-rate')?.value||1 };
+            case 'speed': return { speed: +document.getElementById('bp-speed')?.value||1 };
+            default: return {};
+        }
+    }
+}
+
+document.getElementById('btn-batch').addEventListener('click', async () => {
+    const fileInput = document.getElementById('batch-files');
+    if (!fileInput.files.length) {
+        setStatus('batch-status', 'ファイルを選択してください', 'error');
+        return;
+    }
+
+    const cat = document.getElementById('batch-category').value;
+    const action = document.getElementById('batch-action').value;
+    const params = getBatchParams();
+
+    const fd = new FormData();
+    for (const f of fileInput.files) {
+        fd.append('files', f);
+    }
+    fd.append('params', JSON.stringify(params));
+
+    let apiUrl;
+    if (cat === 'edit') {
+        fd.append('action', action);
+        apiUrl = '/api/batch/edit';
+    } else {
+        fd.append('effect_name', action);
+        apiUrl = '/api/batch/effects';
+    }
+
+    const count = fileInput.files.length;
+    const actionLabel = BATCH_ACTIONS[cat][action]?.label || action;
+    setStatus('batch-status', `${count}個のファイルに「${actionLabel}」を適用中...`, 'processing');
+    showProgress('batch-progress', true);
+    showResult('batch-result', false);
+    document.getElementById('btn-batch').disabled = true;
+
+    try {
+        const resp = await fetch(apiUrl, { method: 'POST', body: fd });
+        if (!resp.ok) throw new Error(await resp.text());
+        const results = await resp.json();
+
+        const container = document.getElementById('batch-result-items');
+        container.innerHTML = '';
+
+        let okCount = 0;
+        let errCount = 0;
+        for (const r of results) {
+            if (r.status === 'ok' && r.url) {
+                makeAudioResult(container, `${r.filename}`, r.url);
+                okCount++;
+            } else {
+                const item = document.createElement('div');
+                item.className = 'result-item';
+                item.innerHTML = `<div class="result-label">${r.filename}</div>
+                    <div style="color:#e74c3c;font-size:13px">${r.status}</div>`;
+                container.appendChild(item);
+                errCount++;
+            }
+        }
+        showResult('batch-result', true);
+        let msg = `完了: ${okCount}個成功`;
+        if (errCount > 0) msg += ` / ${errCount}個エラー`;
+        setStatus('batch-status', msg);
+    } catch (e) {
+        setStatus('batch-status', 'エラー: ' + e.message, 'error');
+    } finally {
+        showProgress('batch-progress', false);
+        document.getElementById('btn-batch').disabled = false;
     }
 });
 

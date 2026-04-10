@@ -61,11 +61,17 @@ class Timeline {
             row.className = 'track-row';
 
             // トラックヘッダー
+            const isActive = pianoRoll && pianoRoll.getActiveTrackId() === track.id;
+            const noteCount = (track.pianoNotes || []).length;
+            const notesBadge = noteCount > 0 ? `<span class="notes-badge" title="${noteCount}ノート">${noteCount}</span>` : '';
             const header = document.createElement('div');
-            header.className = 'track-header';
+            header.className = 'track-header' + (isActive ? ' active-track' : '');
+            header.dataset.trackId = track.id;
+            const isTrackPlaying = engine.isPlaying && engine.soloTrackId === track.id;
             header.innerHTML = `
-                <span class="track-name">${track.name}</span>
+                <span class="track-name">${track.name} ${notesBadge}</span>
                 <div class="track-controls">
+                    <button class="btn-track-play ${isTrackPlaying ? 'playing' : ''}" data-track="${track.id}" title="このトラックだけ再生">${isTrackPlaying ? '⏸' : '▶'}</button>
                     <button class="btn-mute ${track.mute ? 'muted' : ''}" data-track="${track.id}">M</button>
                     <button class="btn-solo ${track.solo ? 'soloed' : ''}" data-track="${track.id}">S</button>
                     <button class="btn-delete-track" data-track="${track.id}">✕</button>
@@ -134,6 +140,43 @@ class Timeline {
     }
 
     _bindTrackEvents() {
+        // トラックヘッダークリック → ピアノロール切替
+        this.container.querySelectorAll('.track-header').forEach(header => {
+            header.addEventListener('click', (e) => {
+                // ボタンクリック時はスキップ（M/S/✕ボタンが処理する）
+                if (e.target.tagName === 'BUTTON') return;
+                const id = parseInt(header.dataset.trackId);
+                if (pianoRoll) {
+                    pianoRoll.switchToTrack(id);
+                    this.render(); // ハイライト更新
+                    if (typeof setStatus === 'function') {
+                        const track = engine.getTrack(id);
+                        setStatus(`ピアノロール: ${track ? track.name : ''}`);
+                    }
+                }
+            });
+        });
+        // トラック個別再生
+        this.container.querySelectorAll('.btn-track-play').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = parseInt(btn.dataset.track);
+                const track = engine.getTrack(id);
+                if (!track) return;
+
+                if (engine.isPlaying && engine.soloTrackId === id) {
+                    // 再生中の同じトラック → 一時停止
+                    engine.pause();
+                    document.getElementById('btn-play').textContent = '▶';
+                    if (typeof setStatus === 'function') setStatus('一時停止');
+                } else {
+                    // 別トラックまたは停止中 → このトラックだけ再生
+                    engine.playSingleTrack(id);
+                    document.getElementById('btn-play').textContent = '⏸';
+                    if (typeof setStatus === 'function') setStatus(`再生中: ${track.name}`);
+                }
+                this.render();
+            });
+        });
         // ミュート
         this.container.querySelectorAll('.btn-mute').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -155,6 +198,10 @@ class Timeline {
         this.container.querySelectorAll('.btn-delete-track').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = parseInt(btn.dataset.track);
+                // 削除するトラックがアクティブならピアノロールをリセット
+                if (pianoRoll && pianoRoll.getActiveTrackId() === id) {
+                    pianoRoll.switchToTrack(null);
+                }
                 engine.removeTrack(id);
                 this.render();
             });

@@ -1,7 +1,21 @@
 /**
  * bunri DAW — WebAudio リアルタイム再生エンジン
- * トラック管理、クリップ再生、メトロノーム、録音を担当
+ * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
+
+// 音名 → 周波数テーブル
+const NOTE_FREQ = {};
+(() => {
+    const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    for (let oct = 0; oct <= 8; oct++) {
+        for (let i = 0; i < 12; i++) {
+            const midi = (oct + 1) * 12 + i;
+            const freq = 440 * Math.pow(2, (midi - 69) / 12);
+            NOTE_FREQ[`${names[i]}${oct}`] = freq;
+        }
+    }
+})();
+
 class AudioEngine {
     constructor() {
         this.ctx = null; // AudioContext（ユーザー操作後に初期化）
@@ -15,7 +29,7 @@ class AudioEngine {
         this.metronomeEnabled = false;
         this.metronomeInterval = null;
 
-        // トラック: { id, name, clips: [{buffer, offset, gainNode}], gain, pan, mute, solo }
+        // トラック: { id, name, clips, pianoNotes, gain, pan, mute, solo }
         this.tracks = [];
         this.nextTrackId = 1;
 
@@ -26,6 +40,7 @@ class AudioEngine {
 
         // 再生中のソースノード（停止用）
         this.activeSources = [];
+        this.soloTrackId = null; // 単独再生中のトラックID（nullなら全トラック）
     }
 
     init() {
@@ -43,6 +58,7 @@ class AudioEngine {
             id: this.nextTrackId++,
             name: name || `Track ${this.tracks.length + 1}`,
             clips: [],       // {buffer, offset, name}
+            pianoNotes: [],  // [{note, octave, step, length}]
             gain: 0,         // dB
             pan: 0,          // -1 ~ 1
             mute: false,
@@ -57,10 +73,12 @@ class AudioEngine {
     }
 
     removeTrack(trackId) {
+        trackId = Number(trackId);
         this.tracks = this.tracks.filter(t => t.id !== trackId);
     }
 
     getTrack(trackId) {
+        trackId = Number(trackId);
         return this.tracks.find(t => t.id === trackId);
     }
 
@@ -139,9 +157,15 @@ class AudioEngine {
         this.init();
         if (this.isPlaying) this.stop();
 
+        // 再生前にアクティブトラックのピアノロールを保存
+        if (window.pianoRoll) {
+            pianoRoll._saveToEngine();
+        }
+
         if (fromSec !== null) this.playOffset = fromSec;
         this.startTime = this.ctx.currentTime;
         this.isPlaying = true;
+        this.soloTrackId = null; // 全トラック再生モード
         this.activeSources = [];
 
         // ソロ判定
@@ -150,30 +174,125 @@ class AudioEngine {
         for (const track of this.tracks) {
             if (track.mute) continue;
             if (hasSolo && !track.solo) continue;
-
-            for (const clip of track.clips) {
-                const source = this.ctx.createBufferSource();
-                source.buffer = clip.buffer;
-                source.connect(track.panNode);
-
-                const clipStart = clip.offset - this.playOffset;
-                if (clipStart >= 0) {
-                    source.start(this.ctx.currentTime + clipStart);
-                } else if (-clipStart < clip.duration) {
-                    source.start(this.ctx.currentTime, -clipStart);
-                } else {
-                    continue; // クリップ全体が再生位置より前
-                }
-                this.activeSources.push(source);
-            }
+            this._scheduleTrack(track);
         }
 
         // メトロノーム
         if (this.metronomeEnabled) this._startMetronome();
     }
 
+    /**
+     * 指定トラックだけを再生する
+     */
+    playSingleTrack(trackId, fromSec = null) {
+        this.init();
+        if (this.isPlaying) this.stop();
+
+        if (window.pianoRoll) {
+            pianoRoll._saveToEngine();
+        }
+
+        const track = this.getTrack(trackId);
+        if (!track) return;
+
+        if (fromSec !== null) this.playOffset = fromSec;
+        this.startTime = this.ctx.currentTime;
+        this.isPlaying = true;
+        this.soloTrackId = trackId; // 単独再生モード
+        this.activeSources = [];
+
+        this._scheduleTrack(track);
+
+        if (this.metronomeEnabled) this._startMetronome();
+    }
+
+    /**
+     * トラックのクリップとピアノノートをスケジュール再生
+     */
+    _scheduleTrack(track) {
+        // オーディオクリップ再生
+        for (const clip of track.clips) {
+            const source = this.ctx.createBufferSource();
+            source.buffer = clip.buffer;
+            source.connect(track.panNode);
+
+            const clipStart = clip.offset - this.playOffset;
+            if (clipStart >= 0) {
+                source.start(this.ctx.currentTime + clipStart);
+            } else if (-clipStart < clip.duration) {
+                source.start(this.ctx.currentTime, -clipStart);
+            } else {
+                continue;
+            }
+            this.activeSources.push(source);
+        }
+
+        // ピアノノート再生
+        this._scheduleTrackNotes(track);
+    }
+
+    /**
+     * トラックのpianoNotesをWebAudioオシレーターでスケジュール再生
+     */
+    _scheduleTrackNotes(track) {
+        if (!track.pianoNotes || track.pianoNotes.length === 0) return;
+
+        const stepSec = 60 / this.bpm / 4; // 16分音符1つの秒数
+
+        for (const n of track.pianoNotes) {
+            const freq = NOTE_FREQ[`${n.note}${n.octave}`];
+            if (!freq) continue;
+
+            const noteStart = n.step * stepSec;
+            const noteDur = n.length * stepSec;
+            const relStart = noteStart - this.playOffset;
+
+            // 既に終わったノートはスキップ
+            if (relStart + noteDur <= 0) continue;
+
+            const attack = 0.01;
+            const release = Math.min(0.15, noteDur * 0.3);
+            const sustainDur = Math.max(0, noteDur - attack - release);
+
+            // オシレーター
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+
+            gain.gain.setValueAtTime(0, this.ctx.currentTime);
+            osc.connect(gain);
+            gain.connect(track.panNode);
+
+            if (relStart >= 0) {
+                const when = this.ctx.currentTime + relStart;
+                // ADSR エンベロープ
+                gain.gain.setValueAtTime(0, when);
+                gain.gain.linearRampToValueAtTime(0.25, when + attack);
+                gain.gain.setValueAtTime(0.25, when + attack + sustainDur);
+                gain.gain.linearRampToValueAtTime(0, when + noteDur);
+                osc.start(when);
+                osc.stop(when + noteDur + 0.01);
+            } else {
+                // 途中からのノート
+                const elapsed = -relStart;
+                const remaining = noteDur - elapsed;
+                if (remaining <= 0) continue;
+                const when = this.ctx.currentTime;
+                gain.gain.setValueAtTime(0.25, when);
+                gain.gain.setValueAtTime(0.25, when + Math.max(0, remaining - release));
+                gain.gain.linearRampToValueAtTime(0, when + remaining);
+                osc.start(when);
+                osc.stop(when + remaining + 0.01);
+            }
+
+            this.activeSources.push(osc);
+        }
+    }
+
     stop() {
         this.isPlaying = false;
+        this.soloTrackId = null;
         for (const src of this.activeSources) {
             try { src.stop(); } catch (e) {}
         }
@@ -200,10 +319,27 @@ class AudioEngine {
 
     getTotalDuration() {
         let maxEnd = 0;
+        const stepSec = 60 / this.bpm / 4;
         for (const track of this.tracks) {
-            for (const clip of track.clips) {
-                maxEnd = Math.max(maxEnd, clip.offset + clip.duration);
-            }
+            maxEnd = Math.max(maxEnd, this._getTrackEndTime(track, stepSec));
+        }
+        return maxEnd;
+    }
+
+    getTrackDuration(trackId) {
+        const track = this.getTrack(trackId);
+        if (!track) return 0;
+        const stepSec = 60 / this.bpm / 4;
+        return this._getTrackEndTime(track, stepSec);
+    }
+
+    _getTrackEndTime(track, stepSec) {
+        let maxEnd = 0;
+        for (const clip of track.clips) {
+            maxEnd = Math.max(maxEnd, clip.offset + clip.duration);
+        }
+        for (const n of (track.pianoNotes || [])) {
+            maxEnd = Math.max(maxEnd, (n.step + n.length) * stepSec);
         }
         return maxEnd;
     }
@@ -271,7 +407,6 @@ class AudioEngine {
                 this.isRecording = false;
                 this.mediaStream.getTracks().forEach(t => t.stop());
                 const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
-                // WebM → AudioBuffer に変換
                 const arrayBuf = await blob.arrayBuffer();
                 const buffer = await this.ctx.decodeAudioData(arrayBuf);
                 resolve(buffer);
@@ -284,6 +419,9 @@ class AudioEngine {
 
     async mixdown() {
         this.init();
+        // 保存前にアクティブトラックのノートを反映
+        if (window.pianoRoll) pianoRoll._saveToEngine();
+
         const duration = this.getTotalDuration();
         if (duration === 0) return null;
 
@@ -291,6 +429,8 @@ class AudioEngine {
         const offCtx = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
         const master = offCtx.createGain();
         master.connect(offCtx.destination);
+
+        const stepSec = 60 / this.bpm / 4;
 
         for (const track of this.tracks) {
             if (track.mute) continue;
@@ -301,11 +441,36 @@ class AudioEngine {
             panNode.connect(gainNode);
             gainNode.connect(master);
 
+            // オーディオクリップ
             for (const clip of track.clips) {
                 const src = offCtx.createBufferSource();
                 src.buffer = clip.buffer;
                 src.connect(panNode);
                 src.start(clip.offset);
+            }
+
+            // ピアノノート
+            for (const n of (track.pianoNotes || [])) {
+                const freq = NOTE_FREQ[`${n.note}${n.octave}`];
+                if (!freq) continue;
+                const noteStart = n.step * stepSec;
+                const noteDur = n.length * stepSec;
+                const attack = 0.01;
+                const release = Math.min(0.15, noteDur * 0.3);
+                const sustainDur = Math.max(0, noteDur - attack - release);
+
+                const osc = offCtx.createOscillator();
+                const g = offCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.value = freq;
+                g.gain.setValueAtTime(0, noteStart);
+                g.gain.linearRampToValueAtTime(0.25, noteStart + attack);
+                g.gain.setValueAtTime(0.25, noteStart + attack + sustainDur);
+                g.gain.linearRampToValueAtTime(0, noteStart + noteDur);
+                osc.connect(g);
+                g.connect(panNode);
+                osc.start(noteStart);
+                osc.stop(noteStart + noteDur + 0.01);
             }
         }
 

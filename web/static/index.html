@@ -20,7 +20,7 @@
             <option value="3">3/4</option>
             <option value="6">6/8</option>
         </select>
-        <button id="btn-play" title="再生" data-hint="全トラックを同時に再生します">▶</button>
+        <button id="btn-play" title="再生/一時停止" data-hint="再生/一時停止を切り替えます">▶</button>
         <button id="btn-stop" title="停止" data-hint="再生を停止して先頭に戻ります">■</button>
         <button id="btn-record" title="録音" data-hint="マイクから録音しながら再生します。もう一度押すと停止">●</button>
         <button id="btn-metronome" title="メトロノーム" data-hint="再生中にBPMに合わせたクリック音を鳴らします">🔔</button>
@@ -163,6 +163,12 @@
             <canvas id="timeline-header-canvas"></canvas>
             <div id="tracks-container"></div>
             <button id="btn-add-track" data-hint="新しいトラック（横一列のレーン）を追加します" style="margin:8px;font-size:12px;padding:4px 12px;background:var(--bg-panel);border:1px solid var(--border);color:var(--text);border-radius:3px;cursor:pointer;">+ トラック追加</button>
+            <!-- シークバー -->
+            <div id="seek-bar-area">
+                <span id="seek-time-current">0:00.0</span>
+                <input type="range" id="seek-bar" min="0" max="100" step="0.1" value="0" data-hint="シークバー：ドラッグして再生位置を変更できます">
+                <span id="seek-time-total">0:00.0</span>
+            </div>
         </div>
 
         <!-- ピアノロール -->

@@ -66,12 +66,22 @@ timeSigSelect.addEventListener('change', () => {
 
 document.getElementById('btn-play').addEventListener('click', () => {
     engine.init();
-    engine.play();
-    setStatus('再生中...');
+    if (engine.isPlaying) {
+        engine.pause();
+        document.getElementById('btn-play').textContent = '▶';
+        setStatus('一時停止');
+    } else {
+        engine.play(); // 全トラック再生
+        document.getElementById('btn-play').textContent = '⏸';
+        setStatus('再生中...');
+    }
+    timeline.render();
 });
 
 document.getElementById('btn-stop').addEventListener('click', () => {
     engine.stop();
+    document.getElementById('btn-play').textContent = '▶';
+    timeline.render();
     setStatus('停止');
 });
 
@@ -82,12 +92,76 @@ document.getElementById('btn-metronome').addEventListener('click', (e) => {
     setStatus(engine.metronomeEnabled ? 'メトロノーム ON' : 'メトロノーム OFF');
 });
 
-// 再生時間表示の更新
-setInterval(() => {
-    const t = engine.getCurrentTime();
+// ---- シークバー ----
+const seekBar = document.getElementById('seek-bar');
+const seekTimeCurrent = document.getElementById('seek-time-current');
+const seekTimeTotal = document.getElementById('seek-time-total');
+let isSeeking = false;
+
+function formatTime(t) {
     const min = Math.floor(t / 60);
     const sec = (t % 60).toFixed(1);
-    timeDisplay.textContent = `${min}:${sec.padStart(4, '0')}`;
+    return `${min}:${sec.padStart(4, '0')}`;
+}
+
+seekBar.addEventListener('mousedown', () => { isSeeking = true; });
+seekBar.addEventListener('touchstart', () => { isSeeking = true; });
+
+seekBar.addEventListener('input', () => {
+    const duration = engine.getTotalDuration();
+    if (duration <= 0) return;
+    const seekTo = (parseFloat(seekBar.value) / 100) * duration;
+    const str = formatTime(seekTo);
+    timeDisplay.textContent = str;
+    seekTimeCurrent.textContent = str;
+});
+
+function finishSeek() {
+    if (!isSeeking) return;
+    isSeeking = false;
+    const duration = engine.getTotalDuration();
+    if (duration <= 0) return;
+    const seekTo = (parseFloat(seekBar.value) / 100) * duration;
+    const wasPlaying = engine.isPlaying;
+    const wasSoloTrack = engine.soloTrackId;
+    if (wasPlaying) {
+        engine.stop();
+    }
+    engine.playOffset = seekTo;
+    if (wasPlaying) {
+        if (wasSoloTrack != null) {
+            engine.playSingleTrack(wasSoloTrack);
+        } else {
+            engine.play();
+        }
+        document.getElementById('btn-play').textContent = '⏸';
+    }
+}
+seekBar.addEventListener('mouseup', finishSeek);
+seekBar.addEventListener('touchend', finishSeek);
+
+// 再生時間表示・シークバーの更新
+setInterval(() => {
+    const t = engine.getCurrentTime();
+    const duration = engine.getTotalDuration();
+    const str = formatTime(t);
+    timeDisplay.textContent = str;
+
+    if (!isSeeking) {
+        seekBar.value = duration > 0 ? (t / duration) * 100 : 0;
+        seekTimeCurrent.textContent = str;
+    }
+    seekTimeTotal.textContent = formatTime(duration);
+
+    // 再生終了時にボタンを戻す
+    if (engine.isPlaying) {
+        if (duration > 0 && t >= duration) {
+            engine.stop();
+            document.getElementById('btn-play').textContent = '▶';
+            timeline.render();
+            setStatus('再生完了');
+        }
+    }
 }, 100);
 
 // ---- トラック追加 ----
@@ -102,6 +176,7 @@ document.getElementById('btn-add-track').addEventListener('click', () => {
 engine.addTrack('Track 1');
 engine.addTrack('Track 2');
 timeline.render();
+pianoRoll._updateLabel();
 
 // ---- ファイルインポート ----
 document.getElementById('btn-import').addEventListener('click', async () => {
@@ -127,7 +202,7 @@ document.getElementById('btn-import').addEventListener('click', async () => {
 document.getElementById('btn-render-seq').addEventListener('click', async () => {
     const notes = pianoRoll.getNotes();
     if (notes.length === 0) {
-        setStatus('ピアノロールにノートを配置してください');
+        setStatus('ピアノロールにノートを配置してください（トラックをクリックして選択後、ダブルクリックで追加）');
         return;
     }
 
@@ -161,13 +236,17 @@ document.getElementById('btn-render-seq').addEventListener('click', async () => 
         const arrayBuf = await blob.arrayBuffer();
         const buffer = await engine.ctx.decodeAudioData(arrayBuf);
 
-        const synthTrackSel = document.getElementById('synth-track');
-        let trackId = synthTrackSel.value;
+        // アクティブトラックがあればそこに追加、なければsynth-trackセレクタを使う
+        let trackId = pianoRoll.getActiveTrackId();
         if (!trackId || !engine.tracks.find(t => t.id === trackId)) {
-            if (engine.tracks.length === 0) engine.addTrack('Synth');
-            trackId = engine.tracks[0].id;
+            const synthTrackSel = document.getElementById('synth-track');
+            trackId = synthTrackSel.value;
+            if (!trackId || !engine.tracks.find(t => t.id == trackId)) {
+                if (engine.tracks.length === 0) engine.addTrack('Synth');
+                trackId = engine.tracks[0].id;
+            }
         }
-        const trackName = engine.tracks.find(t => t.id === trackId)?.name || '';
+        const trackName = engine.tracks.find(t => t.id == trackId)?.name || '';
         await engine.addClipFromBuffer(trackId, buffer, 'synth-seq');
         timeline.render();
         updateTrackSelectors();
@@ -216,6 +295,10 @@ document.getElementById('btn-analyze').addEventListener('click', async () => {
     const input = document.getElementById('analyze-file');
     if (!input.files.length) {
         setStatus('解析するWAVファイルを選択してください');
+        return;
+    }
+    if (!pianoRoll.getActiveTrackId()) {
+        setStatus('先にトラックをクリックしてピアノロールを開いてください');
         return;
     }
 
@@ -362,6 +445,8 @@ document.getElementById('btn-export').addEventListener('click', async () => {
 
 // ---- プロジェクト保存/読込 ----
 document.getElementById('btn-save-project').addEventListener('click', async () => {
+    // 保存前にアクティブトラックのノートをエンジンに保存
+    pianoRoll.getNotes();
     const project = {
         bpm: engine.bpm,
         beatsPerBar: engine.beatsPerBar,
@@ -371,8 +456,8 @@ document.getElementById('btn-save-project').addEventListener('click', async () =
             pan: t.pan,
             mute: t.mute,
             clips: t.clips.map(c => ({ name: c.name, offset: c.offset, duration: c.duration })),
+            pianoNotes: t.pianoNotes || [],
         })),
-        pianoRollNotes: pianoRoll.getNotes(),
         automation: automation.toJSON(),
     };
     const formData = new FormData();
@@ -397,8 +482,20 @@ document.getElementById('btn-load-project').addEventListener('click', async () =
     bpmInput.value = engine.bpm;
     timeSigSelect.value = engine.beatsPerBar;
 
-    pianoRoll.setNotes(project.pianoRollNotes || []);
+    // トラックごとのピアノノートを復元
+    if (project.tracks) {
+        project.tracks.forEach((pt, i) => {
+            if (engine.tracks[i] && pt.pianoNotes) {
+                engine.tracks[i].pianoNotes = pt.pianoNotes;
+            }
+        });
+    }
+    // 旧形式の互換: 単一pianoRollNotesがあれば最初のトラックに入れる
+    if (project.pianoRollNotes && project.pianoRollNotes.length > 0 && engine.tracks.length > 0) {
+        engine.tracks[0].pianoNotes = project.pianoRollNotes;
+    }
     automation.fromJSON(project.automation || {});
+    pianoRoll.switchToTrack(null); // リセット
 
     setStatus(`プロジェクト ${name} を読み込みました（※音声データは再インポートが必要です）`);
 });
@@ -409,6 +506,7 @@ document.getElementById('btn-record').addEventListener('click', async () => {
         try {
             await engine.startRecording();
             engine.play();
+            document.getElementById('btn-play').textContent = '⏸';
             document.getElementById('btn-record').classList.add('active');
             document.getElementById('btn-record').style.color = '#e74c3c';
             setStatus('録音中...');
@@ -418,6 +516,7 @@ document.getElementById('btn-record').addEventListener('click', async () => {
     } else {
         const buffer = await engine.stopRecording();
         engine.pause();
+        document.getElementById('btn-play').textContent = '▶';
         document.getElementById('btn-record').classList.remove('active');
         document.getElementById('btn-record').style.color = '';
 
@@ -504,5 +603,5 @@ if (localStorage.getItem('bunri-guide-seen')) {
 })();
 
 // ---- 初期表示 ----
-setStatus('準備完了 — トラックにWAVファイルをドラッグ&ドロップして開始');
+setStatus('準備完了 — トラック名をクリックしてピアノロールを開く / WAVをD&Dで追加');
 automation.draw();
