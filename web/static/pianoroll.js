@@ -1,14 +1,15 @@
 /**
  * bunri DAW — ピアノロール（トラック独立対応）
  * 各トラックが独自のノートデータを持ち、選択トラック切替で表示を切り替える
+ * Vue.js コンポーネントから init() で初期化して使う
  */
 class PianoRoll {
     constructor() {
-        this.canvas = document.getElementById('piano-grid-canvas');
-        this.noteLayer = document.getElementById('note-layer');
-        this.keysDiv = document.getElementById('piano-keys');
-        this.wrap = document.getElementById('piano-grid-wrap');
-        this.ctx = this.canvas.getContext('2d');
+        this.canvas = null;
+        this.noteLayer = null;
+        this.keysDiv = null;
+        this.wrap = null;
+        this.ctx = null;
 
         this.noteHeight = 14;
         this.stepWidth = 20;     // 16分音符1つの幅(px)
@@ -21,7 +22,6 @@ class PianoRoll {
         this.activeTrackId = null;
 
         // ノートデータ: [{note, octave, step, length, element}]
-        // → engine.tracks[].pianoNotes を参照するが、内部キャッシュも持つ
         this.notes = [];
         this.selectedNote = null;
         this.isDragging = false;
@@ -33,6 +33,20 @@ class PianoRoll {
 
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
 
+        // コールバック（Vue側で設定）
+        this.onTrackSwitch = null;
+    }
+
+    /**
+     * DOM要素を受け取って初期化する（Vue の onMounted から呼ぶ）
+     */
+    init(elements) {
+        this.canvas = elements.canvas;
+        this.noteLayer = elements.noteLayer;
+        this.keysDiv = elements.keysDiv;
+        this.wrap = elements.wrap;
+        this.ctx = this.canvas.getContext('2d');
+
         this._buildKeys();
         this._resize();
         this._drawGrid();
@@ -41,25 +55,15 @@ class PianoRoll {
 
     // ---- トラック切替 ----
 
-    /**
-     * 指定トラックのピアノロールに切り替える
-     */
     switchToTrack(trackId) {
-        // 現在のノートをエンジンに保存
         this._saveToEngine();
-
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
         this.selectedNote = null;
-
-        // エンジンからノートを読み込み
         this._loadFromEngine();
         this._renderNotes();
-        this._updateLabel();
+        if (this.onTrackSwitch) this.onTrackSwitch(this.activeTrackId);
     }
 
-    /**
-     * 現在のノートデータをエンジンのトラックに保存
-     */
     _saveToEngine() {
         if (this.activeTrackId === null) return;
         const track = engine.getTrack(this.activeTrackId);
@@ -69,9 +73,6 @@ class PianoRoll {
         }));
     }
 
-    /**
-     * エンジンのトラックからノートデータを読み込み
-     */
     _loadFromEngine() {
         if (this.activeTrackId === null) {
             this.notes = [];
@@ -83,21 +84,6 @@ class PianoRoll {
             return;
         }
         this.notes = (track.pianoNotes || []).map(n => ({ ...n }));
-    }
-
-    /**
-     * ピアノロール上部のラベルを更新
-     */
-    _updateLabel() {
-        const label = document.querySelector('#piano-roll-area .area-label');
-        if (!label) return;
-        if (this.activeTrackId === null) {
-            label.innerHTML = 'ピアノロール <span class="area-hint">（トラックをクリックして選択）</span>';
-        } else {
-            const track = engine.getTrack(this.activeTrackId);
-            const name = track ? track.name : '?';
-            label.innerHTML = `ピアノロール — <strong style="color:var(--accent)">${name}</strong> <span class="area-hint">（ダブルクリックでノート追加 / ドラッグで移動 / Deleteで削除）</span>`;
-        }
     }
 
     _buildKeys() {
@@ -218,7 +204,6 @@ class PianoRoll {
 
         document.addEventListener('mouseup', () => {
             if (this.isDragging || this.isResizing) {
-                // ドラッグ終了時にエンジンに保存
                 this._saveToEngine();
             }
             this.isDragging = false;
@@ -264,10 +249,10 @@ class PianoRoll {
     }
 
     _renderNotes() {
+        if (!this.noteLayer) return;
         this.noteLayer.innerHTML = '';
 
         if (this.activeTrackId === null) {
-            // 未選択メッセージ
             const msg = document.createElement('div');
             msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--text-dim);font-size:13px;pointer-events:none;';
             msg.textContent = 'トラックをクリックしてピアノロールを開く';
@@ -291,9 +276,6 @@ class PianoRoll {
 
     // ---- 外部インターフェース ----
 
-    /**
-     * 現在アクティブなトラックのノートを取得
-     */
     getNotes() {
         this._saveToEngine();
         return this.notes.map(n => ({
@@ -301,9 +283,6 @@ class PianoRoll {
         }));
     }
 
-    /**
-     * 現在アクティブなトラックにノートを設定
-     */
     setNotes(notes) {
         this.notes = notes.map(n => ({ ...n }));
         this.selectedNote = null;
@@ -311,9 +290,6 @@ class PianoRoll {
         this._renderNotes();
     }
 
-    /**
-     * 現在のアクティブトラックID
-     */
     getActiveTrackId() {
         return this.activeTrackId;
     }
@@ -337,4 +313,5 @@ class PianoRoll {
     }
 }
 
-window.pianoRoll = new PianoRoll();
+// Vue側で初期化するため、自動インスタンス化しない
+// window.pianoRoll は app.js 側で作成する

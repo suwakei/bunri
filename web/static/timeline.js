@@ -1,21 +1,41 @@
 /**
  * bunri DAW — タイムライン / アレンジメントビュー
  * トラック上にクリップを非破壊で配置・移動
+ * Vue.js コンポーネントから init() で初期化して使う
  */
 class Timeline {
     constructor() {
-        this.container = document.getElementById('tracks-container');
-        this.headerCanvas = document.getElementById('timeline-header-canvas');
-        this.headerCtx = this.headerCanvas.getContext('2d');
+        this.container = null;
+        this.headerCanvas = null;
+        this.headerCtx = null;
         this.pixelsPerSecond = 80;
         this.draggingClip = null;
         this.dragOffsetX = 0;
+
+        // コールバック（Vue側で設定）
+        this.onStatus = null;
+        this.onTrackSelect = null;
+        this.onTracksChanged = null;
+    }
+
+    /**
+     * DOM要素を受け取って初期化する（Vue の onMounted から呼ぶ）
+     */
+    init(elements) {
+        this.container = elements.container;
+        this.headerCanvas = elements.headerCanvas;
+        this.headerCtx = this.headerCanvas.getContext('2d');
 
         this._drawHeader();
         this._bindGlobalEvents();
     }
 
+    _setStatus(msg) {
+        if (this.onStatus) this.onStatus(msg);
+    }
+
     _drawHeader() {
+        if (!this.headerCanvas) return;
         const totalSec = Math.max(30, engine.getTotalDuration() + 10);
         const w = totalSec * this.pixelsPerSecond;
         this.headerCanvas.width = w;
@@ -31,7 +51,6 @@ class Timeline {
         const beatsPerBar = engine.beatsPerBar;
         const barSec = beatSec * beatsPerBar;
 
-        // 小節番号と拍線
         for (let t = 0; t < totalSec; t += beatSec) {
             const x = t * this.pixelsPerSecond;
             const barNum = Math.floor(t / barSec) + 1;
@@ -53,6 +72,7 @@ class Timeline {
     }
 
     render() {
+        if (!this.container) return;
         this.container.innerHTML = '';
         this._drawHeader();
 
@@ -61,7 +81,7 @@ class Timeline {
             row.className = 'track-row';
 
             // トラックヘッダー
-            const isActive = pianoRoll && pianoRoll.getActiveTrackId() === track.id;
+            const isActive = window.pianoRoll && window.pianoRoll.getActiveTrackId() === track.id;
             const noteCount = (track.pianoNotes || []).length;
             const notesBadge = noteCount > 0 ? `<span class="notes-badge" title="${noteCount}ノート">${noteCount}</span>` : '';
             const header = document.createElement('div');
@@ -98,14 +118,12 @@ class Timeline {
                 clipEl.dataset.clipIndex = ci;
                 clipEl.title = `${clip.name}\n開始: ${clip.offset.toFixed(1)}s\n長さ: ${clip.duration.toFixed(1)}s`;
 
-                // ドラッグ開始
                 clipEl.addEventListener('mousedown', (e) => {
                     e.preventDefault();
                     this.draggingClip = { trackId: track.id, clipIndex: ci, element: clipEl };
                     this.dragOffsetX = e.clientX - clipEl.getBoundingClientRect().left;
                 });
 
-                // 右クリックで削除
                 clipEl.addEventListener('contextmenu', (e) => {
                     e.preventDefault();
                     engine.removeClip(track.id, ci);
@@ -115,7 +133,7 @@ class Timeline {
                 canvasWrap.appendChild(clipEl);
             });
 
-            // 空エリアにドロップ対応
+            // ドロップ対応
             canvasWrap.addEventListener('dragover', (e) => e.preventDefault());
             canvasWrap.addEventListener('drop', async (e) => {
                 e.preventDefault();
@@ -129,7 +147,8 @@ class Timeline {
                     await engine.addClipFromFile(track.id, file, offsetSec);
                 }
                 this.render();
-                setStatus('クリップを追加しました');
+                this._setStatus('クリップを追加しました');
+                if (this.onTracksChanged) this.onTracksChanged();
             });
 
             row.appendChild(canvasWrap);
@@ -143,16 +162,14 @@ class Timeline {
         // トラックヘッダークリック → ピアノロール切替
         this.container.querySelectorAll('.track-header').forEach(header => {
             header.addEventListener('click', (e) => {
-                // ボタンクリック時はスキップ（M/S/✕ボタンが処理する）
                 if (e.target.tagName === 'BUTTON') return;
                 const id = parseInt(header.dataset.trackId);
-                if (pianoRoll) {
-                    pianoRoll.switchToTrack(id);
-                    this.render(); // ハイライト更新
-                    if (typeof setStatus === 'function') {
-                        const track = engine.getTrack(id);
-                        setStatus(`ピアノロール: ${track ? track.name : ''}`);
-                    }
+                if (window.pianoRoll) {
+                    window.pianoRoll.switchToTrack(id);
+                    this.render();
+                    const track = engine.getTrack(id);
+                    this._setStatus(`ピアノロール: ${track ? track.name : ''}`);
+                    if (this.onTrackSelect) this.onTrackSelect(id);
                 }
             });
         });
@@ -164,15 +181,13 @@ class Timeline {
                 if (!track) return;
 
                 if (engine.isPlaying && engine.soloTrackId === id) {
-                    // 再生中の同じトラック → 一時停止
                     engine.pause();
                     document.getElementById('btn-play').textContent = '▶';
-                    if (typeof setStatus === 'function') setStatus('一時停止');
+                    this._setStatus('一時停止');
                 } else {
-                    // 別トラックまたは停止中 → このトラックだけ再生
                     engine.playSingleTrack(id);
                     document.getElementById('btn-play').textContent = '⏸';
-                    if (typeof setStatus === 'function') setStatus(`再生中: ${track.name}`);
+                    this._setStatus(`再生中: ${track.name}`);
                 }
                 this.render();
             });
@@ -198,18 +213,17 @@ class Timeline {
         this.container.querySelectorAll('.btn-delete-track').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = parseInt(btn.dataset.track);
-                // 削除するトラックがアクティブならピアノロールをリセット
-                if (pianoRoll && pianoRoll.getActiveTrackId() === id) {
-                    pianoRoll.switchToTrack(null);
+                if (window.pianoRoll && window.pianoRoll.getActiveTrackId() === id) {
+                    window.pianoRoll.switchToTrack(null);
                 }
                 engine.removeTrack(id);
                 this.render();
+                if (this.onTracksChanged) this.onTracksChanged();
             });
         });
     }
 
     _bindGlobalEvents() {
-        // クリップのドラッグ移動
         document.addEventListener('mousemove', (e) => {
             if (!this.draggingClip) return;
             const el = this.draggingClip.element;
@@ -218,7 +232,6 @@ class Timeline {
             let x = e.clientX - rect.left - this.dragOffsetX;
             x = Math.max(0, x);
 
-            // スナップ（拍単位）
             const beatSec = 60 / engine.bpm;
             const beatPx = beatSec * this.pixelsPerSecond;
             x = Math.round(x / beatPx) * beatPx;
@@ -242,4 +255,4 @@ class Timeline {
     }
 }
 
-window.timeline = new Timeline();
+// Vue側で初期化するため、自動インスタンス化しない
