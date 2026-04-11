@@ -43,7 +43,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 // engine モジュールをインポート（モック後）
-const { default: engine } = await import('../../web-ui/src/lib/engine');
+const { default: engine } = await import('../lib/engine');
 
 describe('AudioEngine', () => {
     beforeEach(() => {
@@ -245,12 +245,12 @@ describe('AudioEngine', () => {
 
 describe('NOTE_FREQ', () => {
     it('A4 = 440Hz', async () => {
-        const { NOTE_FREQ } = await import('../../web-ui/src/lib/engine');
+        const { NOTE_FREQ } = await import('../lib/engine');
         expect(NOTE_FREQ['A4']).toBeCloseTo(440, 1);
     });
 
     it('C4 ≈ 261.63Hz', async () => {
-        const { NOTE_FREQ } = await import('../../web-ui/src/lib/engine');
+        const { NOTE_FREQ } = await import('../lib/engine');
         expect(NOTE_FREQ['C4']).toBeCloseTo(261.63, 0);
     });
 });

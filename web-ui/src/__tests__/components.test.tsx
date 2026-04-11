@@ -27,9 +27,9 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const { DawProvider } = await import('../../web-ui/src/lib/store');
-const StatusBar = (await import('../../web-ui/src/components/StatusBar')).default;
-const WelcomeGuide = (await import('../../web-ui/src/components/WelcomeGuide')).default;
+const { DawProvider } = await import('../lib/store');
+const StatusBar = (await import('../components/StatusBar')).default;
+const WelcomeGuide = (await import('../components/WelcomeGuide')).default;
 
 function renderWithDaw(ui: React.ReactElement) {
     return render(<DawProvider>{ui}</DawProvider>);
@@ -72,7 +72,7 @@ describe('WelcomeGuide', () => {
 describe('ToolsPage', () => {
     beforeEach(() => cleanup());
     it('タブとナビゲーションが表示される', async () => {
-        const ToolsPage = (await import('../../web-ui/src/pages/ToolsPage')).default;
+        const ToolsPage = (await import('../pages/ToolsPage')).default;
         render(<MemoryRouter><ToolsPage /></MemoryRouter>);
         expect(screen.getByText('bunri ツール')).toBeInTheDocument();
         expect(screen.getByText('音源分離')).toBeInTheDocument();
@@ -85,7 +85,7 @@ describe('ToolsPage', () => {
     });
 
     it('DAWに戻るリンクがある', async () => {
-        const ToolsPage = (await import('../../web-ui/src/pages/ToolsPage')).default;
+        const ToolsPage = (await import('../pages/ToolsPage')).default;
         render(<MemoryRouter><ToolsPage /></MemoryRouter>);
         expect(screen.getByText('DAWに戻る')).toBeInTheDocument();
     });
@@ -94,7 +94,7 @@ describe('ToolsPage', () => {
 describe('HelpPage', () => {
     beforeEach(() => cleanup());
     it('ヘルプページのセクションが表示される', async () => {
-        const HelpPage = (await import('../../web-ui/src/pages/HelpPage')).default;
+        const HelpPage = (await import('../pages/HelpPage')).default;
         render(<MemoryRouter><HelpPage /></MemoryRouter>);
         expect(screen.getByText('bunri DAW 使い方ガイド')).toBeInTheDocument();
         // 目次とセクション見出しで複数マッチするため getAllByText を使用
