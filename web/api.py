@@ -578,3 +578,40 @@ async def api_decompose(
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ---- WAV最適化 API ----
+
+@app.post("/api/wav/info")
+async def api_wav_info(file: UploadFile = File(...)):
+    """WAVファイルの詳細情報を返す"""
+    from wav_optimize import get_wav_info
+    src = _save_upload(file)
+    try:
+        info = get_wav_info(str(src))
+        return JSONResponse(info)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/wav/optimize")
+async def api_wav_optimize(
+    file: UploadFile = File(...),
+    target_sr: int = Form(44100),
+    target_bit_depth: int = Form(16),
+):
+    """WAVファイルを最適化して容量を削減"""
+    from wav_optimize import optimize_wav
+    src = _save_upload(file)
+    try:
+        result = optimize_wav(str(src), target_sr, target_bit_depth)
+        opt_path = Path(result["path"])
+        dst_name = f"optimized_{file.filename}"
+        dst = RESULTS_DIR / dst_name
+        import shutil
+        shutil.copy2(str(opt_path), str(dst))
+        result["download_url"] = f"/api/download/{dst_name}"
+        del result["path"]
+        return JSONResponse(result)
+    except Exception as e:
+        raise HTTPException(500, str(e))
