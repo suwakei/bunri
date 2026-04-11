@@ -1,12 +1,26 @@
 /**
  * bunri DAW — 左パネル（シンセ / ドラム / FX / ファイル タブ）
  */
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { useDaw } from '../lib/store.jsx';
-import engine from '../lib/engine.js';
+import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react';
+import { useDaw } from '../lib/store';
+import engine from '../lib/engine';
+
+interface GmInstrument {
+    program: number;
+    name: string;
+}
+
+interface FxParamDef {
+    id: string;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    def: number;
+}
 
 // ---- GM楽器カテゴリ ----
-const GM_CATEGORIES = {
+const GM_CATEGORIES: Record<string, number[]> = {
     'ピアノ': [0,1,2,4,5,6,8],
     'クロマチックパーカッション': [9,10,11,12,13],
     'ギター': [24,25,26,27,28,29,30],
@@ -22,7 +36,7 @@ const GM_CATEGORIES = {
 };
 
 // ---- FXパラメータ定義 ----
-const FX_PARAMS = {
+const FX_PARAMS: Record<string, FxParamDef[]> = {
     eq: [
         { id: 'low', label: 'Low (dB)', min: -12, max: 12, step: 1, def: 0 },
         { id: 'mid', label: 'Mid (dB)', min: -12, max: 12, step: 1, def: 0 },
@@ -62,11 +76,11 @@ function SynthPanel() {
     const [s, setS] = useState(0.6);
     const [r, setR] = useState(0.2);
     const [synthTrack, setSynthTrack] = useState('');
-    const [gmInstruments, setGmInstruments] = useState([]);
+    const [gmInstruments, setGmInstruments] = useState<GmInstrument[]>([]);
 
     useEffect(() => {
         fetch('/api/gm-instruments').then(r => r.json())
-            .then(setGmInstruments).catch(() => {});
+            .then((data: GmInstrument[]) => setGmInstruments(data)).catch(() => {});
     }, []);
 
     const handleRender = useCallback(async () => {
@@ -79,11 +93,11 @@ function SynthPanel() {
         }
         const fd = new FormData();
         fd.append('notes_json', JSON.stringify(notes));
-        fd.append('bpm', bpm);
+        fd.append('bpm', String(bpm));
         fd.append('waveform', wave);
-        fd.append('volume', vol);
-        fd.append('attack', a); fd.append('decay', d);
-        fd.append('sustain', s); fd.append('release', r);
+        fd.append('volume', String(vol));
+        fd.append('attack', String(a)); fd.append('decay', String(d));
+        fd.append('sustain', String(s)); fd.append('release', String(r));
         fd.append('instrument', instrument);
         fd.append('gm_program', gmProgram);
 
@@ -92,14 +106,14 @@ function SynthPanel() {
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx.decodeAudioData(buf);
+            const buffer = await engine.ctx!.decodeAudioData(buf);
 
             let trackId = pr.getActiveTrackId();
             if (!trackId || !engine.tracks.find(t => t.id === trackId)) {
                 trackId = synthTrack || (engine.tracks[0]?.id);
                 if (!trackId) { engine.addTrack('Synth'); trackId = engine.tracks[0].id; }
             }
-            const trackName = engine.tracks.find(t => t.id == trackId)?.name || '';
+            const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
             await engine.addClipFromBuffer(trackId, buffer, 'synth-seq');
             bumpTracks();
             setStatus(`シーケンスを「${trackName}」に追加しました`);
@@ -107,7 +121,7 @@ function SynthPanel() {
     }, [bpm, wave, vol, a, d, s, r, instrument, gmProgram, synthTrack, pianoRollRef, withProgress, bumpTracks, setStatus]);
 
     // GM楽器をカテゴリ別にグループ化
-    const instMap = {};
+    const instMap: Record<number, string> = {};
     gmInstruments.forEach(i => { instMap[i.program] = i.name; });
 
     return (
@@ -177,22 +191,22 @@ function DrumPanel() {
     const handleGenerate = useCallback(async () => {
         const fd = new FormData();
         fd.append('pattern', pattern);
-        fd.append('bpm', bpm);
-        fd.append('bars', bars);
-        fd.append('volume', vol);
+        fd.append('bpm', String(bpm));
+        fd.append('bars', String(bars));
+        fd.append('volume', String(vol));
 
         await withProgress('ドラム生成中...', async () => {
             const resp = await fetch('/api/synth/drum', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx.decodeAudioData(buf);
+            const buffer = await engine.ctx!.decodeAudioData(buf);
 
             let track;
             if (drumTrack === '__new__') {
                 track = engine.addTrack('Drum');
             } else {
-                track = engine.tracks.find(t => t.id == drumTrack);
+                track = engine.tracks.find(t => String(t.id) === drumTrack);
                 if (!track) track = engine.addTrack('Drum');
             }
             await engine.addClipFromBuffer(track.id, buffer, `drum-${pattern}`);
@@ -228,10 +242,10 @@ function FxPanel() {
     const { setStatus, withProgress, bumpTracks } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
-    const [params, setParams] = useState({});
+    const [params, setParams] = useState<Record<string, number>>({});
 
     useEffect(() => {
-        const defs = {};
+        const defs: Record<string, number> = {};
         (FX_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
         setParams(defs);
     }, [fxType]);
@@ -253,7 +267,7 @@ function FxPanel() {
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx.decodeAudioData(buf);
+            const buffer = await engine.ctx!.decodeAudioData(buf);
             track.clips[0] = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
             bumpTracks();
             setStatus(`${fxType} を適用しました`);
@@ -294,8 +308,8 @@ function FxPanel() {
 function FilePanel() {
     const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm } = useDaw();
     const [fileTrack, setFileTrack] = useState('');
-    const fileInputRef = useRef(null);
-    const analyzeFileRef = useRef(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const analyzeFileRef = useRef<HTMLInputElement>(null);
     const [sensitivity, setSensitivity] = useState(0.5);
     const [isRecording, setIsRecording] = useState(false);
 
@@ -303,11 +317,11 @@ function FilePanel() {
         const files = fileInputRef.current?.files;
         if (!files?.length) return;
         let trackId = fileTrack;
-        if (!trackId || !engine.tracks.find(t => t.id == trackId)) {
+        if (!trackId || !engine.tracks.find(t => String(t.id) === String(trackId))) {
             if (engine.tracks.length === 0) engine.addTrack();
-            trackId = engine.tracks[engine.tracks.length - 1].id;
+            trackId = String(engine.tracks[engine.tracks.length - 1].id);
         }
-        const trackName = engine.tracks.find(t => t.id == trackId)?.name || '';
+        const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
         for (const file of files) {
             await engine.addClipFromFile(trackId, file);
             setStatus(`${file.name} を「${trackName}」に追加しました`);
@@ -322,8 +336,8 @@ function FilePanel() {
         if (!pr?.getActiveTrackId()) { setStatus('先にトラックをクリックしてピアノロールを開いてください'); return; }
         const fd = new FormData();
         fd.append('file', file);
-        fd.append('bpm', bpm);
-        fd.append('sensitivity', sensitivity);
+        fd.append('bpm', String(bpm));
+        fd.append('sensitivity', String(sensitivity));
         await withProgress(`音声を解析中...（${file.name}）`, async () => {
             const resp = await fetch('/api/analyze', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
@@ -339,7 +353,7 @@ function FilePanel() {
             await engine.startRecording();
             setIsRecording(true);
             setStatus('録音中...');
-        } catch { setStatus('マイクにアクセスできません'); }
+        } catch (_e) { setStatus('マイクにアクセスできません'); }
     }, [setStatus]);
 
     const handleMicStop = useCallback(async () => {
@@ -380,13 +394,19 @@ function FilePanel() {
 }
 
 // ---- トラック選択セレクタ（共通部品）----
-function TrackSelector({ value, onChange, includeNew }) {
+interface TrackSelectorProps {
+    value: string;
+    onChange: (v: string) => void;
+    includeNew?: boolean;
+}
+
+function TrackSelector({ value, onChange, includeNew }: TrackSelectorProps) {
     const { trackVersion } = useDaw();
     return (
         <select value={value} onChange={e => onChange(e.target.value)}>
             {includeNew && <option value="__new__">新規作成（Drum）</option>}
             {engine.tracks.map(t => (
-                <option key={t.id} value={t.id}>{t.name}</option>
+                <option key={t.id} value={String(t.id)}>{t.name}</option>
             ))}
         </select>
     );

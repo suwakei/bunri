@@ -1,9 +1,11 @@
 /**
  * bunri DAW — 中央エリア（タイムライン + ピアノロール + オートメーション）
+ * TODO: Canvas系クラスの完全な型定義を追加する
  */
+// @ts-nocheck
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useDaw } from '../lib/store.jsx';
-import engine from '../lib/engine.js';
+import { useDaw } from '../lib/store';
+import engine from '../lib/engine';
 
 // ---- PianoRoll クラス（Canvasベース）----
 class PianoRollEngine {

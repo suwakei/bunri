@@ -1,7 +1,7 @@
 /**
  * bunri DAW — ステータスバー + プログレスバー
  */
-import { useDaw } from '../lib/store.jsx';
+import { useDaw } from '../lib/store';
 
 export default function StatusBar() {
     const { status, hint } = useDaw();

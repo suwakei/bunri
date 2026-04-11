@@ -2,10 +2,18 @@
  * bunri DAW — ヘッダーバー（トランスポート + アクションボタン）
  */
 import { useCallback, useState, useEffect } from 'react';
-import { useDaw } from '../lib/store.jsx';
-import engine from '../lib/engine.js';
+import { useDaw } from '../lib/store';
+import engine from '../lib/engine';
 
-function formatTime(t) {
+interface ProjectData {
+    bpm?: number;
+    beatsPerBar?: number;
+    tracks?: Array<{ pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }> }>;
+    pianoRollNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
+    automation?: Record<string, unknown>;
+}
+
+function formatTime(t: number): string {
     const min = Math.floor(t / 60);
     const sec = (t % 60).toFixed(1);
     return `${min}:${sec.padStart(4, '0')}`;
@@ -63,7 +71,7 @@ export default function HeaderBar() {
                 engine.play();
                 setIsPlaying(true);
                 setStatus('録音中...');
-            } catch {
+            } catch (_e) {
                 setStatus('マイクにアクセスできません');
             }
         } else {
@@ -131,7 +139,7 @@ export default function HeaderBar() {
         if (files.length === 0) { setStatus('保存されたプロジェクトがありません'); return; }
         const name = files[0];
         const projResp = await fetch(`/api/project/load/${name}`);
-        const project = await projResp.json();
+        const project: ProjectData = await projResp.json();
         engine.bpm = project.bpm || 120;
         engine.beatsPerBar = project.beatsPerBar || 4;
         setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
@@ -148,7 +156,7 @@ export default function HeaderBar() {
         setStatus(`プロジェクト ${name} を読み込みました（※音声データは再インポートが必要です）`);
     }, [setBpm, setBeatsPerBar, automationRef, pianoRollRef, bumpTracks, setStatus]);
 
-    const h = (text) => ({
+    const h = (text: string) => ({
         onMouseEnter: () => setHint(text),
         onMouseLeave: () => setHint(''),
     });

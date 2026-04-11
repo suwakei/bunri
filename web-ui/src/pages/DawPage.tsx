@@ -1,12 +1,12 @@
 /**
  * bunri DAW — メインDAWページ
  */
-import { useDaw } from '../lib/store.jsx';
-import HeaderBar from '../components/HeaderBar.jsx';
-import LeftPanel from '../components/LeftPanel.jsx';
-import CenterArea from '../components/CenterArea.jsx';
-import StatusBar from '../components/StatusBar.jsx';
-import WelcomeGuide from '../components/WelcomeGuide.jsx';
+import { useDaw } from '../lib/store';
+import HeaderBar from '../components/HeaderBar';
+import LeftPanel from '../components/LeftPanel';
+import CenterArea from '../components/CenterArea';
+import StatusBar from '../components/StatusBar';
+import WelcomeGuide from '../components/WelcomeGuide';
 
 export default function DawPage() {
     const { showProgress } = useDaw();

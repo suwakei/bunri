@@ -1,9 +1,15 @@
 /**
  * bunri DAW — ウェルカムガイドモーダル
  */
-import { useDaw } from '../lib/store.jsx';
+import type { MouseEvent, ReactElement } from 'react';
+import { useDaw } from '../lib/store';
 
-const STEPS = [
+interface GuideStep {
+    title: string;
+    desc: string;
+}
+
+const STEPS: GuideStep[] = [
     { title: '音声を追加する', desc: '左の「ファイル」タブからWAVを読み込むか、タイムライン上にドラッグ&ドロップします。' },
     { title: '音を作る', desc: '「シンセ」タブで波形を選び、下のピアノロールにダブルクリックでノートを配置。「シーケンスをレンダリング」で音声化されます。' },
     { title: 'ドラムを追加する', desc: '「ドラム」タブでパターンとBPMを選んで生成。自動でDrumトラックに追加されます。' },
@@ -11,12 +17,12 @@ const STEPS = [
     { title: '再生・書き出し', desc: '▶で再生、「書出」ボタンで全トラックをミックスしたWAVをダウンロードできます。' },
 ];
 
-export default function WelcomeGuide() {
+export default function WelcomeGuide(): React.ReactElement | null {
     const { showGuide, closeGuide } = useDaw();
     if (!showGuide) return null;
 
     return (
-        <div id="guide-overlay" onClick={e => { if (e.target.id === 'guide-overlay') closeGuide(); }}>
+        <div id="guide-overlay" onClick={(e: MouseEvent<HTMLDivElement>) => { if ((e.target as HTMLDivElement).id === 'guide-overlay') closeGuide(); }}>
             <div id="guide-modal">
                 <h2>bunri DAW へようこそ</h2>
                 <div className="guide-steps">

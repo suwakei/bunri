@@ -3,8 +3,35 @@
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
 
+export interface PianoNote {
+    note: string;
+    octave: number;
+    step: number;
+    length: number;
+}
+
+export interface Clip {
+    buffer: AudioBuffer;
+    offset: number;
+    name: string;
+    duration: number;
+}
+
+export interface Track {
+    id: number;
+    name: string;
+    clips: Clip[];
+    pianoNotes: PianoNote[];
+    gain: number;
+    pan: number;
+    mute: boolean;
+    solo: boolean;
+    gainNode: GainNode;
+    panNode: StereoPannerNode;
+}
+
 // 音名 → 周波数テーブル
-const NOTE_FREQ = {};
+const NOTE_FREQ: Record<string, number> = {};
 (() => {
     const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
     for (let oct = 0; oct <= 8; oct++) {
@@ -17,9 +44,28 @@ const NOTE_FREQ = {};
 })();
 
 class AudioEngine {
+    ctx: AudioContext | null = null;
+    masterGain: GainNode | null = null;
+    isPlaying: boolean;
+    isRecording: boolean;
+    startTime: number;
+    playOffset: number;
+    bpm: number;
+    beatsPerBar: number;
+    metronomeEnabled: boolean;
+    metronomeInterval: ReturnType<typeof setInterval> | null = null;
+
+    tracks: Track[] = [];
+    nextTrackId: number;
+
+    mediaStream: MediaStream | null = null;
+    mediaRecorder: MediaRecorder | null = null;
+    recordedChunks: Blob[] = [];
+
+    activeSources: (AudioBufferSourceNode | OscillatorNode)[] = [];
+    soloTrackId: number | null = null;
+
     constructor() {
-        this.ctx = null;
-        this.masterGain = null;
         this.isPlaying = false;
         this.isRecording = false;
         this.startTime = 0;
@@ -27,29 +73,19 @@ class AudioEngine {
         this.bpm = 120;
         this.beatsPerBar = 4;
         this.metronomeEnabled = false;
-        this.metronomeInterval = null;
-
-        this.tracks = [];
         this.nextTrackId = 1;
-
-        this.mediaStream = null;
-        this.mediaRecorder = null;
-        this.recordedChunks = [];
-
-        this.activeSources = [];
-        this.soloTrackId = null;
     }
 
-    init() {
+    init(): void {
         if (this.ctx) return;
-        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.ctx = new AudioContext();
         this.masterGain = this.ctx.createGain();
         this.masterGain.connect(this.ctx.destination);
     }
 
-    addTrack(name) {
+    addTrack(name?: string): Track {
         this.init();
-        const track = {
+        const track: Track = {
             id: this.nextTrackId++,
             name: name || `Track ${this.tracks.length + 1}`,
             clips: [],
@@ -58,40 +94,40 @@ class AudioEngine {
             pan: 0,
             mute: false,
             solo: false,
-            gainNode: this.ctx.createGain(),
-            panNode: this.ctx.createStereoPanner(),
+            gainNode: this.ctx!.createGain(),
+            panNode: this.ctx!.createStereoPanner(),
         };
         track.panNode.connect(track.gainNode);
-        track.gainNode.connect(this.masterGain);
+        track.gainNode.connect(this.masterGain!);
         this.tracks.push(track);
         return track;
     }
 
-    removeTrack(trackId) {
+    removeTrack(trackId: number | string): void {
         trackId = Number(trackId);
         this.tracks = this.tracks.filter(t => t.id !== trackId);
     }
 
-    getTrack(trackId) {
+    getTrack(trackId: number | string): Track | undefined {
         trackId = Number(trackId);
         return this.tracks.find(t => t.id === trackId);
     }
 
-    updateTrackGain(trackId, db) {
+    updateTrackGain(trackId: number | string, db: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.gain = db;
         track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, db / 20);
     }
 
-    updateTrackPan(trackId, pan) {
+    updateTrackPan(trackId: number | string, pan: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.pan = pan;
         track.panNode.pan.value = pan;
     }
 
-    toggleMute(trackId) {
+    toggleMute(trackId: number | string): boolean | undefined {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.mute = !track.mute;
@@ -99,54 +135,54 @@ class AudioEngine {
         return track.mute;
     }
 
-    async addClipFromFile(trackId, file, offsetSec = 0) {
+    async addClipFromFile(trackId: number | string, file: File, offsetSec: number = 0): Promise<Clip | undefined> {
         this.init();
         const track = this.getTrack(trackId);
         if (!track) return;
         const arrayBuf = await file.arrayBuffer();
-        const buffer = await this.ctx.decodeAudioData(arrayBuf);
-        const clip = { buffer, offset: offsetSec, name: file.name, duration: buffer.duration };
+        const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+        const clip: Clip = { buffer, offset: offsetSec, name: file.name, duration: buffer.duration };
         track.clips.push(clip);
         return clip;
     }
 
-    async addClipFromUrl(trackId, url, name, offsetSec = 0) {
+    async addClipFromUrl(trackId: number | string, url: string, name?: string, offsetSec: number = 0): Promise<Clip | undefined> {
         this.init();
         const track = this.getTrack(trackId);
         if (!track) return;
         const resp = await fetch(url);
         const arrayBuf = await resp.arrayBuffer();
-        const buffer = await this.ctx.decodeAudioData(arrayBuf);
-        const clip = { buffer, offset: offsetSec, name: name || 'clip', duration: buffer.duration };
+        const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+        const clip: Clip = { buffer, offset: offsetSec, name: name || 'clip', duration: buffer.duration };
         track.clips.push(clip);
         return clip;
     }
 
-    async addClipFromBuffer(trackId, audioBuffer, name, offsetSec = 0) {
+    async addClipFromBuffer(trackId: number | string, audioBuffer: AudioBuffer, name?: string, offsetSec: number = 0): Promise<Clip | undefined> {
         const track = this.getTrack(trackId);
         if (!track) return;
-        const clip = { buffer: audioBuffer, offset: offsetSec, name: name || 'clip', duration: audioBuffer.duration };
+        const clip: Clip = { buffer: audioBuffer, offset: offsetSec, name: name || 'clip', duration: audioBuffer.duration };
         track.clips.push(clip);
         return clip;
     }
 
-    moveClip(trackId, clipIndex, newOffset) {
+    moveClip(trackId: number | string, clipIndex: number, newOffset: number): void {
         const track = this.getTrack(trackId);
         if (!track || !track.clips[clipIndex]) return;
         track.clips[clipIndex].offset = Math.max(0, newOffset);
     }
 
-    removeClip(trackId, clipIndex) {
+    removeClip(trackId: number | string, clipIndex: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.clips.splice(clipIndex, 1);
     }
 
-    play(fromSec = null) {
+    play(fromSec: number | null = null): void {
         this.init();
         if (this.isPlaying) this.stop();
         if (fromSec !== null) this.playOffset = fromSec;
-        this.startTime = this.ctx.currentTime;
+        this.startTime = this.ctx!.currentTime;
         this.isPlaying = true;
         this.soloTrackId = null;
         this.activeSources = [];
@@ -160,30 +196,30 @@ class AudioEngine {
         if (this.metronomeEnabled) this._startMetronome();
     }
 
-    playSingleTrack(trackId, fromSec = null) {
+    playSingleTrack(trackId: number | string, fromSec: number | null = null): void {
         this.init();
         if (this.isPlaying) this.stop();
         const track = this.getTrack(trackId);
         if (!track) return;
         if (fromSec !== null) this.playOffset = fromSec;
-        this.startTime = this.ctx.currentTime;
+        this.startTime = this.ctx!.currentTime;
         this.isPlaying = true;
-        this.soloTrackId = trackId;
+        this.soloTrackId = Number(trackId);
         this.activeSources = [];
         this._scheduleTrack(track);
         if (this.metronomeEnabled) this._startMetronome();
     }
 
-    _scheduleTrack(track) {
+    _scheduleTrack(track: Track): void {
         for (const clip of track.clips) {
-            const source = this.ctx.createBufferSource();
+            const source = this.ctx!.createBufferSource();
             source.buffer = clip.buffer;
             source.connect(track.panNode);
             const clipStart = clip.offset - this.playOffset;
             if (clipStart >= 0) {
-                source.start(this.ctx.currentTime + clipStart);
+                source.start(this.ctx!.currentTime + clipStart);
             } else if (-clipStart < clip.duration) {
-                source.start(this.ctx.currentTime, -clipStart);
+                source.start(this.ctx!.currentTime, -clipStart);
             } else {
                 continue;
             }
@@ -192,7 +228,7 @@ class AudioEngine {
         this._scheduleTrackNotes(track);
     }
 
-    _scheduleTrackNotes(track) {
+    _scheduleTrackNotes(track: Track): void {
         if (!track.pianoNotes || track.pianoNotes.length === 0) return;
         const stepSec = 60 / this.bpm / 4;
         for (const n of track.pianoNotes) {
@@ -207,16 +243,16 @@ class AudioEngine {
             const release = Math.min(0.15, noteDur * 0.3);
             const sustainDur = Math.max(0, noteDur - attack - release);
 
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
+            const osc = this.ctx!.createOscillator();
+            const gain = this.ctx!.createGain();
             osc.type = 'triangle';
             osc.frequency.value = freq;
-            gain.gain.setValueAtTime(0, this.ctx.currentTime);
+            gain.gain.setValueAtTime(0, this.ctx!.currentTime);
             osc.connect(gain);
             gain.connect(track.panNode);
 
             if (relStart >= 0) {
-                const when = this.ctx.currentTime + relStart;
+                const when = this.ctx!.currentTime + relStart;
                 gain.gain.setValueAtTime(0, when);
                 gain.gain.linearRampToValueAtTime(0.25, when + attack);
                 gain.gain.setValueAtTime(0.25, when + attack + sustainDur);
@@ -227,7 +263,7 @@ class AudioEngine {
                 const elapsed = -relStart;
                 const remaining = noteDur - elapsed;
                 if (remaining <= 0) continue;
-                const when = this.ctx.currentTime;
+                const when = this.ctx!.currentTime;
                 gain.gain.setValueAtTime(0.25, when);
                 gain.gain.setValueAtTime(0.25, when + Math.max(0, remaining - release));
                 gain.gain.linearRampToValueAtTime(0, when + remaining);
@@ -238,7 +274,7 @@ class AudioEngine {
         }
     }
 
-    stop() {
+    stop(): void {
         this.isPlaying = false;
         this.soloTrackId = null;
         for (const src of this.activeSources) {
@@ -249,9 +285,9 @@ class AudioEngine {
         this.playOffset = 0;
     }
 
-    pause() {
+    pause(): void {
         if (!this.isPlaying) return;
-        this.playOffset += this.ctx.currentTime - this.startTime;
+        this.playOffset += this.ctx!.currentTime - this.startTime;
         this.isPlaying = false;
         for (const src of this.activeSources) {
             try { src.stop(); } catch (e) {}
@@ -260,12 +296,12 @@ class AudioEngine {
         this._stopMetronome();
     }
 
-    getCurrentTime() {
+    getCurrentTime(): number {
         if (!this.isPlaying) return this.playOffset;
-        return this.playOffset + (this.ctx.currentTime - this.startTime);
+        return this.playOffset + (this.ctx!.currentTime - this.startTime);
     }
 
-    getTotalDuration() {
+    getTotalDuration(): number {
         let maxEnd = 0;
         const stepSec = 60 / this.bpm / 4;
         for (const track of this.tracks) {
@@ -274,14 +310,14 @@ class AudioEngine {
         return maxEnd;
     }
 
-    getTrackDuration(trackId) {
+    getTrackDuration(trackId: number | string): number {
         const track = this.getTrack(trackId);
         if (!track) return 0;
         const stepSec = 60 / this.bpm / 4;
         return this._getTrackEndTime(track, stepSec);
     }
 
-    _getTrackEndTime(track, stepSec) {
+    _getTrackEndTime(track: Track, stepSec: number): number {
         let maxEnd = 0;
         for (const clip of track.clips) {
             maxEnd = Math.max(maxEnd, clip.offset + clip.duration);
@@ -292,11 +328,11 @@ class AudioEngine {
         return maxEnd;
     }
 
-    _startMetronome() {
+    _startMetronome(): void {
         this._stopMetronome();
         const beatSec = 60 / this.bpm;
         let nextBeat = Math.ceil(this.playOffset / beatSec) * beatSec;
-        const schedule = () => {
+        const schedule = (): void => {
             if (!this.isPlaying || !this.metronomeEnabled) return;
             const now = this.getCurrentTime();
             while (nextBeat < now + 0.1) {
@@ -310,53 +346,53 @@ class AudioEngine {
         this.metronomeInterval = setInterval(schedule, 50);
     }
 
-    _stopMetronome() {
+    _stopMetronome(): void {
         if (this.metronomeInterval) {
             clearInterval(this.metronomeInterval);
             this.metronomeInterval = null;
         }
     }
 
-    _playClick(when, freq) {
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
+    _playClick(when: number, freq: number): void {
+        const osc = this.ctx!.createOscillator();
+        const gain = this.ctx!.createGain();
         osc.type = 'sine';
         osc.frequency.value = freq;
         gain.gain.setValueAtTime(0.3, when);
         gain.gain.exponentialRampToValueAtTime(0.001, when + 0.05);
         osc.connect(gain);
-        gain.connect(this.ctx.destination);
+        gain.connect(this.ctx!.destination);
         osc.start(when);
         osc.stop(when + 0.05);
     }
 
-    async startRecording() {
+    async startRecording(): Promise<void> {
         this.init();
         this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         this.mediaRecorder = new MediaRecorder(this.mediaStream);
         this.recordedChunks = [];
-        this.mediaRecorder.ondataavailable = (e) => {
+        this.mediaRecorder.ondataavailable = (e: BlobEvent) => {
             if (e.data.size > 0) this.recordedChunks.push(e.data);
         };
         this.mediaRecorder.start();
         this.isRecording = true;
     }
 
-    async stopRecording() {
+    stopRecording(): Promise<AudioBuffer> {
         return new Promise((resolve) => {
-            this.mediaRecorder.onstop = async () => {
+            this.mediaRecorder!.onstop = async () => {
                 this.isRecording = false;
-                this.mediaStream.getTracks().forEach(t => t.stop());
+                this.mediaStream!.getTracks().forEach(t => t.stop());
                 const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
                 const arrayBuf = await blob.arrayBuffer();
-                const buffer = await this.ctx.decodeAudioData(arrayBuf);
+                const buffer = await this.ctx!.decodeAudioData(arrayBuf);
                 resolve(buffer);
             };
-            this.mediaRecorder.stop();
+            this.mediaRecorder!.stop();
         });
     }
 
-    async mixdown() {
+    async mixdown(): Promise<AudioBuffer | null> {
         this.init();
         const duration = this.getTotalDuration();
         if (duration === 0) return null;
@@ -408,13 +444,13 @@ class AudioEngine {
         return await offCtx.startRendering();
     }
 
-    async exportWav() {
+    async exportWav(): Promise<Blob | null> {
         const buffer = await this.mixdown();
         if (!buffer) return null;
         return this._audioBufferToWav(buffer);
     }
 
-    _audioBufferToWav(buffer) {
+    _audioBufferToWav(buffer: AudioBuffer): Blob {
         const numChannels = buffer.numberOfChannels;
         const sampleRate = buffer.sampleRate;
         const length = buffer.length;
@@ -423,7 +459,7 @@ class AudioEngine {
         const headerLength = 44;
         const wav = new ArrayBuffer(headerLength + dataLength);
         const view = new DataView(wav);
-        const writeString = (offset, str) => {
+        const writeString = (offset: number, str: string): void => {
             for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
         };
         writeString(0, 'RIFF');
@@ -439,7 +475,7 @@ class AudioEngine {
         view.setUint16(34, 8 * bytesPerSample, true);
         writeString(36, 'data');
         view.setUint32(40, dataLength, true);
-        const channels = [];
+        const channels: Float32Array[] = [];
         for (let ch = 0; ch < numChannels; ch++) channels.push(buffer.getChannelData(ch));
         let offset = 44;
         for (let i = 0; i < length; i++) {

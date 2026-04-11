@@ -1,11 +1,25 @@
 /**
  * bunri DAW — ツールページ（音源分離・編集・エフェクト・変換等）
  */
-import { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 
+interface AudioResult {
+    label: string;
+    url: string;
+}
+
+interface FxToolParam {
+    id: string;
+    label: string;
+    def: number;
+    min?: number;
+    max?: number;
+    step?: number;
+}
+
 // ---- ユーティリティ ----
-function makeAudioResult(label, url) {
+function makeAudioResult(label: string, url: string): AudioResult {
     return { label, url };
 }
 
@@ -51,7 +65,7 @@ const TOOLS_CSS = `
 `;
 
 // ---- FXパラメータ定義 ----
-const FX_TOOL_PARAMS = {
+const FX_TOOL_PARAMS: Record<string, FxToolParam[]> = {
     eq: [{ id: 'low', label: 'Low (dB)', def: 0, min: -12, max: 12 }, { id: 'mid', label: 'Mid (dB)', def: 0, min: -12, max: 12 }, { id: 'high', label: 'High (dB)', def: 0, min: -12, max: 12 }],
     compressor: [{ id: 'threshold', label: 'Threshold (dB)', def: -20, min: -40, max: 0 }, { id: 'ratio', label: 'Ratio', def: 4, min: 1, max: 20, step: 0.5 }],
     reverb: [{ id: 'room_size', label: 'Room Size (0-1)', def: 0.5, min: 0, max: 1, step: 0.05 }, { id: 'wet', label: 'Wet (0-1)', def: 0.3, min: 0, max: 1, step: 0.05 }],
@@ -65,7 +79,7 @@ const FX_TOOL_PARAMS = {
     speed: [{ id: 'speed', label: '速度倍率', def: 1, min: 0.25, max: 4, step: 0.05 }],
 };
 
-const EDIT_HINTS = {
+const EDIT_HINTS: Record<string, string> = {
     trim: '<strong>トリム：</strong>開始〜終了の範囲だけを残し、それ以外を削除します。',
     cut: '<strong>カット：</strong>開始〜終了の範囲を削除し、前後を繋げます。',
     copy_range: '<strong>範囲コピー：</strong>開始〜終了の範囲をコピーし、指定した位置に挿入します。',
@@ -85,14 +99,14 @@ function SeparatePanel() {
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
     const [progress, setProgress] = useState(false);
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
     const [disabled, setDisabled] = useState(false);
 
     const handleSeparate = useCallback(async () => {
-        const file = document.getElementById('sep-file')?.files?.[0];
+        const file = ((document.getElementById('sep-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
-        const model = document.getElementById('sep-model').value;
-        const mode = document.getElementById('sep-mode').value;
+        const model = ((document.getElementById('sep-model') as HTMLInputElement)?.value);
+        const mode = ((document.getElementById('sep-mode') as HTMLInputElement)?.value);
         const isDeep = mode === 'deep';
         let apiUrl; const fd = new FormData();
         if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
@@ -102,9 +116,12 @@ function SeparatePanel() {
             const resp = await fetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const result = await resp.json();
-            const items = Object.entries(result).map(([key, info]) => makeAudioResult(info.label || key, info.url));
+            const items = Object.entries(result).map(([key, info]) => {
+                const v = info as { label?: string; url: string };
+                return makeAudioResult(v.label || key, v.url);
+            });
             setResults(items); setStatus(`分離完了！${items.length}個のレイヤーに分割されました`); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
         finally { setProgress(false); setDisabled(false); }
     }, []);
 
@@ -142,7 +159,7 @@ function AnalyzePanel() {
     const [report, setReport] = useState('');
 
     const handleAnalyze = useCallback(async () => {
-        const file = document.getElementById('da-file')?.files?.[0];
+        const file = ((document.getElementById('da-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file);
         setStatus(`解析中...（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
@@ -154,7 +171,7 @@ function AnalyzePanel() {
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
                 .replace(/^- (.+)$/gm, '<div style="padding-left:12px">・ $1</div>');
             setReport(html); setStatus('解析完了'); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
         finally { setProgress(false); }
     }, []);
 
@@ -179,13 +196,13 @@ function EditPanel() {
     const [extra, setExtra] = useState(0);
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
 
     const showExtra = ['copy_range', 'silence', 'loop'].includes(action);
     const extraLabel = action === 'copy_range' ? '挿入位置（秒）' : action === 'silence' ? '無音の長さ（秒）' : 'ループ回数';
 
     const handleEdit = useCallback(async () => {
-        const file = document.getElementById('edit-file')?.files?.[0];
+        const file = ((document.getElementById('edit-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         let params = {};
         if (action === 'trim' || action === 'cut') params = { start, end };
@@ -199,7 +216,7 @@ function EditPanel() {
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('編集結果', url)]); setStatus('完了'); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [action, start, end, extra]);
 
     return (
@@ -234,19 +251,19 @@ function EditPanel() {
 // ---- エフェクトパネル ----
 function EffectsPanel() {
     const [fxType, setFxType] = useState('eq');
-    const [params, setParams] = useState({});
+    const [params, setParams] = useState<Record<string, number>>({});
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
 
     useEffect(() => {
-        const defs = {};
+        const defs: Record<string, number> = {};
         (FX_TOOL_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
         setParams(defs);
     }, [fxType]);
 
     const handleApply = useCallback(async () => {
-        const file = document.getElementById('fx-file')?.files?.[0];
+        const file = ((document.getElementById('fx-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
         setStatus('処理中...'); setStatusType('processing');
@@ -255,7 +272,7 @@ function EffectsPanel() {
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult(`${fxType} 適用結果`, url)]); setStatus('完了'); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [fxType, params]);
 
     return (
@@ -296,7 +313,7 @@ function BatchPanel() {
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
     const [progress, setProgress] = useState(false);
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
     const [fileCount, setFileCount] = useState(0);
 
     const editActions = ['normalize', 'volume', 'fade_in', 'fade_out', 'reverse', 'speed', 'trim', 'cut', 'loop', 'silence'];
@@ -306,7 +323,7 @@ function BatchPanel() {
     useEffect(() => { setAction(actions[0]); }, [category]);
 
     const handleBatch = useCallback(async () => {
-        const files = document.getElementById('batch-files')?.files;
+        const files = ((document.getElementById('batch-files') as HTMLInputElement | null))?.files;
         if (!files?.length) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData();
         for (const f of files) fd.append('files', f);
@@ -319,9 +336,9 @@ function BatchPanel() {
             const resp = await fetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data = await resp.json();
-            const items = data.filter(r => r.status === 'ok' && r.url).map(r => makeAudioResult(r.filename, r.url));
+            const items = (data as Array<{status: string; url?: string; filename: string}>).filter(r => r.status === 'ok' && r.url).map(r => makeAudioResult(r.filename, r.url!));
             setResults(items); setStatus(`完了: ${items.length}個成功`); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
         finally { setProgress(false); }
     }, [category, action]);
 
@@ -329,7 +346,7 @@ function BatchPanel() {
         <div className="tool-panel active">
             <h2>一括編集</h2>
             <p className="desc">複数の音声ファイルに同じ操作を一括適用します。</p>
-            <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files.length)} /></div>
+            <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files?.length ?? 0)} /></div>
             {fileCount > 0 && <div style={{ fontSize: 12, color: '#9e9a92', marginBottom: 12 }}>{fileCount}個のファイルを選択</div>}
             <div className="form-row">
                 <div className="form-group"><label>カテゴリ</label><select value={category} onChange={e => setCategory(e.target.value)}><option value="edit">編集</option><option value="effects">エフェクト</option></select></div>
@@ -350,22 +367,22 @@ function OverlayPanel() {
     const [overVol, setOverVol] = useState(0);
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
 
     const handleOverlay = useCallback(async () => {
-        const baseFile = document.getElementById('ovl-base')?.files?.[0];
-        const overFile = document.getElementById('ovl-over')?.files?.[0];
+        const baseFile = ((document.getElementById('ovl-base') as HTMLInputElement | null))?.files?.[0];
+        const overFile = ((document.getElementById('ovl-over') as HTMLInputElement | null))?.files?.[0];
         if (!baseFile || !overFile) { setStatus('2つのファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData();
         fd.append('base_file', baseFile); fd.append('overlay_file', overFile);
-        fd.append('offset_sec', offset); fd.append('base_vol_db', baseVol); fd.append('overlay_vol_db', overVol);
+        fd.append('offset_sec', String(offset)); fd.append('base_vol_db', String(baseVol)); fd.append('overlay_vol_db', String(overVol));
         setStatus('合成中...'); setStatusType('processing');
         try {
             const resp = await fetch('/api/overlay', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('合成結果', url)]); setStatus('完了'); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [offset, baseVol, overVol]);
 
     return (
@@ -394,10 +411,10 @@ function ConvertPanel() {
     const [bitrate, setBitrate] = useState('192');
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<AudioResult[]>([]);
 
     const handleConvert = useCallback(async () => {
-        const file = document.getElementById('conv-file')?.files?.[0];
+        const file = ((document.getElementById('conv-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('bitrate', bitrate);
         setStatus('変換中...'); setStatusType('processing');
@@ -406,7 +423,7 @@ function ConvertPanel() {
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult(`${target.toUpperCase()} 変換結果`, url)]); setStatus('完了'); setStatusType('');
-        } catch (e) { setStatus('エラー: ' + e.message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [target, bitrate]);
 
     return (
@@ -434,13 +451,13 @@ function ConvertPanel() {
 }
 
 // ---- メインのツールページ ----
-const PANELS = {
+const PANELS: Record<string, () => React.ReactElement> = {
     separate: SeparatePanel, analyze: AnalyzePanel, edit: EditPanel,
     effects: EffectsPanel, batch: BatchPanel, overlay: OverlayPanel, convert: ConvertPanel,
 };
 
 export default function ToolsPage() {
-    const [activeTab, setActiveTab] = useState('separate');
+    const [activeTab, setActiveTab] = useState<string>('separate');
     const ActivePanel = PANELS[activeTab];
 
     return (
