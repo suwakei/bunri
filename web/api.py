@@ -15,8 +15,15 @@ import json
 
 app = FastAPI(title="bunri DAW API")
 
-# 静的ファイル配信
+# 静的ファイル配信（React ビルド出力 → web/static/dist/）
 STATIC_DIR = Path(__file__).parent / "static"
+DIST_DIR = STATIC_DIR / "dist"
+
+# React ビルド出力の assets を配信
+if DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
+
+# 旧来の静的ファイルも引き続き配信
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # アップロード一時ディレクトリ
@@ -38,16 +45,26 @@ def _save_upload(upload: UploadFile) -> Path:
 
 @app.get("/")
 async def index():
+    """React SPA のエントリーポイントを返す（ビルド済みの場合）"""
+    react_index = DIST_DIR / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index))
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 @app.get("/help")
 async def help_page():
+    react_index = DIST_DIR / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index))
     return FileResponse(str(STATIC_DIR / "help.html"))
 
 
 @app.get("/tools")
 async def tools_page():
+    react_index = DIST_DIR / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index))
     return FileResponse(str(STATIC_DIR / "tools.html"))
 
 
