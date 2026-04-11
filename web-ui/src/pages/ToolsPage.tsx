@@ -92,7 +92,7 @@ const TABS = [
     { key: 'separate', label: '音源分離' }, { key: 'analyze', label: '解析' },
     { key: 'edit', label: '編集' }, { key: 'effects', label: 'エフェクト' },
     { key: 'batch', label: '一括編集' }, { key: 'overlay', label: '音源合成' },
-    { key: 'convert', label: '変換' },
+    { key: 'convert', label: '変換' }, { key: 'wav_optimize', label: 'WAV最適化' },
 ];
 
 // ---- 音源分離パネル ----
@@ -610,10 +610,146 @@ function DecomposePanel() {
     );
 }
 
+// ---- WAV最適化パネル ----
+interface WavInfo {
+    sample_rate: number;
+    channels: number;
+    bit_depth: string;
+    duration_sec: number;
+    file_size_mb: number;
+}
+
+interface OptimizeResult {
+    original: WavInfo;
+    optimized: WavInfo;
+    reduction_pct: number;
+    download_url: string;
+}
+
+function WavOptimizePanel() {
+    const [targetSr, setTargetSr] = useState(44100);
+    const [targetBit, setTargetBit] = useState(16);
+    const [status, setStatus] = useState('');
+    const [statusType, setStatusType] = useState('');
+    const [progress, setProgress] = useState(false);
+    const [result, setResult] = useState<OptimizeResult | null>(null);
+    const [info, setInfo] = useState<WavInfo | null>(null);
+
+    const handleInfo = useCallback(async () => {
+        const file = (document.getElementById('opt-file') as HTMLInputElement | null)?.files?.[0];
+        if (!file) return;
+        const fd = new FormData(); fd.append('file', file);
+        try {
+            const resp = await fetch('/api/wav/info', { method: 'POST', body: fd });
+            if (resp.ok) setInfo(await resp.json());
+        } catch (_e) { /* ignore */ }
+    }, []);
+
+    const handleOptimize = useCallback(async () => {
+        const file = (document.getElementById('opt-file') as HTMLInputElement | null)?.files?.[0];
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('target_sr', String(targetSr));
+        fd.append('target_bit_depth', String(targetBit));
+
+        setStatus('最適化中...'); setStatusType('processing'); setProgress(true); setResult(null);
+        try {
+            const resp = await fetch('/api/wav/optimize', { method: 'POST', body: fd });
+            if (!resp.ok) throw new Error(await resp.text());
+            const data: OptimizeResult = await resp.json();
+            setResult(data);
+            setStatus(`完了！容量 ${data.reduction_pct}% 削減（${data.original.file_size_mb}MB → ${data.optimized.file_size_mb}MB）`);
+            setStatusType('');
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        finally { setProgress(false); }
+    }, [targetSr, targetBit]);
+
+    return (
+        <div className="tool-panel active">
+            <h2>WAV最適化（容量削減）</h2>
+            <p className="desc">
+                動画から生成した大容量WAVを、音質を維持したまま一般的なサイズに圧縮します。<br />
+                <strong>サンプルレート変換</strong>（48kHz→44.1kHz）+ <strong>ビット深度変換</strong>（32bit→16bit）+
+                <strong>TPDFディザリング</strong>で量子化ノイズを最小化。
+            </p>
+            <div className="form-group">
+                <label>WAVファイル</label>
+                <input type="file" id="opt-file" accept=".wav" onChange={handleInfo} />
+            </div>
+
+            {info && (
+                <div style={{ fontSize: 12, color: '#9e9a92', padding: '8px 12px', background: '#1c1c25', borderRadius: 4, marginBottom: 12 }}>
+                    現在: <strong style={{ color: '#e8e4de' }}>{info.sample_rate}Hz / {info.bit_depth} / {info.channels}ch</strong>
+                    {' '}— {info.duration_sec}秒 / {info.file_size_mb}MB
+                </div>
+            )}
+
+            <div className="form-row">
+                <div className="form-group">
+                    <label>目標サンプルレート</label>
+                    <select value={targetSr} onChange={e => setTargetSr(+e.target.value)}>
+                        <option value="44100">44100 Hz（CD品質・推奨）</option>
+                        <option value="48000">48000 Hz（動画標準）</option>
+                        <option value="22050">22050 Hz（軽量）</option>
+                    </select>
+                </div>
+                <div className="form-group">
+                    <label>目標ビット深度</label>
+                    <select value={targetBit} onChange={e => setTargetBit(+e.target.value)}>
+                        <option value="16">16bit（CD品質・推奨）</option>
+                        <option value="24">24bit（高品質）</option>
+                    </select>
+                </div>
+            </div>
+
+            <div className="hint">
+                <strong>44.1kHz / 16bit</strong> が一般的なCDやストリーミングの品質です。<br />
+                人間の可聴域（〜20kHz）を完全にカバーし、聴感上の差はほぼありません。<br />
+                動画由来の 48kHz/32bit WAV → 44.1kHz/16bit で <strong>容量が約1/3〜1/4</strong> になります。
+            </div>
+
+            <button className="btn" onClick={handleOptimize}>最適化を実行</button>
+            {progress && <div className="progress-bar"><div className="fill" /></div>}
+            {status && <div className={`status ${statusType}`}>{status}</div>}
+
+            {result && (
+                <div className="result-area" style={{ display: 'block' }}>
+                    <h3>最適化結果</h3>
+                    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                        <thead><tr style={{ color: '#9e9a92', textAlign: 'left' }}>
+                            <th style={{ padding: '4px 8px' }}></th><th style={{ padding: '4px 8px' }}>元</th><th style={{ padding: '4px 8px' }}>最適化後</th>
+                        </tr></thead>
+                        <tbody>
+                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>サンプルレート</td>
+                                <td style={{ padding: '4px 8px' }}>{result.original.sample_rate} Hz</td>
+                                <td style={{ padding: '4px 8px', color: '#d4a44c' }}>{result.optimized.sample_rate} Hz</td></tr>
+                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>ビット深度</td>
+                                <td style={{ padding: '4px 8px' }}>{result.original.bit_depth}</td>
+                                <td style={{ padding: '4px 8px', color: '#d4a44c' }}>{result.optimized.bit_depth}</td></tr>
+                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>ファイルサイズ</td>
+                                <td style={{ padding: '4px 8px' }}>{result.original.file_size_mb} MB</td>
+                                <td style={{ padding: '4px 8px', color: '#4ecdc4', fontWeight: 'bold' }}>{result.optimized.file_size_mb} MB（{result.reduction_pct}%削減）</td></tr>
+                        </tbody>
+                    </table>
+                    {result.download_url && (
+                        <div style={{ marginTop: 12 }}>
+                            <audio controls src={result.download_url} style={{ width: '100%', marginBottom: 8 }} />
+                            <a href={result.download_url} download style={{ color: '#e8bc6a', fontSize: 13 }}>最適化済みWAVをダウンロード</a>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 const PANELS: Record<string, () => React.ReactElement> = {
     decompose: DecomposePanel,
     separate: SeparatePanel, analyze: AnalyzePanel, edit: EditPanel,
     effects: EffectsPanel, batch: BatchPanel, overlay: OverlayPanel, convert: ConvertPanel,
+    wav_optimize: WavOptimizePanel,
 };
 
 export default function ToolsPage() {
