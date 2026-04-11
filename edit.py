@@ -178,7 +178,8 @@ def concat_audio(file_obj_1, file_obj_2):
 def export_mp3(file_obj, bitrate):
     """WAVをMP3に書き出し（lameが必要、なければsoundfileでFLAC代替）"""
     from pathlib import Path
-    import subprocess, sys
+    import subprocess
+    import sys
     data, sr = load_audio(file_obj)
     out_dir = Path("results") / "edited"
     out_dir.mkdir(parents=True, exist_ok=True)

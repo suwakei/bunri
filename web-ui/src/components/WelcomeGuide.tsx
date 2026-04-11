@@ -1,7 +1,7 @@
 /**
  * bunri DAW — ウェルカムガイドモーダル
  */
-import type { MouseEvent, ReactElement } from 'react';
+import type { MouseEvent } from 'react';
 import { useDaw } from '../lib/store';
 
 interface GuideStep {

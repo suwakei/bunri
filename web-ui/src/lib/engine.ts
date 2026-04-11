@@ -278,7 +278,7 @@ class AudioEngine {
         this.isPlaying = false;
         this.soloTrackId = null;
         for (const src of this.activeSources) {
-            try { src.stop(); } catch (e) {}
+            try { src.stop(); } catch (_e) { /* 既に停止済み */ }
         }
         this.activeSources = [];
         this._stopMetronome();
@@ -290,7 +290,7 @@ class AudioEngine {
         this.playOffset += this.ctx!.currentTime - this.startTime;
         this.isPlaying = false;
         for (const src of this.activeSources) {
-            try { src.stop(); } catch (e) {}
+            try { src.stop(); } catch (_e) { /* 既に停止済み */ }
         }
         this.activeSources = [];
         this._stopMetronome();

@@ -1,7 +1,7 @@
 /**
  * bunri DAW — 左パネル（シンセ / ドラム / FX / ファイル タブ）
  */
-import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 
@@ -242,13 +242,16 @@ function FxPanel() {
     const { setStatus, withProgress, bumpTracks } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
-    const [params, setParams] = useState<Record<string, number>>({});
-
-    useEffect(() => {
+    const defaultParams = useCallback(() => {
         const defs: Record<string, number> = {};
         (FX_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
-        setParams(defs);
+        return defs;
     }, [fxType]);
+    const [params, setParams] = useState<Record<string, number>>(defaultParams);
+
+    useEffect(() => {
+        setParams(defaultParams());
+    }, [defaultParams]);
 
     const handleApply = useCallback(async () => {
         const track = engine.getTrack(fxTrack);

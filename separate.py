@@ -156,7 +156,7 @@ def deep_separate(
     input_p = Path(input_path)
 
     # 第1段: htdemucs_6s でフル分離
-    print(f"[深層分離] === 第1段: htdemucs_6s フル分離 ===")
+    print("[深層分離] === 第1段: htdemucs_6s フル分離 ===")
     first = separate_audio(
         input_path=input_path,
         output_dir=output_dir,
@@ -182,9 +182,9 @@ def deep_separate(
     # 第2段: otherをさらに分離
     if other_path and other_path.exists() and recursive_depth > 0:
         if _is_silent(other_path):
-            print(f"[深層分離] other はほぼ無音のためスキップ")
+            print("[深層分離] other はほぼ無音のためスキップ")
         else:
-            print(f"\n[深層分離] === 第2段: otherステムを再分離 ===")
+            print("\n[深層分離] === 第2段: otherステムを再分離 ===")
             other_out = str(Path(output_dir) / "deep_other")
             sub = separate_audio(
                 input_path=str(other_path),
