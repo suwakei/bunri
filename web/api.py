@@ -539,3 +539,42 @@ async def load_project(name: str):
     if not path.exists():
         raise HTTPException(404, "プロジェクトが見つかりません")
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+# ---- 音源分解（Decompose）API ----
+
+@app.post("/api/decompose")
+async def api_decompose(
+    file: UploadFile = File(...),
+    bpm: int = Form(0),
+    sensitivity: float = Form(0.5),
+):
+    """
+    WAVファイルを分離→ピッチ解析→楽器推定まで一括処理。
+    bpm=0 の場合は自動検出。
+    """
+    from decompose import decompose
+
+    src = _save_upload(file)
+    detected_bpm = bpm if bpm > 0 else None
+
+    try:
+        result = decompose(
+            str(src), bpm=detected_bpm, sensitivity=sensitivity,
+            segment=7, jobs=1,
+        )
+
+        # 音声ファイルのパスをダウンロードURLに変換
+        for stem_name, stem_data in result["stems"].items():
+            audio_path = Path(stem_data["audio_path"])
+            if audio_path.exists():
+                dst_name = f"decompose_{stem_name}_{file.filename}"
+                dst = RESULTS_DIR / dst_name
+                import shutil
+                shutil.copy2(str(audio_path), str(dst))
+                stem_data["audio_url"] = f"/api/download/{dst_name}"
+            del stem_data["audio_path"]
+
+        return JSONResponse(result)
+    except Exception as e:
+        raise HTTPException(500, str(e))

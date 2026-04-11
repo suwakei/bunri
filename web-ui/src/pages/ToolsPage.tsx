@@ -88,6 +88,7 @@ const EDIT_HINTS: Record<string, string> = {
 };
 
 const TABS = [
+    { key: 'decompose', label: '完全分解' },
     { key: 'separate', label: '音源分離' }, { key: 'analyze', label: '解析' },
     { key: 'edit', label: '編集' }, { key: 'effects', label: 'エフェクト' },
     { key: 'batch', label: '一括編集' }, { key: 'overlay', label: '音源合成' },
@@ -451,13 +452,172 @@ function ConvertPanel() {
 }
 
 // ---- メインのツールページ ----
+// ---- 完全分解パネル ----
+interface StemResult {
+    audio_url?: string;
+    notes?: Array<{ note: string; octave: number; step: number; length: number; velocity: number }>;
+    drum_events?: Array<{ type: string; step: number; velocity: number }>;
+    gm_program: number | null;
+    mix: { volume_db: number; pan: number; reverb_wet: number };
+}
+
+interface DecomposeResult {
+    bpm: number;
+    stems: Record<string, StemResult>;
+}
+
+const STEM_LABELS: Record<string, string> = {
+    vocals: 'ボーカル', drums: 'ドラム', bass: 'ベース',
+    guitar: 'ギター', piano: 'ピアノ', other: 'その他',
+};
+
+function DecomposePanel() {
+    const [status, setStatus] = useState('');
+    const [statusType, setStatusType] = useState('');
+    const [progress, setProgress] = useState(false);
+    const [bpm, setBpm] = useState(0);
+    const [sensitivity, setSensitivity] = useState(0.5);
+    const [result, setResult] = useState<DecomposeResult | null>(null);
+    const [disabled, setDisabled] = useState(false);
+
+    const handleDecompose = useCallback(async () => {
+        const file = (document.getElementById('decompose-file') as HTMLInputElement | null)?.files?.[0];
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('bpm', String(bpm));
+        fd.append('sensitivity', String(sensitivity));
+
+        setStatus(`分解中...（${file.name}）Demucs分離 → ピッチ解析 → 楽器推定。CPU処理のため数分かかります。`);
+        setStatusType('processing'); setProgress(true); setResult(null); setDisabled(true);
+
+        try {
+            const resp = await fetch('/api/decompose', { method: 'POST', body: fd });
+            if (!resp.ok) throw new Error(await resp.text());
+            const data: DecomposeResult = await resp.json();
+            setResult(data);
+            const stemCount = Object.keys(data.stems).length;
+            const totalNotes = Object.values(data.stems).reduce((sum, s) =>
+                sum + (s.notes?.length || 0) + (s.drum_events?.length || 0), 0);
+            setStatus(`分解完了！BPM: ${data.bpm} / ${stemCount}ステム / ${totalNotes}ノート検出`);
+            setStatusType('');
+        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        finally { setProgress(false); setDisabled(false); }
+    }, [bpm, sensitivity]);
+
+    return (
+        <div className="tool-panel active">
+            <h2>完全分解（Decompose）</h2>
+            <p className="desc">
+                音源を楽器パートに分離し、各パートの音符を自動書き起こしします。<br />
+                <strong>Demucs分離 → ポリフォニックピッチ検出 → ドラムパターン解析 → 楽器推定</strong>を一括実行。<br />
+                結果はDAWのトラック+ピアノロールにそのまま読み込めるJSON形式です。
+            </p>
+            <div className="form-group">
+                <label>音声ファイル（WAV / MP3 / FLAC）</label>
+                <input type="file" id="decompose-file" accept=".wav,.mp3,.flac,.ogg,.m4a" />
+            </div>
+            <div className="form-row">
+                <div className="form-group">
+                    <label>BPM（0 = 自動検出）</label>
+                    <input type="number" value={bpm} min="0" max="300"
+                        onChange={e => setBpm(+e.target.value)} />
+                </div>
+                <div className="form-group">
+                    <label>検出感度（{sensitivity}）</label>
+                    <input type="range" min="0.1" max="1" step="0.05" value={sensitivity}
+                        onChange={e => setSensitivity(+e.target.value)}
+                        style={{ width: '100%', background: '#1c1c25' }} />
+                </div>
+            </div>
+            <div className="hint">
+                <strong>完全再現のワークフロー:</strong><br />
+                1. ここでBGMを分解 → 各パートのノートデータを取得<br />
+                2. DAWで「読込」→ 各トラックにノートが配置される<br />
+                3. GM楽器を選び「シーケンスをレンダリング」で音声化<br />
+                4. 原曲と聴き比べながら手動で微調整
+            </div>
+            <button className="btn" onClick={handleDecompose} disabled={disabled}>
+                完全分解を開始
+            </button>
+            {progress && <div className="progress-bar"><div className="fill" /></div>}
+            {status && <div className={`status ${statusType}`}>{status}</div>}
+
+            {result && (
+                <div className="result-area" style={{ display: 'block' }}>
+                    <h3>分解結果（BPM: {result.bpm}）</h3>
+                    {Object.entries(result.stems).map(([name, stem]) => (
+                        <div key={name} className="result-item" style={{ paddingBottom: 16, marginBottom: 16 }}>
+                            <div className="result-label" style={{ fontSize: 14, marginBottom: 8 }}>
+                                {STEM_LABELS[name] || name}
+                                {stem.gm_program != null && <span style={{ marginLeft: 8, color: '#9e9a92' }}>GM#{stem.gm_program}</span>}
+                            </div>
+
+                            {stem.audio_url && <audio controls src={stem.audio_url} style={{ width: '100%', marginBottom: 8 }} />}
+
+                            <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#9e9a92', marginBottom: 8 }}>
+                                <span>音量: {stem.mix.volume_db}dB</span>
+                                <span>パン: {stem.mix.pan}</span>
+                                <span>残響: {(stem.mix.reverb_wet * 100).toFixed(0)}%</span>
+                            </div>
+
+                            {stem.notes && stem.notes.length > 0 && (
+                                <div style={{ fontSize: 12, color: '#d4a44c' }}>
+                                    {stem.notes.length}ノート検出
+                                    <span style={{ color: '#9e9a92', marginLeft: 8 }}>
+                                        ({stem.notes.slice(0, 5).map(n => `${n.note}${n.octave}`).join(' ')}...)
+                                    </span>
+                                </div>
+                            )}
+
+                            {stem.drum_events && stem.drum_events.length > 0 && (
+                                <div style={{ fontSize: 12, color: '#4ecdc4' }}>
+                                    {stem.drum_events.length}ドラムヒット検出
+                                    <span style={{ color: '#9e9a92', marginLeft: 8 }}>
+                                        (kick: {stem.drum_events.filter(e => e.type === 'kick').length}
+                                        / snare: {stem.drum_events.filter(e => e.type === 'snare').length}
+                                        / hihat: {stem.drum_events.filter(e => e.type === 'hihat').length})
+                                    </span>
+                                </div>
+                            )}
+
+                            {stem.audio_url && <a href={stem.audio_url} download style={{ fontSize: 12 }}>WAVダウンロード</a>}
+                        </div>
+                    ))}
+
+                    <div style={{ marginTop: 16, padding: 12, background: '#1c1c25', borderRadius: 6 }}>
+                        <div style={{ fontSize: 13, color: '#d4a44c', marginBottom: 8 }}>DAW用JSONデータ</div>
+                        <textarea
+                            readOnly
+                            value={JSON.stringify(result, null, 2)}
+                            style={{ width: '100%', height: 120, background: '#111116', color: '#e8e4de', border: '1px solid #2a2a35', borderRadius: 4, fontSize: 11, fontFamily: 'monospace', resize: 'vertical', padding: 8 }}
+                        />
+                        <button className="btn" style={{ marginTop: 8 }}
+                            onClick={() => {
+                                const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url; a.download = 'decompose_result.json';
+                                a.click(); URL.revokeObjectURL(url);
+                            }}>
+                            JSONをダウンロード
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 const PANELS: Record<string, () => React.ReactElement> = {
+    decompose: DecomposePanel,
     separate: SeparatePanel, analyze: AnalyzePanel, edit: EditPanel,
     effects: EffectsPanel, batch: BatchPanel, overlay: OverlayPanel, convert: ConvertPanel,
 };
 
 export default function ToolsPage() {
-    const [activeTab, setActiveTab] = useState<string>('separate');
+    const [activeTab, setActiveTab] = useState<string>('decompose');
     const ActivePanel = PANELS[activeTab];
 
     return (

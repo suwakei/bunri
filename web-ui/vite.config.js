@@ -7,7 +7,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './test-setup.ts',
-    include: ['../test/front/**/*.test.{ts,tsx}'],
+    include: ['./src/__tests__/*.test.ts', './src/__tests__/*.test.tsx'],
     server: {
       deps: {
         fallbackCJS: true,

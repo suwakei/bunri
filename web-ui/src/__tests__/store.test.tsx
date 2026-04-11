@@ -24,7 +24,7 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const { DawProvider, useDaw } = await import('../../web-ui/src/lib/store');
+const { DawProvider, useDaw } = await import('../lib/store');
 
 // テスト用コンシューマーコンポーネント
 function TestConsumer() {
