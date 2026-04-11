@@ -168,7 +168,7 @@ function AnalyzePanel() {
             const resp = await fetch('/api/deep-analyze', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data = await resp.json();
-            let html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:#d4a44c;margin-top:16px">$1</h3>')
+            const html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:#d4a44c;margin-top:16px">$1</h3>')
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
                 .replace(/^- (.+)$/gm, '<div style="padding-left:12px">・ $1</div>');
             setReport(html); setStatus('解析完了'); setStatusType('');
