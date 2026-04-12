@@ -20,11 +20,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 DIST_DIR = STATIC_DIR / "dist"
 
 # React ビルド出力の assets を配信
-if DIST_DIR.exists():
+if DIST_DIR.exists() and (DIST_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
-
-# 旧来の静的ファイルも引き続き配信
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # アップロード一時ディレクトリ
 UPLOAD_DIR = ROOT / "uploads"
@@ -45,27 +42,21 @@ def _save_upload(upload: UploadFile) -> Path:
 
 @app.get("/")
 async def index():
-    """React SPA のエントリーポイントを返す（ビルド済みの場合）"""
+    """React SPA のエントリーポイントを返す"""
     react_index = DIST_DIR / "index.html"
-    if react_index.exists():
-        return FileResponse(str(react_index))
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    if not react_index.exists():
+        raise HTTPException(500, "React build が見つかりません。`cd web-ui && npm run build` を実行してください")
+    return FileResponse(str(react_index))
 
 
 @app.get("/help")
 async def help_page():
-    react_index = DIST_DIR / "index.html"
-    if react_index.exists():
-        return FileResponse(str(react_index))
-    return FileResponse(str(STATIC_DIR / "help.html"))
+    return await index()
 
 
 @app.get("/tools")
 async def tools_page():
-    react_index = DIST_DIR / "index.html"
-    if react_index.exists():
-        return FileResponse(str(react_index))
-    return FileResponse(str(STATIC_DIR / "tools.html"))
+    return await index()
 
 
 # ---- シンセ / シーケンサー API ----
