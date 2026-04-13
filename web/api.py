@@ -606,3 +606,41 @@ async def api_wav_optimize(
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ---- 音楽アシスタント API ----
+
+@app.get("/api/assistant/status")
+async def api_assistant_status():
+    """ローカル/クラウドLLMの利用可否を返す"""
+    from music_assistant import check_availability
+    return JSONResponse(check_availability())
+
+
+@app.post("/api/assistant/chat")
+async def api_assistant_chat(
+    prompt: str = Form(...),
+    bpm: int = Form(120),
+    bars: int = Form(4),
+    mode: str = Form("auto"),
+    context_notes: str = Form("[]"),
+):
+    """
+    自然言語プロンプトからピアノロール用ノートを提案。
+    mode: "auto" (自動ルーティング) | "local" (Ollama) | "cloud" (Claude)
+    """
+    from music_assistant import suggest_notes, AssistantError
+    try:
+        ctx = json.loads(context_notes) if context_notes else []
+        result = suggest_notes(
+            prompt=prompt,
+            bpm=bpm,
+            bars=bars,
+            mode=mode,
+            context_notes=ctx,
+        )
+        return JSONResponse(result)
+    except AssistantError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))

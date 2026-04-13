@@ -8,6 +8,7 @@
 
 | 機能 | 説明 |
 |---|---|
+| **AIアシスタント** | 自然言語チャットでピアノロール提案（ローカルGemma / クラウドClaude ハイブリッド）。生成されるのはノートデータのみ、音はユーザーが選んだGM音源で鳴る |
 | **音源完全分解 (Decompose)** | WAV を Demucs で6ステム分離 → 各パートをポリフォニックピッチ検出 → 楽器推定 → トラック+ピアノロール自動生成 |
 | **音源分離** | Demucs によるボーカル/ドラム/ベース/ギター/ピアノ/その他への分離 |
 | **シンセサイザー** | 4種の基本波形 + GM 音源（FluidSynth）、ADSR エンベロープ |
@@ -108,6 +109,46 @@ make install-frontend
 ```bash
 make build
 ```
+
+### 4. （オプション）AIアシスタント用 LLM セットアップ
+
+AIアシスタント機能（自然言語からピアノロール提案）を使う場合、以下のいずれかを設定します。
+
+#### ローカル: Ollama（推奨・無料・オフライン動作）
+
+[Ollama](https://ollama.com) をインストール後、モデルをダウンロード:
+
+```bash
+# Gemma 3 4B（軽量・CPU向け、約3GB）
+ollama pull gemma3:4b
+
+# または Gemma 3 12B（高品質・8GB以上のRAM推奨）
+ollama pull gemma3:12b
+
+# Ollama サーバーを起動
+ollama serve
+```
+
+環境変数でモデルを指定可能（デフォルト: `gemma3:4b`）:
+
+```bash
+export OLLAMA_MODEL=gemma3:12b
+export OLLAMA_URL=http://localhost:11434
+```
+
+#### クラウド: Anthropic Claude（高品質・創造的な指示向き）
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxx
+# オプション: モデル指定（デフォルト: claude-haiku-4-5-20251001）
+export CLAUDE_MODEL=claude-sonnet-4-5
+```
+
+両方設定すると、プロンプトの内容に応じて自動ルーティングされます:
+- **ローカル**: コード進行、ベースライン、定番リズムパターン等
+- **クラウド**: 「切ない」「エモい」等の抽象的・創造的な指示
+
+どちらも設定しない場合でも、AIアシスタント以外の全機能は通常通り使えます。
 
 ## 起動方法
 
