@@ -4,6 +4,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import AssistantPanel from './AssistantPanel';
 
 interface GmInstrument {
     program: number;
@@ -421,6 +422,7 @@ const TABS = [
     { key: 'drum', label: 'ドラム' },
     { key: 'fx', label: 'FX' },
     { key: 'file', label: 'ファイル' },
+    { key: 'ai', label: 'AI' },
 ];
 
 export default function LeftPanel() {
@@ -448,6 +450,9 @@ export default function LeftPanel() {
             </div>
             <div style={{ display: activeTab === 'file' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
                 <FilePanel />
+            </div>
+            <div style={{ display: activeTab === 'ai' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
+                <AssistantPanel />
             </div>
         </div>
     );
