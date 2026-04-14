@@ -308,13 +308,38 @@ function FxPanel() {
     );
 }
 
+interface DecomposeStem {
+    audio_url?: string;
+    notes?: Array<{ note: string; octave: number; step: number; length: number; velocity?: number }>;
+    drum_events?: Array<{ type: string; step: number; velocity: number }>;
+    gm_program: number | null;
+    mix: { volume_db: number; pan: number; reverb_wet: number };
+}
+
+interface DecomposeResult {
+    bpm: number;
+    stems: Record<string, DecomposeStem>;
+}
+
+const STEM_LABELS_JP: Record<string, string> = {
+    vocals: 'ボーカル',
+    drums: 'ドラム',
+    bass: 'ベース',
+    guitar: 'ギター',
+    piano: 'ピアノ',
+    other: 'その他',
+};
+
 // ---- ファイルパネル ----
 function FilePanel() {
-    const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm } = useDaw();
+    const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm, setBpm } = useDaw();
     const [fileTrack, setFileTrack] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const analyzeFileRef = useRef<HTMLInputElement>(null);
+    const transcribeFileRef = useRef<HTMLInputElement>(null);
     const [sensitivity, setSensitivity] = useState(0.5);
+    const [transcribeSensitivity, setTranscribeSensitivity] = useState(0.5);
+    const [autoBpm, setAutoBpm] = useState(true);
     const [isRecording, setIsRecording] = useState(false);
 
     const handleImport = useCallback(async () => {
@@ -352,6 +377,96 @@ function FilePanel() {
         });
     }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus]);
 
+    const handleFullTranscribe = useCallback(async () => {
+        const file = transcribeFileRef.current?.files?.[0];
+        if (!file) { setStatus('解析する楽曲ファイルを選択してください'); return; }
+
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('bpm', autoBpm ? '0' : String(bpm));
+        fd.append('sensitivity', String(transcribeSensitivity));
+
+        await withProgress(
+            `楽曲を解析中...（${file.name}）ステム分離 → ピッチ検出 → 楽器推定。数分かかります`,
+            async () => {
+                const resp = await fetch('/api/decompose', { method: 'POST', body: fd });
+                if (!resp.ok) throw new Error(await resp.text());
+                const result: DecomposeResult = await resp.json();
+
+                // BPM を自動検出値で更新
+                if (autoBpm && result.bpm) {
+                    setBpm(result.bpm);
+                }
+
+                const pr = pianoRollRef.current;
+                const stemEntries = Object.entries(result.stems);
+                let createdTracks = 0;
+                let firstTrackId: number | null = null;
+                let totalNotes = 0;
+
+                for (const [stemName, stem] of stemEntries) {
+                    const label = STEM_LABELS_JP[stemName] || stemName;
+                    const track = engine.addTrack(label);
+                    if (firstTrackId === null) firstTrackId = track.id;
+                    createdTracks++;
+
+                    // ミックスパラメータ反映
+                    if (stem.mix) {
+                        engine.updateTrackGain(track.id, stem.mix.volume_db);
+                        engine.updateTrackPan(track.id, stem.mix.pan);
+                    }
+
+                    // 音声クリップを追加
+                    if (stem.audio_url) {
+                        try {
+                            await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
+                        } catch (e) {
+                            console.warn(`${stemName} の音声読み込みに失敗:`, e);
+                        }
+                    }
+
+                    // ピアノロールノートを設定（ドラム以外）
+                    if (stem.notes && stem.notes.length > 0) {
+                        track.pianoNotes = stem.notes.map(n => ({
+                            note: n.note,
+                            octave: n.octave,
+                            step: n.step,
+                            length: n.length,
+                        }));
+                        totalNotes += stem.notes.length;
+                    }
+
+                    // ドラムイベントを長さ1のパーカッションノートとして近似配置
+                    if (stem.drum_events && stem.drum_events.length > 0) {
+                        // type ごとに別のMIDIノートに割り当て（C1=kick, D1=snare, F#1=hihat 近似）
+                        const drumMap: Record<string, { note: string; octave: number }> = {
+                            kick: { note: 'C', octave: 2 },
+                            snare: { note: 'D', octave: 2 },
+                            hihat: { note: 'F#', octave: 2 },
+                        };
+                        track.pianoNotes = stem.drum_events.map(e => ({
+                            ...(drumMap[e.type] || drumMap.kick),
+                            step: e.step,
+                            length: 1,
+                        }));
+                        totalNotes += stem.drum_events.length;
+                    }
+                }
+
+                bumpTracks();
+
+                // 最初のステムのピアノロールを開く
+                if (firstTrackId !== null && pr) {
+                    pr.switchToTrack(firstTrackId);
+                }
+
+                setStatus(
+                    `解析完了！BPM: ${result.bpm} / ${createdTracks}トラック / ${totalNotes}ノート自動配置`
+                );
+            },
+        );
+    }, [bpm, autoBpm, transcribeSensitivity, withProgress, setStatus, setBpm, bumpTracks, pianoRollRef]);
+
     const handleMicRecord = useCallback(async () => {
         try {
             await engine.startRecording();
@@ -372,6 +487,32 @@ function FilePanel() {
 
     return (
         <div id="file-panel" className="panel-content">
+            <h3 style={{ color: 'var(--accent)' }}>楽曲を完全解析して配置</h3>
+            <p className="panel-desc">
+                <strong>アップロード1回で全自動:</strong> ステム分離 → ピッチ検出 → 楽器推定 → トラック自動作成 → ピアノロール配置。
+                既存曲を分解してDAWで再現・編集できます。
+            </p>
+            <input type="file" ref={transcribeFileRef} accept=".wav,.mp3,.flac,.ogg,.m4a" />
+            <div className="param-row">
+                <div>
+                    <label>
+                        <input type="checkbox" checked={autoBpm}
+                            onChange={e => setAutoBpm(e.target.checked)}
+                            style={{ marginRight: 4 }} />
+                        BPM自動検出
+                    </label>
+                </div>
+                <div>
+                    <label>感度 ({transcribeSensitivity})</label>
+                    <input type="range" min="0.1" max="1" step="0.05"
+                        value={transcribeSensitivity}
+                        onChange={e => setTranscribeSensitivity(+e.target.value)} />
+                </div>
+            </div>
+            <button className="action-btn" onClick={handleFullTranscribe}>
+                楽曲を完全解析（数分かかります）
+            </button>
+            <hr style={{ borderColor: 'var(--border)', margin: '12px 0' }} />
             <h3>ファイル読み込み</h3>
             <p className="panel-desc">WAVファイルをトラックに追加します。タイムライン上に直接ドラッグ&ドロップもできます。</p>
             <input type="file" ref={fileInputRef} accept=".wav" multiple />
@@ -379,8 +520,8 @@ function FilePanel() {
             <TrackSelector value={fileTrack} onChange={setFileTrack} />
             <button className="action-btn" onClick={handleImport}>選択したトラックに追加</button>
             <hr style={{ borderColor: 'var(--border)', margin: '12px 0' }} />
-            <h3>WAV解析 → ピアノロール</h3>
-            <p className="panel-desc">WAVファイルの音程を解析し、ピアノロールにノートとして自動配置します。</p>
+            <h3>単音メロディ解析</h3>
+            <p className="panel-desc">単音のWAVからピッチを抽出して、選択中のピアノロールに配置します（ボーカルやメロディ用）。</p>
             <input type="file" ref={analyzeFileRef} accept=".wav" />
             <label>感度</label>
             <input type="range" min="0.1" max="1" step="0.05" value={sensitivity}
