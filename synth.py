@@ -265,6 +265,95 @@ def _instrument_synth(freq, duration, sr, instrument):
         v4 = np.sin(2 * np.pi * (freq * 1.002) * t + 1.5)
         return (v1 + v2 + v3 + v4) * 0.25
 
+    elif instrument == "choir":
+        # 男女混声合唱風: フォルマント合成（母音「ア」的な共鳴）
+        # 複数声部のデチューン + フォルマント強調
+        vibrato = 0.005 * np.sin(2 * np.pi * 5 * t + np.random.uniform(0, np.pi))
+        base = np.sin(phase * (1 + vibrato))
+        # フォルマント周波数（男声「ア」: 730, 1090, 2440 Hz 付近）
+        formant1 = np.sin(2 * np.pi * 730 * t) * 0.15
+        formant2 = np.sin(2 * np.pi * 1090 * t) * 0.08
+        formant3 = np.sin(2 * np.pi * 2440 * t) * 0.04
+        # 男女パート（1オクターブ違い）を重ねる
+        upper = np.sin(2 * np.pi * (freq * 2) * t) * 0.3
+        lower = np.sin(2 * np.pi * (freq * 0.5) * t) * 0.2
+        # 軽いノイズで息感
+        breath = np.random.randn(len(t)) * 0.03
+        out = base + upper + lower + formant1 + formant2 + formant3 + breath
+        return out * 0.4
+
+    elif instrument == "strings":
+        # ストリングスセクション: 多層デチューン鋸歯状波 + ビブラート
+        vibrato = 0.004 * np.sin(2 * np.pi * 5.2 * t)
+        saw1 = 2 * ((freq * t * (1 + vibrato)) - np.floor(0.5 + freq * t * (1 + vibrato)))
+        saw2 = 2 * ((freq * 1.007 * t) - np.floor(0.5 + freq * 1.007 * t))
+        saw3 = 2 * ((freq * 0.993 * t) - np.floor(0.5 + freq * 0.993 * t))
+        mix = (saw1 + saw2 + saw3) / 3
+        # 簡易ローパス（アンサンブル感）
+        kernel_size = max(int(sr / (freq * 8)), 3)
+        kernel = np.ones(kernel_size) / kernel_size
+        filtered = np.convolve(mix, kernel, mode='same')
+        return filtered * 0.8
+
+    elif instrument == "brass":
+        # ブラス: 鋸歯状波 + 倍音強調 + アタック時のピッチベンド
+        pitch_bend = 1 + 0.002 * np.exp(-t * 8)  # アタックで上昇
+        saw = 2 * ((freq * t * pitch_bend) - np.floor(0.5 + freq * t * pitch_bend))
+        # 2倍音を強調
+        h2 = np.sin(phase * 2) * 0.4
+        return saw * 0.7 + h2
+
+    elif instrument == "piano":
+        # ピアノ: 複数倍音の加算合成 + 減衰
+        # ハンマー音（アタックノイズ）
+        attack_noise = np.random.randn(int(sr * 0.005)) * 0.3
+        out = np.zeros_like(t)
+        # 倍音ごとに異なる減衰率
+        harmonics = [(1, 1.0, 2.0), (2, 0.5, 3.0), (3, 0.25, 4.0),
+                     (4, 0.15, 5.0), (5, 0.08, 6.0)]
+        for h, amp, decay_rate in harmonics:
+            out += amp * np.sin(phase * h) * np.exp(-t * decay_rate)
+        # アタックノイズを先頭に付与
+        if len(attack_noise) < len(out):
+            out[:len(attack_noise)] += attack_noise
+        return out / 2
+
+    elif instrument == "epiano":
+        # エレピ: FM合成（Yamaha DX7風）
+        mod_freq = freq * 1.0
+        mod_index = 2.0 * np.exp(-t * 3)  # モジュレーションインデックスが減衰
+        modulator = mod_index * np.sin(2 * np.pi * mod_freq * t)
+        carrier = np.sin(phase + modulator)
+        return carrier * np.exp(-t * 0.8)
+
+    elif instrument == "pad":
+        # シンセパッド: スロー立ち上がりの多層デチューン
+        vibrato = 0.002 * np.sin(2 * np.pi * 0.5 * t)
+        s1 = np.sin(phase * (1 + vibrato))
+        s2 = np.sin(2 * np.pi * (freq * 1.003) * t + 0.3)
+        s3 = np.sin(2 * np.pi * (freq * 0.997) * t + 0.7)
+        s4 = np.sin(2 * np.pi * (freq * 2.0) * t) * 0.3  # 1オクターブ上
+        return (s1 + s2 + s3 + s4) * 0.3
+
+    elif instrument == "bell":
+        # ベル/シンセベル: FM合成の非整数倍音
+        mod = np.sin(2 * np.pi * freq * 3.5 * t) * 3 * np.exp(-t * 2)
+        carrier = np.sin(phase + mod)
+        return carrier * np.exp(-t * 1.5)
+
+    elif instrument == "pluck":
+        # プラック（シンセ弦）: 鋸歯状波 + 急減衰フィルタ
+        saw = 2 * (freq * t - np.floor(0.5 + freq * t))
+        envelope = np.exp(-t * 4)  # 急速な減衰
+        return saw * envelope
+
+    elif instrument == "lead":
+        # シンセリード: 矩形波 + 軽いPWM + ビブラート
+        vibrato = 0.005 * np.sin(2 * np.pi * 5 * t)
+        pwm = 0.5 + 0.2 * np.sin(2 * np.pi * 0.8 * t)
+        square = np.sign(np.sin(phase * (1 + vibrato)) - (pwm - 0.5) * 2)
+        return square * 0.6
+
     elif instrument == "flute":
         # 正弦波 + ブレスノイズ + ビブラート
         vibrato = 0.004 * np.sin(2 * np.pi * 5 * t)
@@ -299,6 +388,15 @@ INSTRUMENT_ADSR = {
     "guitar":  (0.002, 0.05, 0.3, 0.3),
     "violin":  (0.08, 0.1, 0.8, 0.15),
     "chorus":  (0.1, 0.15, 0.7, 0.3),
+    "choir":   (0.15, 0.2, 0.75, 0.4),
+    "strings": (0.12, 0.2, 0.8, 0.3),
+    "brass":   (0.05, 0.1, 0.75, 0.2),
+    "piano":   (0.002, 0.3, 0.4, 0.5),
+    "epiano":  (0.005, 0.2, 0.5, 0.3),
+    "pad":     (0.4, 0.3, 0.85, 0.6),
+    "bell":    (0.001, 0.1, 0.3, 1.5),
+    "pluck":   (0.001, 0.05, 0.1, 0.3),
+    "lead":    (0.01, 0.05, 0.8, 0.15),
     "flute":   (0.05, 0.08, 0.7, 0.15),
     "bass":    (0.005, 0.1, 0.6, 0.1),
     "organ":   (0.01, 0.05, 0.9, 0.05),
