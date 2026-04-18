@@ -782,7 +782,17 @@ async def api_convert(
 
 @app.post("/api/project/save")
 async def save_project(data: str = Form(...)):
-    """タイムラインのクリップ配置やオートメーションデータを保存"""
+    """プロジェクトデータを JSON ファイルとして保存する。
+
+    タイムラインのクリップ配置・オートメーション等を含む JSON 文字列を
+    ``projects/project_<timestamp>.json`` として保存する。
+
+    Args:
+        data: 保存するプロジェクトデータの JSON 文字列。
+
+    Returns:
+        保存されたファイル名を含む辞書（例: ``{"filename": "project_1234567890.json"}``）。
+    """
     project_dir = ROOT / "projects"
     project_dir.mkdir(exist_ok=True)
     import time
@@ -793,6 +803,12 @@ async def save_project(data: str = Form(...)):
 
 @app.get("/api/project/list")
 async def list_projects():
+    """保存済みプロジェクトのファイル名一覧を返す。
+
+    Returns:
+        プロジェクトファイル名（文字列）のリスト（JSON）。
+        新しいものが先頭になるよう降順ソートされる。
+    """
     project_dir = ROOT / "projects"
     project_dir.mkdir(exist_ok=True)
     files = sorted(project_dir.glob("*.json"), reverse=True)
@@ -801,6 +817,17 @@ async def list_projects():
 
 @app.get("/api/project/load/{name}")
 async def load_project(name: str):
+    """指定した名前のプロジェクトを読み込んで JSON で返す。
+
+    Args:
+        name: 読み込むプロジェクトファイル名（拡張子 ``.json`` を含む）。
+
+    Returns:
+        プロジェクトデータの ``JSONResponse``。
+
+    Raises:
+        HTTPException: 指定したファイルが projects/ に存在しない場合（HTTP 404）。
+    """
     project_dir = ROOT / "projects"
     path = project_dir / name
     if not path.exists():
@@ -816,9 +843,19 @@ async def api_decompose(
     bpm: int = Form(0),
     sensitivity: float = Form(0.5),
 ):
-    """
-    WAVファイルを分離→ピッチ解析→楽器推定まで一括処理。
-    bpm=0 の場合は自動検出。
+    """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
+
+    Args:
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        bpm: プロジェクトの BPM。``0`` を指定すると自動検出する。
+        sensitivity: ノート検出感度（0.0〜1.0）。
+
+    Returns:
+        分解結果の ``JSONResponse``。各ステムに ``audio_url`` と
+        ノートデータ・楽器推定結果が含まれる。``audio_path`` は除去済み。
+
+    Raises:
+        HTTPException: 処理中に例外が発生した場合（HTTP 500）。
     """
     from decompose import decompose
 
@@ -851,7 +888,18 @@ async def api_decompose(
 
 @app.post("/api/wav/info")
 async def api_wav_info(file: UploadFile = File(...)):
-    """WAVファイルの詳細情報を返す"""
+    """WAV ファイルのメタデータと詳細情報を返す。
+
+    Args:
+        file: 情報を取得する WAV ファイル（マルチパートアップロード）。
+
+    Returns:
+        サンプルレート・ビット深度・チャンネル数・ファイルサイズ等を含む
+        ``JSONResponse``。
+
+    Raises:
+        HTTPException: ファイル読み取りや解析に失敗した場合（HTTP 500）。
+    """
     from wav_optimize import get_wav_info
     src = _save_upload(file)
     try:
@@ -867,7 +915,20 @@ async def api_wav_optimize(
     target_sr: int = Form(44100),
     target_bit_depth: int = Form(16),
 ):
-    """WAVファイルを最適化して容量を削減"""
+    """WAV ファイルをリサンプリング・ビット深度変換して容量を削減する。
+
+    Args:
+        file: 最適化する WAV ファイル（マルチパートアップロード）。
+        target_sr: 目標サンプルレート（Hz）。デフォルト 44100。
+        target_bit_depth: 目標ビット深度（16 または 24）。デフォルト 16。
+
+    Returns:
+        最適化結果の ``JSONResponse``。``download_url`` キーにダウンロード
+        リンクを含み、``path`` キーは除去済み。
+
+    Raises:
+        HTTPException: 最適化処理中に例外が発生した場合（HTTP 500）。
+    """
     from wav_optimize import optimize_wav
     src = _save_upload(file)
     try:
@@ -888,7 +949,12 @@ async def api_wav_optimize(
 
 @app.get("/api/assistant/status")
 async def api_assistant_status():
-    """ローカル/クラウドLLMの利用可否を返す"""
+    """ローカル/クラウド LLM バックエンドの利用可否を確認して返す。
+
+    Returns:
+        ``{"local": bool, "cloud": bool, "local_models": list[str]}`` 形式の
+        ``JSONResponse``。詳細は ``check_availability`` を参照。
+    """
     from music_assistant import check_availability
     return JSONResponse(check_availability())
 

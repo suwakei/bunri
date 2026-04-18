@@ -561,6 +561,10 @@ class AudioEngine {
         });
     }
 
+    /**
+     * OfflineAudioContext を使って全トラックをミックスダウンする。
+     * @returns ミックス済み AudioBuffer。コンテンツが空の場合は null
+     */
     async mixdown(): Promise<AudioBuffer | null> {
         this.init();
         const duration = this.getTotalDuration();
@@ -613,12 +617,21 @@ class AudioEngine {
         return await offCtx.startRendering();
     }
 
+    /**
+     * 全トラックをミックスダウンして WAV Blob を返す。
+     * @returns WAV 形式の Blob。コンテンツが空の場合は null
+     */
     async exportWav(): Promise<Blob | null> {
         const buffer = await this.mixdown();
         if (!buffer) return null;
         return this._audioBufferToWav(buffer);
     }
 
+    /**
+     * AudioBuffer を PCM 16bit WAV フォーマットの Blob に変換する。
+     * @param buffer - 変換元の AudioBuffer
+     * @returns audio/wav の Blob
+     */
     _audioBufferToWav(buffer: AudioBuffer): Blob {
         const numChannels = buffer.numberOfChannels;
         const sampleRate = buffer.sampleRate;

@@ -4,30 +4,68 @@
 import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 import engine from './engine';
 
+/**
+ * DAW グローバル状態のコンテキスト型定義。
+ * AudioEngine への参照と、UI 全体で共有される状態・操作関数を提供する。
+ */
 export interface DawContextType {
+    /** WebAudio 再生エンジンのシングルトン */
     engine: typeof engine;
+    /** ステータスバーに表示するメッセージ */
     status: string;
+    /** @param msg - 表示するステータスメッセージ */
     setStatus: (msg: string) => void;
+    /** ヒントテキスト */
     hint: string;
+    /** @param msg - 表示するヒントメッセージ */
     setHint: (msg: string) => void;
+    /** プログレスバーの表示フラグ */
     showProgress: boolean;
+    /** @param v - true でプログレスバーを表示 */
     setShowProgress: (v: boolean) => void;
+    /**
+     * 非同期処理をプログレス表示付きで実行するラッパー。
+     * @param msg - 処理中に表示するステータスメッセージ
+     * @param fn - 実行する非同期関数
+     */
     withProgress: (msg: string, fn: () => Promise<void>) => Promise<void>;
+    /** ウェルカムガイドの表示フラグ */
     showGuide: boolean;
+    /** @param v - true でガイドを表示 */
     setShowGuide: (v: boolean) => void;
+    /** ガイドを閉じ、localStorage に既読フラグを保存する */
     closeGuide: () => void;
+    /** 現在の BPM */
     bpm: number;
+    /**
+     * BPM を更新し、AudioEngine にも反映する。
+     * @param v - 新しい BPM 値（文字列または数値）
+     */
     setBpm: (v: string | number) => void;
+    /** 1 小節あたりの拍数 */
     beatsPerBar: number;
+    /**
+     * 拍子を更新し、AudioEngine にも反映する。
+     * @param v - 新しい拍数（文字列または数値）
+     */
     setBeatsPerBar: (v: string | number) => void;
+    /** 再生中フラグ */
     isPlaying: boolean;
+    /** @param v - true で再生中状態にする */
     setIsPlaying: (v: boolean) => void;
+    /** メトロノーム有効フラグ */
     metronomeEnabled: boolean;
+    /** @param v - true でメトロノームを有効にする */
     setMetronomeEnabled: (v: boolean) => void;
+    /** トラックリスト変更を検知するためのバージョンカウンタ */
     trackVersion: number;
+    /** trackVersion をインクリメントしてトラックリストの再レンダリングをトリガーする */
     bumpTracks: () => void;
+    /** PianoRoll コンポーネントへの ref */
     pianoRollRef: React.MutableRefObject<any>;
+    /** Timeline コンポーネントへの ref */
     timelineRef: React.MutableRefObject<any>;
+    /** AutomationEditor コンポーネントへの ref */
     automationRef: React.MutableRefObject<any>;
 }
 
