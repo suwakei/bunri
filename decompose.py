@@ -19,7 +19,20 @@ STEM_GM_CANDIDATES = {
 
 
 def _freq_to_midi(freq):
-    """周波数からMIDIノート番号を返す"""
+    """周波数をMIDIノート番号に変換する。
+
+    A4=440Hz を基準とした12平均律で計算し、ピアノ鍵盤範囲（21〜108）外の
+    値は None を返す。
+
+    Args:
+        freq (float): 変換する周波数（Hz）。0以下または NaN の場合は None を返す。
+
+    Returns:
+        int | None: MIDIノート番号（21〜108）。範囲外または無効な入力の場合は None。
+
+    Note:
+        内部で numpy をインポートする（遅延インポート）。
+    """
     import numpy as np
     if freq <= 0 or np.isnan(freq):
         return None
@@ -31,19 +44,56 @@ def _freq_to_midi(freq):
 
 
 def _midi_to_note(midi):
-    """MIDIノート番号から(音名, オクターブ)を返す"""
+    """MIDIノート番号を音名とオクターブのタプルに変換する。
+
+    Args:
+        midi (int): MIDIノート番号（0〜127）。
+
+    Returns:
+        tuple[str, int]: ``(音名, オクターブ)`` のタプル。
+            音名は "C", "C#", … "B" のいずれか。
+            オクターブは MIDI 規約に基づき中央 C（60）が C4 となるよう算出。
+
+    Raises:
+        IndexError: ``midi`` が 0〜127 の範囲外の場合。
+    """
     note_name = NOTE_NAMES[midi % 12]
     octave = (midi // 12) - 1
     return note_name, octave
 
 
 def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4, engine="basic_pitch"):
-    """
-    ポリフォニック（多声）ピッチ検出。
-    デフォルトは Spotify Basic Pitch。engine='stft' で旧STFT実装にフォールバック。
+    """音声ファイルからポリフォニック（多声）ピッチを検出してノートリストを返す。
+
+    デフォルトエンジンは Spotify Basic Pitch（``engine="basic_pitch"``）。
+    Basic Pitch が利用できない環境では ``engine="stft"`` で旧STFT実装に
+    フォールバックできる。
+
+    Args:
+        file_path (str): 解析する音声ファイルのパス（WAV推奨）。
+        bpm (int, optional): テンポ（BPM）。ステップ長の計算に使用。デフォルト 120。
+        sensitivity (float, optional): 検出感度（0〜1）。大きいほど多くのノートを検出。
+            デフォルト 0.5。
+        max_notes_per_frame (int, optional): 1フレームあたりの最大同時発音数。
+            ``engine="stft"`` の場合のみ有効。デフォルト 4。
+        engine (str, optional): 使用するエンジン。``"basic_pitch"``（デフォルト）または
+            ``"stft"``。
 
     Returns:
-        list of {"note": str, "octave": int, "step": int, "length": int, "velocity": int}
+        list[dict]: ノートイベントのリスト。各要素は以下のキーを持つ辞書。
+
+        .. code-block:: python
+
+            {
+                "note":     str,   # 音名 ("C", "C#", … "B")
+                "octave":   int,   # オクターブ番号
+                "step":     int,   # 16分音符単位の開始位置
+                "length":   int,   # 16分音符単位の長さ（最小 1）
+                "velocity": int,   # ベロシティ（1〜127）
+            }
+
+    Note:
+        重いモジュール（``basic_pitch`` または ``librosa``）は関数内で遅延インポートする。
     """
     if engine == "stft":
         return _transcribe_stft(file_path, bpm, sensitivity, max_notes_per_frame)
@@ -51,7 +101,27 @@ def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_fra
 
 
 def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
-    """Spotify Basic Pitch によるポリフォニックピッチ検出"""
+    """Spotify Basic Pitch を使ってポリフォニックピッチ検出を行う内部実装。
+
+    Basic Pitch の ICASSP 2022 モデルを用いてオンセット閾値とフレーム閾値を
+    ``sensitivity`` から算出し、ノートイベントをピアノロール形式のリストに変換する。
+
+    Args:
+        file_path (str): 解析する音声ファイルのパス。
+        bpm (int, optional): テンポ（BPM）。ステップ長計算に使用。デフォルト 120。
+        sensitivity (float, optional): 検出感度（0〜1）。デフォルト 0.5。
+
+    Returns:
+        list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
+            ステップ順にソート済み。
+
+    Raises:
+        ImportError: ``basic_pitch`` パッケージがインストールされていない場合。
+
+    Note:
+        ``TF_CPP_MIN_LOG_LEVEL`` 環境変数を "3" に設定して TensorFlow の
+        ログ出力を抑制する（既に設定済みの場合は上書きしない）。
+    """
     import os
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
@@ -95,7 +165,26 @@ def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
 
 
 def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4):
-    """旧STFT実装のフォールバック（Basic Pitchが使えない環境用）"""
+    """STFT スペクトル解析によるポリフォニックピッチ検出の旧実装。
+
+    Basic Pitch が使えない環境向けのフォールバック。
+    n_fft=4096 の高解像度 STFT を用いて各フレームで倍音ピークを検出し、
+    連続するフレームをまとめてノートイベントに変換する。
+
+    Args:
+        file_path (str): 解析する音声ファイルのパス。
+        bpm (int, optional): テンポ（BPM）。ステップ長計算に使用。デフォルト 120。
+        sensitivity (float, optional): 検出感度（0〜1）。デフォルト 0.5。
+        max_notes_per_frame (int, optional): 1フレームあたりの最大同時発音数。
+            デフォルト 4。
+
+    Returns:
+        list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
+
+    Note:
+        サンプルレートは 22050 Hz に固定。``numpy`` および ``librosa`` を
+        関数内で遅延インポートする。
+    """
     import numpy as np
     import librosa
 

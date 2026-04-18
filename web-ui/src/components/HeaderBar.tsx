@@ -5,6 +5,16 @@ import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 
+/**
+ * プロジェクトデータの構造を表すインターフェース。
+ * API の `/api/project/save` / `/api/project/load/{name}` でやり取りされる。
+ *
+ * @property bpm - テンポ（Beats Per Minute）
+ * @property beatsPerBar - 1小節あたりの拍数
+ * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
+ * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
+ * @property automation - オートメーションポイントのシリアライズ済みデータ
+ */
 interface ProjectData {
     bpm?: number;
     beatsPerBar?: number;
@@ -13,6 +23,12 @@ interface ProjectData {
     automation?: Record<string, unknown>;
 }
 
+/**
+ * 再生時間（秒）を `M:SS.d` 形式の文字列に変換する。
+ *
+ * @param t - 変換する時間（秒、0 以上の実数）
+ * @returns `"分:秒.1桁"` 形式の時刻文字列（例: `"1:03.5"`）
+ */
 function formatTime(t: number): string {
     const min = Math.floor(t / 60);
     const sec = (t % 60).toFixed(1);

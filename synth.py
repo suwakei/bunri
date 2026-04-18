@@ -166,7 +166,15 @@ def _fluidsynth_render(notes, bpm, program, volume, sr=44100):
 
 
 def _note_to_midi(note_name, octave):
-    """音名+オクターブからMIDIノート番号を返す"""
+    """音名とオクターブからMIDIノート番号を計算して返す。
+
+    Args:
+        note_name (str): 音名。NOTE_NAMES に含まれる文字列（例: "C", "A#"）。
+        octave (int): オクターブ番号（MIDI規格: C4=60 に基づく）。
+
+    Returns:
+        int: MIDIノート番号（0〜127）。
+    """
     idx = NOTE_NAMES.index(note_name)
     return (octave + 1) * 12 + idx
 
@@ -174,6 +182,19 @@ def _note_to_midi(note_name, octave):
 # ---- 基本波形 ----
 
 def _oscillator(freq, duration, sr, waveform):
+    """指定した波形の基本オシレーターを生成する。
+
+    Args:
+        freq (float): 生成する音の周波数（Hz）。
+        duration (float): 生成する長さ（秒）。
+        sr (int): サンプルレート（Hz）。
+        waveform (str): 波形の種類。"sine" / "square" / "sawtooth" / "triangle"
+            のいずれか。未知の値の場合は "sine" にフォールバックする。
+
+    Returns:
+        numpy.ndarray: 形状 (int(sr * duration),) の float64 配列。
+            振幅は -1.0〜1.0 の範囲。
+    """
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
     if waveform == "sine":
         return np.sin(2 * np.pi * freq * t)
@@ -189,6 +210,24 @@ def _oscillator(freq, duration, sr, waveform):
 # ---- ADSRエンベロープ ----
 
 def _adsr(length, sr, attack, decay, sustain, release):
+    """ADSRエンベロープを生成する。
+
+    Attack → Decay → Sustain → Release の順に振幅が変化する
+    エンベロープ配列を返す。各フェーズが length を超える場合は
+    残りサンプル数に合わせてクリップされる。
+
+    Args:
+        length (int): エンベロープの総サンプル数。
+        sr (int): サンプルレート（Hz）。
+        attack (float): アタック時間（秒）。0 から 1 まで線形補間。
+        decay (float): ディケイ時間（秒）。1 から sustain まで線形補間。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。sustain から 0 まで線形補間。
+
+    Returns:
+        numpy.ndarray: 形状 (length,) の float64 配列。
+            値は 0.0〜1.0 の範囲。
+    """
     env = np.zeros(length)
     a = int(attack * sr)
     d = int(decay * sr)
@@ -222,7 +261,22 @@ NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def note_to_freq(note_name, octave):
-    """音名とオクターブから周波数を計算（A4=440Hz基準）"""
+    """音名とオクターブから周波数を計算する（A4=440Hz基準）。
+
+    A4 を 440 Hz として、半音ごとに 2^(1/12) 倍のスケールで
+    平均律の周波数を算出する。
+
+    Args:
+        note_name (str): 音名。NOTE_NAMES に含まれる文字列
+            （"C", "C#", "D", ... "B" のいずれか）。
+        octave (int): オクターブ番号（A4 が octave=4 に対応）。
+
+    Returns:
+        float: 対応する周波数（Hz）。
+
+    Raises:
+        ValueError: note_name が NOTE_NAMES に含まれない場合。
+    """
     if note_name not in NOTE_NAMES:
         raise ValueError(f"不正な音名: {note_name}")
     semitone = NOTE_NAMES.index(note_name) - 9  # A=0基準
@@ -233,7 +287,23 @@ def note_to_freq(note_name, octave):
 # ---- 単音シンセ ----
 
 def _instrument_synth(freq, duration, sr, instrument):
-    """楽器プリセットによる音声合成"""
+    """楽器プリセットを使ったモデルベース音声合成を行う。
+
+    各楽器ごとに専用アルゴリズムで波形を生成する。
+    未知の instrument 名が渡された場合は _oscillator にフォールバックする。
+
+    Args:
+        freq (float): 音の基本周波数（Hz）。
+        duration (float): 生成する長さ（秒）。
+        sr (int): サンプルレート（Hz）。
+        instrument (str): 楽器プリセット名。
+            "guitar" / "violin" / "chorus" / "flute" / "bass" / "organ"
+            のいずれか。それ以外は _oscillator の waveform として解釈される。
+
+    Returns:
+        numpy.ndarray: 生成した波形サンプル列（float64）。
+            長さは int(sr * duration)。ADSRエンベロープは未適用。
+    """
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
     phase = 2 * np.pi * freq * t
 
@@ -309,7 +379,30 @@ INSTRUMENTS = list(INSTRUMENT_ADSR.keys())
 
 def synth_note(note_name, octave, duration, waveform, volume,
                attack, decay, sustain, release, instrument=None):
-    """単音を生成（instrument指定時は楽器プリセットを使用）"""
+    """単音WAVファイルを合成して一時ファイルに保存する。
+
+    instrument が指定されている場合は _instrument_synth と INSTRUMENT_ADSR の
+    プリセットパラメータを使用する。呼び出し元が ADSR パラメータをデフォルト値
+    （attack=0.01, decay=0.1, sustain=0.6, release=0.2）のまま渡した場合は
+    プリセット値を優先する。
+
+    Args:
+        note_name (str): 音名（"C"〜"B"、シャープ記号含む）。
+        octave (int): オクターブ番号。
+        duration (float): 音符の長さ（秒）。
+        waveform (str): instrument が None のときに使用する波形
+            （"sine" / "square" / "sawtooth" / "triangle"）。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+        attack (float): アタック時間（秒）。
+        decay (float): ディケイ時間（秒）。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。
+        instrument (str | None): 楽器プリセット名。None の場合は
+            waveform パラメータが使用される。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+    """
     sr = 44100
     freq = note_to_freq(note_name, int(octave))
     if instrument and instrument in INSTRUMENT_ADSR:
