@@ -22,18 +22,22 @@ interface FxParamDef {
 
 // ---- GM楽器カテゴリ ----
 const GM_CATEGORIES: Record<string, number[]> = {
-    'ピアノ': [0,1,2,4,5,6,8],
-    'クロマチックパーカッション': [9,10,11,12,13],
-    'ギター': [24,25,26,27,28,29,30],
-    'ベース': [32,33,34,35,36,38],
-    'ストリングス': [40,41,42,43,44,45,46,48,49,50],
-    'コーラス/ボイス': [52,53,54],
-    'ブラス': [56,57,58,59,60,61,62],
+    'ピアノ': [0,1,2,3,4,5,6,7,8],
+    'クロマチックパーカッション': [9,10,11,12,13,14,15],
+    'オルガン': [16,17,18,19,20,21,22,23],
+    'ギター': [24,25,26,27,28,29,30,31],
+    'ベース': [32,33,34,35,36,37,38,39],
+    'ストリングス': [40,41,42,43,44,45,46,47],
+    'アンサンブル/合唱': [48,49,50,51,52,53,54,55],
+    'ブラス': [56,57,58,59,60,61,62,63],
     'リード/サックス': [64,65,66,67],
-    '木管': [68,69,70,71,72,73,74,75,79],
-    'シンセリード': [80,81],
-    'シンセパッド': [88,89,90,91,95],
-    'エスニック/その他': [104,105,108,110,114],
+    '木管': [68,69,70,71,72,73,74,75,76,77,78,79],
+    'シンセリード': [80,81,82,83,84,85,86,87],
+    'シンセパッド': [88,89,90,91,92,93,94,95],
+    'シンセ効果音': [96,97,98,99,100,101,102,103],
+    'エスニック': [104,105,106,107,108,109,110,111],
+    'パーカッション': [112,113,114,115,116,117,118,119],
+    'サウンドエフェクト': [120,121,122,123,124,125,126,127],
 };
 
 // ---- FXパラメータ定義 ----
@@ -149,12 +153,31 @@ function SynthPanel() {
                 <label>簡易楽器</label>
                 <select value={instrument} onChange={e => setInstrument(e.target.value)}>
                     <option value="">基本波形（下で選択）</option>
-                    <option value="guitar">ギター</option>
-                    <option value="violin">バイオリン</option>
-                    <option value="chorus">コーラス</option>
-                    <option value="flute">フルート</option>
-                    <option value="bass">ベース</option>
-                    <option value="organ">オルガン</option>
+                    <optgroup label="鍵盤">
+                        <option value="piano">ピアノ</option>
+                        <option value="epiano">エレピ</option>
+                        <option value="organ">オルガン</option>
+                    </optgroup>
+                    <optgroup label="弦">
+                        <option value="guitar">ギター</option>
+                        <option value="pluck">プラック</option>
+                        <option value="violin">バイオリン</option>
+                        <option value="strings">ストリングス</option>
+                        <option value="bass">ベース</option>
+                    </optgroup>
+                    <optgroup label="管">
+                        <option value="flute">フルート</option>
+                        <option value="brass">ブラス</option>
+                    </optgroup>
+                    <optgroup label="ボイス">
+                        <option value="chorus">コーラス（デチューン）</option>
+                        <option value="choir">合唱（男女混声）</option>
+                    </optgroup>
+                    <optgroup label="シンセ">
+                        <option value="lead">シンセリード</option>
+                        <option value="pad">シンセパッド</option>
+                        <option value="bell">シンセベル</option>
+                    </optgroup>
                 </select>
                 <label>波形</label>
                 <select value={wave} onChange={e => setWave(e.target.value)}>

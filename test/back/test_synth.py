@@ -39,6 +39,39 @@ class TestSynthNote:
             result = synth_note('E', 3, 0.3, 'sine', 0.5, 0.01, 0.1, 0.6, 0.2, instrument=inst)
             assert Path(result).exists()
 
+    def test_新しい楽器プリセットで生成できる(self):
+        """追加した楽器（コーラス・ストリングス・ピアノ等）のテスト"""
+        from synth import synth_note
+        new_instruments = [
+            'chorus', 'choir', 'strings', 'brass',
+            'piano', 'epiano', 'pad', 'bell', 'pluck', 'lead', 'organ',
+        ]
+        for inst in new_instruments:
+            result = synth_note('A', 4, 0.3, 'sine', 0.5, 0.01, 0.1, 0.6, 0.2, instrument=inst)
+            assert Path(result).exists(), f"{inst} の生成に失敗"
+            data, sr = load_audio(result)
+            assert len(data) > 0, f"{inst} の出力が空"
+
+    def test_全楽器プリセットが音声データを出力する(self):
+        """全ての楽器プリセットで有音の出力があること（無音ではない）"""
+        import numpy as np
+        from synth import synth_note, INSTRUMENTS
+        for inst in INSTRUMENTS:
+            result = synth_note('C', 4, 0.2, 'sine', 0.7, 0.01, 0.05, 0.6, 0.1, instrument=inst)
+            data, _ = load_audio(result)
+            rms = np.sqrt(np.mean(data ** 2))
+            assert rms > 0.001, f"{inst} の出力がほぼ無音 (RMS={rms})"
+
+    def test_INSTRUMENTS_ADSRに新楽器が含まれる(self):
+        from synth import INSTRUMENT_ADSR
+        for inst in ['choir', 'strings', 'brass', 'piano', 'epiano', 'pad', 'bell', 'pluck', 'lead']:
+            assert inst in INSTRUMENT_ADSR, f"{inst} のADSR定義がない"
+            a, d, s, r = INSTRUMENT_ADSR[inst]
+            assert 0 <= a <= 2, f"{inst} のattackが範囲外"
+            assert 0 <= d <= 2, f"{inst} のdecayが範囲外"
+            assert 0 <= s <= 1, f"{inst} のsustainが範囲外"
+            assert 0 <= r <= 3, f"{inst} のreleaseが範囲外"
+
 
 class TestDrumMachine:
     def test_8ビートパターンを生成(self):
