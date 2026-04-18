@@ -306,6 +306,11 @@ class AudioEngine {
         if (this.metronomeEnabled) this._startMetronome();
     }
 
+    /**
+     * 指定トラック単体を再生する（他のトラックは無音）。
+     * @param trackId - 再生するトラック ID
+     * @param fromSec - 再生開始位置（秒）。null の場合は現在の playOffset を使用
+     */
     playSingleTrack(trackId: number | string, fromSec: number | null = null): void {
         this.init();
         if (this.isPlaying) this.stop();
@@ -320,6 +325,10 @@ class AudioEngine {
         if (this.metronomeEnabled) this._startMetronome();
     }
 
+    /**
+     * トラック内のクリップとピアノノートを AudioContext にスケジュールする。
+     * @param track - スケジュール対象の Track
+     */
     _scheduleTrack(track: Track): void {
         for (const clip of track.clips) {
             const source = this.ctx!.createBufferSource();
@@ -338,6 +347,11 @@ class AudioEngine {
         this._scheduleTrackNotes(track);
     }
 
+    /**
+     * トラックのピアノノートをオシレータでスケジュールする。
+     * アタック/サステイン/リリースによるエンベロープを適用する。
+     * @param track - ノートをスケジュールするトラック
+     */
     _scheduleTrackNotes(track: Track): void {
         if (!track.pianoNotes || track.pianoNotes.length === 0) return;
         const stepSec = 60 / this.bpm / 4;
@@ -384,6 +398,10 @@ class AudioEngine {
         }
     }
 
+    /**
+     * 再生を停止し、再生位置を先頭（0 秒）に戻す。
+     * アクティブな全ソースノードを停止する。
+     */
     stop(): void {
         this.isPlaying = false;
         this.soloTrackId = null;
@@ -395,6 +413,10 @@ class AudioEngine {
         this.playOffset = 0;
     }
 
+    /**
+     * 再生を一時停止し、現在の再生位置を playOffset に保存する。
+     * 再度 play() を呼ぶと同位置から再開できる。
+     */
     pause(): void {
         if (!this.isPlaying) return;
         this.playOffset += this.ctx!.currentTime - this.startTime;
@@ -406,11 +428,19 @@ class AudioEngine {
         this._stopMetronome();
     }
 
+    /**
+     * 現在の再生位置を秒単位で返す。
+     * @returns 再生中はリアルタイム位置、停止中は playOffset
+     */
     getCurrentTime(): number {
         if (!this.isPlaying) return this.playOffset;
         return this.playOffset + (this.ctx!.currentTime - this.startTime);
     }
 
+    /**
+     * 全トラックを通じた総再生時間を返す。
+     * @returns 最も遅く終わるクリップ/ノートの終端時刻（秒）
+     */
     getTotalDuration(): number {
         let maxEnd = 0;
         const stepSec = 60 / this.bpm / 4;
@@ -420,6 +450,11 @@ class AudioEngine {
         return maxEnd;
     }
 
+    /**
+     * 指定トラックの再生時間を返す。
+     * @param trackId - 対象トラック ID
+     * @returns トラック内の最終クリップ/ノート終端時刻（秒）。トラックが存在しない場合は 0
+     */
     getTrackDuration(trackId: number | string): number {
         const track = this.getTrack(trackId);
         if (!track) return 0;

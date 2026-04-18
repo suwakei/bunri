@@ -490,11 +490,25 @@ async def api_mixer(
     files: list[UploadFile] = File(...),
     config: str = Form("{}"),
 ):
-    """
-    config JSON: {
-        "tracks": [{"vol": 0, "pan": 0, "mute": false}, ...],
-        "master_vol": 0
-    }
+    """最大4トラックをミキシングして WAV で返す。
+
+    Args:
+        files: ミキシングするトラックファイルのリスト（最大4件）。
+        config: ミキサー設定の JSON 文字列。形式::
+
+                {
+                    "tracks": [{"vol": 0, "pan": 0, "mute": false}, ...],
+                    "master_vol": 0
+                }
+
+            ``vol`` は dB 調整量、``pan`` は -1.0〜1.0、``master_vol`` は
+            マスター出力の dB 調整量。
+
+    Returns:
+        ミキシング後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ミキシング処理中に ``ValueError`` が発生した場合（HTTP 400）。
     """
     from mixer import mix_tracks
 
@@ -529,7 +543,21 @@ async def api_analyze(
     sensitivity: float = Form(0.5),
     engine: str = Form("basic_pitch"),
 ):
-    """WAVファイルを解析してピアノロール用ノートデータを返す。engine: basic_pitch | pyin"""
+    """WAV ファイルを解析してピアノロール用ノートデータを返す。
+
+    Args:
+        file: 解析する音声ファイル（マルチパートアップロード）。
+        bpm: プロジェクトの BPM（ノートのステップ計算に使用）。
+        sensitivity: ノート検出感度（0.0〜1.0）。高いほど微弱な音も検出する。
+        engine: 解析エンジン（``"basic_pitch"`` または ``"pyin"``）。
+
+    Returns:
+        ノートデータのリスト（JSON）。各要素は
+        ``{"note": str, "octave": int, "step": int, "length": int}`` の形式。
+
+    Raises:
+        HTTPException: 解析処理中に例外が発生した場合（HTTP 500）。
+    """
     from analyze import analyze_wav
     src = _save_upload(file)
     try:
@@ -547,6 +575,20 @@ async def api_separate(
     model: str = Form("htdemucs"),
     two_stems: str = Form("true"),
 ):
+    """Demucs で音源を分離してダウンロードリンクを返す。
+
+    Args:
+        file: 分離対象の音声ファイル（マルチパートアップロード）。
+        model: Demucs モデル名（例: ``"htdemucs"``）。
+        two_stems: ``"true"`` でボーカル/伴奏の2ステム分離、
+            ``"false"`` で4ステム（vocals/drums/bass/other）分離。
+
+    Returns:
+        ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+
+    Raises:
+        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+    """
     from separate import separate_audio, STEM_LABELS
     src = _save_upload(file)
     out_dir = str(RESULTS_DIR / "separated")
@@ -577,7 +619,20 @@ async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
 ):
-    """深層分離: htdemucs_6s + otherの再分離で最大限レイヤー分割"""
+    """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
+
+    ``other`` ステムを再帰的に再分離することで最大限レイヤーを分割する。
+
+    Args:
+        file: 分離対象の音声ファイル（マルチパートアップロード）。
+        depth: 再帰分離の深さ（1 = 追加再分離なし）。
+
+    Returns:
+        ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+
+    Raises:
+        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+    """
     from separate import deep_separate, STEM_LABELS
     src = _save_upload(file)
     out_dir = str(RESULTS_DIR / "separated")
