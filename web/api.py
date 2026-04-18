@@ -967,9 +967,24 @@ async def api_assistant_chat(
     mode: str = Form("auto"),
     context_notes: str = Form("[]"),
 ):
-    """
-    自然言語プロンプトからピアノロール用ノートを提案。
-    mode: "auto" (自動ルーティング) | "local" (Ollama) | "cloud" (Claude)
+    """自然言語プロンプトからピアノロール用ノートを LLM で提案する。
+
+    Args:
+        prompt: ユーザーの作曲リクエスト文字列
+            （例: ``"4小節のポップスコード進行"``）。
+        bpm: プロジェクトの BPM（LLM への文脈として渡す）。
+        bars: 生成する小節数。
+        mode: バックエンド選択（``"auto"`` / ``"local"`` / ``"cloud"``）。
+            ``"auto"`` ではプロンプト内容に応じて自動ルーティングされる。
+        context_notes: 既存ノートの JSON 文字列（継続性のための文脈）。
+
+    Returns:
+        ``{"notes": list, "explanation": str, "backend": str}`` 形式の
+        ``JSONResponse``。
+
+    Raises:
+        HTTPException: プロンプトが空または ``mode`` が無効な場合（HTTP 400）。
+        HTTPException: LLM 接続・パース処理に失敗した場合（HTTP 500）。
     """
     from music_assistant import suggest_notes, AssistantError
     try:

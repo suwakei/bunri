@@ -71,6 +71,11 @@ export interface DawContextType {
 
 const DawContext = createContext<DawContextType | null>(null);
 
+/**
+ * DAW グローバル状態を提供する Context プロバイダー。
+ * アプリのルートを囲むことで、配下の全コンポーネントが `useDaw()` で状態にアクセスできる。
+ * @param children - プロバイダーで囲む子コンポーネント
+ */
 export function DawProvider({ children }: { children: ReactNode }) {
     const [status, setStatus] = useState('準備完了');
     const [hint, setHint] = useState('');
@@ -135,6 +140,11 @@ export function DawProvider({ children }: { children: ReactNode }) {
     return <DawContext.Provider value={value}>{children}</DawContext.Provider>;
 }
 
+/**
+ * DAW グローバル状態にアクセスするカスタムフック。
+ * `DawProvider` の外で呼ぶとエラーをスローする。
+ * @returns DawContextType — DAW の全状態と操作関数
+ */
 export function useDaw(): DawContextType {
     const ctx = useContext(DawContext);
     if (!ctx) throw new Error('useDaw must be used within DawProvider');
