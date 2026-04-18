@@ -462,6 +462,12 @@ class AudioEngine {
         return this._getTrackEndTime(track, stepSec);
     }
 
+    /**
+     * トラック内の全クリップ・ノートの終端時刻の最大値を返す内部メソッド。
+     * @param track - 対象トラック
+     * @param stepSec - 1 ステップの秒数（60 / bpm / 4）
+     * @returns 最終終端時刻（秒）
+     */
     _getTrackEndTime(track: Track, stepSec: number): number {
         let maxEnd = 0;
         for (const clip of track.clips) {
@@ -473,6 +479,10 @@ class AudioEngine {
         return maxEnd;
     }
 
+    /**
+     * メトロノームのスケジューリングループを開始する。
+     * 50 ms 間隔でビートをルックアヘッドしてクリック音を鳴らす。
+     */
     _startMetronome(): void {
         this._stopMetronome();
         const beatSec = 60 / this.bpm;
@@ -491,6 +501,7 @@ class AudioEngine {
         this.metronomeInterval = setInterval(schedule, 50);
     }
 
+    /** メトロノームのインターバルタイマーを停止・クリアする。 */
     _stopMetronome(): void {
         if (this.metronomeInterval) {
             clearInterval(this.metronomeInterval);
@@ -498,6 +509,11 @@ class AudioEngine {
         }
     }
 
+    /**
+     * 指定タイミングに短いクリック音（サイン波）を再生する。
+     * @param when - 再生タイミング（AudioContext の絶対時刻、秒）
+     * @param freq - クリック音の周波数（Hz）。拍頭は 1500 Hz、それ以外は 1000 Hz
+     */
     _playClick(when: number, freq: number): void {
         const osc = this.ctx!.createOscillator();
         const gain = this.ctx!.createGain();
@@ -511,6 +527,10 @@ class AudioEngine {
         osc.stop(when + 0.05);
     }
 
+    /**
+     * マイク入力を開始し、MediaRecorder で録音バッファを蓄積する。
+     * @returns マイクの権限取得と録音開始が完了したら resolve する Promise
+     */
     async startRecording(): Promise<void> {
         this.init();
         this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -523,6 +543,10 @@ class AudioEngine {
         this.isRecording = true;
     }
 
+    /**
+     * 録音を停止し、録音データをデコードして AudioBuffer を返す。
+     * @returns デコード済みの録音データを含む AudioBuffer
+     */
     stopRecording(): Promise<AudioBuffer> {
         return new Promise((resolve) => {
             this.mediaRecorder!.onstop = async () => {

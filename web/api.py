@@ -660,7 +660,19 @@ async def api_deep_separate(
 async def api_deep_analyze(
     file: UploadFile = File(...),
 ):
-    """音声ファイルの詳細解析（周波数帯域・楽器構成・テンポ等）"""
+    """音声ファイルの詳細解析レポートをマークダウンで返す。
+
+    周波数帯域エネルギー分布・推定楽器構成・テンポ・スペクトル特徴を含む。
+
+    Args:
+        file: 解析する音声ファイル（マルチパートアップロード）。
+
+    Returns:
+        マークダウン形式のレポートを含む JSON（``{"report": str}``）。
+
+    Raises:
+        HTTPException: 解析処理中に例外が発生した場合（HTTP 500）。
+    """
     from deep_separate import analyze_audio
     src = _save_upload(file)
     try:
@@ -672,6 +684,17 @@ async def api_deep_analyze(
 
 @app.get("/api/download/{filename}")
 async def api_download(filename: str):
+    """results/ ディレクトリ内のファイルをダウンロードとして返す。
+
+    Args:
+        filename: ダウンロードするファイル名（パス区切り文字を含まない）。
+
+    Returns:
+        指定ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``filename`` が results/ に存在しない場合（HTTP 404）。
+    """
     path = RESULTS_DIR / filename
     if not path.exists():
         raise HTTPException(404, "ファイルが見つかりません")
@@ -689,6 +712,22 @@ async def api_overlay(
     base_vol_db: float = Form(0),
     overlay_vol_db: float = Form(0),
 ):
+    """2つの音声ファイルを合成（オーバーレイ）して WAV で返す。
+
+    Args:
+        base_file: ベースとなる音声ファイル（マルチパートアップロード）。
+        overlay_file: 重ねる音声ファイル（マルチパートアップロード）。
+        offset_sec: オーバーレイを開始するオフセット時間（秒）。
+        base_vol_db: ベース音声の音量調整（dB）。
+        overlay_vol_db: オーバーレイ音声の音量調整（dB）。
+
+    Returns:
+        合成後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+        ダウンロードファイル名は ``overlay_result.wav``。
+
+    Raises:
+        HTTPException: 合成処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     from overlay import overlay_audio
     base_path = _save_upload(base_file)
     over_path = _save_upload(overlay_file)
@@ -709,6 +748,21 @@ async def api_convert(
     file: UploadFile = File(...),
     bitrate: int = Form(192),
 ):
+    """音声・動画ファイルを指定フォーマットに変換して返す。
+
+    Args:
+        target: 変換先フォーマット（``"wav"`` または ``"mp3"``）。
+        file: 変換元ファイル（マルチパートアップロード）。MP4/動画・音声ファイルを想定。
+        bitrate: MP3 出力時のビットレート（kbps）。WAV 変換時は無視。
+
+    Returns:
+        変換後のファイルの ``FileResponse``（``audio/wav`` または ``audio/mp3``）。
+        ダウンロードファイル名は ``converted.<target>``。
+
+    Raises:
+        HTTPException: ``target`` が ``"wav"``/``"mp3"`` 以外の場合（HTTP 400）。
+        HTTPException: 変換処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     from convert import mp4_to_wav, mp4_to_mp3
     src = _save_upload(file)
     try:
