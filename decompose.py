@@ -37,20 +37,65 @@ def _midi_to_note(midi):
     return note_name, octave
 
 
-def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4):
+def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4, engine="basic_pitch"):
     """
     ポリフォニック（多声）ピッチ検出。
-    STFTのスペクトルピークから複数の同時発音を検出する。
-
-    Args:
-        file_path: WAVファイルパス
-        bpm: テンポ
-        sensitivity: 検出感度（0〜1）
-        max_notes_per_frame: 1フレームあたりの最大同時発音数
+    デフォルトは Spotify Basic Pitch。engine='stft' で旧STFT実装にフォールバック。
 
     Returns:
         list of {"note": str, "octave": int, "step": int, "length": int, "velocity": int}
     """
+    if engine == "stft":
+        return _transcribe_stft(file_path, bpm, sensitivity, max_notes_per_frame)
+    return _transcribe_basic_pitch(file_path, bpm, sensitivity)
+
+
+def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
+    """Spotify Basic Pitch によるポリフォニックピッチ検出"""
+    import os
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
+    from basic_pitch.inference import predict
+    from basic_pitch import ICASSP_2022_MODEL_PATH
+
+    onset_threshold = max(0.3, 1.0 - sensitivity * 0.7)
+    note_threshold = max(0.2, 0.8 - sensitivity * 0.6)
+
+    _, _, note_events = predict(
+        file_path,
+        model_or_model_path=ICASSP_2022_MODEL_PATH,
+        onset_threshold=onset_threshold,
+        frame_threshold=note_threshold,
+        minimum_note_length=40,
+        midi_tempo=bpm,
+    )
+
+    step_sec = 60.0 / bpm / 4
+
+    notes = []
+    for start_sec, end_sec, midi_note, amplitude, _ in note_events:
+        midi_note = int(midi_note)
+        if midi_note < 21 or midi_note > 108:
+            continue
+        note_name = NOTE_NAMES[midi_note % 12]
+        octave = (midi_note // 12) - 1
+        step = max(0, int(round(start_sec / step_sec)))
+        length = max(1, int(round((end_sec - start_sec) / step_sec)))
+        velocity = min(127, max(1, int(amplitude * 127)))
+        notes.append({
+            "note": note_name,
+            "octave": octave,
+            "step": step,
+            "length": length,
+            "velocity": velocity,
+        })
+
+    notes.sort(key=lambda n: (n["step"], n["octave"], n["note"]))
+    return notes
+
+
+def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4):
+    """旧STFT実装のフォールバック（Basic Pitchが使えない環境用）"""
     import numpy as np
     import librosa
 

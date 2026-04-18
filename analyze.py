@@ -1,24 +1,14 @@
-"""WAV音声解析 → ピアノロール用ノートデータ変換"""
-import numpy as np
+"""WAV音声解析 → ピアノロール用ノートデータ変換
 
+デフォルトは Spotify Basic Pitch（ポリフォニック対応ニューラルネット）。
+engine='pyin' で従来の librosa pyin（単音メロディ向け）にフォールバック可能。
+"""
+import numpy as np
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
-def _freq_to_note(freq):
-    """周波数から(音名, オクターブ, MIDIノート番号)を返す"""
-    if freq <= 0 or np.isnan(freq):
-        return None
-    midi = 69 + 12 * np.log2(freq / 440.0)
-    midi_round = int(round(midi))
-    if midi_round < 24 or midi_round > 96:  # C2〜C7の範囲外は無視
-        return None
-    note_name = NOTE_NAMES[midi_round % 12]
-    octave = (midi_round // 12) - 1
-    return note_name, octave, midi_round
-
-
-def analyze_wav(file_path, bpm=120, sensitivity=0.5):
+def analyze_wav(file_path, bpm=120, sensitivity=0.5, engine="basic_pitch"):
     """
     WAVファイルを解析してピアノロール用のノートデータを返す。
 
@@ -26,16 +16,65 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5):
         file_path: WAVファイルのパス
         bpm: テンポ（16分音符のステップ計算に使用）
         sensitivity: ピッチ検出の感度（0〜1, 低いほど厳密）
+        engine: 検出エンジン ("basic_pitch" | "pyin")
 
     Returns:
         list of {"note": str, "octave": int, "step": int, "length": int}
     """
+    if engine == "pyin":
+        return _analyze_pyin(file_path, bpm, sensitivity)
+    return _analyze_basic_pitch(file_path, bpm, sensitivity)
+
+
+def _analyze_basic_pitch(file_path, bpm=120, sensitivity=0.5):
+    """Spotify Basic Pitch によるポリフォニックピッチ検出"""
+    import os
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
+    from basic_pitch.inference import predict
+    from basic_pitch import ICASSP_2022_MODEL_PATH
+
+    # onset/note の閾値を sensitivity から計算
+    # sensitivity 高い → 閾値低い → 検出ノート数が増える
+    onset_threshold = max(0.3, 1.0 - sensitivity * 0.7)
+    note_threshold = max(0.2, 0.8 - sensitivity * 0.6)
+
+    model_output, midi_data, note_events = predict(
+        file_path,
+        model_or_model_path=ICASSP_2022_MODEL_PATH,
+        onset_threshold=onset_threshold,
+        frame_threshold=note_threshold,
+        minimum_note_length=40,  # ms
+        midi_tempo=bpm,
+    )
+
+    step_sec = 60.0 / bpm / 4  # 16分音符
+
+    notes = []
+    for start_sec, end_sec, midi_note, amplitude, _ in note_events:
+        if midi_note < 24 or midi_note > 96:  # C1〜C7
+            continue
+        note_name = NOTE_NAMES[int(midi_note) % 12]
+        octave = (int(midi_note) // 12) - 1
+        step = max(0, int(round(start_sec / step_sec)))
+        length = max(1, int(round((end_sec - start_sec) / step_sec)))
+        notes.append({
+            "note": note_name,
+            "octave": octave,
+            "step": step,
+            "length": length,
+        })
+
+    notes.sort(key=lambda n: (n["step"], n["octave"], n["note"]))
+    return notes
+
+
+def _analyze_pyin(file_path, bpm=120, sensitivity=0.5):
+    """librosa pyin による単音メロディ向けピッチ検出（フォールバック用）"""
     import librosa
 
-    # 音声読み込み（モノラル、22050Hz）
     y, sr = librosa.load(file_path, sr=22050, mono=True)
 
-    # ピッチ検出（pyin: 確率的YIN）
     fmin = librosa.note_to_hz('C2')
     fmax = librosa.note_to_hz('C7')
     f0, voiced_flag, voiced_prob = librosa.pyin(
@@ -43,13 +82,9 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5):
         frame_length=2048, hop_length=512,
     )
 
-    # 時間軸
     times = librosa.times_like(f0, sr=sr, hop_length=512)
-
-    # 16分音符のステップ長（秒）
     step_sec = 60.0 / bpm / 4
 
-    # フレームごとのピッチをノートに変換
     threshold = max(0.1, sensitivity * 0.8)
     notes = []
     current_note = None
@@ -62,7 +97,6 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5):
         if is_voiced and prob >= threshold and not np.isnan(freq):
             info = _freq_to_note(freq)
             if info is None:
-                # 範囲外 → 無音扱い
                 if current_note:
                     notes.append(_make_note(current_note, current_start, t, step_sec))
                     current_note = None
@@ -70,31 +104,38 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5):
 
             note_name, octave, midi = info
 
-            # 同じノートが続いている場合はまとめる
             if current_note and abs(midi - current_midi) <= 1:
-                continue  # 同じノート（半音以内の揺れは許容）
+                continue
             else:
-                # 新しいノート
                 if current_note:
                     notes.append(_make_note(current_note, current_start, t, step_sec))
                 current_note = (note_name, octave)
                 current_start = t
                 current_midi = midi
         else:
-            # 無声区間
             if current_note:
                 notes.append(_make_note(current_note, current_start, t, step_sec))
                 current_note = None
 
-    # 最後のノート
     if current_note:
         end_t = times[-1] if len(times) > 0 else current_start + step_sec
         notes.append(_make_note(current_note, current_start, end_t, step_sec))
 
-    # 極端に短いノート（1ステップ未満）を除去
     notes = [n for n in notes if n["length"] >= 1]
-
     return notes
+
+
+def _freq_to_note(freq):
+    """周波数から(音名, オクターブ, MIDIノート番号)を返す"""
+    if freq <= 0 or np.isnan(freq):
+        return None
+    midi = 69 + 12 * np.log2(freq / 440.0)
+    midi_round = int(round(midi))
+    if midi_round < 24 or midi_round > 96:
+        return None
+    note_name = NOTE_NAMES[midi_round % 12]
+    octave = (midi_round // 12) - 1
+    return note_name, octave, midi_round
 
 
 def _make_note(note_info, start_time, end_time, step_sec):

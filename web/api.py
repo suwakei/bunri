@@ -361,12 +361,13 @@ async def api_analyze(
     file: UploadFile = File(...),
     bpm: float = Form(120),
     sensitivity: float = Form(0.5),
+    engine: str = Form("basic_pitch"),
 ):
-    """WAVファイルを解析してピアノロール用ノートデータを返す"""
+    """WAVファイルを解析してピアノロール用ノートデータを返す。engine: basic_pitch | pyin"""
     from analyze import analyze_wav
     src = _save_upload(file)
     try:
-        notes = analyze_wav(str(src), bpm=bpm, sensitivity=sensitivity)
+        notes = analyze_wav(str(src), bpm=bpm, sensitivity=sensitivity, engine=engine)
         return JSONResponse(notes)
     except Exception as e:
         raise HTTPException(500, str(e))
