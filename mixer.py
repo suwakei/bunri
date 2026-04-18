@@ -6,7 +6,21 @@ from audio_utils import sec_to_samples, save_tmp, to_stereo
 
 
 def _resample(data, sr_from, sr_to):
-    """簡易リサンプル（線形補間）"""
+    """線形補間による簡易リサンプルを行う。
+
+    サンプルレートが同一の場合は入力をそのまま返す（コピーなし）。
+    異なる場合は np.interp による線形補間でリサンプルする。
+
+    Args:
+        data: 入力波形配列（numpy.ndarray）。
+            モノラル shape=(N,) またはステレオ shape=(N, 2)。
+        sr_from: 入力のサンプルレート（Hz）。正の整数。
+        sr_to: 出力のサンプルレート（Hz）。正の整数。
+
+    Returns:
+        numpy.ndarray: リサンプル後の波形配列。
+            sr_from == sr_to の場合は入力と同じオブジェクトを返す。
+    """
     if sr_from == sr_to:
         return data
     orig_len = len(data)
@@ -22,7 +36,21 @@ def _resample(data, sr_from, sr_to):
 
 
 def _apply_pan(data, pan):
-    """等パワーパンニング適用"""
+    """等パワーパンニングをステレオ信号に適用する。
+
+    モノラルの場合は先にステレオに変換する。
+    cos/sin カーブを使った等パワーパンニングにより、中央でもレベルが
+    下がらないパン特性を実現する。
+
+    Args:
+        data: 入力波形配列（numpy.ndarray）。
+            モノラル shape=(N,) またはステレオ shape=(N, 2)。
+        pan: パン位置。-1.0（完全左）〜 0.0（中央）〜 1.0（完全右）の実数。
+
+    Returns:
+        numpy.ndarray: パン適用後のステレオ配列（shape=(N, 2)）。
+            入力のコピーに対してゲインを適用して返す。
+    """
     data = to_stereo(data)
     angle = (pan + 1) / 2 * (np.pi / 2)
     result = data.copy()
@@ -38,7 +66,42 @@ def mix_tracks(
     file4, vol4, pan4, mute4,
     master_vol,
 ):
-    """最大4トラックをミックスダウン"""
+    """最大 4 トラックをミックスダウンして 1 つの WAV ファイルに書き出す。
+
+    各トラックに対して音量・パン・ミュートを適用した後、加算合成する。
+    サンプルレートが異なるトラックは最初に読み込んだトラックのサンプルレートに
+    合わせてリサンプルする。最後にマスターボリュームを適用する。
+
+    Args:
+        file1: トラック 1 のファイルパスまたはファイルオブジェクト。None でスキップ。
+        vol1: トラック 1 の音量（dB）。正値で増幅、負値で減衰。
+        pan1: トラック 1 のパン位置。-1.0（左）〜 0.0（中央）〜 1.0（右）。
+        mute1: トラック 1 のミュートフラグ（bool）。True でスキップ。
+        file2: トラック 2 のファイルパスまたはファイルオブジェクト。None でスキップ。
+        vol2: トラック 2 の音量（dB）。
+        pan2: トラック 2 のパン位置。
+        mute2: トラック 2 のミュートフラグ（bool）。
+        file3: トラック 3 のファイルパスまたはファイルオブジェクト。None でスキップ。
+        vol3: トラック 3 の音量（dB）。
+        pan3: トラック 3 のパン位置。
+        mute3: トラック 3 のミュートフラグ（bool）。
+        file4: トラック 4 のファイルパスまたはファイルオブジェクト。None でスキップ。
+        vol4: トラック 4 の音量（dB）。
+        pan4: トラック 4 のパン位置。
+        mute4: トラック 4 のミュートフラグ（bool）。
+        master_vol: マスターボリューム（dB）。全トラック合成後に適用される。
+
+    Returns:
+        str: 保存された一時 WAV ファイルのパス。ステレオ 2 チャンネル。
+            サンプルレートは最初に読み込まれたトラックのサンプルレートに準拠。
+
+    Raises:
+        ValueError: ミュートされていないトラックが 1 つもない場合
+            （全トラックが None またはミュート）。
+
+    Side Effects:
+        results/edited/ にファイルを書き出す。
+    """
     tracks = [
         (file1, vol1, pan1, mute1),
         (file2, vol2, pan2, mute2),

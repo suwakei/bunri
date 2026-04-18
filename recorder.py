@@ -8,7 +8,26 @@ from audio_utils import save_tmp
 
 
 def save_recording(audio_tuple):
-    """Gradio の Audio コンポーネントから受け取った録音データを WAV で保存"""
+    """Gradio の Audio コンポーネントから受け取った録音データを WAV で保存する。
+
+    Gradio の Audio コンポーネントは (sample_rate, numpy_array) のタプルを
+    返す。整数型（int16 / int32）の場合は float32 に正規化してから保存する。
+
+    Args:
+        audio_tuple: Gradio の Audio コンポーネントが返す録音データ。
+            (sample_rate: int, data: numpy.ndarray) の形式のタプル。
+            data の dtype は float32、int16、int32 のいずれかを想定。
+            None の場合は ValueError を送出する。
+
+    Returns:
+        str: 保存された一時 WAV ファイルのパス（results/edited/ 以下）。
+
+    Raises:
+        ValueError: audio_tuple が None の場合。
+
+    Side Effects:
+        results/edited/ に WAV ファイルを書き出す。
+    """
     if audio_tuple is None:
         raise ValueError("録音データがありません")
 
