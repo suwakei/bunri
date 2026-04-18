@@ -3,17 +3,33 @@
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
 
+/**
+ * ピアノロール上の1ノートを表すデータ構造。
+ * ステップ単位（16分音符基準）で位置と長さを保持する。
+ */
 export interface PianoNote {
+    /** 音名（例: "C", "C#", "D"） */
     note: string;
+    /** オクターブ番号（0〜8） */
     octave: number;
+    /** 開始ステップ（16分音符単位） */
     step: number;
+    /** 音長（ステップ数） */
     length: number;
 }
 
+/**
+ * タイムライン上に配置された音声クリップ。
+ * デコード済み AudioBuffer とタイムライン上の開始位置を持つ。
+ */
 export interface Clip {
+    /** デコード済み PCM バッファ */
     buffer: AudioBuffer;
+    /** タイムライン上の開始位置（秒） */
     offset: number;
+    /** クリップの表示名 */
     name: string;
+    /** クリップの長さ（秒） */
     duration: number;
 }
 

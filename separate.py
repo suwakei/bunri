@@ -180,17 +180,37 @@ def deep_separate(
     jobs: int = 1,
     recursive_depth: int = 1,
 ) -> dict[str, Path]:
-    """
-    最大限のレイヤー分離を行う。
+    """htdemucs_6s による2段階レイヤー分離を行い、有音ステムのパスを返す。
 
-    1. htdemucs_6s で6ステムに分離
-    2. 「other」ステムをさらに htdemucs_6s で再分離
-    3. 再分離で得た無音ステムは除外
+    以下の手順で最大限のレイヤー分離を試みる:
+
+    1. ``htdemucs_6s`` で入力を6ステムに分離。
+    2. ``recursive_depth > 0`` の場合、「other」ステムをさらに
+       ``htdemucs_6s`` で再分離し ``"other_<stem>"`` として追加。
+    3. 無音（RMS < -50 dBFS）のステムは結果から除外する。
+    4. 再分離後のサブステムが全て無音の場合は元の ``"other"`` を残す。
 
     Args:
-        recursive_depth: otherを再帰分離する深さ（1=1回再分離, 0=再分離なし）
+        input_path (str): 入力音声ファイルのパス。
+        output_dir (str, optional): 出力先ルートディレクトリ。デフォルト ``"output"``。
+        mp3_output (bool, optional): ``True`` → MP3 出力。``False`` → WAV 出力。
+            デフォルト ``False``。
+        segment (int, optional): Demucs の処理セグメント長（秒）。デフォルト 7。
+        jobs (int, optional): 並列ジョブ数。デフォルト 1。
+        recursive_depth (int, optional): ``"other"`` ステムを再帰分離する深さ。
+            ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
+
     Returns:
-        {"stem_name": Path, ...} — 可変数のステム（無音除外済み）
+        dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
+            無音ステムは除外済み。再分離ステムのキーは ``"other_vocals"`` 等の
+            形式でプレフィックスされる。
+
+    Raises:
+        RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
+
+    Note:
+        第2段の出力は ``<output_dir>/deep_other/`` に書き出される。
+        進捗ログは標準出力に直接出力される。
     """
     input_p = Path(input_path)
 

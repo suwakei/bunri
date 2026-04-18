@@ -31,7 +31,17 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 
 def _save_upload(upload: UploadFile) -> Path:
-    """アップロードファイルを保存してパスを返す"""
+    """アップロードされたファイルを uploads/ に保存し、保存先パスを返す。
+
+    Args:
+        upload: FastAPI の ``UploadFile`` オブジェクト。``filename`` 属性が必要。
+
+    Returns:
+        保存先ファイルの絶対パス（``UPLOAD_DIR / upload.filename``）。
+
+    Raises:
+        OSError: ファイルの書き込みに失敗した場合。
+    """
     dst = UPLOAD_DIR / upload.filename
     with open(dst, "wb") as f:
         shutil.copyfileobj(upload.file, f)
