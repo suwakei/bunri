@@ -6,7 +6,33 @@ from audio_utils import sec_to_samples, save_tmp, to_stereo
 
 
 def overlay_audio(base_obj, overlay_obj, offset_sec, base_vol_db, overlay_vol_db):
-    """ベース音源の上にオーバーレイ音源を重ねる"""
+    """ベース音源の上にオーバーレイ音源を重ねて合成する。
+
+    ベース音源を基準に、オーバーレイ音源を指定したオフセット位置から
+    加算合成する。サンプルレートが異なる場合はオーバーレイをベースに
+    合わせて線形補間でリサンプルする。両音源はステレオに統一される。
+
+    Args:
+        base_obj: ベース（背景）音源のパスまたはファイルオブジェクト。None 不可。
+        overlay_obj: オーバーレイ（前景）音源のパスまたはファイルオブジェクト。
+            None 不可。
+        offset_sec: オーバーレイを配置する開始位置（秒）。0 以上の実数。
+            ベース音源の先頭からの時間オフセット。
+        base_vol_db: ベース音源の音量調整量（dB）。
+            0.0 で変化なし、正値で増幅、負値で減衰。
+        overlay_vol_db: オーバーレイ音源の音量調整量（dB）。
+            0.0 で変化なし、正値で増幅、負値で減衰。
+
+    Returns:
+        str: 保存された一時 WAV ファイルのパス。出力サンプルレートは
+            ベース音源のサンプルレートに準拠する。ステレオ 2 チャンネル。
+
+    Raises:
+        ValueError: base_obj または overlay_obj が None の場合。
+
+    Side Effects:
+        results/edited/ にファイルを書き出す。
+    """
     if base_obj is None or overlay_obj is None:
         raise ValueError("ベースとオーバーレイの両方のファイルをアップロードしてください")
 

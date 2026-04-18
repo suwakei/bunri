@@ -31,7 +31,17 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 
 def _save_upload(upload: UploadFile) -> Path:
-    """アップロードファイルを保存してパスを返す"""
+    """アップロードされたファイルを uploads/ に保存し、保存先パスを返す。
+
+    Args:
+        upload: FastAPI の ``UploadFile`` オブジェクト。``filename`` 属性が必要。
+
+    Returns:
+        保存先ファイルの絶対パス（``UPLOAD_DIR / upload.filename``）。
+
+    Raises:
+        OSError: ファイルの書き込みに失敗した場合。
+    """
     dst = UPLOAD_DIR / upload.filename
     with open(dst, "wb") as f:
         shutil.copyfileobj(upload.file, f)
@@ -42,7 +52,14 @@ def _save_upload(upload: UploadFile) -> Path:
 
 @app.get("/")
 async def index():
-    """React SPA のエントリーポイントを返す"""
+    """React SPA のエントリーポイント HTML を返す。
+
+    Returns:
+        ``web/static/dist/index.html`` の ``FileResponse``。
+
+    Raises:
+        HTTPException: ビルド済み ``index.html`` が存在しない場合（HTTP 500）。
+    """
     react_index = DIST_DIR / "index.html"
     if not react_index.exists():
         raise HTTPException(500, "React build が見つかりません。`cd web-ui && npm run build` を実行してください")
@@ -51,11 +68,27 @@ async def index():
 
 @app.get("/help")
 async def help_page():
+    """ヘルプページ（React SPA）を返す。
+
+    Returns:
+        ``index()`` の結果と同一の ``FileResponse``。
+
+    Raises:
+        HTTPException: React ビルドが存在しない場合（HTTP 500）。
+    """
     return await index()
 
 
 @app.get("/tools")
 async def tools_page():
+    """ツールページ（React SPA）を返す。
+
+    Returns:
+        ``index()`` の結果と同一の ``FileResponse``。
+
+    Raises:
+        HTTPException: React ビルドが存在しない場合（HTTP 500）。
+    """
     return await index()
 
 
@@ -73,6 +106,22 @@ async def api_synth_note(
     sustain: float = Form(0.7),
     release: float = Form(0.3),
 ):
+    """単音をソフトウェアシンセで合成して WAV で返す。
+
+    Args:
+        note: 音名（例: ``"A"``, ``"C#"``）。
+        octave: オクターブ（2〜6）。
+        duration: 発音時間（秒）。
+        waveform: 波形種別（``"sine"`` / ``"square"`` / ``"sawtooth"`` / ``"triangle"``）。
+        volume: 出力音量（0.0〜1.0）。
+        attack: ADSR アタック時間（秒）。
+        decay: ADSR ディケイ時間（秒）。
+        sustain: ADSR サスティンレベル（0.0〜1.0）。
+        release: ADSR リリース時間（秒）。
+
+    Returns:
+        合成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+    """
     from synth import synth_note
     path = synth_note(note, octave, duration, waveform, volume,
                       attack, decay, sustain, release)
@@ -92,6 +141,27 @@ async def api_synth_sequence(
     instrument: str = Form(""),
     gm_program: str = Form(""),
 ):
+    """ステップシーケンサーでノートシーケンスを合成して WAV で返す。
+
+    Args:
+        notes_json: ノートリストを表す JSON 文字列
+            （例: ``'[{"note":"C","octave":4,"step":0,"length":4}]'``）。
+        bpm: テンポ（BPM）。
+        waveform: 波形種別（``"sine"`` / ``"square"`` 等）。GM 楽器指定時は無視。
+        volume: 出力音量（0.0〜1.0）。
+        attack: ADSR アタック時間（秒）。
+        decay: ADSR ディケイ時間（秒）。
+        sustain: ADSR サスティンレベル（0.0〜1.0）。
+        release: ADSR リリース時間（秒）。
+        instrument: 楽器カテゴリ名（FluidSynth 使用時）。空文字で波形合成。
+        gm_program: GM プログラム番号（文字列）。``"none"`` または空文字で波形合成。
+
+    Returns:
+        合成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``notes_json`` のパースや合成処理に失敗した場合（HTTP 400）。
+    """
     from synth import step_sequencer
     try:
         inst = instrument if instrument else None
@@ -106,7 +176,12 @@ async def api_synth_sequence(
 
 @app.get("/api/gm-instruments")
 async def api_gm_instruments():
-    """利用可能なGM楽器リストを返す"""
+    """利用可能な GM 楽器一覧を返す。
+
+    Returns:
+        プログラム番号と楽器名のリスト（JSON）。各要素は
+        ``{"program": int, "name": str}`` の形式。
+    """
     from synth import GM_INSTRUMENTS
     return [{"program": k, "name": v} for k, v in GM_INSTRUMENTS.items()]
 
@@ -118,6 +193,20 @@ async def api_drum(
     bars: int = Form(4),
     volume: float = Form(0.7),
 ):
+    """ドラムマシンでパターンを生成し WAV で返す。
+
+    Args:
+        pattern: ドラムパターン名（例: ``"8ビート"``, ``"4つ打ち"``, ``"ボサノバ"``）。
+        bpm: テンポ（BPM）。
+        bars: 生成する小節数。
+        volume: 出力音量（0.0〜1.0）。
+
+    Returns:
+        生成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: 不明なパターン名などで失敗した場合（HTTP 400）。
+    """
     from synth import drum_machine
     try:
         path = drum_machine(pattern, bpm, bars, volume)
@@ -133,6 +222,17 @@ async def api_metronome(
     bars: int = Form(8),
     volume: float = Form(0.7),
 ):
+    """メトロノーム音声を生成して WAV で返す。
+
+    Args:
+        bpm: テンポ（BPM）。
+        beats_per_bar: 1小節あたりの拍数（例: ``4`` = 4/4拍子）。
+        bars: 生成する小節数。
+        volume: クリック音の音量（0.0〜1.0）。
+
+    Returns:
+        生成したメトロノーム WAV ファイルの ``FileResponse``（``audio/wav``）。
+    """
     from metronome import generate_metronome
     path = generate_metronome(bpm, beats_per_bar, bars, volume)
     return FileResponse(path, media_type="audio/wav")
@@ -146,6 +246,23 @@ async def api_effect(
     file: UploadFile = File(...),
     params: str = Form("{}"),
 ):
+    """指定したエフェクトを音声ファイルに適用して WAV で返す。
+
+    Args:
+        effect_name: 適用するエフェクト名。以下が有効:
+            ``eq``, ``compressor``, ``reverb``, ``delay``, ``volume``,
+            ``normalize``, ``fade_in``, ``fade_out``, ``pan``, ``reverse``,
+            ``pitch_shift``, ``time_stretch``, ``speed``。
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        params: エフェクトパラメータの JSON 文字列（例: ``'{"db": -3}'``）。
+
+    Returns:
+        エフェクト適用後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``effect_name`` が無効な場合（HTTP 400）。
+        HTTPException: エフェクト処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     import effects
     import edit
     import pitch_time
@@ -188,6 +305,23 @@ async def api_edit(
     file: UploadFile = File(...),
     params: str = Form("{}"),
 ):
+    """指定した編集操作を音声ファイルに適用して WAV で返す。
+
+    Args:
+        action: 編集操作名。以下が有効:
+            ``trim``, ``cut``, ``copy_range``, ``silence``, ``loop``。
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        params: 操作パラメータの JSON 文字列
+            （例: ``'{"start": 1.0, "end": 5.0}'``）。
+
+    Returns:
+        編集後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+        複数ファイルを返す操作（``split_at`` 等）では先頭ファイルを返す。
+
+    Raises:
+        HTTPException: ``action`` が無効な場合（HTTP 400）。
+        HTTPException: パラメータ不足または値域エラーの場合（HTTP 400）。
+    """
     import edit
 
     src = _save_upload(file)
@@ -221,7 +355,23 @@ async def api_batch_edit(
     action: str = Form("trim"),
     params: str = Form("{}"),
 ):
-    """複数ファイルに同じ編集操作を一括適用"""
+    """複数ファイルに同じ編集操作を一括適用して結果をダウンロードリンクで返す。
+
+    Args:
+        files: 処理対象の音声ファイルリスト（マルチパートアップロード）。
+        action: 編集操作名（``trim``, ``cut``, ``silence``, ``loop``,
+            ``reverse``, ``normalize``, ``volume``, ``fade_in``, ``fade_out``,
+            ``speed`` のいずれか）。
+        params: 操作パラメータの JSON 文字列。
+
+    Returns:
+        各ファイルの処理結果リスト（JSON）。各要素は
+        ``{"filename": str, "url": str | None, "status": str}`` の形式。
+        個別ファイルのエラーは ``status`` に記録され、全体は 200 で返る。
+
+    Raises:
+        HTTPException: ``action`` が無効な場合（HTTP 400）。
+    """
     import edit
     p = json.loads(params)
 
@@ -268,7 +418,23 @@ async def api_batch_effects(
     effect_name: str = Form("normalize"),
     params: str = Form("{}"),
 ):
-    """複数ファイルに同じエフェクトを一括適用"""
+    """複数ファイルに同じエフェクトを一括適用して結果をダウンロードリンクで返す。
+
+    Args:
+        files: 処理対象の音声ファイルリスト（マルチパートアップロード）。
+        effect_name: エフェクト名（``eq``, ``compressor``, ``reverb``, ``delay``,
+            ``volume``, ``normalize``, ``fade_in``, ``fade_out``, ``pan``,
+            ``reverse``, ``pitch_shift``, ``time_stretch``, ``speed`` のいずれか）。
+        params: エフェクトパラメータの JSON 文字列。
+
+    Returns:
+        各ファイルの処理結果リスト（JSON）。各要素は
+        ``{"filename": str, "url": str | None, "status": str}`` の形式。
+        個別ファイルのエラーは ``status`` に記録され、全体は 200 で返る。
+
+    Raises:
+        HTTPException: ``effect_name`` が無効な場合（HTTP 400）。
+    """
     import effects
     import edit
     import pitch_time
@@ -324,11 +490,25 @@ async def api_mixer(
     files: list[UploadFile] = File(...),
     config: str = Form("{}"),
 ):
-    """
-    config JSON: {
-        "tracks": [{"vol": 0, "pan": 0, "mute": false}, ...],
-        "master_vol": 0
-    }
+    """最大4トラックをミキシングして WAV で返す。
+
+    Args:
+        files: ミキシングするトラックファイルのリスト（最大4件）。
+        config: ミキサー設定の JSON 文字列。形式::
+
+                {
+                    "tracks": [{"vol": 0, "pan": 0, "mute": false}, ...],
+                    "master_vol": 0
+                }
+
+            ``vol`` は dB 調整量、``pan`` は -1.0〜1.0、``master_vol`` は
+            マスター出力の dB 調整量。
+
+    Returns:
+        ミキシング後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ミキシング処理中に ``ValueError`` が発生した場合（HTTP 400）。
     """
     from mixer import mix_tracks
 
@@ -363,7 +543,21 @@ async def api_analyze(
     sensitivity: float = Form(0.5),
     engine: str = Form("basic_pitch"),
 ):
-    """WAVファイルを解析してピアノロール用ノートデータを返す。engine: basic_pitch | pyin"""
+    """WAV ファイルを解析してピアノロール用ノートデータを返す。
+
+    Args:
+        file: 解析する音声ファイル（マルチパートアップロード）。
+        bpm: プロジェクトの BPM（ノートのステップ計算に使用）。
+        sensitivity: ノート検出感度（0.0〜1.0）。高いほど微弱な音も検出する。
+        engine: 解析エンジン（``"basic_pitch"`` または ``"pyin"``）。
+
+    Returns:
+        ノートデータのリスト（JSON）。各要素は
+        ``{"note": str, "octave": int, "step": int, "length": int}`` の形式。
+
+    Raises:
+        HTTPException: 解析処理中に例外が発生した場合（HTTP 500）。
+    """
     from analyze import analyze_wav
     src = _save_upload(file)
     try:
@@ -381,6 +575,20 @@ async def api_separate(
     model: str = Form("htdemucs"),
     two_stems: str = Form("true"),
 ):
+    """Demucs で音源を分離してダウンロードリンクを返す。
+
+    Args:
+        file: 分離対象の音声ファイル（マルチパートアップロード）。
+        model: Demucs モデル名（例: ``"htdemucs"``）。
+        two_stems: ``"true"`` でボーカル/伴奏の2ステム分離、
+            ``"false"`` で4ステム（vocals/drums/bass/other）分離。
+
+    Returns:
+        ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+
+    Raises:
+        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+    """
     from separate import separate_audio, STEM_LABELS
     src = _save_upload(file)
     out_dir = str(RESULTS_DIR / "separated")
@@ -411,7 +619,20 @@ async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
 ):
-    """深層分離: htdemucs_6s + otherの再分離で最大限レイヤー分割"""
+    """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
+
+    ``other`` ステムを再帰的に再分離することで最大限レイヤーを分割する。
+
+    Args:
+        file: 分離対象の音声ファイル（マルチパートアップロード）。
+        depth: 再帰分離の深さ（1 = 追加再分離なし）。
+
+    Returns:
+        ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+
+    Raises:
+        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+    """
     from separate import deep_separate, STEM_LABELS
     src = _save_upload(file)
     out_dir = str(RESULTS_DIR / "separated")
@@ -439,7 +660,19 @@ async def api_deep_separate(
 async def api_deep_analyze(
     file: UploadFile = File(...),
 ):
-    """音声ファイルの詳細解析（周波数帯域・楽器構成・テンポ等）"""
+    """音声ファイルの詳細解析レポートをマークダウンで返す。
+
+    周波数帯域エネルギー分布・推定楽器構成・テンポ・スペクトル特徴を含む。
+
+    Args:
+        file: 解析する音声ファイル（マルチパートアップロード）。
+
+    Returns:
+        マークダウン形式のレポートを含む JSON（``{"report": str}``）。
+
+    Raises:
+        HTTPException: 解析処理中に例外が発生した場合（HTTP 500）。
+    """
     from deep_separate import analyze_audio
     src = _save_upload(file)
     try:
@@ -451,6 +684,17 @@ async def api_deep_analyze(
 
 @app.get("/api/download/{filename}")
 async def api_download(filename: str):
+    """results/ ディレクトリ内のファイルをダウンロードとして返す。
+
+    Args:
+        filename: ダウンロードするファイル名（パス区切り文字を含まない）。
+
+    Returns:
+        指定ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``filename`` が results/ に存在しない場合（HTTP 404）。
+    """
     path = RESULTS_DIR / filename
     if not path.exists():
         raise HTTPException(404, "ファイルが見つかりません")
@@ -468,6 +712,22 @@ async def api_overlay(
     base_vol_db: float = Form(0),
     overlay_vol_db: float = Form(0),
 ):
+    """2つの音声ファイルを合成（オーバーレイ）して WAV で返す。
+
+    Args:
+        base_file: ベースとなる音声ファイル（マルチパートアップロード）。
+        overlay_file: 重ねる音声ファイル（マルチパートアップロード）。
+        offset_sec: オーバーレイを開始するオフセット時間（秒）。
+        base_vol_db: ベース音声の音量調整（dB）。
+        overlay_vol_db: オーバーレイ音声の音量調整（dB）。
+
+    Returns:
+        合成後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+        ダウンロードファイル名は ``overlay_result.wav``。
+
+    Raises:
+        HTTPException: 合成処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     from overlay import overlay_audio
     base_path = _save_upload(base_file)
     over_path = _save_upload(overlay_file)
@@ -488,6 +748,21 @@ async def api_convert(
     file: UploadFile = File(...),
     bitrate: int = Form(192),
 ):
+    """音声・動画ファイルを指定フォーマットに変換して返す。
+
+    Args:
+        target: 変換先フォーマット（``"wav"`` または ``"mp3"``）。
+        file: 変換元ファイル（マルチパートアップロード）。MP4/動画・音声ファイルを想定。
+        bitrate: MP3 出力時のビットレート（kbps）。WAV 変換時は無視。
+
+    Returns:
+        変換後のファイルの ``FileResponse``（``audio/wav`` または ``audio/mp3``）。
+        ダウンロードファイル名は ``converted.<target>``。
+
+    Raises:
+        HTTPException: ``target`` が ``"wav"``/``"mp3"`` 以外の場合（HTTP 400）。
+        HTTPException: 変換処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     from convert import mp4_to_wav, mp4_to_mp3
     src = _save_upload(file)
     try:
@@ -507,7 +782,17 @@ async def api_convert(
 
 @app.post("/api/project/save")
 async def save_project(data: str = Form(...)):
-    """タイムラインのクリップ配置やオートメーションデータを保存"""
+    """プロジェクトデータを JSON ファイルとして保存する。
+
+    タイムラインのクリップ配置・オートメーション等を含む JSON 文字列を
+    ``projects/project_<timestamp>.json`` として保存する。
+
+    Args:
+        data: 保存するプロジェクトデータの JSON 文字列。
+
+    Returns:
+        保存されたファイル名を含む辞書（例: ``{"filename": "project_1234567890.json"}``）。
+    """
     project_dir = ROOT / "projects"
     project_dir.mkdir(exist_ok=True)
     import time
@@ -518,6 +803,12 @@ async def save_project(data: str = Form(...)):
 
 @app.get("/api/project/list")
 async def list_projects():
+    """保存済みプロジェクトのファイル名一覧を返す。
+
+    Returns:
+        プロジェクトファイル名（文字列）のリスト（JSON）。
+        新しいものが先頭になるよう降順ソートされる。
+    """
     project_dir = ROOT / "projects"
     project_dir.mkdir(exist_ok=True)
     files = sorted(project_dir.glob("*.json"), reverse=True)
@@ -526,6 +817,17 @@ async def list_projects():
 
 @app.get("/api/project/load/{name}")
 async def load_project(name: str):
+    """指定した名前のプロジェクトを読み込んで JSON で返す。
+
+    Args:
+        name: 読み込むプロジェクトファイル名（拡張子 ``.json`` を含む）。
+
+    Returns:
+        プロジェクトデータの ``JSONResponse``。
+
+    Raises:
+        HTTPException: 指定したファイルが projects/ に存在しない場合（HTTP 404）。
+    """
     project_dir = ROOT / "projects"
     path = project_dir / name
     if not path.exists():
@@ -541,9 +843,19 @@ async def api_decompose(
     bpm: int = Form(0),
     sensitivity: float = Form(0.5),
 ):
-    """
-    WAVファイルを分離→ピッチ解析→楽器推定まで一括処理。
-    bpm=0 の場合は自動検出。
+    """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
+
+    Args:
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        bpm: プロジェクトの BPM。``0`` を指定すると自動検出する。
+        sensitivity: ノート検出感度（0.0〜1.0）。
+
+    Returns:
+        分解結果の ``JSONResponse``。各ステムに ``audio_url`` と
+        ノートデータ・楽器推定結果が含まれる。``audio_path`` は除去済み。
+
+    Raises:
+        HTTPException: 処理中に例外が発生した場合（HTTP 500）。
     """
     from decompose import decompose
 
@@ -576,7 +888,18 @@ async def api_decompose(
 
 @app.post("/api/wav/info")
 async def api_wav_info(file: UploadFile = File(...)):
-    """WAVファイルの詳細情報を返す"""
+    """WAV ファイルのメタデータと詳細情報を返す。
+
+    Args:
+        file: 情報を取得する WAV ファイル（マルチパートアップロード）。
+
+    Returns:
+        サンプルレート・ビット深度・チャンネル数・ファイルサイズ等を含む
+        ``JSONResponse``。
+
+    Raises:
+        HTTPException: ファイル読み取りや解析に失敗した場合（HTTP 500）。
+    """
     from wav_optimize import get_wav_info
     src = _save_upload(file)
     try:
@@ -592,7 +915,20 @@ async def api_wav_optimize(
     target_sr: int = Form(44100),
     target_bit_depth: int = Form(16),
 ):
-    """WAVファイルを最適化して容量を削減"""
+    """WAV ファイルをリサンプリング・ビット深度変換して容量を削減する。
+
+    Args:
+        file: 最適化する WAV ファイル（マルチパートアップロード）。
+        target_sr: 目標サンプルレート（Hz）。デフォルト 44100。
+        target_bit_depth: 目標ビット深度（16 または 24）。デフォルト 16。
+
+    Returns:
+        最適化結果の ``JSONResponse``。``download_url`` キーにダウンロード
+        リンクを含み、``path`` キーは除去済み。
+
+    Raises:
+        HTTPException: 最適化処理中に例外が発生した場合（HTTP 500）。
+    """
     from wav_optimize import optimize_wav
     src = _save_upload(file)
     try:
@@ -613,7 +949,12 @@ async def api_wav_optimize(
 
 @app.get("/api/assistant/status")
 async def api_assistant_status():
-    """ローカル/クラウドLLMの利用可否を返す"""
+    """ローカル/クラウド LLM バックエンドの利用可否を確認して返す。
+
+    Returns:
+        ``{"local": bool, "cloud": bool, "local_models": list[str]}`` 形式の
+        ``JSONResponse``。詳細は ``check_availability`` を参照。
+    """
     from music_assistant import check_availability
     return JSONResponse(check_availability())
 
@@ -626,9 +967,24 @@ async def api_assistant_chat(
     mode: str = Form("auto"),
     context_notes: str = Form("[]"),
 ):
-    """
-    自然言語プロンプトからピアノロール用ノートを提案。
-    mode: "auto" (自動ルーティング) | "local" (Ollama) | "cloud" (Claude)
+    """自然言語プロンプトからピアノロール用ノートを LLM で提案する。
+
+    Args:
+        prompt: ユーザーの作曲リクエスト文字列
+            （例: ``"4小節のポップスコード進行"``）。
+        bpm: プロジェクトの BPM（LLM への文脈として渡す）。
+        bars: 生成する小節数。
+        mode: バックエンド選択（``"auto"`` / ``"local"`` / ``"cloud"``）。
+            ``"auto"`` ではプロンプト内容に応じて自動ルーティングされる。
+        context_notes: 既存ノートの JSON 文字列（継続性のための文脈）。
+
+    Returns:
+        ``{"notes": list, "explanation": str, "backend": str}`` 形式の
+        ``JSONResponse``。
+
+    Raises:
+        HTTPException: プロンプトが空または ``mode`` が無効な場合（HTTP 400）。
+        HTTPException: LLM 接続・パース処理に失敗した場合（HTTP 500）。
     """
     from music_assistant import suggest_notes, AssistantError
     try:

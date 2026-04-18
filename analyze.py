@@ -9,17 +9,26 @@ NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def analyze_wav(file_path, bpm=120, sensitivity=0.5, engine="basic_pitch"):
-    """
-    WAVファイルを解析してピアノロール用のノートデータを返す。
+    """WAVファイルを解析してピアノロール用のノートデータを返す。
+
+    engine に応じて Basic Pitch または pyin を使用してピッチ検出を行い、
+    16分音符単位のステップ/長さに変換したノートデータのリストを返す。
 
     Args:
-        file_path: WAVファイルのパス
-        bpm: テンポ（16分音符のステップ計算に使用）
-        sensitivity: ピッチ検出の感度（0〜1, 低いほど厳密）
-        engine: 検出エンジン ("basic_pitch" | "pyin")
+        file_path (str): 解析対象の WAV ファイルパス。
+        bpm (float): テンポ（BPM）。16分音符のステップ長さ計算に使用される。
+        sensitivity (float): ピッチ検出の感度（0.0〜1.0）。
+            値が高いほど検出ノート数が増える（閾値が緩くなる）。
+        engine (str): 検出エンジンの選択。
+            "basic_pitch" — Spotify Basic Pitch によるポリフォニック検出（デフォルト）。
+            "pyin"        — librosa pyin による単音メロディ向け検出。
 
     Returns:
-        list of {"note": str, "octave": int, "step": int, "length": int}
+        list[dict]: ノートデータのリスト。各要素は以下のキーを持つ辞書。
+            - note (str): 音名（例: "C", "A#"）。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（16分音符単位、0始まり）。
+            - length (int): ノートの長さ（16分音符の個数）。
     """
     if engine == "pyin":
         return _analyze_pyin(file_path, bpm, sensitivity)
@@ -27,7 +36,23 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5, engine="basic_pitch"):
 
 
 def _analyze_basic_pitch(file_path, bpm=120, sensitivity=0.5):
-    """Spotify Basic Pitch によるポリフォニックピッチ検出"""
+    """Spotify Basic Pitch を使ってポリフォニックピッチ検出を行う。
+
+    ICASSP_2022 モデルでオンセット・フレーム閾値を sensitivity から算出し、
+    検出された MIDI ノートイベントを 16分音符単位のステップ/長さに変換する。
+    C1（MIDI=24）〜C7（MIDI=96）の範囲外のノートは除外する。
+
+    Args:
+        file_path (str): 解析対象のオーディオファイルパス
+            （Basic Pitch が対応する形式: WAV, MP3, FLAC 等）。
+        bpm (float): テンポ（BPM）。ステップ変換に使用される。
+        sensitivity (float): 検出感度（0.0〜1.0）。
+            高いほどオンセット/フレーム閾値が低くなり、より多くのノートを検出する。
+
+    Returns:
+        list[dict]: step 昇順にソートされたノートデータのリスト。
+            各要素は {"note": str, "octave": int, "step": int, "length": int}。
+    """
     import os
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
@@ -70,7 +95,23 @@ def _analyze_basic_pitch(file_path, bpm=120, sensitivity=0.5):
 
 
 def _analyze_pyin(file_path, bpm=120, sensitivity=0.5):
-    """librosa pyin による単音メロディ向けピッチ検出（フォールバック用）"""
+    """librosa pyin を使って単音メロディのピッチ検出を行う（フォールバック用）。
+
+    22050 Hz モノラルでロードしたオーディオに pyin を適用し、有声フレームの
+    ピッチを追跡する。隣接する半音差 1 以内のフレームは同一ノートとして
+    継続扱いし、連続区間をひとつのノートに集約する。
+    length が 1 未満のノートは除外される。
+
+    Args:
+        file_path (str): 解析対象の WAV ファイルパス。
+        bpm (float): テンポ（BPM）。ステップ変換に使用される。
+        sensitivity (float): 有声判定の確率閾値の基準値（0.0〜1.0）。
+            実際の閾値は max(0.1, sensitivity * 0.8) で計算される。
+
+    Returns:
+        list[dict]: length >= 1 のノートデータのリスト。
+            各要素は {"note": str, "octave": int, "step": int, "length": int}。
+    """
     import librosa
 
     y, sr = librosa.load(file_path, sr=22050, mono=True)
@@ -126,7 +167,19 @@ def _analyze_pyin(file_path, bpm=120, sensitivity=0.5):
 
 
 def _freq_to_note(freq):
-    """周波数から(音名, オクターブ, MIDIノート番号)を返す"""
+    """周波数を最近接のMIDIノートに変換して (音名, オクターブ, MIDIノート番号) を返す。
+
+    A4=440 Hz を基準に対数スケールでMIDIノート番号へ変換し、
+    四捨五入した整数値に対応する音名・オクターブを返す。
+    C1（MIDI=24）未満または C7（MIDI=96）超の場合は None を返す。
+
+    Args:
+        freq (float): 変換する周波数（Hz）。0 以下または NaN の場合は None を返す。
+
+    Returns:
+        tuple[str, int, int] | None: (音名, オクターブ, MIDIノート番号) のタプル。
+            周波数が無効または範囲外の場合は None。
+    """
     if freq <= 0 or np.isnan(freq):
         return None
     midi = 69 + 12 * np.log2(freq / 440.0)
@@ -139,7 +192,25 @@ def _freq_to_note(freq):
 
 
 def _make_note(note_info, start_time, end_time, step_sec):
-    """ノート情報を辞書に変換"""
+    """ノートの時間情報を 16分音符ステップ単位の辞書に変換する。
+
+    開始・終了時刻（秒）を step_sec で割り、四捨五入することで
+    ステップ番号と長さを算出する。ステップは 0 未満にならず、
+    長さは最小 1 が保証される。
+
+    Args:
+        note_info (tuple[str, int]): (音名, オクターブ) のタプル。
+        start_time (float): ノートの開始時刻（秒）。
+        end_time (float): ノートの終了時刻（秒）。
+        step_sec (float): 1 ステップの長さ（秒）。16分音符の場合は 60/(bpm*4)。
+
+    Returns:
+        dict: ノートデータ辞書。
+            - note (str): 音名。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（0始まり）。
+            - length (int): ノートの長さ（ステップ数、最小 1）。
+    """
     note_name, octave = note_info
     step = max(0, int(round(start_time / step_sec)))
     length = max(1, int(round((end_time - start_time) / step_sec)))

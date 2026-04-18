@@ -20,10 +20,29 @@ STEM_LABELS = {
 
 
 def analyze_audio(file_path: str) -> str:
-    """
-    音声ファイルを解析して構成情報をテキストで返す。
+    """音声ファイルを解析し、構成情報をマークダウン形式のテキストで返す。
 
-    周波数帯域のエネルギー分布、推定楽器構成、基本情報を出力。
+    以下の情報を含むレポートを生成する:
+
+    - 基本情報（長さ・サンプルレート・チャンネル・フォーマット・音量・テンポ）
+    - 周波数帯域（7バンド）ごとのエネルギー分布（棒グラフ付き）
+    - スペクトル特徴量（重心・帯域幅・ロールオフ・アタック密度）
+    - ヒューリスティックによる推定楽器構成
+    - htdemucs_6s で分離できるステム一覧
+
+    Args:
+        file_path (str): 解析する音声ファイルのパス。
+
+    Returns:
+        str: マークダウン形式の解析レポート文字列。
+
+    Raises:
+        Exception: ``librosa.load`` または ``soundfile.info`` が失敗した場合に伝播。
+
+    Note:
+        サンプルレートは 22050 Hz にダウンサンプリングして処理する。
+        ``numpy`` および ``librosa`` を関数内で遅延インポートする。
+        チャンネル情報取得には ``soundfile`` をトップレベルでインポート済み。
     """
     import numpy as np
     import librosa
@@ -121,7 +140,33 @@ def analyze_audio(file_path: str) -> str:
 
 
 def _estimate_instruments(band_energy, centroid, onset_rate, zcr):
-    """帯域エネルギーとスペクトル特徴から楽器を推定"""
+    """帯域エネルギーとスペクトル特徴から推定楽器のリストを返す内部ヘルパー。
+
+    ヒューリスティックなルールに基づき、複数の楽器カテゴリを同時に推定できる。
+    各カテゴリの判定条件は以下の通り:
+
+    - **ドラム**: オンセット密度 > 2.0 回/秒
+    - **ベース**: サブベース+ベース帯域エネルギー > 20%
+    - **ボーカル**: ミッド+ハイミッド > 30% かつ ZCR > 0.02
+    - **ギター**: ローミッド+ミッド > 35%
+    - **ピアノ**: 広帯域 > 60% かつオンセット密度 > 1.5
+    - **ストリングス**: ミッド+ハイミッド+プレゼンス > 30% かつオンセット密度 < 3.0
+    - **シンバル**: プレゼンス+エアー > 15%
+
+    Args:
+        band_energy (dict[str, float]): 帯域名をキー、エネルギー割合（%）を値とする辞書。
+            ``analyze_audio`` が内部で生成したものを想定。
+        centroid (float): スペクトル重心（Hz）。現バージョンでは参照のみ（未使用）。
+        onset_rate (float): オンセット密度（回/秒）。
+        zcr (float): ゼロ交差率の平均値。
+
+    Returns:
+        list[str]: 推定楽器を表す日本語文字列のリスト。
+            いずれの条件も満たさない場合は ``["単一楽器または特殊な音源"]`` を返す。
+
+    Note:
+        複数条件を同時に満たす場合、複数の楽器が返される（排他でない）。
+    """
     instruments = []
 
     sub = band_energy.get("サブベース (20-60Hz)", 0)
@@ -173,12 +218,41 @@ def deep_separate(
     mp3_output: bool = False,
     segment: int = 7,
 ) -> dict[str, str]:
-    """
-    htdemucs_6s で6ステム分離を実行し、各レイヤーのパスを返す。
+    """htdemucs_6s で音声を6ステムに分離し、結果ファイルのパスを返す。
+
+    入力ファイルを一時ディレクトリにコピーしてから ``_demucs_runner.py`` を
+    サブプロセスで実行し、分離済みステムを ``results/layers/<stem_name>/`` に
+    保存する。
+
+    Args:
+        file_path (str): 入力音声ファイルのパス。
+        mp3_output (bool, optional): ``True`` → MP3 形式で出力。
+            ``False`` → WAV 形式で出力。デフォルト ``False``。
+        segment (int, optional): Demucs の処理セグメント長（秒）。
+            小さいほどメモリ使用量を抑えられる。デフォルト 7。
 
     Returns:
-        {"vocals": path, "drums": path, "bass": path,
-         "guitar": path, "piano": path, "other": path}
+        dict[str, str]: ステム名をキー、保存先ファイルパス（文字列）を値とする辞書。
+            存在するステムのみ含まれる。例::
+
+                {
+                    "vocals": "results/layers/track/vocals.wav",
+                    "drums":  "results/layers/track/drums.wav",
+                    "bass":   "results/layers/track/bass.wav",
+                    "guitar": "results/layers/track/guitar.wav",
+                    "piano":  "results/layers/track/piano.wav",
+                    "other":  "results/layers/track/other.wav",
+                }
+
+    Raises:
+        ValueError: ``file_path`` が存在しない場合。
+        RuntimeError: Demucs サブプロセスが非ゼロ終了コードを返した場合。
+            初回実行時はモデルの自動ダウンロードが発生するため時間がかかる場合がある。
+
+    Note:
+        処理は ``tempfile.TemporaryDirectory`` 内で行われ、終了後に一時ファイルは
+        自動削除される。最終的な出力は ``results/layers/<入力ファイル名のstem>/``
+        に保存される。並列ジョブ数は常に 1（``--jobs 1``）で固定。
     """
     src = Path(file_path)
     if not src.exists():

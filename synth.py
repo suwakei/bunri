@@ -166,7 +166,15 @@ def _fluidsynth_render(notes, bpm, program, volume, sr=44100):
 
 
 def _note_to_midi(note_name, octave):
-    """音名+オクターブからMIDIノート番号を返す"""
+    """音名とオクターブからMIDIノート番号を計算して返す。
+
+    Args:
+        note_name (str): 音名。NOTE_NAMES に含まれる文字列（例: "C", "A#"）。
+        octave (int): オクターブ番号（MIDI規格: C4=60 に基づく）。
+
+    Returns:
+        int: MIDIノート番号（0〜127）。
+    """
     idx = NOTE_NAMES.index(note_name)
     return (octave + 1) * 12 + idx
 
@@ -174,6 +182,19 @@ def _note_to_midi(note_name, octave):
 # ---- 基本波形 ----
 
 def _oscillator(freq, duration, sr, waveform):
+    """指定した波形の基本オシレーターを生成する。
+
+    Args:
+        freq (float): 生成する音の周波数（Hz）。
+        duration (float): 生成する長さ（秒）。
+        sr (int): サンプルレート（Hz）。
+        waveform (str): 波形の種類。"sine" / "square" / "sawtooth" / "triangle"
+            のいずれか。未知の値の場合は "sine" にフォールバックする。
+
+    Returns:
+        numpy.ndarray: 形状 (int(sr * duration),) の float64 配列。
+            振幅は -1.0〜1.0 の範囲。
+    """
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
     if waveform == "sine":
         return np.sin(2 * np.pi * freq * t)
@@ -189,6 +210,24 @@ def _oscillator(freq, duration, sr, waveform):
 # ---- ADSRエンベロープ ----
 
 def _adsr(length, sr, attack, decay, sustain, release):
+    """ADSRエンベロープを生成する。
+
+    Attack → Decay → Sustain → Release の順に振幅が変化する
+    エンベロープ配列を返す。各フェーズが length を超える場合は
+    残りサンプル数に合わせてクリップされる。
+
+    Args:
+        length (int): エンベロープの総サンプル数。
+        sr (int): サンプルレート（Hz）。
+        attack (float): アタック時間（秒）。0 から 1 まで線形補間。
+        decay (float): ディケイ時間（秒）。1 から sustain まで線形補間。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。sustain から 0 まで線形補間。
+
+    Returns:
+        numpy.ndarray: 形状 (length,) の float64 配列。
+            値は 0.0〜1.0 の範囲。
+    """
     env = np.zeros(length)
     a = int(attack * sr)
     d = int(decay * sr)
@@ -222,7 +261,22 @@ NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def note_to_freq(note_name, octave):
-    """音名とオクターブから周波数を計算（A4=440Hz基準）"""
+    """音名とオクターブから周波数を計算する（A4=440Hz基準）。
+
+    A4 を 440 Hz として、半音ごとに 2^(1/12) 倍のスケールで
+    平均律の周波数を算出する。
+
+    Args:
+        note_name (str): 音名。NOTE_NAMES に含まれる文字列
+            （"C", "C#", "D", ... "B" のいずれか）。
+        octave (int): オクターブ番号（A4 が octave=4 に対応）。
+
+    Returns:
+        float: 対応する周波数（Hz）。
+
+    Raises:
+        ValueError: note_name が NOTE_NAMES に含まれない場合。
+    """
     if note_name not in NOTE_NAMES:
         raise ValueError(f"不正な音名: {note_name}")
     semitone = NOTE_NAMES.index(note_name) - 9  # A=0基準
@@ -233,7 +287,23 @@ def note_to_freq(note_name, octave):
 # ---- 単音シンセ ----
 
 def _instrument_synth(freq, duration, sr, instrument):
-    """楽器プリセットによる音声合成"""
+    """楽器プリセットを使ったモデルベース音声合成を行う。
+
+    各楽器ごとに専用アルゴリズムで波形を生成する。
+    未知の instrument 名が渡された場合は _oscillator にフォールバックする。
+
+    Args:
+        freq (float): 音の基本周波数（Hz）。
+        duration (float): 生成する長さ（秒）。
+        sr (int): サンプルレート（Hz）。
+        instrument (str): 楽器プリセット名。
+            "guitar" / "violin" / "chorus" / "flute" / "bass" / "organ"
+            のいずれか。それ以外は _oscillator の waveform として解釈される。
+
+    Returns:
+        numpy.ndarray: 生成した波形サンプル列（float64）。
+            長さは int(sr * duration)。ADSRエンベロープは未適用。
+    """
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
     phase = 2 * np.pi * freq * t
 
@@ -309,7 +379,30 @@ INSTRUMENTS = list(INSTRUMENT_ADSR.keys())
 
 def synth_note(note_name, octave, duration, waveform, volume,
                attack, decay, sustain, release, instrument=None):
-    """単音を生成（instrument指定時は楽器プリセットを使用）"""
+    """単音WAVファイルを合成して一時ファイルに保存する。
+
+    instrument が指定されている場合は _instrument_synth と INSTRUMENT_ADSR の
+    プリセットパラメータを使用する。呼び出し元が ADSR パラメータをデフォルト値
+    （attack=0.01, decay=0.1, sustain=0.6, release=0.2）のまま渡した場合は
+    プリセット値を優先する。
+
+    Args:
+        note_name (str): 音名（"C"〜"B"、シャープ記号含む）。
+        octave (int): オクターブ番号。
+        duration (float): 音符の長さ（秒）。
+        waveform (str): instrument が None のときに使用する波形
+            （"sine" / "square" / "sawtooth" / "triangle"）。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+        attack (float): アタック時間（秒）。
+        decay (float): ディケイ時間（秒）。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。
+        instrument (str | None): 楽器プリセット名。None の場合は
+            waveform パラメータが使用される。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+    """
     sr = 44100
     freq = note_to_freq(note_name, int(octave))
     if instrument and instrument in INSTRUMENT_ADSR:
@@ -333,14 +426,37 @@ def synth_note(note_name, octave, duration, waveform, volume,
 def step_sequencer(notes_json, bpm, waveform, volume,
                    attack, decay, sustain, release, instrument=None,
                    gm_program=None):
-    """
-    JSONフォーマットの音符データからオーディオを生成。
+    """JSON形式の音符データをシーケンスレンダリングしてWAVファイルを生成する。
 
-    notes_json: [{"note": "C", "octave": 4, "step": 0, "length": 1}, ...]
-      - step: 何ステップ目か（16分音符単位、0始まり）
-      - length: 何ステップ分の長さか
-      - "rest" の note は休符
-    gm_program: GM楽器番号（指定時はFluidSynthで高品質レンダリング）
+    16分音符をステップ単位として、各ノートを時間軸に配置・合成する。
+    gm_program が指定されかつ SoundFont ファイルが存在する場合は
+    FluidSynth を用いた高品質レンダリング（_fluidsynth_render）を行う。
+
+    Args:
+        notes_json (str): JSON 文字列。以下の形式のオブジェクト配列。
+            [{"note": "C", "octave": 4, "step": 0, "length": 1}, ...]
+            - note (str): 音名。"rest" は休符として扱われる。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（16分音符単位、0始まり）。
+            - length (int): 音符の長さ（16分音符の何個分か）。
+        bpm (float): テンポ（BPM）。16分音符の長さ計算に使用される。
+        waveform (str): instrument が None のときに使用する波形種別。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+        attack (float): アタック時間（秒）。
+        decay (float): ディケイ時間（秒）。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。
+        instrument (str | None): 楽器プリセット名。None の場合は
+            waveform パラメータが使用される。
+        gm_program (int | None): GM 楽器番号（0〜127）。指定時は
+            FluidSynth でレンダリングされ、他の波形/楽器パラメータは無視される。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+
+    Raises:
+        ValueError: notes_json が不正な JSON 形式の場合、
+            または音符データが空の場合。
     """
     sr = 44100
     step_sec = 60.0 / bpm / 4  # 16分音符の長さ（秒）
@@ -403,7 +519,18 @@ def step_sequencer(notes_json, bpm, waveform, volume,
 # ---- ドラムマシン ----
 
 def _kick(sr):
-    """キックドラムの合成"""
+    """キックドラムの波形を合成して返す。
+
+    周波数が時間とともに指数的に減衰するサイン波を積分して
+    キック特有の「ズン」という低音を再現する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.3) の float64 波形配列。
+            振幅は -1.0〜1.0 の範囲（エンベロープ適用済み）。
+    """
     t = np.linspace(0, 0.3, int(sr * 0.3), endpoint=False)
     freq = 150 * np.exp(-t * 15) + 40
     phase = np.cumsum(2 * np.pi * freq / sr)
@@ -411,7 +538,18 @@ def _kick(sr):
 
 
 def _snare(sr):
-    """スネアドラムの合成"""
+    """スネアドラムの波形を合成して返す。
+
+    200 Hz のサイン波（胴鳴り成分）とホワイトノイズ（スナッピー成分）を
+    それぞれ指数減衰エンベロープで成形し、0.5:0.5 で混合する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.2) の float64 波形配列。
+            振幅はおおよそ -1.0〜1.0 の範囲。
+    """
     t = np.linspace(0, 0.2, int(sr * 0.2), endpoint=False)
     tone = np.sin(2 * np.pi * 200 * t) * np.exp(-t * 20)
     noise = np.random.randn(len(t)) * np.exp(-t * 15)
@@ -419,7 +557,18 @@ def _snare(sr):
 
 
 def _hihat(sr):
-    """ハイハットの合成"""
+    """クローズドハイハットの波形を合成して返す。
+
+    ホワイトノイズを急峻な指数減衰エンベロープで成形し、
+    短い「チッ」という金属的な音を再現する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.08) の float64 波形配列。
+            振幅はおおよそ -0.6〜0.6 の範囲。
+    """
     t = np.linspace(0, 0.08, int(sr * 0.08), endpoint=False)
     noise = np.random.randn(len(t)) * np.exp(-t * 40)
     return noise * 0.6
@@ -450,7 +599,25 @@ DRUM_PATTERNS = {
 
 
 def drum_machine(pattern_name, bpm, bars, volume):
-    """ドラムパターンを生成"""
+    """プリセットパターンを使ってドラムトラックを生成しWAVファイルに保存する。
+
+    DRUM_PATTERNS に定義された 16 ステップ（1小節）のパターンを
+    bars 小節分繰り返す。各ステップでキック・スネア・ハイハットの
+    波形を重ね合わせて出力する。
+
+    Args:
+        pattern_name (str): ドラムパターン名。DRUM_PATTERNS のキー
+            （"4つ打ち" / "8ビート" / "ボサノバ" / "レゲエ"）のいずれか。
+        bpm (float): テンポ（BPM）。16分音符の長さ計算に使用される。
+        bars (int | str): 繰り返す小節数。int に変換して使用される。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+
+    Raises:
+        ValueError: pattern_name が DRUM_PATTERNS に存在しない場合。
+    """
     sr = 44100
     step_sec = 60.0 / bpm / 4
     bars = int(bars)

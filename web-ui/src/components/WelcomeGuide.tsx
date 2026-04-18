@@ -4,8 +4,13 @@
 import type { MouseEvent } from 'react';
 import { useDaw } from '../lib/store';
 
+/**
+ * ウェルカムガイドの1ステップを表すデータ型。
+ */
 interface GuideStep {
+    /** ステップのタイトル */
     title: string;
+    /** ステップの説明文 */
     desc: string;
 }
 
@@ -17,6 +22,13 @@ const STEPS: GuideStep[] = [
     { title: '再生・書き出し', desc: '▶で再生、「書出」ボタンで全トラックをミックスしたWAVをダウンロードできます。' },
 ];
 
+/**
+ * 初回起動時に表示するウェルカムガイドモーダル。
+ * `showGuide` が false の場合は何もレンダリングしない。
+ * オーバーレイ外クリックまたは「はじめる」ボタンで閉じると、
+ * localStorage に既読フラグが保存されて次回以降は表示されない。
+ * @returns ガイドモーダルの JSX 要素、非表示時は null
+ */
 export default function WelcomeGuide(): React.ReactElement | null {
     const { showGuide, closeGuide } = useDaw();
     if (!showGuide) return null;

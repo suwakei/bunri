@@ -28,6 +28,11 @@ const HELP_CSS = `
 .help-page .layout-box { background:#17171e; border:1px solid #2a2a35; border-radius:8px; padding:20px; margin:16px 0; font-size:13px; color:#9e9a92; }
 `;
 
+/**
+ * 使い方ガイドページコンポーネント（/help ルート）。
+ * 目次・各機能の説明・キーボードショートカット一覧をインライン CSS とともに表示する。
+ * @returns ガイドページ全体の JSX 要素
+ */
 export default function HelpPage() {
     return (
         <div className="help-page">

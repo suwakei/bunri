@@ -47,20 +47,43 @@ def separate_audio(
     segment: int = 7,
     jobs: int = 1,
 ) -> dict[str, Path]:
-    """
-    音源を分離して各ステムのパスを返す。
+    """Demucs を使って音声ファイルを各ステムに分離し、出力パスを返す。
+
+    ``_demucs_runner.py`` をサブプロセスとして起動することで、torchaudio の
+    保存パッチを安全に適用しつつ分離処理を行う。
 
     Args:
-        input_path:  入力音声ファイルのパス
-        output_dir:  出力先ディレクトリ
-        model:       使用するDemucsモデル
-        two_stems:   True → vocals / no_vocals の2分割（htdemucs_6sでは無視）
-                     False → モデルの全ステム分割
-        mp3_output:  True → MP3で出力（False → WAV）
-        segment:     処理セグメント長（秒）。小さいほどメモリ節約（デフォルト7）
-        jobs:        並列ジョブ数（CPU負荷を抑えるなら1）
+        input_path (str): 入力音声ファイルのパス。対応フォーマット:
+            ``.mp3``, ``.wav``, ``.flac``, ``.ogg``, ``.m4a``。
+        output_dir (str, optional): 分離結果の出力先ルートディレクトリ。
+            デフォルト ``"output"``。
+        model (str, optional): 使用する Demucs モデル名。
+            ``"htdemucs"``（推奨）, ``"htdemucs_ft"``, ``"htdemucs_6s"`` のいずれか。
+            デフォルト ``"htdemucs"``。
+        two_stems (bool, optional): ``True`` の場合 vocals / no_vocals の2分割。
+            ``False`` の場合モデルの全ステムを分割。
+            ``htdemucs_6s`` 指定時は常に ``False`` に強制される。デフォルト ``True``。
+        mp3_output (bool, optional): ``True`` → MP3 形式で出力。
+            ``False`` → WAV 形式で出力。デフォルト ``False``。
+        segment (int, optional): Demucs の処理セグメント長（秒）。
+            小さいほどメモリ使用量を抑えられる。デフォルト 7。
+        jobs (int, optional): 並列ジョブ数。CPU 負荷を抑えるなら 1。デフォルト 1。
+
     Returns:
-        {"stem_name": Path, ...} — モデルと設定に応じた可変数のステム
+        dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
+            実際にファイルが存在するステムのみ含まれる。例::
+
+                {"vocals": Path("output/htdemucs/track/vocals.wav"),
+                 "no_vocals": Path("output/htdemucs/track/no_vocals.wav")}
+
+    Raises:
+        FileNotFoundError: ``input_path`` が存在しない場合。
+        ValueError: ``input_path`` の拡張子が非対応フォーマットの場合。
+        RuntimeError: Demucs サブプロセスが非ゼロ終了コードを返した場合。
+
+    Note:
+        進捗ログは標準出力に直接出力される（``subprocess.run`` の
+        ``capture_output=False`` による）。
     """
     input_path = Path(input_path)
 
@@ -122,7 +145,23 @@ def separate_audio(
 
 
 def _is_silent(file_path: Path, threshold_db: float = -50) -> bool:
-    """WAVファイルがほぼ無音かどうか判定する"""
+    """WAV ファイルの RMS がほぼ無音レベルかどうかを判定する。
+
+    ファイル全体の RMS を dBFS に変換し、``threshold_db`` を下回れば無音と判定する。
+
+    Args:
+        file_path (Path): 判定する WAV ファイルのパス。
+        threshold_db (float, optional): 無音と見なす閾値（dBFS）。
+            デフォルト ``-50``。
+
+    Returns:
+        bool: RMS が ``threshold_db`` 未満であれば ``True``（無音）、
+            それ以外は ``False``。
+
+    Note:
+        ステレオファイルはチャンネル平均をとってからモノラル RMS を算出する。
+        ``numpy`` および ``soundfile`` を関数内で遅延インポートする。
+    """
     import numpy as np
     import soundfile as sf
     data, sr = sf.read(str(file_path))
@@ -141,17 +180,37 @@ def deep_separate(
     jobs: int = 1,
     recursive_depth: int = 1,
 ) -> dict[str, Path]:
-    """
-    最大限のレイヤー分離を行う。
+    """htdemucs_6s による2段階レイヤー分離を行い、有音ステムのパスを返す。
 
-    1. htdemucs_6s で6ステムに分離
-    2. 「other」ステムをさらに htdemucs_6s で再分離
-    3. 再分離で得た無音ステムは除外
+    以下の手順で最大限のレイヤー分離を試みる:
+
+    1. ``htdemucs_6s`` で入力を6ステムに分離。
+    2. ``recursive_depth > 0`` の場合、「other」ステムをさらに
+       ``htdemucs_6s`` で再分離し ``"other_<stem>"`` として追加。
+    3. 無音（RMS < -50 dBFS）のステムは結果から除外する。
+    4. 再分離後のサブステムが全て無音の場合は元の ``"other"`` を残す。
 
     Args:
-        recursive_depth: otherを再帰分離する深さ（1=1回再分離, 0=再分離なし）
+        input_path (str): 入力音声ファイルのパス。
+        output_dir (str, optional): 出力先ルートディレクトリ。デフォルト ``"output"``。
+        mp3_output (bool, optional): ``True`` → MP3 出力。``False`` → WAV 出力。
+            デフォルト ``False``。
+        segment (int, optional): Demucs の処理セグメント長（秒）。デフォルト 7。
+        jobs (int, optional): 並列ジョブ数。デフォルト 1。
+        recursive_depth (int, optional): ``"other"`` ステムを再帰分離する深さ。
+            ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
+
     Returns:
-        {"stem_name": Path, ...} — 可変数のステム（無音除外済み）
+        dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
+            無音ステムは除外済み。再分離ステムのキーは ``"other_vocals"`` 等の
+            形式でプレフィックスされる。
+
+    Raises:
+        RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
+
+    Note:
+        第2段の出力は ``<output_dir>/deep_other/`` に書き出される。
+        進捗ログは標準出力に直接出力される。
     """
     input_p = Path(input_path)
 

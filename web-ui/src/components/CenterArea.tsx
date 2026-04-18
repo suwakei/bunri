@@ -7,6 +7,21 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 
+/**
+ * Canvas ベースのピアノロールエディタエンジン。
+ *
+ * グリッド描画・ノートの追加/移動/リサイズ/削除・アクティブトラックとの
+ * 双方向同期（`_saveToEngine` / `_loadFromEngine`）を担う。
+ * React コンポーネントから `pianoRollRef.current` 経由で操作する。
+ *
+ * 主なパブリック API:
+ * - `init(el)` — DOM 要素群を渡して初期化する
+ * - `switchToTrack(trackId)` — 表示するトラックを切り替える
+ * - `getNotes()` — 現在のノート配列を返す（エンジンへも保存）
+ * - `setNotes(notes)` — ノートを一括セットして再描画する
+ * - `getActiveTrackId()` — アクティブなトラック ID を返す
+ * - `clear()` — 全ノートを削除する
+ */
 // ---- PianoRoll クラス（Canvasベース）----
 class PianoRollEngine {
     constructor() {
@@ -22,12 +37,29 @@ class PianoRollEngine {
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
     }
+    /**
+     * ピアノロールを DOM 要素群に紐付けて初期化する。
+     * 鍵盤の構築・Canvas リサイズ・グリッド描画・イベント登録を行う。
+     *
+     * @param el - 初期化に必要な DOM 要素群
+     * @param el.canvas - グリッド描画用 `<canvas>` 要素
+     * @param el.noteLayer - ノートブロックを配置するオーバーレイ `<div>` 要素
+     * @param el.keysDiv - 鍵盤キーを並べる `<div>` 要素
+     * @param el.wrap - スクロール可能なラッパー `<div>` 要素
+     */
     init(el) {
         this.canvas = el.canvas; this.noteLayer = el.noteLayer;
         this.keysDiv = el.keysDiv; this.wrap = el.wrap;
         this.ctx = this.canvas.getContext('2d');
         this._buildKeys(); this._resize(); this._drawGrid(); this._bindEvents();
     }
+    /**
+     * アクティブトラックを切り替えてピアノロールを再描画する。
+     * 切り替え前に現在のノートをエンジンへ保存し、新トラックのノートを読み込む。
+     * `onTrackSwitch` コールバックが設定されていれば呼び出す。
+     *
+     * @param trackId - 切り替え先のトラック ID（`null` を渡すと選択解除）
+     */
     switchToTrack(trackId) {
         this._saveToEngine();
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
@@ -138,12 +170,47 @@ class PianoRollEngine {
             this.noteLayer.appendChild(el);
         });
     }
+    /**
+     * 現在のノート一覧をエンジンに保存したうえで返す。
+     * `/api/synth/sequence` へ送信するデータ取得時などに使用する。
+     *
+     * @returns ノート情報の配列（`note`, `octave`, `step`, `length` を含むオブジェクト）
+     */
     getNotes() { this._saveToEngine(); return this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length })); }
+    /**
+     * ノートを一括セットしてピアノロールを再描画する。
+     * 音声解析結果（`/api/analyze`）の配置などに使用する。
+     *
+     * @param notes - セットするノート情報の配列（`note`, `octave`, `step`, `length` を含む）
+     */
     setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._renderNotes(); }
+    /**
+     * 現在アクティブなトラックの ID を返す。
+     *
+     * @returns アクティブなトラック ID（数値）、未選択時は `null`
+     */
     getActiveTrackId() { return this.activeTrackId; }
+    /**
+     * 全ノートを削除してピアノロールをクリアする。
+     * エンジン側のピアノノートも同時に空にする。
+     */
     clear() { this.notes = []; this.selectedNote = null; this._saveToEngine(); this._renderNotes(); }
 }
 
+/**
+ * Canvas ベースのタイムライン（アレンジメントビュー）エンジン。
+ *
+ * 全トラックとそのクリップを DOM として描画し、以下の操作を提供する:
+ * - クリップのドラッグ移動（拍グリッドにスナップ）
+ * - クリップの右クリック削除
+ * - WAV ファイルのドラッグ＆ドロップによるインポート
+ * - トラックヘッダーのクリックによるピアノロール切り替え
+ * - ミュート / ソロ / トラック削除 / トラック単体再生
+ *
+ * 主なパブリック API:
+ * - `init(el)` — DOM 要素を渡して初期化する
+ * - `render(pianoRoll)` — 全トラックを再描画する
+ */
 // ---- Timeline クラス（Canvasベース）----
 class TimelineEngine {
     constructor() {
@@ -151,6 +218,14 @@ class TimelineEngine {
         this.pixelsPerSecond = 80; this.draggingClip = null; this.dragOffsetX = 0;
         this.onStatus = null; this.onTrackSelect = null; this.onTracksChanged = null;
     }
+    /**
+     * タイムラインを DOM 要素群に紐付けて初期化する。
+     * ヘッダー Canvas の描画とグローバルマウスイベントの登録を行う。
+     *
+     * @param el - 初期化に必要な DOM 要素群
+     * @param el.container - トラック行を配置するコンテナ `<div>` 要素
+     * @param el.headerCanvas - 小節番号ルーラーを描画する `<canvas>` 要素
+     */
     init(el) {
         this.container = el.container; this.headerCanvas = el.headerCanvas;
         this.headerCtx = this.headerCanvas.getContext('2d');
@@ -170,6 +245,12 @@ class TimelineEngine {
             ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, 24); ctx.stroke();
         }
     }
+    /**
+     * エンジンの全トラックをタイムラインに再描画する。
+     * トラックヘッダー・クリップ・ドラッグ＆ドロップ・各種ボタンのイベントを再バインドする。
+     *
+     * @param pianoRoll - 連携するピアノロールエンジン（トラック選択の同期に使用）
+     */
     render(pianoRoll) {
         if (!this.container) return;
         this.container.innerHTML = ''; this._drawHeader();
@@ -275,6 +356,24 @@ class TimelineEngine {
     }
 }
 
+/**
+ * Canvas ベースのオートメーション曲線エディタエンジン。
+ *
+ * トラック・パラメータごとにタイムライン上のコントロールポイントを管理し、
+ * ベジェ曲線で補間して描画する。
+ *
+ * 操作:
+ * - ダブルクリック: ポイントを追加
+ * - ドラッグ: ポイントを移動
+ * - 右クリック: ポイントを削除
+ *
+ * 主なパブリック API:
+ * - `init(el)` — Canvas 要素を渡して初期化する
+ * - `setTrack(trackId, param)` — 表示するトラック / パラメータを切り替える
+ * - `draw()` — 曲線とポイントを再描画する
+ * - `toJSON()` — 全オートメーションデータをシリアライズする
+ * - `fromJSON(data)` — シリアライズデータを復元して再描画する
+ */
 // ---- AutomationEditor クラス ----
 class AutomationEditorEngine {
     constructor() {
@@ -282,6 +381,13 @@ class AutomationEditorEngine {
         this.activeTrackId = null; this.activeParam = 'volume';
         this.draggingPoint = null; this.pixelsPerSecond = 80;
     }
+    /**
+     * オートメーションエディタを Canvas 要素に紐付けて初期化する。
+     * Canvas をリサイズしてイベントリスナーを登録する。
+     *
+     * @param el - 初期化に必要な DOM 要素群
+     * @param el.canvas - オートメーション曲線を描画する `<canvas>` 要素
+     */
     init(el) {
         this.canvas = el.canvas; this.ctx = this.canvas.getContext('2d');
         this._resize(); this._bindEvents();
@@ -291,6 +397,12 @@ class AutomationEditorEngine {
         const rect = this.canvas.parentElement.getBoundingClientRect();
         this.canvas.width = rect.width; this.canvas.height = rect.height;
     }
+    /**
+     * 表示対象のトラックとパラメータを切り替えて再描画する。
+     *
+     * @param trackId - 表示するトラックの ID（`null` を渡すとトラック未選択状態になる）
+     * @param param - 表示するオートメーションパラメータ名（省略時は `"volume"`）
+     */
     setTrack(trackId, param) { this.activeTrackId = trackId; this.activeParam = param || 'volume'; this.draw(); }
     _getPoints() { if (!this.activeTrackId) return []; const k = `${this.activeTrackId}_${this.activeParam}`; if (!this.data[k]) this.data[k] = []; return this.data[k]; }
     _setPoints(pts) { if (!this.activeTrackId) return; this.data[`${this.activeTrackId}_${this.activeParam}`] = pts; }
@@ -342,10 +454,30 @@ class AutomationEditorEngine {
         });
         window.addEventListener('resize', () => this.draw());
     }
+    /**
+     * 全トラック・全パラメータのオートメーションデータをシリアライズして返す。
+     * プロジェクト保存（`/api/project/save`）時に使用する。
+     *
+     * @returns コントロールポイントを含むオートメーションデータのディープコピー
+     */
     toJSON() { return JSON.parse(JSON.stringify(this.data)); }
+    /**
+     * シリアライズされたオートメーションデータを復元して再描画する。
+     * プロジェクト読み込み（`/api/project/load/{name}`）時に使用する。
+     *
+     * @param data - `toJSON()` が返した形式のオートメーションデータ（`null` / `undefined` 時は空データとして扱う）
+     */
     fromJSON(data) { this.data = data || {}; this.draw(); }
 }
 
+/**
+ * 再生位置のシークバーコンポーネント。
+ * 100ms 間隔でエンジンの現在時刻・総時間をポーリングしてスライダーと時刻表示を更新する。
+ * ドラッグ中はポーリングによる上書きを抑止し、離したタイミングでシーク処理を実行する。
+ * ソロトラックが設定されている場合はシーク後に同じトラックの再生を再開する。
+ *
+ * @returns `<div id="seek-bar-area">` 要素（現在時刻・スライダー・総時間を含む）
+ */
 // ---- SeekBar コンポーネント ----
 function SeekBar() {
     const [seekVal, setSeekVal] = useState(0);
@@ -385,6 +517,17 @@ function SeekBar() {
     );
 }
 
+/**
+ * 中央エリアコンポーネント。
+ * タイムライン・ピアノロール・オートメーションエディタの 3 ペインを縦に並べて表示する。
+ *
+ * マウント時に `PianoRollEngine` / `TimelineEngine` / `AutomationEditorEngine` を初期化し、
+ * それぞれを `pianoRollRef` / `timelineRef` / `automationRef` に格納して
+ * 他のコンポーネントからも参照できるようにする。
+ * `trackVersion` が変わるたびにタイムラインを再描画して最新の状態を反映する。
+ *
+ * @returns 中央エリア全体の `<div id="center">` 要素
+ */
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
     const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion } = useDaw();

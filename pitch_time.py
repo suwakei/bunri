@@ -5,10 +5,27 @@ from audio_utils import load_audio, save_tmp
 
 
 def _phase_vocoder(data, sr, stretch_factor, hop_length=512, win_length=2048):
-    """
-    フェーズボコーダーによるタイムストレッチ。
+    """フェーズボコーダーによるタイムストレッチを行う。
+
+    ステレオ信号の場合はチャンネルごとに _phase_vocoder_mono を呼び出して
+    処理し、結果を列方向に結合して返す。
+
     stretch_factor > 1 → 伸ばす（遅くする）
     stretch_factor < 1 → 縮める（速くする）
+
+    Args:
+        data: 入力波形配列（numpy.ndarray）。
+            モノラル shape=(N,) またはステレオ shape=(N, 2)。
+        sr: サンプルレート（Hz）。正の整数。現実装では使用しないが将来拡張用。
+        stretch_factor: 時間伸縮倍率。0 より大きい実数。
+            1.0 = 等速、2.0 = 2 倍に伸ばす、0.5 = 半分に縮める。
+        hop_length: STFT のホップサイズ（サンプル数）。デフォルト 512。
+        win_length: STFT の窓サイズ（サンプル数）。デフォルト 2048。
+
+    Returns:
+        numpy.ndarray: タイムストレッチ後の波形配列。
+            入力がモノラルなら shape=(M,)、ステレオなら shape=(M, 2)。
+            M は stretch_factor に応じた長さ。
     """
     if data.ndim == 2:
         # ステレオ: チャンネルごとに処理
@@ -20,7 +37,23 @@ def _phase_vocoder(data, sr, stretch_factor, hop_length=512, win_length=2048):
 
 
 def _phase_vocoder_mono(signal, sr, stretch_factor, hop_length, win_length):
-    """モノラル信号に対するフェーズボコーダー"""
+    """モノラル信号に対してフェーズボコーダーによるタイムストレッチを適用する。
+
+    短時間フーリエ変換（STFT）を使って位相情報を保持しながら
+    時間軸を伸縮する。入力ホップを stretch_factor に応じて調整し、
+    出力ホップは固定とすることで時間軸を変換する。
+
+    Args:
+        signal: モノラル波形配列（numpy.ndarray, shape=(N,), float）。
+        sr: サンプルレート（Hz）。正の整数。現実装では未使用。
+        stretch_factor: 時間伸縮倍率。0 より大きい実数。
+        hop_length: 出力ホップサイズ（サンプル数）。正の整数。
+        win_length: FFT 窓サイズ（サンプル数）。正の整数。
+
+    Returns:
+        numpy.ndarray: タイムストレッチ後のモノラル波形配列（shape=(M,)）。
+            入力フレーム数が 2 未満の場合は入力をそのまま返す。
+    """
     n_fft = win_length
     hop_out = hop_length
     hop_in = int(hop_length / stretch_factor)
@@ -88,7 +121,22 @@ def _phase_vocoder_mono(signal, sr, stretch_factor, hop_length, win_length):
 
 
 def _resample_linear(data, factor):
-    """線形補間によるリサンプル（ピッチ変更用）"""
+    """線形補間によるリサンプル（ピッチ変更用）を行う。
+
+    サンプル数を factor 分の 1 に変更することで、タイムストレッチ後の
+    信号を元の長さに戻しピッチを変換する目的で使用する。
+
+    Args:
+        data: 入力波形配列（numpy.ndarray）。
+            モノラル shape=(N,) またはステレオ shape=(N, 2)。
+        factor: リサンプル倍率。出力サンプル数 = int(N / factor)。
+            0 より大きい実数。
+
+    Returns:
+        numpy.ndarray: リサンプル後の波形配列。
+            モノラル shape=(M,) またはステレオ shape=(M, 2)。
+            計算後のサンプル数が 2 未満の場合は先頭 2 サンプルを返す。
+    """
     orig_len = len(data)
     new_len = int(orig_len / factor)
     if new_len < 2:
@@ -104,9 +152,26 @@ def _resample_linear(data, factor):
 
 
 def pitch_shift(file_obj, semitones):
-    """
-    ピッチシフト（速度を維持したまま音程を変更）
-    semitones: 半音単位（+12 = 1オクターブ上、-12 = 1オクターブ下）
+    """速度を維持したまま音程（ピッチ）をシフトする。
+
+    フェーズボコーダーでタイムストレッチした後、線形補間リサンプルで
+    元の長さに戻すことでピッチのみを変化させる。
+
+    処理手順:
+        1. factor = 2^(semitones/12) を計算
+        2. フェーズボコーダーで factor 倍に時間伸縮
+        3. 線形補間で元のサンプル数に戻す（これによりピッチが factor 倍になる）
+
+    Args:
+        file_obj: 入力 WAV ファイルのパスまたはファイルオブジェクト。
+        semitones: シフトする半音数。正の値で音程アップ、負の値でダウン。
+            例: +12 で 1 オクターブ上、-12 で 1 オクターブ下、0 で変化なし。
+
+    Returns:
+        str: 保存された一時 WAV ファイルのパス。
+
+    Side Effects:
+        results/edited/ にファイルを書き出す。
     """
     data, sr = load_audio(file_obj)
     if semitones == 0:
@@ -125,9 +190,24 @@ def pitch_shift(file_obj, semitones):
 
 
 def time_stretch(file_obj, rate):
-    """
-    タイムストレッチ（音程を維持したまま速度を変更）
-    rate: 1.0=等速、0.5=半分の速さ、2.0=倍速
+    """音程を維持したまま再生速度を変更する（タイムストレッチ）。
+
+    フェーズボコーダーを使って音程を保ったまま時間軸を伸縮する。
+    rate < 1.0 で遅くなり、rate > 1.0 で速くなる。
+
+    Args:
+        file_obj: 入力 WAV ファイルのパスまたはファイルオブジェクト。
+        rate: 再生速度倍率。0 より大きい実数。
+            1.0 = 等速、0.5 = 半分の速さ（2 倍の長さ）、2.0 = 倍速（半分の長さ）。
+
+    Returns:
+        str: 保存された一時 WAV ファイルのパス。
+
+    Raises:
+        ValueError: rate が 0 以下の場合。
+
+    Side Effects:
+        results/edited/ にファイルを書き出す。
     """
     data, sr = load_audio(file_obj)
     if rate <= 0:

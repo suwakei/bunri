@@ -71,7 +71,11 @@ Response:
 # ---- 例外 ----
 
 class AssistantError(Exception):
-    """LLM呼び出しやパースのエラー"""
+    """LLM呼び出しやパース処理で発生するエラーを表す例外クラス。
+
+    Ollama/Claude API への接続失敗、HTTPエラー、JSON パースエラー、
+    バリデーション失敗など、アシスタント機能に関するあらゆる異常系で送出される。
+    """
     pass
 
 
@@ -95,12 +99,21 @@ _LOCAL_KEYWORDS = [
 
 
 def _route(prompt: str) -> str:
-    """
-    プロンプトの性質でローカル/クラウドを判定。
-    自動選択の判断基準:
-    - クラウド向けキーワードがあれば 'cloud'
-    - ローカル向けキーワードがあれば 'local'
-    - それ以外は 'local'（無料を優先）
+    """プロンプトの内容を分析してローカル/クラウドのどちらを使うか決定する。
+
+    クラウド向けキーワード（情緒的・曖昧な表現）が含まれる場合は Claude を、
+    ローカル向けキーワード（定型的な音楽理論用語）が含まれる場合は Ollama を選ぶ。
+    どちらにも該当しない場合はコスト優先でローカルを返す。
+
+    Args:
+        prompt: ユーザーが入力した自然言語リクエスト文字列。
+
+    Returns:
+        使用するバックエンドを示す文字列。``"local"`` または ``"cloud"`` のいずれか。
+
+    Note:
+        空文字列や ``None`` が渡された場合は常に ``"local"`` を返す。
+        キーワードマッチは大文字小文字を区別しない（日本語のため実質区別なし）。
     """
     if not prompt:
         return 'local'
@@ -116,9 +129,34 @@ def _route(prompt: str) -> str:
 # ---- ノートパース ----
 
 def _parse_response(text: str) -> dict:
-    """
-    LLM の応答から JSON を抽出してバリデーション。
-    マークダウンコードフェンス等を含んでも robust にパース。
+    """LLM の生テキスト応答から JSON を抽出し、ノートデータをバリデーションして返す。
+
+    マークダウンのコードフェンス（```json ... ```）が含まれていても除去したうえで
+    最初の ``{`` から最後の ``}`` までを JSON としてパースする。
+    ノートオブジェクトごとに音名・オクターブ・ステップ・長さを検証し、
+    不正なエントリは無視して有効なものだけを返す。
+
+    Args:
+        text: LLM から返された生テキスト。JSON を含む文字列。
+
+    Returns:
+        以下のキーを持つ辞書::
+
+            {
+                "notes": [
+                    {"note": str, "octave": int, "step": int, "length": int},
+                    ...
+                ],
+                "explanation": str,
+            }
+
+        ``notes`` の各要素は NOTE_NAMES に含まれる音名、オクターブ 0〜8、
+        ステップ 0 以上、長さ 1 以上に正規化される。
+
+    Raises:
+        AssistantError: テキスト内に JSON が見つからない場合。
+        AssistantError: JSON のパースに失敗した場合。
+        AssistantError: パースされた JSON に ``"notes"`` キーが存在しない場合。
     """
     # マークダウンフェンスを除去
     text = text.strip()
@@ -172,9 +210,30 @@ def _parse_response(text: str) -> dict:
 
 def _call_local(user_message: str, model: str = DEFAULT_LOCAL_MODEL,
                 url: str = DEFAULT_LOCAL_URL, timeout: float = 60.0) -> str:
-    """
-    Ollama HTTP API を呼び出す。
-    事前に `ollama pull <model>` 済みである必要がある。
+    """Ollama の HTTP Chat API を呼び出してモデルの応答テキストを返す。
+
+    ``/api/chat`` エンドポイントに POST し、JSON モードで応答を受け取る。
+    システムプロンプト（SYSTEM_PROMPT）は常に付与される。
+
+    Args:
+        user_message: ユーザーのリクエスト文字列（BPM・小節数情報を含む）。
+        model: 使用する Ollama モデル名（例: ``"gemma3:4b"``）。
+            デフォルトは環境変数 ``OLLAMA_MODEL`` の値。
+        url: Ollama サーバーのベース URL。
+            デフォルトは環境変数 ``OLLAMA_URL`` の値（``http://localhost:11434``）。
+        timeout: HTTP リクエストのタイムアウト秒数。
+
+    Returns:
+        モデルが生成したテキスト（JSON 文字列を含む）。
+
+    Raises:
+        AssistantError: Ollama サーバーへの接続に失敗した場合。
+            ``ollama serve`` が起動していない可能性がある。
+        AssistantError: Ollama サーバーが HTTP エラーを返した場合。
+
+    Note:
+        事前に ``ollama pull <model>`` でモデルを取得しておく必要がある。
+        temperature=0.7 で呼び出すため、同じプロンプトでも応答が変わることがある。
     """
     import httpx
 
@@ -207,9 +266,33 @@ def _call_local(user_message: str, model: str = DEFAULT_LOCAL_MODEL,
 
 def _call_cloud(user_message: str, model: str = DEFAULT_CLOUD_MODEL,
                 api_key: str = "", timeout: float = 60.0) -> str:
-    """
-    Anthropic Claude API を呼び出す。
-    環境変数 ANTHROPIC_API_KEY が必要。
+    """Anthropic Claude Messages API を呼び出してモデルの応答テキストを返す。
+
+    ``https://api.anthropic.com/v1/messages`` に POST し、
+    レスポンスの ``content[0].text`` を返す。
+    システムプロンプト（SYSTEM_PROMPT）は常に付与される。
+
+    Args:
+        user_message: ユーザーのリクエスト文字列（BPM・小節数情報を含む）。
+        model: 使用する Claude モデル ID（例: ``"claude-haiku-4-5-20251001"``）。
+            デフォルトは環境変数 ``CLAUDE_MODEL`` の値。
+        api_key: Anthropic API キー。空文字の場合は環境変数
+            ``ANTHROPIC_API_KEY`` を参照する。
+        timeout: HTTP リクエストのタイムアウト秒数。
+
+    Returns:
+        Claude が生成したテキスト（JSON 文字列を含む）。
+
+    Raises:
+        AssistantError: API キーが設定されていない場合。
+        AssistantError: Claude API サーバーへの接続に失敗した場合。
+        AssistantError: Claude API が HTTP エラーを返した場合。
+        AssistantError: 応答の ``content`` が空の場合。
+
+    Note:
+        max_tokens=2048 で呼び出すため、非常に長いノートシーケンスは
+        途中で切断される可能性がある。
+        API 呼び出しはネットワーク料金が発生する。
     """
     import httpx
 
@@ -260,24 +343,51 @@ def suggest_notes(
     local_caller=None,
     cloud_caller=None,
 ) -> dict:
-    """
-    自然言語プロンプトからピアノロール用ノートデータを生成する。
+    """自然言語プロンプトからピアノロール用ノートデータを生成する。
+
+    ``mode`` に応じてローカル（Ollama）またはクラウド（Claude）の LLM を選択し、
+    BPM・小節数・既存ノートを文脈としてプロンプトに付加してノートを生成する。
+    生成されたテキストは ``_parse_response`` でパース・バリデーションされる。
 
     Args:
-        prompt: ユーザーの自然言語リクエスト
-        bpm: 現在のBPM（文脈としてプロンプトに含める）
-        bars: 生成したい小節数
-        mode: "auto" | "local" | "cloud"
-        context_notes: 既存のノートデータ（継続性のため）
-        local_caller: ローカルバックエンド呼び出し関数（テスト時のモック用）
-        cloud_caller: クラウドバックエンド呼び出し関数（テスト時のモック用）
+        prompt: ユーザーの自然言語リクエスト（例: ``"4小節のポップスコード進行"``）。
+            空文字列や空白のみの文字列は不可。
+        bpm: 現在のプロジェクト BPM。プロンプトの文脈として LLM に渡す。
+        bars: 生成したい小節数。1小節=16ステップとして LLM に伝える。
+        mode: バックエンド選択モード。以下のいずれか:
+
+            - ``"auto"``: ``_route`` でプロンプトを分析して自動選択。
+            - ``"local"``: Ollama を強制使用。
+            - ``"cloud"``: Claude を強制使用。
+
+        context_notes: 既存のピアノロールノートリスト（継続性のため LLM に参照させる）。
+            最初の 16 ノートのみ使用される。``None`` の場合は省略。
+        local_caller: ローカルバックエンドの呼び出し関数。
+            ``None`` の場合は ``_call_local`` を使用。テスト時のモック差し替えに使う。
+        cloud_caller: クラウドバックエンドの呼び出し関数。
+            ``None`` の場合は ``_call_cloud`` を使用。テスト時のモック差し替えに使う。
 
     Returns:
-        {
-            "notes": [{"note", "octave", "step", "length"}, ...],
-            "explanation": str,
-            "backend": "local" | "cloud",
-        }
+        以下のキーを持つ辞書::
+
+            {
+                "notes": [
+                    {"note": str, "octave": int, "step": int, "length": int},
+                    ...
+                ],
+                "explanation": str,   # LLM による日本語での生成説明
+                "backend": str,       # 実際に使用したバックエンド ("local" | "cloud")
+            }
+
+    Raises:
+        AssistantError: ``prompt`` が空または空白のみの場合。
+        AssistantError: ``mode`` が ``"auto"`` / ``"local"`` / ``"cloud"`` 以外の場合。
+        AssistantError: LLM への接続や応答のパースに失敗した場合
+            （``_call_local`` / ``_call_cloud`` / ``_parse_response`` から伝播）。
+
+    Note:
+        ``local_caller`` / ``cloud_caller`` は依存性注入のためのパラメータであり、
+        本番コードでは省略して ``None`` のままにすること。
     """
     if not prompt or not prompt.strip():
         raise AssistantError("プロンプトが空です")
@@ -318,9 +428,26 @@ def suggest_notes(
 
 
 def check_availability() -> dict:
-    """
-    ローカル/クラウドの利用可否を返す。
-    UI で「使えるバックエンド」を表示するため。
+    """ローカル（Ollama）およびクラウド（Claude）バックエンドの利用可否を確認する。
+
+    Ollama に対しては実際に HTTP GET リクエストを送信して応答を確認する。
+    Claude については API キーが環境変数に設定されているかだけを確認する
+    （実際の API 接続テストは行わない）。
+
+    Returns:
+        以下のキーを持つ辞書::
+
+            {
+                "local": bool,           # Ollama サーバーが応答可能かどうか
+                "cloud": bool,           # ANTHROPIC_API_KEY が設定されているかどうか
+                "local_models": list[str], # Ollama に登録されているモデル名のリスト
+            }
+
+    Note:
+        Ollama への接続タイムアウトは 2.0 秒。サーバーが起動していない場合や
+        ネットワークエラーの場合は例外をキャッチして ``local=False`` を返す。
+        ``cloud`` フラグは API キーの存在のみを確認するため、
+        キーが無効であっても ``True`` を返す場合がある。
     """
     result = {"local": False, "cloud": False, "local_models": []}
 

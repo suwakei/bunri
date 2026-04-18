@@ -5,31 +5,64 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useDaw } from '../lib/store';
 
+/**
+ * AIアシスタントが提案する単一ノートのデータ構造。
+ * ピアノロールの1マスに相当する。
+ */
 interface AssistantNote {
+    /** 音名（例: "C", "D#"） */
     note: string;
+    /** オクターブ番号（例: 4 = 中央C） */
     octave: number;
+    /** 開始ステップ（16分音符単位のグリッドインデックス） */
     step: number;
+    /** ノートの長さ（ステップ数） */
     length: number;
 }
 
+/**
+ * `/api/assistant/chat` が返すレスポンス全体。
+ * 提案ノート列・説明文・使用バックエンドを含む。
+ */
 interface AssistantResponse {
+    /** 提案されたノートの配列 */
     notes: AssistantNote[];
+    /** LLMが生成したノートの説明文 */
     explanation: string;
+    /** 実際に応答を生成したバックエンド種別 */
     backend: 'local' | 'cloud';
 }
 
+/**
+ * チャット履歴の1メッセージを表す型。
+ * role によってユーザー発言・アシスタント応答・エラーを区別する。
+ */
 interface ChatMessage {
+    /** メッセージの送信者種別 */
     role: 'user' | 'assistant' | 'error';
+    /** 表示するテキスト内容 */
     text: string;
+    /** role が 'assistant' のときのみ存在する構造化レスポンス */
     response?: AssistantResponse;
 }
 
+/**
+ * LLMバックエンドの利用可否を示す状態型。
+ * `/api/assistant/status` のレスポンスに対応する。
+ */
 interface AvailabilityStatus {
+    /** Ollama ローカルサーバーが起動しているか */
     local: boolean;
+    /** クラウドAPIキー（ANTHROPIC_API_KEY）が設定されているか */
     cloud: boolean;
+    /** Ollama で利用可能なモデル名の一覧 */
     local_models: string[];
 }
 
+/**
+ * チャット入力欄に表示するサンプルプロンプトの一覧。
+ * クリックすると入力欄にセットされる。
+ */
 const EXAMPLE_PROMPTS = [
     '4小節のポップスコード進行（Cメジャー）',
     '2小節のシンプルなベースライン（Am）',
@@ -38,6 +71,13 @@ const EXAMPLE_PROMPTS = [
     'ジャズっぽいウォーキングベース',
 ];
 
+/**
+ * AIアシスタントパネルコンポーネント。
+ * ユーザーが自然言語でプロンプトを入力すると、LLMがピアノロールノートを提案する。
+ * 提案はアクティブトラックのピアノロールへ「置換」または「末尾追加」で適用できる。
+ *
+ * @returns AIアシスタントUIのJSX要素
+ */
 export default function AssistantPanel() {
     const { bpm, setStatus, pianoRollRef, bumpTracks, setHint } = useDaw();
     const [messages, setMessages] = useState<ChatMessage[]>([]);

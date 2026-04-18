@@ -5,6 +5,16 @@ import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 
+/**
+ * プロジェクトデータの構造を表すインターフェース。
+ * API の `/api/project/save` / `/api/project/load/{name}` でやり取りされる。
+ *
+ * @property bpm - テンポ（Beats Per Minute）
+ * @property beatsPerBar - 1小節あたりの拍数
+ * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
+ * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
+ * @property automation - オートメーションポイントのシリアライズ済みデータ
+ */
 interface ProjectData {
     bpm?: number;
     beatsPerBar?: number;
@@ -13,12 +23,24 @@ interface ProjectData {
     automation?: Record<string, unknown>;
 }
 
+/**
+ * 再生時間（秒）を `M:SS.d` 形式の文字列に変換する。
+ *
+ * @param t - 変換する時間（秒、0 以上の実数）
+ * @returns `"分:秒.1桁"` 形式の時刻文字列（例: `"1:03.5"`）
+ */
 function formatTime(t: number): string {
     const min = Math.floor(t / 60);
     const sec = (t % 60).toFixed(1);
     return `${min}:${sec.padStart(4, '0')}`;
 }
 
+/**
+ * エンジンの現在再生位置を 100ms 間隔でポーリングし、
+ * `M:SS.d` 形式でリアルタイム表示するコンポーネント。
+ *
+ * @returns 現在再生時刻を示す `<span id="time-display">` 要素
+ */
 function TimeDisplay() {
     const [time, setTime] = useState('0:00.0');
     useEffect(() => {
@@ -30,6 +52,13 @@ function TimeDisplay() {
     return <span id="time-display">{time}</span>;
 }
 
+/**
+ * ヘッダーバーコンポーネント。
+ * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
+ * プロジェクト操作ボタン（保存・読込・WAV書き出し・ガイド）を提供する。
+ *
+ * @returns ヘッダー全体の `<div id="header">` 要素
+ */
 export default function HeaderBar() {
     const {
         bpm, setBpm, beatsPerBar, setBeatsPerBar,
