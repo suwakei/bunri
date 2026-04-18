@@ -6,11 +6,29 @@ import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import AssistantPanel from './AssistantPanel';
 
+/**
+ * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
+ * `/api/gm-instruments` レスポンスの各要素に対応する。
+ *
+ * @property program - GM プログラム番号（0〜127）
+ * @property name - 楽器名（例: `"Acoustic Grand Piano"`）
+ */
 interface GmInstrument {
     program: number;
     name: string;
 }
 
+/**
+ * FX パネルで表示・操作する単一パラメータの定義。
+ * `FX_PARAMS` 定数の各エントリーに対応する。
+ *
+ * @property id - API に送信するパラメータキー（例: `"threshold"`）
+ * @property label - UI 上に表示するラベル文字列（例: `"Threshold (dB)"`）
+ * @property min - スライダーの最小値
+ * @property max - スライダーの最大値
+ * @property step - スライダーのステップ幅
+ * @property def - デフォルト値（エフェクト切り替え時に適用される）
+ */
 interface FxParamDef {
     id: string;
     label: string;
@@ -20,6 +38,10 @@ interface FxParamDef {
     def: number;
 }
 
+/**
+ * GM 楽器をカテゴリ名 → GM プログラム番号配列にまとめた定数。
+ * シンセパネルの楽器セレクトボックスをカテゴリ別 `<optgroup>` で表示するために使用する。
+ */
 // ---- GM楽器カテゴリ ----
 const GM_CATEGORIES: Record<string, number[]> = {
     'ピアノ': [0,1,2,4,5,6,8],
@@ -36,6 +58,11 @@ const GM_CATEGORIES: Record<string, number[]> = {
     'エスニック/その他': [104,105,108,110,114],
 };
 
+/**
+ * エフェクト種別ごとのパラメータ定義マップ。
+ * キーは `/api/effects/{name}` のパス部分（`"eq"`, `"reverb"` など）と一致する。
+ * 値は空配列の場合、追加パラメータなし（例: `"normalize"`）。
+ */
 // ---- FXパラメータ定義 ----
 const FX_PARAMS: Record<string, FxParamDef[]> = {
     eq: [
@@ -65,6 +92,13 @@ const FX_PARAMS: Record<string, FxParamDef[]> = {
     ],
 };
 
+/**
+ * シンセサイザーパネルコンポーネント。
+ * GM 音源またはカスタム波形を選択し、ピアノロールのノートを
+ * `/api/synth/sequence` へ送信してシーケンスをレンダリング・トラックに追加する。
+ *
+ * @returns シンセパネル全体の `<div id="synth-panel">` 要素
+ */
 // ---- シンセパネル ----
 function SynthPanel() {
     const { bpm, setStatus, withProgress, bumpTracks, pianoRollRef, setHint } = useDaw();
@@ -181,6 +215,13 @@ function SynthPanel() {
     );
 }
 
+/**
+ * ドラムマシンパネルコンポーネント。
+ * プリセットパターン・小節数・音量を指定して `/api/synth/drum` を呼び出し、
+ * 生成されたドラム音声を選択トラックに追加する。
+ *
+ * @returns ドラムパネル全体の `<div id="drum-panel">` 要素
+ */
 // ---- ドラムパネル ----
 function DrumPanel() {
     const { bpm, setStatus, withProgress, bumpTracks } = useDaw();
@@ -238,6 +279,13 @@ function DrumPanel() {
     );
 }
 
+/**
+ * エフェクトパネルコンポーネント。
+ * 対象トラックの最初のクリップを WAV に変換して `/api/effects/{fxType}` に送信し、
+ * エフェクト処理済みの音声でクリップを上書きする。
+ *
+ * @returns FX パネル全体の `<div id="fx-panel">` 要素
+ */
 // ---- FXパネル ----
 function FxPanel() {
     const { setStatus, withProgress, bumpTracks } = useDaw();
@@ -308,6 +356,15 @@ function FxPanel() {
     );
 }
 
+/**
+ * `/api/decompose` レスポンスにおける単一ステム（音源分離パート）のデータ構造。
+ *
+ * @property audio_url - 分離済み音声ファイルのサーバー側 URL（省略可）
+ * @property notes - ピアノロールへ配置するノート情報の配列（ドラム以外のステム用、省略可）
+ * @property drum_events - ドラムイベントの配列（ドラムステム用、省略可）
+ * @property gm_program - 推定された GM プログラム番号（推定不能時は `null`）
+ * @property mix - 推定されたミックスパラメータ（音量 dB・パン・リバーブウェット）
+ */
 interface DecomposeStem {
     audio_url?: string;
     notes?: Array<{ note: string; octave: number; step: number; length: number; velocity?: number }>;
@@ -316,11 +373,21 @@ interface DecomposeStem {
     mix: { volume_db: number; pan: number; reverb_wet: number };
 }
 
+/**
+ * `/api/decompose` レスポンス全体のデータ構造。
+ *
+ * @property bpm - 自動検出された楽曲テンポ（Beats Per Minute）
+ * @property stems - ステム名（`"vocals"`, `"drums"` など）をキーとする分離結果マップ
+ */
 interface DecomposeResult {
     bpm: number;
     stems: Record<string, DecomposeStem>;
 }
 
+/**
+ * ステム名（英語）から日本語表示ラベルへのマッピング定数。
+ * `/api/decompose` レスポンスのキーをトラック名として UI に表示する際に使用する。
+ */
 const STEM_LABELS_JP: Record<string, string> = {
     vocals: 'ボーカル',
     drums: 'ドラム',

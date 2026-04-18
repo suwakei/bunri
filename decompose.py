@@ -230,9 +230,26 @@ def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4)
 
 
 def _find_harmonic_peaks(spectrum, freqs, midi_min, midi_max, threshold, max_peaks):
-    """
-    スペクトルから倍音構造を考慮してピークを検出。
-    基音と倍音（2f, 3f, 4f）のエネルギーを合算して信頼度を上げる。
+    """スペクトルから倍音構造を考慮してピーク（MIDIノート）を検出する。
+
+    各MIDIノートについて基音（f0）と3次倍音（2f0, 3f0, 4f0）のエネルギーを
+    重み付き合算し、閾値を超えかつ倍音が2本以上検出された場合に採用する。
+    半音（1半音）以内の近接ノートは重複とみなして除去する。
+
+    Args:
+        spectrum (numpy.ndarray): 正規化済みSTFTマグニチュードスペクトル（1次元）。
+        freqs (numpy.ndarray): 各ビンに対応する周波数配列（Hz）。
+        midi_min (int): 検出するMIDIノート番号の下限（含む）。
+        midi_max (int): 検出するMIDIノート番号の上限（含む）。
+        threshold (float): 採用するエネルギー閾値（正規化値）。
+        max_peaks (int): 返すピーク数の上限。
+
+    Returns:
+        list[tuple[int, float]]: ``(MIDIノート番号, エネルギー値)`` のリスト。
+            エネルギー降順・近接除去済み。最大 ``max_peaks`` 件。
+
+    Note:
+        ``numpy`` を関数内で遅延インポートする。
     """
     import numpy as np
 
@@ -275,7 +292,25 @@ def _find_harmonic_peaks(spectrum, freqs, midi_min, midi_max, threshold, max_pea
 
 
 def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
-    """フレーム単位のMIDIノート列をノートイベント（開始・終了）に変換"""
+    """フレーム単位のMIDIノート列をノートイベントリストに変換する。
+
+    フレームを順に走査し、各MIDIノートのオン/オフ遷移を検出して開始・終了フレームを
+    記録する。持続時間が ``step_sec`` の 0.5 倍未満のイベントはノイズとして除去する。
+
+    Args:
+        frame_notes (list[list[int]]): フレームごとのアクティブMIDIノート番号リスト。
+        frame_velocities (list[list[int]]): ``frame_notes`` に対応するベロシティリスト。
+        sr (int): サンプルレート（Hz）。
+        hop_length (int): STFTのホップ長（サンプル数）。フレーム→秒変換に使用。
+        step_sec (float): 1ステップの長さ（秒）。通常は16分音符の長さ。
+
+    Returns:
+        list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
+            ステップ順にソート済み。
+
+    Note:
+        ``numpy`` を関数内で遅延インポートする。
+    """
     import numpy as np
 
     # アクティブノートの追跡
@@ -339,12 +374,31 @@ def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
 
 
 def transcribe_drums(file_path, bpm=120, sensitivity=0.5):
-    """
-    ドラムステムからリズムパターンを検出。
-    オンセット検出 + スペクトル特徴でキック/スネア/ハイハットを分類。
+    """ドラムステムからリズムパターンを検出してドラムイベントリストを返す。
+
+    librosa のオンセット検出でアタックを特定し、各オンセット近傍の 30ms 窓の
+    スペクトル重心からキック・スネア・ハイハットを分類する。
+
+    Args:
+        file_path (str): ドラムステムの音声ファイルパス（WAV推奨）。
+        bpm (int, optional): テンポ（BPM）。ステップ位置の計算に使用。デフォルト 120。
+        sensitivity (float, optional): 検出感度（0〜1）。大きいほど弱いアタックも検出。
+            デフォルト 0.5。
 
     Returns:
-        list of {"type": "kick"|"snare"|"hihat", "step": int, "velocity": int}
+        list[dict]: ドラムイベントのリスト。各要素は以下のキーを持つ辞書。
+
+        .. code-block:: python
+
+            {
+                "type":     str,  # "kick" | "snare" | "hihat"
+                "step":     int,  # 16分音符単位の発音位置
+                "velocity": int,  # ベロシティ（1〜127）
+            }
+
+    Note:
+        サンプルレートは 22050 Hz に固定。``numpy`` および ``librosa`` を
+        関数内で遅延インポートする。
     """
     import numpy as np
     import librosa
@@ -386,7 +440,26 @@ def transcribe_drums(file_path, bpm=120, sensitivity=0.5):
 
 
 def _classify_drum_hit(window, sr):
-    """短い音声区間からドラムの種類と強さを判定"""
+    """短い音声ウィンドウのスペクトル重心からドラムの種類とベロシティを判定する。
+
+    FFT のスペクトル重心を用いたヒューリスティック分類:
+
+    - 重心 < 200 Hz  → キック
+    - 200 Hz 以上 < 2000 Hz → スネア
+    - 2000 Hz 以上  → ハイハット
+
+    Args:
+        window (numpy.ndarray): 解析する音声サンプル列（30ms 程度を想定）。
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        tuple[str, int]: ``(drum_type, velocity)`` のタプル。
+            ``drum_type`` は ``"kick"``、``"snare"``、``"hihat"`` のいずれか。
+            ``velocity`` は 1〜127。
+
+    Note:
+        ``numpy`` を関数内で遅延インポートする。
+    """
     import numpy as np
 
     # RMSからvelocity推定
@@ -412,11 +485,29 @@ def _classify_drum_hit(window, sr):
 
 
 def estimate_instrument(file_path, stem_name, candidates=None):
-    """
-    ステムのスペクトル特徴から最適なGM楽器番号を推定。
+    """ステムのスペクトル特徴から最適な GM 楽器番号を推定する。
+
+    音声の最初の 10 秒を読み込んでスペクトル重心を計算し、``candidates`` に
+    含まれる GM プログラム番号の経験的な重心値と最も近いものを返す。
+
+    Args:
+        file_path (str): 解析するステムファイルのパス。
+        stem_name (str): ステム名（``"vocals"``, ``"drums"``, ``"bass"``,
+            ``"guitar"``, ``"piano"``, ``"other"`` のいずれか）。
+            ``candidates`` が None の場合、``STEM_GM_CANDIDATES`` から候補を取得。
+        candidates (list[int] | None, optional): 候補の GM プログラム番号リスト。
+            None の場合は ``STEM_GM_CANDIDATES[stem_name]`` を使用。デフォルト None。
 
     Returns:
-        int: GM program number (0-127), or None
+        int | None: 推定された GM プログラム番号（0〜127）。
+            候補リストが空の場合は None。
+
+    Raises:
+        Exception: ``librosa.load`` が失敗した場合は例外が伝播する。
+
+    Note:
+        ``numpy`` および ``librosa`` を関数内で遅延インポートする。
+        ボーカルとドラム（``STEM_GM_CANDIDATES`` が空のステム）は None を返す。
     """
     import numpy as np
     import librosa
@@ -462,11 +553,30 @@ def estimate_instrument(file_path, stem_name, candidates=None):
 
 
 def estimate_mix_params(file_path):
-    """
-    ステムのミックスパラメータ（音量、パン、残響量）を推定。
+    """ステム音声からミックスパラメータ（音量・パン・残響量）を推定する。
+
+    - **volume_db**: 全体 RMS から dBFS を算出。
+    - **pan**: L/R チャンネルの RMS 差分から -1（左）〜1（右）を算出。
+    - **reverb_wet**: 末尾 10% のエネルギー比率から残響量を推定。
+
+    Args:
+        file_path (str): 解析するステムファイルのパス（WAV推奨）。
+            モノラル・ステレオどちらも可。
 
     Returns:
-        {"volume_db": float, "pan": float, "reverb_wet": float}
+        dict: 以下のキーを持つ辞書。値はすべて float で丸め済み。
+
+        .. code-block:: python
+
+            {
+                "volume_db":  float,  # 平均音量（dBFS）
+                "pan":        float,  # パン位置（-1.0〜1.0）
+                "reverb_wet": float,  # 推定残響量（0.0〜1.0）
+            }
+
+    Note:
+        モノラルファイルの場合、ステレオに複製してパンを 0.0 とする。
+        ``numpy`` および ``librosa`` を関数内で遅延インポートする。
     """
     import numpy as np
     import librosa

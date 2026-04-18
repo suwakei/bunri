@@ -426,14 +426,37 @@ def synth_note(note_name, octave, duration, waveform, volume,
 def step_sequencer(notes_json, bpm, waveform, volume,
                    attack, decay, sustain, release, instrument=None,
                    gm_program=None):
-    """
-    JSONフォーマットの音符データからオーディオを生成。
+    """JSON形式の音符データをシーケンスレンダリングしてWAVファイルを生成する。
 
-    notes_json: [{"note": "C", "octave": 4, "step": 0, "length": 1}, ...]
-      - step: 何ステップ目か（16分音符単位、0始まり）
-      - length: 何ステップ分の長さか
-      - "rest" の note は休符
-    gm_program: GM楽器番号（指定時はFluidSynthで高品質レンダリング）
+    16分音符をステップ単位として、各ノートを時間軸に配置・合成する。
+    gm_program が指定されかつ SoundFont ファイルが存在する場合は
+    FluidSynth を用いた高品質レンダリング（_fluidsynth_render）を行う。
+
+    Args:
+        notes_json (str): JSON 文字列。以下の形式のオブジェクト配列。
+            [{"note": "C", "octave": 4, "step": 0, "length": 1}, ...]
+            - note (str): 音名。"rest" は休符として扱われる。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（16分音符単位、0始まり）。
+            - length (int): 音符の長さ（16分音符の何個分か）。
+        bpm (float): テンポ（BPM）。16分音符の長さ計算に使用される。
+        waveform (str): instrument が None のときに使用する波形種別。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+        attack (float): アタック時間（秒）。
+        decay (float): ディケイ時間（秒）。
+        sustain (float): サステインレベル（0.0〜1.0）。
+        release (float): リリース時間（秒）。
+        instrument (str | None): 楽器プリセット名。None の場合は
+            waveform パラメータが使用される。
+        gm_program (int | None): GM 楽器番号（0〜127）。指定時は
+            FluidSynth でレンダリングされ、他の波形/楽器パラメータは無視される。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+
+    Raises:
+        ValueError: notes_json が不正な JSON 形式の場合、
+            または音符データが空の場合。
     """
     sr = 44100
     step_sec = 60.0 / bpm / 4  # 16分音符の長さ（秒）
@@ -496,7 +519,18 @@ def step_sequencer(notes_json, bpm, waveform, volume,
 # ---- ドラムマシン ----
 
 def _kick(sr):
-    """キックドラムの合成"""
+    """キックドラムの波形を合成して返す。
+
+    周波数が時間とともに指数的に減衰するサイン波を積分して
+    キック特有の「ズン」という低音を再現する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.3) の float64 波形配列。
+            振幅は -1.0〜1.0 の範囲（エンベロープ適用済み）。
+    """
     t = np.linspace(0, 0.3, int(sr * 0.3), endpoint=False)
     freq = 150 * np.exp(-t * 15) + 40
     phase = np.cumsum(2 * np.pi * freq / sr)
@@ -504,7 +538,18 @@ def _kick(sr):
 
 
 def _snare(sr):
-    """スネアドラムの合成"""
+    """スネアドラムの波形を合成して返す。
+
+    200 Hz のサイン波（胴鳴り成分）とホワイトノイズ（スナッピー成分）を
+    それぞれ指数減衰エンベロープで成形し、0.5:0.5 で混合する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.2) の float64 波形配列。
+            振幅はおおよそ -1.0〜1.0 の範囲。
+    """
     t = np.linspace(0, 0.2, int(sr * 0.2), endpoint=False)
     tone = np.sin(2 * np.pi * 200 * t) * np.exp(-t * 20)
     noise = np.random.randn(len(t)) * np.exp(-t * 15)
@@ -512,7 +557,18 @@ def _snare(sr):
 
 
 def _hihat(sr):
-    """ハイハットの合成"""
+    """クローズドハイハットの波形を合成して返す。
+
+    ホワイトノイズを急峻な指数減衰エンベロープで成形し、
+    短い「チッ」という金属的な音を再現する。
+
+    Args:
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        numpy.ndarray: 長さ int(sr * 0.08) の float64 波形配列。
+            振幅はおおよそ -0.6〜0.6 の範囲。
+    """
     t = np.linspace(0, 0.08, int(sr * 0.08), endpoint=False)
     noise = np.random.randn(len(t)) * np.exp(-t * 40)
     return noise * 0.6
@@ -543,7 +599,25 @@ DRUM_PATTERNS = {
 
 
 def drum_machine(pattern_name, bpm, bars, volume):
-    """ドラムパターンを生成"""
+    """プリセットパターンを使ってドラムトラックを生成しWAVファイルに保存する。
+
+    DRUM_PATTERNS に定義された 16 ステップ（1小節）のパターンを
+    bars 小節分繰り返す。各ステップでキック・スネア・ハイハットの
+    波形を重ね合わせて出力する。
+
+    Args:
+        pattern_name (str): ドラムパターン名。DRUM_PATTERNS のキー
+            （"4つ打ち" / "8ビート" / "ボサノバ" / "レゲエ"）のいずれか。
+        bpm (float): テンポ（BPM）。16分音符の長さ計算に使用される。
+        bars (int | str): 繰り返す小節数。int に変換して使用される。
+        volume (float): 出力音量スケール（0.0〜1.0）。
+
+    Returns:
+        str: 生成した WAV 一時ファイルのパス。
+
+    Raises:
+        ValueError: pattern_name が DRUM_PATTERNS に存在しない場合。
+    """
     sr = 44100
     step_sec = 60.0 / bpm / 4
     bars = int(bars)

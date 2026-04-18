@@ -35,6 +35,12 @@ function formatTime(t: number): string {
     return `${min}:${sec.padStart(4, '0')}`;
 }
 
+/**
+ * エンジンの現在再生位置を 100ms 間隔でポーリングし、
+ * `M:SS.d` 形式でリアルタイム表示するコンポーネント。
+ *
+ * @returns 現在再生時刻を示す `<span id="time-display">` 要素
+ */
 function TimeDisplay() {
     const [time, setTime] = useState('0:00.0');
     useEffect(() => {
@@ -46,6 +52,13 @@ function TimeDisplay() {
     return <span id="time-display">{time}</span>;
 }
 
+/**
+ * ヘッダーバーコンポーネント。
+ * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
+ * プロジェクト操作ボタン（保存・読込・WAV書き出し・ガイド）を提供する。
+ *
+ * @returns ヘッダー全体の `<div id="header">` 要素
+ */
 export default function HeaderBar() {
     const {
         bpm, setBpm, beatsPerBar, setBeatsPerBar,

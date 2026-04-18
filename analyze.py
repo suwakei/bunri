@@ -9,17 +9,26 @@ NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def analyze_wav(file_path, bpm=120, sensitivity=0.5, engine="basic_pitch"):
-    """
-    WAVファイルを解析してピアノロール用のノートデータを返す。
+    """WAVファイルを解析してピアノロール用のノートデータを返す。
+
+    engine に応じて Basic Pitch または pyin を使用してピッチ検出を行い、
+    16分音符単位のステップ/長さに変換したノートデータのリストを返す。
 
     Args:
-        file_path: WAVファイルのパス
-        bpm: テンポ（16分音符のステップ計算に使用）
-        sensitivity: ピッチ検出の感度（0〜1, 低いほど厳密）
-        engine: 検出エンジン ("basic_pitch" | "pyin")
+        file_path (str): 解析対象の WAV ファイルパス。
+        bpm (float): テンポ（BPM）。16分音符のステップ長さ計算に使用される。
+        sensitivity (float): ピッチ検出の感度（0.0〜1.0）。
+            値が高いほど検出ノート数が増える（閾値が緩くなる）。
+        engine (str): 検出エンジンの選択。
+            "basic_pitch" — Spotify Basic Pitch によるポリフォニック検出（デフォルト）。
+            "pyin"        — librosa pyin による単音メロディ向け検出。
 
     Returns:
-        list of {"note": str, "octave": int, "step": int, "length": int}
+        list[dict]: ノートデータのリスト。各要素は以下のキーを持つ辞書。
+            - note (str): 音名（例: "C", "A#"）。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（16分音符単位、0始まり）。
+            - length (int): ノートの長さ（16分音符の個数）。
     """
     if engine == "pyin":
         return _analyze_pyin(file_path, bpm, sensitivity)
@@ -27,7 +36,23 @@ def analyze_wav(file_path, bpm=120, sensitivity=0.5, engine="basic_pitch"):
 
 
 def _analyze_basic_pitch(file_path, bpm=120, sensitivity=0.5):
-    """Spotify Basic Pitch によるポリフォニックピッチ検出"""
+    """Spotify Basic Pitch を使ってポリフォニックピッチ検出を行う。
+
+    ICASSP_2022 モデルでオンセット・フレーム閾値を sensitivity から算出し、
+    検出された MIDI ノートイベントを 16分音符単位のステップ/長さに変換する。
+    C1（MIDI=24）〜C7（MIDI=96）の範囲外のノートは除外する。
+
+    Args:
+        file_path (str): 解析対象のオーディオファイルパス
+            （Basic Pitch が対応する形式: WAV, MP3, FLAC 等）。
+        bpm (float): テンポ（BPM）。ステップ変換に使用される。
+        sensitivity (float): 検出感度（0.0〜1.0）。
+            高いほどオンセット/フレーム閾値が低くなり、より多くのノートを検出する。
+
+    Returns:
+        list[dict]: step 昇順にソートされたノートデータのリスト。
+            各要素は {"note": str, "octave": int, "step": int, "length": int}。
+    """
     import os
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
