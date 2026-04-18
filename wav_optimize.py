@@ -7,18 +7,33 @@ from audio_utils import load_audio, save_tmp
 
 
 def get_wav_info(file_path):
-    """
-    WAVファイルの詳細情報を返す。
+    """WAVファイルのメタデータと物理的な詳細情報を返す。
+
+    soundfile を使ってファイルを開かずにヘッダ情報を読み取り、
+    ファイルシステムからサイズを取得してまとめる。
+
+    Args:
+        file_path: 情報を取得するWAVファイルのパス（文字列または Path オブジェクト）。
 
     Returns:
-        {
-            "sample_rate": int,
-            "channels": int,
-            "bit_depth": str,
-            "duration_sec": float,
-            "file_size_mb": float,
-            "samples": int,
-        }
+        以下のキーを持つ辞書::
+
+            {
+                "sample_rate": int,        # サンプルレート（Hz）
+                "channels": int,           # チャンネル数（1=モノ, 2=ステレオ）
+                "bit_depth": str,          # ビット深度サブタイプ（例: "PCM_16", "PCM_24", "FLOAT"）
+                "duration_sec": float,     # 再生時間（秒、小数点以下2桁に丸め）
+                "file_size_mb": float,     # ファイルサイズ（MB、小数点以下2桁に丸め）
+                "samples": int,            # 総サンプル数（フレーム数）
+            }
+
+    Raises:
+        RuntimeError: soundfile がファイルを開けない場合（破損・非対応フォーマット等）。
+        FileNotFoundError: 指定したパスにファイルが存在しない場合。
+
+    Note:
+        ``bit_depth`` は soundfile のサブタイプ文字列をそのまま返す。
+        ``"FLOAT"`` は 32bit 浮動小数点、``"DOUBLE"`` は 64bit 浮動小数点を表す。
     """
     import soundfile as sf
     from pathlib import Path
@@ -37,30 +52,46 @@ def get_wav_info(file_path):
 
 
 def optimize_wav(file_path, target_sr=44100, target_bit_depth=16):
-    """
-    WAVファイルを最適化して容量を削減する。
-    音質への影響を最小限に抑えるため、以下の処理を行う:
+    """WAVファイルを最適化して容量を削減する。
 
-    1. サンプルレート変換（例: 48kHz → 44.1kHz）
-       - ナイキスト周波数以上をローパスフィルタで除去してからリサンプル
-       - 可聴域（〜20kHz）は44.1kHzで完全にカバー
-    2. ビット深度変換（例: 32bit float → 16bit）
-       - ディザリング適用で量子化ノイズを知覚しにくい形に分散
-    3. 無音トリム（オプション）
-       - 先頭・末尾の無音部分を除去
+    音質への影響を最小限に抑えながら、以下の変換を順番に行う:
+
+    1. **サンプルレート変換** — ``_resample`` によるポリフェーズリサンプリング。
+       ナイキスト周波数以上をローパスフィルタで除去してから変換する。
+       可聴域（〜20kHz）は 44.1kHz で完全カバーされる。
+    2. **ビット深度変換** — ``_dither_and_quantize`` による TPDF ディザリング後に量子化。
+       32bit float → 16bit などの変換時の量子化ノイズを知覚しにくくする。
+    3. **クリッピング防止** — 変換後の値を ``[-1.0, 1.0]`` にクリップ。
+
+    出力ファイルは ``results/optimized/`` ディレクトリに保存される。
 
     Args:
-        file_path: 入力WAVファイルのパス
-        target_sr: 目標サンプルレート（デフォルト 44100Hz = CD品質）
-        target_bit_depth: 目標ビット深度（16 or 24）
+        file_path: 入力WAVファイルのパス（文字列または Path オブジェクト）。
+        target_sr: 目標サンプルレート（Hz）。デフォルトは 44100（CD品質）。
+            入力と同じ値の場合はリサンプリングをスキップする。
+        target_bit_depth: 目標ビット深度。``16`` または ``24`` を指定する。
+            それ以外の値が渡された場合は 16bit として処理する。
 
     Returns:
-        {
-            "path": str,          # 最適化後のファイルパス
-            "original": dict,     # 元ファイルの情報
-            "optimized": dict,    # 最適化後の情報
-            "reduction_pct": float # 容量削減率（%）
-        }
+        以下のキーを持つ辞書::
+
+            {
+                "path": str,            # 最適化後ファイルの絶対パス
+                "original": dict,       # 元ファイルの get_wav_info() 結果
+                "optimized": dict,      # 最適化後ファイルの get_wav_info() 結果
+                "reduction_pct": float, # ファイルサイズの削減率（%、小数点以下1桁）
+            }
+
+    Raises:
+        RuntimeError: soundfile がファイルを読み書きできない場合。
+        FileNotFoundError: ``file_path`` が存在しない場合。
+        ImportError: scipy がインストールされていない場合（リサンプリング時）。
+
+    Note:
+        内部では float64 で処理するため、変換精度は入力フォーマットに依存しない。
+        ``results/optimized/`` ディレクトリが存在しない場合は自動作成する。
+        出力ファイル名は ``opt_{元ファイル名}_{target_sr}_{target_bit_depth}bit.wav``
+        の形式になる。
     """
     import numpy as np
     import soundfile as sf
@@ -115,9 +146,30 @@ def optimize_wav(file_path, target_sr=44100, target_bit_depth=16):
 
 
 def _resample(data, orig_sr, target_sr):
-    """
-    高品質リサンプリング。
-    scipy の resample_poly を使用（ポリフェーズフィルタ）。
+    """ポリフェーズフィルタを使って高品質なサンプルレート変換を行う。
+
+    ``scipy.signal.resample_poly`` を使用する。変換比率は最大公約数で
+    簡約するため、整数比で表せないレート間（例: 48000→44100）でも
+    正確に処理できる。モノラル・ステレオの両方に対応する。
+
+    Args:
+        data: 入力音声データの NumPy 配列。
+            モノラルの場合は shape ``(samples,)``、
+            ステレオの場合は shape ``(samples, channels)``。
+        orig_sr: 入力データのサンプルレート（Hz）。
+        target_sr: 変換後の目標サンプルレート（Hz）。
+
+    Returns:
+        リサンプル後の音声データ（dtype: ``numpy.float64``）。
+        入力と同じ次元数・チャンネル数を保持する。
+
+    Raises:
+        ImportError: scipy がインストールされていない場合。
+
+    Note:
+        ``orig_sr == target_sr`` の場合は変換を行わずに入力をそのまま返す。
+        ステレオの場合はチャンネルごとに独立してリサンプリングし、
+        処理後に ``numpy.column_stack`` で結合する。
     """
     import numpy as np
     from math import gcd
@@ -144,9 +196,28 @@ def _resample(data, orig_sr, target_sr):
 
 
 def _dither_and_quantize(data, bit_depth):
-    """
-    TPDF（三角確率密度関数）ディザリングを適用して量子化。
-    ディザリングにより16bit変換時の量子化ノイズを知覚しにくくする。
+    """TPDF ディザリングを適用してから指定ビット深度に量子化する。
+
+    TPDF（三角確率密度関数）ディザは、2 つの独立した一様分布ノイズを加算して
+    三角分布を生成する。これにより量子化ノイズが特定の周波数に集中せず、
+    知覚的に目立ちにくい白色ノイズに近い特性になる。
+
+    量子化ステップは ``1 / (2^(bit_depth-1) - 1)`` で計算される。
+    処理後もデータは float 形式のまま返す（soundfile での書き込み時に整数変換される）。
+
+    Args:
+        data: 入力音声データの NumPy 配列（dtype: float、値域 ``[-1.0, 1.0]``）。
+            モノラル・ステレオどちらも可。
+        bit_depth: 目標ビット深度（整数）。例: ``16`` または ``24``。
+
+    Returns:
+        ディザリングおよび量子化を適用した NumPy 配列（dtype は入力に準じる）。
+        値域は入力と同じ ``[-1.0, 1.0]`` に正規化された float 形式。
+
+    Note:
+        この関数は量子化後もデータを float のまま返す。クリッピングは行わないため、
+        呼び出し元で ``numpy.clip`` を適用することを推奨する。
+        ディザノイズのレベルは量子化ステップの ±0.5 LSB（最小量子化単位）以内に収まる。
     """
     import numpy as np
 

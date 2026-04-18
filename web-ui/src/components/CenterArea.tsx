@@ -7,6 +7,21 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 
+/**
+ * Canvas ベースのピアノロールエディタエンジン。
+ *
+ * グリッド描画・ノートの追加/移動/リサイズ/削除・アクティブトラックとの
+ * 双方向同期（`_saveToEngine` / `_loadFromEngine`）を担う。
+ * React コンポーネントから `pianoRollRef.current` 経由で操作する。
+ *
+ * 主なパブリック API:
+ * - `init(el)` — DOM 要素群を渡して初期化する
+ * - `switchToTrack(trackId)` — 表示するトラックを切り替える
+ * - `getNotes()` — 現在のノート配列を返す（エンジンへも保存）
+ * - `setNotes(notes)` — ノートを一括セットして再描画する
+ * - `getActiveTrackId()` — アクティブなトラック ID を返す
+ * - `clear()` — 全ノートを削除する
+ */
 // ---- PianoRoll クラス（Canvasベース）----
 class PianoRollEngine {
     constructor() {
@@ -22,12 +37,29 @@ class PianoRollEngine {
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
     }
+    /**
+     * ピアノロールを DOM 要素群に紐付けて初期化する。
+     * 鍵盤の構築・Canvas リサイズ・グリッド描画・イベント登録を行う。
+     *
+     * @param el - 初期化に必要な DOM 要素群
+     * @param el.canvas - グリッド描画用 `<canvas>` 要素
+     * @param el.noteLayer - ノートブロックを配置するオーバーレイ `<div>` 要素
+     * @param el.keysDiv - 鍵盤キーを並べる `<div>` 要素
+     * @param el.wrap - スクロール可能なラッパー `<div>` 要素
+     */
     init(el) {
         this.canvas = el.canvas; this.noteLayer = el.noteLayer;
         this.keysDiv = el.keysDiv; this.wrap = el.wrap;
         this.ctx = this.canvas.getContext('2d');
         this._buildKeys(); this._resize(); this._drawGrid(); this._bindEvents();
     }
+    /**
+     * アクティブトラックを切り替えてピアノロールを再描画する。
+     * 切り替え前に現在のノートをエンジンへ保存し、新トラックのノートを読み込む。
+     * `onTrackSwitch` コールバックが設定されていれば呼び出す。
+     *
+     * @param trackId - 切り替え先のトラック ID（`null` を渡すと選択解除）
+     */
     switchToTrack(trackId) {
         this._saveToEngine();
         this.activeTrackId = trackId !== null ? Number(trackId) : null;

@@ -618,33 +618,53 @@ def estimate_mix_params(file_path):
 
 
 def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
-    """
-    音源分解のメインパイプライン。
+    """音源分解のメインパイプライン。WAV → 分離 → 解析 → トラックデータを返す。
 
-    1. Demucs で6ステム分離
-    2. 各ステムをポリフォニック書き起こし（ドラムはリズム解析）
-    3. 楽器推定 + ミックスパラメータ推定
+    以下の3段階で処理する:
+
+    1. ``deep_separate`` （``separate.py``）で htdemucs_6s による6ステム分離。
+    2. 各ステムをポリフォニック書き起こし（ドラムはリズム解析）。
+    3. 楽器番号推定とミックスパラメータ推定。
 
     Args:
-        input_path: WAVファイルパス
-        bpm: テンポ（Noneの場合は自動検出）
-        sensitivity: 検出感度 (0〜1)
-        segment: Demucs の処理セグメント長
-        jobs: 並列ジョブ数
+        input_path (str): 入力 WAV ファイルのパス。
+        bpm (int | None, optional): テンポ（BPM）。None の場合は librosa で自動検出し
+            60〜200 の範囲にクランプする。デフォルト None。
+        sensitivity (float, optional): ピッチ/リズム検出の感度（0〜1）。デフォルト 0.5。
+        segment (int, optional): Demucs の処理セグメント長（秒）。小さいほどメモリ節約。
+            デフォルト 7。
+        jobs (int, optional): Demucs の並列ジョブ数。CPU 負荷を抑えるなら 1。
+            デフォルト 1。
 
     Returns:
-        {
-            "bpm": int,
-            "stems": {
-                "stem_name": {
-                    "audio_path": str,
-                    "notes": [...],           # ピアノロール用ノートデータ
-                    "drum_events": [...],      # ドラムのみ
-                    "gm_program": int | None,
-                    "mix": {"volume_db", "pan", "reverb_wet"},
+        dict: 以下の構造を持つ辞書。
+
+        .. code-block:: python
+
+            {
+                "bpm": int,
+                "stems": {
+                    "<stem_name>": {
+                        "audio_path": str,        # results/decompose/<stem>.wav
+                        "notes": list[dict],      # ピアノロール用ノートデータ（ドラム以外）
+                        "drum_events": list[dict],# リズムイベント（ドラムのみ）
+                        "gm_program": int | None, # GM プログラム番号
+                        "mix": {
+                            "volume_db":  float,
+                            "pan":        float,
+                            "reverb_wet": float,
+                        },
+                    }
                 }
             }
-        }
+
+    Raises:
+        FileNotFoundError: ``input_path`` が存在しない場合（``deep_separate`` が送出）。
+        RuntimeError: Demucs の実行に失敗した場合。
+
+    Note:
+        分離済みステムは ``results/decompose/`` に WAV としてコピーされる。
+        ``numpy`` および ``librosa`` を関数内で遅延インポートする。
     """
     import numpy as np
     import librosa

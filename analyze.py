@@ -95,7 +95,23 @@ def _analyze_basic_pitch(file_path, bpm=120, sensitivity=0.5):
 
 
 def _analyze_pyin(file_path, bpm=120, sensitivity=0.5):
-    """librosa pyin による単音メロディ向けピッチ検出（フォールバック用）"""
+    """librosa pyin を使って単音メロディのピッチ検出を行う（フォールバック用）。
+
+    22050 Hz モノラルでロードしたオーディオに pyin を適用し、有声フレームの
+    ピッチを追跡する。隣接する半音差 1 以内のフレームは同一ノートとして
+    継続扱いし、連続区間をひとつのノートに集約する。
+    length が 1 未満のノートは除外される。
+
+    Args:
+        file_path (str): 解析対象の WAV ファイルパス。
+        bpm (float): テンポ（BPM）。ステップ変換に使用される。
+        sensitivity (float): 有声判定の確率閾値の基準値（0.0〜1.0）。
+            実際の閾値は max(0.1, sensitivity * 0.8) で計算される。
+
+    Returns:
+        list[dict]: length >= 1 のノートデータのリスト。
+            各要素は {"note": str, "octave": int, "step": int, "length": int}。
+    """
     import librosa
 
     y, sr = librosa.load(file_path, sr=22050, mono=True)
@@ -151,7 +167,19 @@ def _analyze_pyin(file_path, bpm=120, sensitivity=0.5):
 
 
 def _freq_to_note(freq):
-    """周波数から(音名, オクターブ, MIDIノート番号)を返す"""
+    """周波数を最近接のMIDIノートに変換して (音名, オクターブ, MIDIノート番号) を返す。
+
+    A4=440 Hz を基準に対数スケールでMIDIノート番号へ変換し、
+    四捨五入した整数値に対応する音名・オクターブを返す。
+    C1（MIDI=24）未満または C7（MIDI=96）超の場合は None を返す。
+
+    Args:
+        freq (float): 変換する周波数（Hz）。0 以下または NaN の場合は None を返す。
+
+    Returns:
+        tuple[str, int, int] | None: (音名, オクターブ, MIDIノート番号) のタプル。
+            周波数が無効または範囲外の場合は None。
+    """
     if freq <= 0 or np.isnan(freq):
         return None
     midi = 69 + 12 * np.log2(freq / 440.0)
@@ -164,7 +192,25 @@ def _freq_to_note(freq):
 
 
 def _make_note(note_info, start_time, end_time, step_sec):
-    """ノート情報を辞書に変換"""
+    """ノートの時間情報を 16分音符ステップ単位の辞書に変換する。
+
+    開始・終了時刻（秒）を step_sec で割り、四捨五入することで
+    ステップ番号と長さを算出する。ステップは 0 未満にならず、
+    長さは最小 1 が保証される。
+
+    Args:
+        note_info (tuple[str, int]): (音名, オクターブ) のタプル。
+        start_time (float): ノートの開始時刻（秒）。
+        end_time (float): ノートの終了時刻（秒）。
+        step_sec (float): 1 ステップの長さ（秒）。16分音符の場合は 60/(bpm*4)。
+
+    Returns:
+        dict: ノートデータ辞書。
+            - note (str): 音名。
+            - octave (int): オクターブ番号。
+            - step (int): 開始ステップ（0始まり）。
+            - length (int): ノートの長さ（ステップ数、最小 1）。
+    """
     note_name, octave = note_info
     step = max(0, int(round(start_time / step_sec)))
     length = max(1, int(round((end_time - start_time) / step_sec)))

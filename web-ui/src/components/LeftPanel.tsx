@@ -397,6 +397,15 @@ const STEM_LABELS_JP: Record<string, string> = {
     other: 'その他',
 };
 
+/**
+ * ファイルパネルコンポーネント。以下の機能を統合する:
+ * - 楽曲の完全解析（`/api/decompose`）: ステム分離 → ピッチ検出 → トラック自動生成
+ * - WAV ファイルのトラックへのインポート
+ * - 単音メロディの解析（`/api/analyze`）によるピアノロール自動配置
+ * - マイク録音の開始・停止とトラックへの追加
+ *
+ * @returns ファイルパネル全体の `<div id="file-panel">` 要素
+ */
 // ---- ファイルパネル ----
 function FilePanel() {
     const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm, setBpm } = useDaw();
@@ -605,6 +614,13 @@ function FilePanel() {
     );
 }
 
+/**
+ * トラック選択セレクトボックスの Props。
+ *
+ * @property value - 現在選択中のトラック ID 文字列（`engine.tracks[].id` を文字列化したもの）
+ * @property onChange - トラック ID が変更されたときに呼ばれるコールバック
+ * @property includeNew - `true` のとき「新規作成」オプションを先頭に表示する（省略時 `false`）
+ */
 // ---- トラック選択セレクタ（共通部品）----
 interface TrackSelectorProps {
     value: string;
@@ -612,6 +628,15 @@ interface TrackSelectorProps {
     includeNew?: boolean;
 }
 
+/**
+ * 現在のエンジントラック一覧から選択できる `<select>` コンポーネント。
+ * `trackVersion` が変わると自動的に再描画され、トラックの増減を反映する。
+ *
+ * @param value - 現在選択中のトラック ID 文字列
+ * @param onChange - 選択変更時のコールバック（新しいトラック ID を引数に受け取る）
+ * @param includeNew - `true` のとき「新規作成（Drum）」オプションを先頭に追加する
+ * @returns エンジントラック一覧を選択肢として持つ `<select>` 要素
+ */
 function TrackSelector({ value, onChange, includeNew }: TrackSelectorProps) {
     const { trackVersion } = useDaw();
     return (
@@ -624,6 +649,9 @@ function TrackSelector({ value, onChange, includeNew }: TrackSelectorProps) {
     );
 }
 
+/**
+ * 左パネルのタブ定義。`key` はパネルの識別子、`label` はタブボタンの表示文字列。
+ */
 // ---- メインの LeftPanel ----
 const TABS = [
     { key: 'synth', label: 'シンセ' },
@@ -633,6 +661,13 @@ const TABS = [
     { key: 'ai', label: 'AI' },
 ];
 
+/**
+ * 左パネルコンポーネント。
+ * シンセ・ドラム・FX・ファイル・AI の 5 タブを切り替えて表示する。
+ * 各タブの内容は常に DOM に存在し、`display` の切り替えで表示・非表示を制御する。
+ *
+ * @returns 左パネル全体の `<div id="left-panel">` 要素
+ */
 export default function LeftPanel() {
     const [activeTab, setActiveTab] = useState('synth');
 
