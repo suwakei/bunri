@@ -245,6 +245,14 @@ class AudioEngine {
         return clip;
     }
 
+    /**
+     * デコード済み AudioBuffer をそのままトラックにクリップとして追加する。
+     * @param trackId - 追加先トラック ID
+     * @param audioBuffer - デコード済みバッファ
+     * @param name - クリップ名（省略時は "clip"）
+     * @param offsetSec - タイムライン上の開始位置（秒、デフォルト 0）
+     * @returns 追加した Clip、トラックが存在しない場合は undefined
+     */
     async addClipFromBuffer(trackId: number | string, audioBuffer: AudioBuffer, name?: string, offsetSec: number = 0): Promise<Clip | undefined> {
         const track = this.getTrack(trackId);
         if (!track) return;
@@ -253,18 +261,33 @@ class AudioEngine {
         return clip;
     }
 
+    /**
+     * タイムライン上のクリップ開始位置を変更する（0 秒未満にはならない）。
+     * @param trackId - 対象トラック ID
+     * @param clipIndex - クリップのインデックス
+     * @param newOffset - 新しい開始位置（秒）
+     */
     moveClip(trackId: number | string, clipIndex: number, newOffset: number): void {
         const track = this.getTrack(trackId);
         if (!track || !track.clips[clipIndex]) return;
         track.clips[clipIndex].offset = Math.max(0, newOffset);
     }
 
+    /**
+     * トラックから指定インデックスのクリップを削除する。
+     * @param trackId - 対象トラック ID
+     * @param clipIndex - 削除するクリップのインデックス
+     */
     removeClip(trackId: number | string, clipIndex: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.clips.splice(clipIndex, 1);
     }
 
+    /**
+     * 全トラックを再生する。ソロ/ミュート状態を考慮してスケジューリングする。
+     * @param fromSec - 再生開始位置（秒）。null の場合は現在の playOffset を使用
+     */
     play(fromSec: number | null = null): void {
         this.init();
         if (this.isPlaying) this.stop();

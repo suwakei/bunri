@@ -355,7 +355,23 @@ async def api_batch_edit(
     action: str = Form("trim"),
     params: str = Form("{}"),
 ):
-    """複数ファイルに同じ編集操作を一括適用"""
+    """複数ファイルに同じ編集操作を一括適用して結果をダウンロードリンクで返す。
+
+    Args:
+        files: 処理対象の音声ファイルリスト（マルチパートアップロード）。
+        action: 編集操作名（``trim``, ``cut``, ``silence``, ``loop``,
+            ``reverse``, ``normalize``, ``volume``, ``fade_in``, ``fade_out``,
+            ``speed`` のいずれか）。
+        params: 操作パラメータの JSON 文字列。
+
+    Returns:
+        各ファイルの処理結果リスト（JSON）。各要素は
+        ``{"filename": str, "url": str | None, "status": str}`` の形式。
+        個別ファイルのエラーは ``status`` に記録され、全体は 200 で返る。
+
+    Raises:
+        HTTPException: ``action`` が無効な場合（HTTP 400）。
+    """
     import edit
     p = json.loads(params)
 
@@ -402,7 +418,23 @@ async def api_batch_effects(
     effect_name: str = Form("normalize"),
     params: str = Form("{}"),
 ):
-    """複数ファイルに同じエフェクトを一括適用"""
+    """複数ファイルに同じエフェクトを一括適用して結果をダウンロードリンクで返す。
+
+    Args:
+        files: 処理対象の音声ファイルリスト（マルチパートアップロード）。
+        effect_name: エフェクト名（``eq``, ``compressor``, ``reverb``, ``delay``,
+            ``volume``, ``normalize``, ``fade_in``, ``fade_out``, ``pan``,
+            ``reverse``, ``pitch_shift``, ``time_stretch``, ``speed`` のいずれか）。
+        params: エフェクトパラメータの JSON 文字列。
+
+    Returns:
+        各ファイルの処理結果リスト（JSON）。各要素は
+        ``{"filename": str, "url": str | None, "status": str}`` の形式。
+        個別ファイルのエラーは ``status`` に記録され、全体は 200 で返る。
+
+    Raises:
+        HTTPException: ``effect_name`` が無効な場合（HTTP 400）。
+    """
     import effects
     import edit
     import pitch_time
