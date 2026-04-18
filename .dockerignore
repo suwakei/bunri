@@ -1,0 +1,16 @@
+node_modules/
+web-ui/node_modules/
+web/static/dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+results/
+uploads/
+projects/
+*.pyc
+*.egg-info/
+.claude/
+test/
+docs/
