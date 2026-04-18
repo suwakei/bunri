@@ -33,20 +33,38 @@ export interface Clip {
     duration: number;
 }
 
+/**
+ * ミキサートラック。クリップとピアノノートをまとめ、
+ * ゲイン/パン/ミュート/ソロを制御する WebAudio ノードを保持する。
+ */
 export interface Track {
+    /** トラック固有 ID（1始まりの連番） */
     id: number;
+    /** トラック表示名 */
     name: string;
+    /** タイムライン上のクリップ一覧 */
     clips: Clip[];
+    /** ピアノロールのノート一覧 */
     pianoNotes: PianoNote[];
+    /** ゲイン量（dB） */
     gain: number;
+    /** パン位置（-1.0〜1.0） */
     pan: number;
+    /** ミュート状態 */
     mute: boolean;
+    /** ソロ状態 */
     solo: boolean;
+    /** WebAudio GainNode */
     gainNode: GainNode;
+    /** WebAudio StereoPannerNode */
     panNode: StereoPannerNode;
 }
 
-// 音名 → 周波数テーブル
+/**
+ * 音名（例: "A4", "C#3"）を周波数（Hz）にマッピングするテーブル。
+ * A4 = 440 Hz を基準に 12 平均律で計算済み。
+ * @example NOTE_FREQ["A4"] // => 440
+ */
 const NOTE_FREQ: Record<string, number> = {};
 (() => {
     const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -59,6 +77,11 @@ const NOTE_FREQ: Record<string, number> = {};
     }
 })();
 
+/**
+ * WebAudio API を使ったリアルタイム再生エンジン。
+ * トラック管理・クリップスケジューリング・ピアノノート再生・
+ * メトロノーム・マイク録音・WAV書き出しを一元管理する。
+ */
 class AudioEngine {
     ctx: AudioContext | null = null;
     masterGain: GainNode | null = null;
@@ -92,6 +115,10 @@ class AudioEngine {
         this.nextTrackId = 1;
     }
 
+    /**
+     * AudioContext とマスターゲインを初期化する。
+     * 既に初期化済みの場合は何もしない。
+     */
     init(): void {
         if (this.ctx) return;
         this.ctx = new AudioContext();
@@ -99,6 +126,11 @@ class AudioEngine {
         this.masterGain.connect(this.ctx.destination);
     }
 
+    /**
+     * 新しいトラックを追加し、WebAudio ノードをマスターに接続する。
+     * @param name - トラック名（省略時は "Track N"）
+     * @returns 作成した Track オブジェクト
+     */
     addTrack(name?: string): Track {
         this.init();
         const track: Track = {
@@ -119,16 +151,30 @@ class AudioEngine {
         return track;
     }
 
+    /**
+     * 指定 ID のトラックをエンジンから削除する。
+     * @param trackId - 削除するトラックの ID
+     */
     removeTrack(trackId: number | string): void {
         trackId = Number(trackId);
         this.tracks = this.tracks.filter(t => t.id !== trackId);
     }
 
+    /**
+     * 指定 ID のトラックを取得する。
+     * @param trackId - 検索するトラック ID
+     * @returns 見つかった Track、存在しない場合は undefined
+     */
     getTrack(trackId: number | string): Track | undefined {
         trackId = Number(trackId);
         return this.tracks.find(t => t.id === trackId);
     }
 
+    /**
+     * トラックのゲインを更新する。ミュート中は音量を 0 に保つ。
+     * @param trackId - 対象トラック ID
+     * @param db - ゲイン量（dB）
+     */
     updateTrackGain(trackId: number | string, db: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
@@ -136,6 +182,11 @@ class AudioEngine {
         track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, db / 20);
     }
 
+    /**
+     * トラックのパン位置を更新する。
+     * @param trackId - 対象トラック ID
+     * @param pan - パン値（-1.0=左, 0=中央, 1.0=右）
+     */
     updateTrackPan(trackId: number | string, pan: number): void {
         const track = this.getTrack(trackId);
         if (!track) return;
@@ -143,6 +194,11 @@ class AudioEngine {
         track.panNode.pan.value = pan;
     }
 
+    /**
+     * トラックのミュート状態をトグルする。
+     * @param trackId - 対象トラック ID
+     * @returns ミュート後の状態（true=ミュート中）、トラックが存在しない場合は undefined
+     */
     toggleMute(trackId: number | string): boolean | undefined {
         const track = this.getTrack(trackId);
         if (!track) return;
@@ -151,6 +207,13 @@ class AudioEngine {
         return track.mute;
     }
 
+    /**
+     * ローカルファイルをデコードしてトラックにクリップを追加する。
+     * @param trackId - 追加先トラック ID
+     * @param file - 音声ファイル（WAV/MP3 等）
+     * @param offsetSec - タイムライン上の開始位置（秒、デフォルト 0）
+     * @returns 追加した Clip、トラックが存在しない場合は undefined
+     */
     async addClipFromFile(trackId: number | string, file: File, offsetSec: number = 0): Promise<Clip | undefined> {
         this.init();
         const track = this.getTrack(trackId);
@@ -162,6 +225,14 @@ class AudioEngine {
         return clip;
     }
 
+    /**
+     * URL から音声をフェッチ・デコードしてトラックにクリップを追加する。
+     * @param trackId - 追加先トラック ID
+     * @param url - 音声ファイルの URL
+     * @param name - クリップ名（省略時は "clip"）
+     * @param offsetSec - タイムライン上の開始位置（秒、デフォルト 0）
+     * @returns 追加した Clip、トラックが存在しない場合は undefined
+     */
     async addClipFromUrl(trackId: number | string, url: string, name?: string, offsetSec: number = 0): Promise<Clip | undefined> {
         this.init();
         const track = this.getTrack(trackId);

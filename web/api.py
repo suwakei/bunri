@@ -52,7 +52,14 @@ def _save_upload(upload: UploadFile) -> Path:
 
 @app.get("/")
 async def index():
-    """React SPA のエントリーポイントを返す"""
+    """React SPA のエントリーポイント HTML を返す。
+
+    Returns:
+        ``web/static/dist/index.html`` の ``FileResponse``。
+
+    Raises:
+        HTTPException: ビルド済み ``index.html`` が存在しない場合（HTTP 500）。
+    """
     react_index = DIST_DIR / "index.html"
     if not react_index.exists():
         raise HTTPException(500, "React build が見つかりません。`cd web-ui && npm run build` を実行してください")
@@ -61,11 +68,27 @@ async def index():
 
 @app.get("/help")
 async def help_page():
+    """ヘルプページ（React SPA）を返す。
+
+    Returns:
+        ``index()`` の結果と同一の ``FileResponse``。
+
+    Raises:
+        HTTPException: React ビルドが存在しない場合（HTTP 500）。
+    """
     return await index()
 
 
 @app.get("/tools")
 async def tools_page():
+    """ツールページ（React SPA）を返す。
+
+    Returns:
+        ``index()`` の結果と同一の ``FileResponse``。
+
+    Raises:
+        HTTPException: React ビルドが存在しない場合（HTTP 500）。
+    """
     return await index()
 
 
@@ -83,6 +106,22 @@ async def api_synth_note(
     sustain: float = Form(0.7),
     release: float = Form(0.3),
 ):
+    """単音をソフトウェアシンセで合成して WAV で返す。
+
+    Args:
+        note: 音名（例: ``"A"``, ``"C#"``）。
+        octave: オクターブ（2〜6）。
+        duration: 発音時間（秒）。
+        waveform: 波形種別（``"sine"`` / ``"square"`` / ``"sawtooth"`` / ``"triangle"``）。
+        volume: 出力音量（0.0〜1.0）。
+        attack: ADSR アタック時間（秒）。
+        decay: ADSR ディケイ時間（秒）。
+        sustain: ADSR サスティンレベル（0.0〜1.0）。
+        release: ADSR リリース時間（秒）。
+
+    Returns:
+        合成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+    """
     from synth import synth_note
     path = synth_note(note, octave, duration, waveform, volume,
                       attack, decay, sustain, release)
@@ -102,6 +141,27 @@ async def api_synth_sequence(
     instrument: str = Form(""),
     gm_program: str = Form(""),
 ):
+    """ステップシーケンサーでノートシーケンスを合成して WAV で返す。
+
+    Args:
+        notes_json: ノートリストを表す JSON 文字列
+            （例: ``'[{"note":"C","octave":4,"step":0,"length":4}]'``）。
+        bpm: テンポ（BPM）。
+        waveform: 波形種別（``"sine"`` / ``"square"`` 等）。GM 楽器指定時は無視。
+        volume: 出力音量（0.0〜1.0）。
+        attack: ADSR アタック時間（秒）。
+        decay: ADSR ディケイ時間（秒）。
+        sustain: ADSR サスティンレベル（0.0〜1.0）。
+        release: ADSR リリース時間（秒）。
+        instrument: 楽器カテゴリ名（FluidSynth 使用時）。空文字で波形合成。
+        gm_program: GM プログラム番号（文字列）。``"none"`` または空文字で波形合成。
+
+    Returns:
+        合成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``notes_json`` のパースや合成処理に失敗した場合（HTTP 400）。
+    """
     from synth import step_sequencer
     try:
         inst = instrument if instrument else None
@@ -116,7 +176,12 @@ async def api_synth_sequence(
 
 @app.get("/api/gm-instruments")
 async def api_gm_instruments():
-    """利用可能なGM楽器リストを返す"""
+    """利用可能な GM 楽器一覧を返す。
+
+    Returns:
+        プログラム番号と楽器名のリスト（JSON）。各要素は
+        ``{"program": int, "name": str}`` の形式。
+    """
     from synth import GM_INSTRUMENTS
     return [{"program": k, "name": v} for k, v in GM_INSTRUMENTS.items()]
 
@@ -128,6 +193,20 @@ async def api_drum(
     bars: int = Form(4),
     volume: float = Form(0.7),
 ):
+    """ドラムマシンでパターンを生成し WAV で返す。
+
+    Args:
+        pattern: ドラムパターン名（例: ``"8ビート"``, ``"4つ打ち"``, ``"ボサノバ"``）。
+        bpm: テンポ（BPM）。
+        bars: 生成する小節数。
+        volume: 出力音量（0.0〜1.0）。
+
+    Returns:
+        生成した WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: 不明なパターン名などで失敗した場合（HTTP 400）。
+    """
     from synth import drum_machine
     try:
         path = drum_machine(pattern, bpm, bars, volume)
@@ -143,6 +222,17 @@ async def api_metronome(
     bars: int = Form(8),
     volume: float = Form(0.7),
 ):
+    """メトロノーム音声を生成して WAV で返す。
+
+    Args:
+        bpm: テンポ（BPM）。
+        beats_per_bar: 1小節あたりの拍数（例: ``4`` = 4/4拍子）。
+        bars: 生成する小節数。
+        volume: クリック音の音量（0.0〜1.0）。
+
+    Returns:
+        生成したメトロノーム WAV ファイルの ``FileResponse``（``audio/wav``）。
+    """
     from metronome import generate_metronome
     path = generate_metronome(bpm, beats_per_bar, bars, volume)
     return FileResponse(path, media_type="audio/wav")
@@ -156,6 +246,23 @@ async def api_effect(
     file: UploadFile = File(...),
     params: str = Form("{}"),
 ):
+    """指定したエフェクトを音声ファイルに適用して WAV で返す。
+
+    Args:
+        effect_name: 適用するエフェクト名。以下が有効:
+            ``eq``, ``compressor``, ``reverb``, ``delay``, ``volume``,
+            ``normalize``, ``fade_in``, ``fade_out``, ``pan``, ``reverse``,
+            ``pitch_shift``, ``time_stretch``, ``speed``。
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        params: エフェクトパラメータの JSON 文字列（例: ``'{"db": -3}'``）。
+
+    Returns:
+        エフェクト適用後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: ``effect_name`` が無効な場合（HTTP 400）。
+        HTTPException: エフェクト処理中に ``ValueError`` が発生した場合（HTTP 400）。
+    """
     import effects
     import edit
     import pitch_time
@@ -198,6 +305,23 @@ async def api_edit(
     file: UploadFile = File(...),
     params: str = Form("{}"),
 ):
+    """指定した編集操作を音声ファイルに適用して WAV で返す。
+
+    Args:
+        action: 編集操作名。以下が有効:
+            ``trim``, ``cut``, ``copy_range``, ``silence``, ``loop``。
+        file: 処理対象の音声ファイル（マルチパートアップロード）。
+        params: 操作パラメータの JSON 文字列
+            （例: ``'{"start": 1.0, "end": 5.0}'``）。
+
+    Returns:
+        編集後の WAV ファイルの ``FileResponse``（``audio/wav``）。
+        複数ファイルを返す操作（``split_at`` 等）では先頭ファイルを返す。
+
+    Raises:
+        HTTPException: ``action`` が無効な場合（HTTP 400）。
+        HTTPException: パラメータ不足または値域エラーの場合（HTTP 400）。
+    """
     import edit
 
     src = _save_upload(file)

@@ -470,6 +470,14 @@ class AutomationEditorEngine {
     fromJSON(data) { this.data = data || {}; this.draw(); }
 }
 
+/**
+ * 再生位置のシークバーコンポーネント。
+ * 100ms 間隔でエンジンの現在時刻・総時間をポーリングしてスライダーと時刻表示を更新する。
+ * ドラッグ中はポーリングによる上書きを抑止し、離したタイミングでシーク処理を実行する。
+ * ソロトラックが設定されている場合はシーク後に同じトラックの再生を再開する。
+ *
+ * @returns `<div id="seek-bar-area">` 要素（現在時刻・スライダー・総時間を含む）
+ */
 // ---- SeekBar コンポーネント ----
 function SeekBar() {
     const [seekVal, setSeekVal] = useState(0);
@@ -509,6 +517,17 @@ function SeekBar() {
     );
 }
 
+/**
+ * 中央エリアコンポーネント。
+ * タイムライン・ピアノロール・オートメーションエディタの 3 ペインを縦に並べて表示する。
+ *
+ * マウント時に `PianoRollEngine` / `TimelineEngine` / `AutomationEditorEngine` を初期化し、
+ * それぞれを `pianoRollRef` / `timelineRef` / `automationRef` に格納して
+ * 他のコンポーネントからも参照できるようにする。
+ * `trackVersion` が変わるたびにタイムラインを再描画して最新の状態を反映する。
+ *
+ * @returns 中央エリア全体の `<div id="center">` 要素
+ */
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
     const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion } = useDaw();
