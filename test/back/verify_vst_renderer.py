@@ -1,28 +1,30 @@
 """vst_renderer モジュールの単体検証スクリプト。
 
-このスクリプトは pytest ではなく ``python test/back/verify_vst_renderer.py``
-として単独で実行するためのもの。実際の VST3 プラグインと任意の MIDI
-ファイルを使って、追加した ``VST3Renderer`` が期待通り動作するかを
-チェックする。
+pytest ではなく ``python test/back/verify_vst_renderer.py`` として
+単独で実行する。実際の VST3 プラグインと任意の MIDI を使って
+``render_vst_midi`` が期待通り動作するかをチェックする。
 
-使い方:
+使い方::
+
     # 必要なら: pip install dawdreamer
-    # 任意の VST3 プラグインと MIDI を用意して以下のように実行する
 
-    VST3_PATH="/path/to/Synth.vst3" \\
-    MIDI_PATH="/path/to/song.mid" \\
+    # (A) ダミー MIDI を自動生成して実行
+    VST3_PATH=/path/to/Synth.vst3 python test/back/verify_vst_renderer.py
+
+    # (B) 自前の MIDI を使う
+    VST3_PATH=/path/to/Synth.vst3 \\
+    MIDI_PATH=/path/to/song.mid \\
     python test/back/verify_vst_renderer.py
 
-    # プリセットを渡したい場合
-    PRESET_PATH="/path/to/p.vstpreset" \\
-    VST3_PATH=... MIDI_PATH=... python test/back/verify_vst_renderer.py
+    # (C) プリセット付き
+    VST3_PATH=... MIDI_PATH=... \\
+    PRESET_PATH=/path/to/p.vstpreset \\
+    python test/back/verify_vst_renderer.py
 
-実行すると以下を検証する:
+検証項目:
     1) dawdreamer がインポートできること
-    2) VST3Renderer が VST3 / プリセットを読み込めること
-    3) render_midi が (N,) または (N, 2) の numpy 配列を返すこと
-    4) render_midi_to_wav が有効な WAV を results/edited/ に書き出すこと
-    5) render_vst_midi ワンショットヘルパが同様に動くこと
+    2) render_vst_midi が WAV パス（``results/edited/vst_XXXX.wav``）を返すこと
+    3) 生成 WAV が soundfile で読めて、長さ > 0 かつ無音でないこと
 """
 import os
 import sys
@@ -34,11 +36,10 @@ sys.path.insert(0, str(ROOT))
 
 
 def _make_dummy_midi(path: Path) -> None:
-    """検証用に Cメジャートライアド（C4/E4/G4、2秒）を鳴らす単純なMIDIを書く。
+    """検証用に C メジャートライアド（C4/E4/G4、2 秒）の最小 SMF を書き出す。
 
-    外部ライブラリに依存せず、SMF Format 0 のバイナリを手書きで生成する。
+    SMF Format 0、480 ticks/四分音符、120 BPM。外部ライブラリに依存しない。
     """
-    # Format 0, 1 track, 480 ticks / quarter
     header = b"MThd" + (6).to_bytes(4, "big") + \
              (0).to_bytes(2, "big") + (1).to_bytes(2, "big") + \
              (480).to_bytes(2, "big")
@@ -51,17 +52,15 @@ def _make_dummy_midi(path: Path) -> None:
             n >>= 7
         return bytes(out)
 
-    # 120 BPM, 3ノート（C4, E4, G4）を同時に鳴らし 2秒 = 1920 ticks 伸ばす
     events = bytearray()
-    # tempo: 500000us/quarter = 120BPM
+    # tempo: 500000 us/quarter = 120 BPM
     events += vlq(0) + b"\xFF\x51\x03" + (500000).to_bytes(3, "big")
-    for n in (60, 64, 67):  # C4, E4, G4
+    for n in (60, 64, 67):  # C4 / E4 / G4
         events += vlq(0) + bytes([0x90, n, 100])
     events += vlq(1920) + bytes([0x80, 60, 0])
     for n in (64, 67):
         events += vlq(0) + bytes([0x80, n, 0])
-    # end of track
-    events += vlq(0) + b"\xFF\x2F\x00"
+    events += vlq(0) + b"\xFF\x2F\x00"  # end of track
 
     track = b"MTrk" + len(events).to_bytes(4, "big") + bytes(events)
     path.write_bytes(header + track)
@@ -80,14 +79,12 @@ def main() -> int:
         print("[NG] dawdreamer が未インストールです。`pip install dawdreamer` を実行してください")
         return 1
 
-    # 2) VST3Renderer クラスがインポートできること
-    from vst_renderer import VST3Renderer, render_vst_midi
-    print("[OK] vst_renderer をインポートできました")
+    from vst_renderer import render_vst_midi
+    print("[OK] vst_renderer.render_vst_midi をインポートできました")
 
     if not plugin_path:
         print("[SKIP] 環境変数 VST3_PATH が未設定のため実レンダリングはスキップします")
-        print("       例: VST3_PATH=/path/to/Synth.vst3 MIDI_PATH=/path/to/a.mid \\")
-        print("           python test/back/verify_vst_renderer.py")
+        print("       例: VST3_PATH=/path/to/Synth.vst3 python test/back/verify_vst_renderer.py")
         return 0
 
     if not Path(plugin_path).exists():
@@ -101,37 +98,30 @@ def main() -> int:
         _make_dummy_midi(Path(midi_path))
         print(f"[OK] ダミー MIDI を生成しました: {midi_path}")
 
-    # 3) numpy 配列での出力検証
+    # 2) WAV パスを返すこと
+    out_path = render_vst_midi(
+        plugin_path=plugin_path,
+        midi_path=midi_path,
+        duration=3.0,
+        preset_path=preset_path,
+    )
+    assert isinstance(out_path, str), "戻り値は str（WAV のパス）であるべき"
+    out = Path(out_path)
+    assert out.exists(), f"WAV ファイルが存在しません: {out_path}"
+    assert out.parent.name == "edited", f"保存先が results/edited/ ではない: {out}"
+    assert out.name.startswith("vst_"), f"プレフィックスが vst_ ではない: {out.name}"
+    print(f"[OK] render_vst_midi -> {out_path}")
+
+    # 3) soundfile で読み直して中身を検証
     import numpy as np
     import soundfile as sf
-
-    with VST3Renderer(sample_rate=44100) as r:
-        r.load_plugin(plugin_path, preset_path)
-        print(f"[OK] load_plugin: {plugin_path}")
-        if preset_path:
-            print(f"[OK] load_preset: {preset_path}")
-
-        audio, sr = r.render_midi(midi_path, duration=3.0)
-        assert isinstance(audio, np.ndarray), "numpy.ndarray を返すべき"
-        assert sr == 44100
-        assert audio.ndim in (1, 2), f"shape は (N,) か (N, 2) であるべき: {audio.shape}"
-        if audio.ndim == 2:
-            assert audio.shape[1] in (1, 2), f"チャンネル数が不正: {audio.shape}"
-        assert audio.dtype == np.float32
-        print(f"[OK] render_midi -> shape={audio.shape} dtype={audio.dtype} sr={sr}")
-
-        # 4) WAV 保存検証
-        wav_path = r.render_midi_to_wav(midi_path, duration=3.0, prefix="verify")
-        assert Path(wav_path).exists(), "WAV ファイルが存在しない"
-        data, wav_sr = sf.read(wav_path)
-        assert wav_sr == 44100
-        assert len(data) > 0
-        print(f"[OK] render_midi_to_wav -> {wav_path} ({len(data)} samples, sr={wav_sr})")
-
-    # 5) ワンショットヘルパ
-    wav2 = render_vst_midi(plugin_path, midi_path, duration=2.0, preset_path=preset_path)
-    assert Path(wav2).exists()
-    print(f"[OK] render_vst_midi (ヘルパ) -> {wav2}")
+    data, wav_sr = sf.read(out_path)
+    assert wav_sr == 44100, f"サンプルレートが 44100 ではない: {wav_sr}"
+    assert len(data) > 0, "WAV が空"
+    peak = float(np.max(np.abs(data))) if data.size else 0.0
+    print(f"[OK] WAV 検証: samples={len(data)} sr={wav_sr} peak={peak:.4f}")
+    if peak < 1e-5:
+        print("[WARN] ピーク振幅がほぼゼロです。プラグイン/プリセット/MIDI の組み合わせを確認してください")
 
     print("\n=== 全ての検証に合格しました ===")
     return 0

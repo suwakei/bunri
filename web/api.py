@@ -246,18 +246,21 @@ async def api_synth_vst(
             レンダリング中に例外が発生した場合（HTTP 500）。
     """
     # 重いインポートは関数内で遅延実行（プロジェクト規約）
-    try:
-        from vst_renderer import VST3Renderer
-    except ImportError as e:
-        raise HTTPException(500, f"dawdreamer が利用できません: {e}")
+    from vst_renderer import render_vst_midi
 
     midi_path = _save_upload(midi)
     preset = preset_path or None
 
     try:
-        with VST3Renderer(sample_rate=sample_rate) as r:
-            r.load_plugin(plugin_path, preset)
-            out_path = r.render_midi_to_wav(str(midi_path), duration)
+        out_path = render_vst_midi(
+            plugin_path=plugin_path,
+            midi_path=str(midi_path),
+            duration=duration,
+            preset_path=preset,
+            sr=sample_rate,
+        )
+    except ImportError as e:
+        raise HTTPException(500, f"dawdreamer が利用できません: {e}")
     except FileNotFoundError as e:
         raise HTTPException(400, str(e))
     except (ValueError, RuntimeError) as e:
