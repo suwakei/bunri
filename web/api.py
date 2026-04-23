@@ -215,6 +215,57 @@ async def api_drum(
         raise HTTPException(400, str(e))
 
 
+@app.post("/api/synth/vst")
+async def api_synth_vst(
+    midi: UploadFile = File(...),
+    plugin_path: str = Form(...),
+    duration: float = Form(30.0),
+    preset_path: str = Form(""),
+    sample_rate: int = Form(44100),
+):
+    """VST3 プラグインで MIDI をレンダリングして WAV で返す。
+
+    ``vst_renderer.VST3Renderer`` を呼び出し、アップロードされた MIDI を
+    指定の VST3 プラグインでオフラインレンダリングする。出力は既存の
+    シンセ系エンドポイントと同じく ``audio/wav`` の ``FileResponse``。
+
+    Args:
+        midi: アップロードされた MIDI ファイル（``.mid`` / ``.midi``）。
+        plugin_path: サーバー側から見た VST3 のパス（``.vst3`` バンドル/ファイル）。
+        duration: レンダリング時間（秒）。デフォルトは 30 秒。
+        preset_path: 任意のプリセットファイル（``.vstpreset`` / ``.fxp`` 等）。
+            空文字のときはプラグインのデフォルト状態で読み込む。
+        sample_rate: サンプルレート（Hz）。デフォルト 44100。
+
+    Returns:
+        レンダリングした WAV ファイルの ``FileResponse``（``audio/wav``）。
+
+    Raises:
+        HTTPException: dawdreamer 未インストール時（HTTP 500）、
+            プラグイン/プリセット/MIDI が見つからない場合（HTTP 400）、
+            レンダリング中に例外が発生した場合（HTTP 500）。
+    """
+    # 重いインポートは関数内で遅延実行（プロジェクト規約）
+    try:
+        from vst_renderer import VST3Renderer
+    except ImportError as e:
+        raise HTTPException(500, f"dawdreamer が利用できません: {e}")
+
+    midi_path = _save_upload(midi)
+    preset = preset_path or None
+
+    try:
+        with VST3Renderer(sample_rate=sample_rate) as r:
+            r.load_plugin(plugin_path, preset)
+            out_path = r.render_midi_to_wav(str(midi_path), duration)
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(500, f"VST3 レンダリングに失敗しました: {e}")
+
+    return FileResponse(out_path, media_type="audio/wav")
+
+
 @app.post("/api/metronome")
 async def api_metronome(
     bpm: float = Form(120),
