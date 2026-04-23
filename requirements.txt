@@ -10,3 +10,4 @@ librosa
 basic-pitch
 scipy
 httpx
+dawdreamer
