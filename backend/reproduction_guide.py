@@ -10,14 +10,41 @@
   （LLM が解析結果に無いことを言っていないかを、利用者が見分けられるように）
 - カルテは長くて変わらないので、プロンプトキャッシュの対象にする。1 曲のカルテに対して
   何度も問い合わせる使われ方を想定している
+
+費用を無駄にしないための仕組み（詳しくは docs/reproduction-guide-design.md の「費用」）:
+
+- 作ったガイドは保存し、同じ条件（カルテ・対象・モデル・思考の深さ・指示文と出力の形の版）なら
+  API を呼ばずに返す（``guide_for``、``guide_cache``）
+- 同じカルテへの呼び出しは 1 つずつ通す。連打や二重送信で 2 回課金されないようにする
+- 呼び出しごとに使用量を記録し、1 日の上限に達していたら API を呼ばない（``guide_usage``）
+- 解析できた項目がほとんど無いカルテは、API を呼ばずに断る（``material_shortage``）
+- 入力が上限を超える長いカルテは、黙って切らず、対象をセクションに絞らせる（``fit_request``）
 """
+import hashlib
 import json
 import re
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import llm_settings
 
-# 1 回の応答の上限。ガイドは数千トークンに収まる
+# 1 回の応答の上限。途中で切れたときの歯止めで、節約の手段ではない（モデルからは見えず、
+# 当たると応答が途中で切れて作り直しになる）。出力を短くするのは指示文で行う
 MAX_TOKENS = 16000
+
+# 指示文・出力の形・検証・カルテの渡し方の版。どれかを変えたら上げる。上げると、保存済みのガイドは
+# 使われなくなる。指示文と出力の形は、上げ忘れても指紋（``request_fingerprint``）が変わるので、
+# 古い保存分が使われることは無い
+GUIDE_VERSION = 2
+
+# 思考の深さ。このモデルの既定と同じ値を、明示して固定する。呼び出しごとに変えると
+# プロンプトキャッシュが効かなくなる（モデル・出力の形も同じ）
+EFFORT = "medium"
+
+# プロンプトキャッシュの保持時間。"5m"（既定。書き込みは入力の 1.25 倍）か "1h"（2 倍）。
+# None ならキャッシュの区切りを打たない
+CACHE_TTL = "5m"
 
 # 説明の主題。カルテのどの部分の話かを表す
 TOPICS = ("grid", "key", "chords", "sections", "mix", "general")
@@ -27,7 +54,7 @@ GUIDE_SCHEMA = {
     "properties": {
         "overview": {
             "type": "string",
-            "description": "曲全体の作りを 2〜4 文で。カルテに在る事実だけを使う。",
+            "description": "曲全体の作りを 2〜3 文で。カルテに在る事実だけを使う。",
         },
         "steps": {
             "type": "array",
@@ -96,7 +123,8 @@ SYSTEM_PROMPT = """\
 
 この会話には、楽曲を信号処理で解析した結果（楽曲カルテ）が <chart> タグの中に JSON で\
 与えられます。あなたの仕事は、カルテの内容を「こう作れば再現できる」という手順の説明に\
-言い換えることです。
+言い換えることです。カルテの chords は表で、columns が列の名前、rows の 1 行が 1 つのコードです\
+（length_beats は、そのコードが続く拍数）。
 
 なぜ言い換えだけなのか: このアプリは「生成しないアシスタント」です。曲の事実は解析が出し、\
 あなたはそれを読み上げて、初心者が次に何をすればよいか分かる形にします。あなたが自分の\
@@ -125,9 +153,25 @@ SYSTEM_PROMPT = """\
 - 手順は、テンポとキーの設定 → 曲の構成 → コード進行 → 音作りとミックス、の順を基本にする。\
 focus が指定されたら、そのセクションの再現に絞る。
 - 専門用語を使うときは、最初に一言で意味を添える。
-- 曲そのものについての推測はしない。ファイル名や数値の傾向から、ジャンル・作られ方・楽器を\
+- 曲そのものについての推測はしない。数値の傾向から、ジャンル・作られ方・楽器を\
 言い当てようとしない（カルテに在る事実ではないため）。
 - 日本語で書く。
+
+書く量について: 利用者は、DAW の横の細いパネルでこれを読みながら手を動かします。長い説明は\
+読まれず、作業の手も止まるので、次の量を目安にしてください。
+- overview は 2〜3 文。
+- 手順は、曲全体なら 5〜7 個、focus でセクションを絞ったときは 3〜5 個。1 つの手順の body は \
+2〜4 文で、「何を設定・打ち込みするか」と「その根拠になるカルテの値」を書く。
+- コード進行は、全部の小節を書き出さない。繰り返しのひとまとまり（たとえば 4 小節）で示し、\
+そこから外れる小節だけを個別に挙げる。進行が同じセクションは、先に説明したセクションと同じだと書けば足りる。
+- cautions は、利用者の作業が変わるものだけを、1 項目 1 文で。
+- 解析できた項目が少ないカルテでは、在る項目についてだけ書く。検出できなかった項目は cautions に \
+1 行ずつ挙げるだけにして、一般論で手順を埋めない（一般論を混ぜると、解析結果のように読めてしまうため）。\
+手順が 1〜2 個になってもかまわない。
+
+body の長さと書き方の例（内容は必ずカルテから取る。○○ はカルテの値）:
+「テンポを ○○ BPM に設定し、メトロノームを鳴らして曲の頭と合うか確かめます。解析では 1 拍目が \
+○○ 秒の位置に在ります（たぶん）。ずれて聞こえたら、カルテのグリッド補正で直してから次へ進みます。」
 """.format(certain=song_chart_tiers()[0], likely=song_chart_tiers()[1])
 
 
@@ -137,25 +181,48 @@ class GuideError(Exception):
     Attributes:
         code: 画面側が出し分けに使う種類。``"no_key"``（API キーが無い）、
             ``"auth"``（キーが正しくない）、``"rate_limit"``、``"network"``、
-            ``"refused"``（モデルが応答を断った）、``"truncated"``、``"api"``、``"invalid"``。
+            ``"refused"``（モデルが応答を断った）、``"truncated"``、``"api"``、``"invalid"``、
+            ``"daily_limit"``（1 日の上限に達した）、``"too_long"``（カルテが長すぎる）、
+            ``"no_material"``（解析できた項目がほとんど無い）。
+        usage: 応答が返ってきていた場合の使用量（断られた・途中で切れた、でも費用はかかる）。
+            応答が返る前の失敗なら None。
+        model: 応答したモデル（分かる場合）。
     """
 
-    def __init__(self, message, code="api"):
+    def __init__(self, message, code="api", usage=None, model=None):
         super().__init__(message)
         self.code = code
+        self.usage = usage
+        self.model = model
 
 
-def prompt_chart(chart):
+# LLM に渡すコードの表の列。カルテの chords[] から、言語化に使う項目だけを取り出す
+_CHORD_COLUMNS = ("bar", "beat", "length_beats", "symbol", "degree", "confidence")
+_CHORD_SOURCE_KEYS = ("bar", "beat", "beat_count", "symbol", "degree", "confidence")
+
+
+def prompt_chart(chart, only_section=None):
     """カルテから、LLM に渡すぶんを取り出して JSON 文字列にする。
 
-    実測ビート列 ``grid.beat_times_sec`` は数百個の数値で、言語化には使わないので外す
-    （小節・拍の位置は sections と chords が持っている）。それ以外はそのまま渡す。
+    言語化に使わない項目を外し、数の多いコードは表の形に詰める。事実（値）は変えない。
+
+    - ``grid.beat_times_sec``: 実測ビート列。数百個の数値で、言語化には使わない
+      （小節・拍の位置は sections と chords が持っている）。数（``beat_count``）だけ残す
+    - ``source.filename``: 曲の事実ではない。指示文でも、ファイル名からの推測を禁じている。
+      送らなければ、利用者のファイル名が外に出ない
+    - ``chords[]`` の ``beat_index`` ``start_sec`` ``end_sec``: 小節・拍（``bar`` ``beat``）と
+      長さ（``beat_count``）から決まる。ガイドは場所を小節で指す
+    - ``chords[]`` の ``root`` ``quality``: コード名（``symbol``）に含まれている
+    - ``chords[]`` は、1 件ごとに項目名を繰り返さず、列の名前（``columns``）と行（``rows``）に分ける。
+      長い曲では、入力のほとんどをコードの一覧が占めるため
 
     プロンプトキャッシュが効くよう、同じカルテからは常に同じバイト列を返す
     （キー順と区切り文字を固定する）。
 
     Args:
         chart: 楽曲カルテ（``song_chart.build_chart`` の結果）。
+        only_section: セクションの ID。指定すると、コードの一覧をそのセクションの小節だけにする
+            （長すぎるカルテで、対象を絞ったときに使う。``chords.only_section`` に絞った旨を残す）。
 
     Returns:
         str: JSON 文字列。
@@ -167,18 +234,42 @@ def prompt_chart(chart):
     if isinstance(grid, dict):
         beats = grid.pop("beat_times_sec", None)
         grid["beat_count"] = len(beats) if isinstance(beats, list) else None
+    source = slim.get("source")
+    if isinstance(source, dict):
+        source.pop("filename", None)
+
+    chords = [c for c in slim.get("chords") or [] if isinstance(c, dict)]
+    table = {"columns": list(_CHORD_COLUMNS)}
+    if only_section is not None:
+        section = next((s for s in slim.get("sections") or []
+                        if isinstance(s, dict) and s.get("id") == only_section), None)
+        if section is not None:
+            first, last = section.get("start_bar") or 0, section.get("end_bar") or 0
+            chords = [c for c in chords if isinstance(c.get("bar"), int) and first <= c["bar"] <= last]
+            table["only_section"] = only_section
+    table["rows"] = [[c.get(key) for key in _CHORD_SOURCE_KEYS] for c in chords]
+    slim["chords"] = table
     return json.dumps(slim, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def build_request(chart, focus=None):
+def build_request(chart, focus=None, *, model=None, effort=None, trim_to_focus=False):
     """Claude に送るリクエストの引数を組み立てる。
 
     並びは「変わらないもの → 変わるもの」。指示文とカルテを system に置き、カルテの後ろに
     キャッシュの区切りを打つ。問い合わせごとに変わる focus は、その後ろの user に置く。
 
+    キャッシュは、区切りより前のバイト列・モデル・思考の深さ・出力の形がすべて同じときだけ効く。
+    ``model`` ``effort`` を呼び出しごとに変えると効かなくなる（製品の経路では変えない。
+    比較用のスクリプトが使う）。
+
     Args:
         chart: 楽曲カルテ。
         focus: 絞り込むセクションの ID（``sections[].id``）。None なら曲全体。
+        model: モデルの ID。None なら ``llm_settings.model()``。
+        effort: 思考の深さ。None なら ``EFFORT``。
+        trim_to_focus: True なら、コードの一覧を ``focus`` のセクションだけにする
+            （カルテが長すぎるとき。区切りより前が対象ごとに変わるので、対象をまたいだ
+            キャッシュは効かなくなる）。
 
     Returns:
         dict: ``client.beta.messages.create`` に渡すキーワード引数。
@@ -195,27 +286,92 @@ def build_request(chart, focus=None):
     else:
         request = f"focus: セクション {focus} の再現に絞って、再現ガイドを作ってください。"
 
-    return {
-        "model": llm_settings.model(),
+    model = model or llm_settings.model()
+    chart_block = {
+        "type": "text",
+        "text": "<chart>\n" + prompt_chart(chart, only_section=focus if trim_to_focus else None) + "\n</chart>",
+    }
+    if CACHE_TTL == "1h":
+        chart_block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+    elif CACHE_TTL:
+        chart_block["cache_control"] = {"type": "ephemeral"}
+
+    body = {
+        "model": model,
         "max_tokens": MAX_TOKENS,
-        "system": [
-            {"type": "text", "text": SYSTEM_PROMPT},
-            {
-                "type": "text",
-                "text": "<chart>\n" + prompt_chart(chart) + "\n</chart>",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ],
+        "system": [{"type": "text", "text": SYSTEM_PROMPT}, chart_block],
         "messages": [{"role": "user", "content": request}],
-        # このモデルは既定が medium。説明文の作成には十分なので、明示して固定する
         "output_config": {
-            "effort": "medium",
+            "effort": effort or EFFORT,
             "format": {"type": "json_schema", "schema": GUIDE_SCHEMA},
         },
-        # 安全性の分類器が応答を断ったとき、Anthropic が勧める別のモデルで同じ依頼をやり直す
-        "betas": ["server-side-fallback-2026-07-01"],
-        "fallbacks": "default",
     }
+    if not model.startswith("claude-haiku"):
+        # 安全性の分類器が応答を断ったとき、Anthropic が勧める別のモデルで同じ依頼をやり直す。
+        # Haiku にはサーバ側のやり直しが無いので付けない
+        body["betas"] = ["server-side-fallback-2026-07-01"]
+        body["fallbacks"] = "default"
+    return body
+
+
+def request_fingerprint():
+    """指示文・出力の形・版の指紋を返す。保存したガイドの鍵に入れる。
+
+    Returns:
+        str: 16 桁の 16 進文字列。指示文か出力の形か ``GUIDE_VERSION`` が変わると変わる。
+    """
+    payload = json.dumps([GUIDE_VERSION, SYSTEM_PROMPT, GUIDE_SCHEMA], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def guide_key(chart, focus, model, effort):
+    """保存したガイドの鍵を返す。
+
+    カルテの正規化 JSON のハッシュ・対象・モデル・思考の深さ・指示文と出力の形の指紋から作る。
+    どれか 1 つでも違えば別の鍵になり、保存分は使われない。
+
+    Args:
+        chart: 楽曲カルテ。
+        focus: 対象のセクション ID。曲全体なら None。
+        model: 頼むモデルの ID。
+        effort: 思考の深さ。
+
+    Returns:
+        str: 40 桁の 16 進文字列（ファイル名に使える）。
+    """
+    import guide_cache
+
+    parts = [guide_cache.chart_hash(chart), focus or "", model, effort, request_fingerprint()]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:40]
+
+
+def material_shortage(chart):
+    """カルテに、ガイドを作る材料が足りないときの理由を返す（足りていれば None）。
+
+    テンポ・キー・コード・構成・ミックスのうち、解析できたものが 1 つ以下なら、言い換える事実が
+    ほとんど無い。Claude を呼んでも「検出できませんでした」を並べるだけになるので、呼ばずに断る
+    （判断は機械的に決まるので、LLM にさせない）。
+
+    Args:
+        chart: 楽曲カルテ。
+
+    Returns:
+        str | None: 利用者にそのまま見せられる理由。
+    """
+    unavailable = chart.get("unavailable") or {}
+    grid, key, mix = chart.get("grid") or {}, chart.get("key") or {}, chart.get("mix") or {}
+    available = {
+        "テンポ": "grid" not in unavailable and bool(grid.get("bpm")) and (grid.get("bpm_confidence") or 0) > 0,
+        "キー": bool(key.get("tonic")),
+        "コード": bool(chart.get("chords")),
+        "構成": bool(chart.get("sections")),
+        "ミックス": mix.get("loudness_lufs") is not None,
+    }
+    if sum(available.values()) > 1:
+        return None
+    missing = "・".join(name for name, ok in available.items() if not ok)
+    return (f"この音声からは、ガイドの材料になる項目をほとんど解析できませんでした（{missing}が検出できていません）。"
+            "無音に近い、短すぎる、または音程の無い音声かもしれません。別の音声で試してください")
 
 
 def _chart_bounds(chart):
@@ -370,40 +526,28 @@ def unverified_terms(text, chart):
 
 
 def _usage(response):
-    """応答の使用量を、画面とログ用の辞書にする（キャッシュが効いたかの確認に使う）。"""
+    """応答の使用量を、記録と画面用の辞書にする。
+
+    課金の単位になる 4 つの計器と、出力のうち思考に使われたぶん（分かる場合）。
+    """
     usage = getattr(response, "usage", None)
+    details = getattr(usage, "output_tokens_details", None)
     return {
         "input_tokens": getattr(usage, "input_tokens", None),
         "output_tokens": getattr(usage, "output_tokens", None),
         "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
         "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+        "thinking_tokens": getattr(details, "thinking_tokens", None),
     }
 
 
-def generate(chart, focus=None, client=None):
-    """楽曲カルテから再現ガイドを作る。
-
-    Args:
-        chart: 楽曲カルテ。
-        focus: 絞り込むセクションの ID。None なら曲全体。
-        client: Anthropic のクライアント。None なら ``llm_settings.make_client()`` で作る
-            （テストでは差し替える）。
-
-    Returns:
-        dict: ``{"guide": 検証済みのガイド, "model": 応答したモデル, "usage": 使用量}``。
-
-    Raises:
-        GuideError: API キーが無い・正しくない、通信できない、モデルが応答を断った、
-            出力が途中で切れた、などの場合。メッセージは利用者にそのまま見せられる。
-    """
+@contextmanager
+def _api_errors():
+    """Anthropic SDK の例外を、利用者にそのまま見せられる ``GuideError`` に直す。"""
     import anthropic
 
-    request = build_request(chart, focus)
-    if client is None:
-        client = llm_settings.make_client()
-
     try:
-        response = client.beta.messages.create(**request)
+        yield
     except TypeError as e:
         # SDK は、使える認証情報が 1 つも無いとき TypeError を出す
         if "authentication" in str(e).lower():
@@ -420,21 +564,247 @@ def generate(chart, focus=None, client=None):
     except anthropic.APIStatusError as e:
         raise GuideError(f"Claude の API がエラーを返しました（{e.status_code}）", code="api")
 
+
+def request_chars(request):
+    """リクエストに含まれる文字数を返す（指示文・カルテ・依頼・出力の形）。
+
+    トークン数は文字数を超えないので（1 トークンは 1 文字以上）、これが上限より小さければ、
+    トークン数を数えるまでもなく上限に収まる。
+    """
+    total = sum(len(block.get("text") or "") for block in request["system"])
+    total += sum(len(m["content"]) for m in request["messages"] if isinstance(m.get("content"), str))
+    total += len(json.dumps(request["output_config"]["format"], ensure_ascii=False))
+    return total
+
+
+def count_input_tokens(request, client):
+    """リクエストの入力のトークン数を、API に数えさせる（推論はしない。費用はかからない）。
+
+    Args:
+        request: ``build_request`` の結果。
+        client: Anthropic のクライアント。
+
+    Returns:
+        int: 入力のトークン数（指示文・カルテ・依頼。出力の形のぶんは含まない）。
+
+    Raises:
+        GuideError: API キーが無い・正しくない、通信できない、などの場合。
+    """
+    system = [{"type": "text", "text": block["text"]} for block in request["system"]]
+    with _api_errors():
+        result = client.messages.count_tokens(model=request["model"], system=system, messages=request["messages"])
+    return result.input_tokens
+
+
+def fit_request(chart, focus, client, max_input_tokens, *, model=None, effort=None):
+    """入力が上限に収まるリクエストを返す。収まらなければ、黙って切らずに理由を出す。
+
+    長い曲ではコードの一覧が長くなる。カルテ全体が上限を超えるときは、
+
+    - 対象が曲全体なら、対象をセクションに絞るよう知らせる
+    - 対象がセクションなら、コードの一覧をそのセクションだけにして送る（それでも超えるなら知らせる）
+
+    文字数が上限より小さければ、数えずに通す（``request_chars``）。
+
+    Args:
+        chart: 楽曲カルテ。
+        focus: 対象のセクション ID。曲全体なら None。
+        client: Anthropic のクライアント（トークン数を数えるのに使う）。
+        max_input_tokens: 入力の上限（トークン）。
+        model: モデルの ID。None なら ``llm_settings.model()``。
+        effort: 思考の深さ。None なら ``EFFORT``。
+
+    Returns:
+        dict: ``build_request`` の形のリクエスト。
+
+    Raises:
+        GuideError: 上限に収まらない場合（``code="too_long"``）。
+    """
+    request = build_request(chart, focus, model=model, effort=effort)
+    if request_chars(request) <= max_input_tokens:
+        return request
+    tokens = count_input_tokens(request, client)
+    if tokens <= max_input_tokens:
+        return request
+    if focus is None:
+        raise GuideError(
+            f"この曲はカルテが長く、Claude に送る量が上限を超えます（約 {tokens:,} トークン。上限は {max_input_tokens:,}）。"
+            "「対象」でセクションを選んで、絞って作ってください", code="too_long")
+    trimmed = build_request(chart, focus, model=model, effort=effort, trim_to_focus=True)
+    if request_chars(trimmed) > max_input_tokens:
+        tokens = count_input_tokens(trimmed, client)
+        if tokens > max_input_tokens:
+            raise GuideError(
+                f"このセクションだけでも、Claude に送る量が上限を超えます（約 {tokens:,} トークン。上限は {max_input_tokens:,}）。"
+                "設定で入力の上限を上げてください", code="too_long")
+    return trimmed
+
+
+def generate(chart, focus=None, client=None, request=None):
+    """楽曲カルテから再現ガイドを作る（Claude を 1 回呼ぶ）。
+
+    保存分の再利用・上限の確認・記録は行わない。それらは ``guide_for`` が受け持つ。
+
+    Args:
+        chart: 楽曲カルテ。
+        focus: 絞り込むセクションの ID。None なら曲全体。
+        client: Anthropic のクライアント。None なら ``llm_settings.make_client()`` で作る
+            （テストでは差し替える）。
+        request: 送るリクエスト。None なら ``build_request(chart, focus)``。
+
+    Returns:
+        dict: ``{"guide": 検証済みのガイド, "model": 応答したモデル, "usage": 使用量}``。
+
+    Raises:
+        GuideError: API キーが無い・正しくない、通信できない、モデルが応答を断った、
+            出力が途中で切れた、などの場合。メッセージは利用者にそのまま見せられる。
+            応答が返ってきていた失敗では、``usage`` に使用量が入る。
+    """
+    if request is None:
+        request = build_request(chart, focus)
+    if client is None:
+        client = llm_settings.make_client()
+
+    with _api_errors():
+        response = client.beta.messages.create(**request)
+
+    usage = _usage(response)
+    model = getattr(response, "model", request["model"])
+
+    def fail(message, code):
+        return GuideError(message, code=code, usage=usage, model=model)
+
     if response.stop_reason == "refusal":
-        raise GuideError("この内容については、モデルが応答を返しませんでした", code="refused")
+        raise fail("この内容については、モデルが応答を返しませんでした", "refused")
     if response.stop_reason == "max_tokens":
-        raise GuideError("ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください", code="truncated")
+        raise fail("ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください", "truncated")
 
     text = next((block.text for block in response.content if block.type == "text"), None)
     if not text:
-        raise GuideError("モデルから説明文が返りませんでした", code="invalid")
+        raise fail("モデルから説明文が返りませんでした", "invalid")
     try:
         raw = json.loads(text)
     except json.JSONDecodeError:
-        raise GuideError("モデルの応答を読み取れませんでした", code="invalid")
+        raise fail("モデルの応答を読み取れませんでした", "invalid")
+    try:
+        guide = validate_guide(raw, chart)
+    except GuideError as e:
+        raise fail(str(e), e.code)
 
+    return {"guide": guide, "model": model, "usage": usage}
+
+
+def _public(entry, cached):
+    """保存したガイドの 1 件を、API の応答に載せる形にする。"""
     return {
-        "guide": validate_guide(raw, chart),
-        "model": getattr(response, "model", request["model"]),
-        "usage": _usage(response),
+        "guide": entry["guide"],
+        "model": entry.get("model"),
+        "usage": entry.get("usage") or {},
+        "cost_usd": entry.get("cost_usd"),
+        "duration_sec": entry.get("duration_sec"),
+        "created_at": entry.get("created_at"),
+        "cached": cached,
     }
+
+
+def saved_guide(chart, focus=None):
+    """保存済みのガイドを返す（無ければ None）。API は呼ばない。
+
+    Args:
+        chart: 楽曲カルテ。
+        focus: 対象のセクション ID。曲全体なら None。
+
+    Returns:
+        dict | None: ``guide_for`` と同じ形（``cached`` は True）。
+
+    Raises:
+        GuideError: ``focus`` がカルテに無いセクションを指している場合。
+    """
+    import guide_cache
+
+    request = build_request(chart, focus)
+    entry = guide_cache.load(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
+    return _public(entry, cached=True) if entry else None
+
+
+def guide_for(chart, focus=None, regenerate=False, client=None):
+    """再現ガイドを返す。保存済みが在ればそれを返し、無いときだけ Claude を呼ぶ。
+
+    順番:
+
+    1. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）
+    2. 同じカルテへの呼び出しを 1 つずつ通す。待っている間に、同じ条件のガイドが出来ていたら
+       それを返す（連打・二重送信で 2 回呼ばない。作り直しの連打も同じ）
+    3. 材料が足りないカルテ、1 日の上限に達しているとき、入力が長すぎるときは、API を呼ばずに断る
+    4. Claude を呼び、使用量を記録し、ガイドを保存する
+
+    Args:
+        chart: 楽曲カルテ。
+        focus: 対象のセクション ID。曲全体なら None。
+        regenerate: True なら、保存済みが在っても作り直す（費用がかかる）。
+        client: Anthropic のクライアント（テストでは差し替える）。
+
+    Returns:
+        dict: ``{"guide", "model", "usage", "cost_usd", "duration_sec", "created_at", "cached"}``。
+        ``cached`` は、保存済みを返したとき True。
+
+    Raises:
+        GuideError: 作れなかった場合。メッセージは利用者にそのまま見せられる。
+    """
+    import guide_cache
+    import guide_usage
+
+    request = build_request(chart, focus)
+    model, effort = request["model"], request["output_config"]["effort"]
+    key = guide_key(chart, focus, model, effort)
+    if not regenerate:
+        entry = guide_cache.load(key)
+        if entry:
+            return _public(entry, cached=True)
+
+    chart_id = guide_cache.chart_hash(chart)
+    asked_at = time.time()
+    with guide_cache.lock_for(chart_id):
+        entry = guide_cache.load(key)
+        if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
+            return _public(entry, cached=True)
+
+        shortage = material_shortage(chart)
+        if shortage:
+            raise GuideError(shortage, code="no_material")
+        blocked = guide_usage.today()["blocked"]
+        if blocked:
+            raise GuideError(blocked, code="daily_limit")
+
+        if client is None:
+            client = llm_settings.make_client()
+        request = fit_request(chart, focus, client, guide_usage.settings()["max_input_tokens"])
+
+        log = {"requested_model": model, "effort": effort, "focus": focus, "chart": chart_id[:16],
+               "cache_ttl": CACHE_TTL or "none", "version": request_fingerprint()}
+        started = time.monotonic()
+        try:
+            result = generate(chart, focus, client=client, request=request)
+        except GuideError as e:
+            guide_usage.record_call(ok=False, error=e.code, model=e.model or model, usage=e.usage,
+                                    duration_sec=time.monotonic() - started, **log)
+            raise
+        duration = time.monotonic() - started
+        record = guide_usage.record_call(ok=True, model=result["model"], usage=result["usage"],
+                                         duration_sec=duration, **log)
+        entry = {
+            "guide": result["guide"],
+            "model": result["model"],
+            "usage": result["usage"],
+            "cost_usd": record["cost_usd"],
+            "duration_sec": record["duration_sec"],
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "created_ts": time.time(),
+            "requested_model": model,
+            "effort": effort,
+            "focus": focus,
+            "chart": chart_id,
+            "fingerprint": request_fingerprint(),
+        }
+        guide_cache.save(key, entry)
+        return _public(entry, cached=False)

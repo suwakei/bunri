@@ -1269,28 +1269,20 @@ async def api_clear_anthropic_key():
     return llm_settings.status()
 
 
-@app.post("/api/chart/{chart_id}/guide")
-def api_chart_guide(chart_id: str, focus: str = Form("")):
-    """保存済みのカルテから、再現ガイド（第2層）を作る。
+# 再現ガイドを作れなかったときの HTTP ステータス（GuideError.code → ステータス）。無いものは 502
+_GUIDE_ERROR_STATUS = {
+    "no_key": 401, "auth": 401, "rate_limit": 429, "daily_limit": 429,
+    "invalid": 400, "too_long": 413, "no_material": 422,
+}
 
-    カルテを Claude に渡し、「こう作れば再現できる」という手順の説明を受け取る。
-    Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある
-    （FastAPI がスレッドプールで実行する）。
 
-    Args:
-        chart_id: カルテの ID。
-        focus: 絞り込むセクションの ID。空なら曲全体。
-
-    Returns:
-        ``{"chart_id": str, "focus": str | None, "guide": dict, "model": str, "usage": dict}``。
+def _guide_chart(chart_id: str, focus: str):
+    """再現ガイドの対象になるカルテと、対象のセクション ID を読む（内部用）。
 
     Raises:
-        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）、
-            API キーが無い・正しくない（401）、利用制限（429）、Claude 側の失敗（502）。
-            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``。
+        HTTPException: カルテが見つからない（404）、形式が読めない（400）。
     """
     import bunri_file
-    import reproduction_guide
 
     path = _chart_path(chart_id)
     if not path.exists():
@@ -1299,14 +1291,111 @@ def api_chart_guide(chart_id: str, focus: str = Form("")):
         chart = bunri_file.read_chart(path)
     except bunri_file.BunriFileError as e:
         raise HTTPException(400, str(e))
+    return chart, focus.strip() or None
 
-    focus_id = focus.strip() or None
+
+def _guide_http_error(e):
+    """``GuideError`` を、理由と種類を持つ ``HTTPException`` にする（内部用）。"""
+    return HTTPException(_GUIDE_ERROR_STATUS.get(e.code, 502), {"message": str(e), "code": e.code})
+
+
+@app.get("/api/chart/{chart_id}/guide")
+def api_chart_guide_saved(chart_id: str, focus: str = ""):
+    """保存済みの再現ガイドを返す。Claude は呼ばない（費用はかからない）。
+
+    画面は、カルテを開いたとき・対象を変えたときにこれを呼び、保存済みが在れば最初から表示する。
+
+    Args:
+        chart_id: カルテの ID。
+        focus: 絞り込むセクションの ID。空なら曲全体。
+
+    Returns:
+        ``{"chart_id", "focus", "saved": bool, "today": 今日の使用量}``。``saved`` が True のときは、
+        ``POST`` と同じ ``guide`` ``model`` ``usage`` ``cost_usd`` ``created_at`` ``cached`` も持つ。
+
+    Raises:
+        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）。
+    """
+    import guide_usage
+    import reproduction_guide
+
+    chart, focus_id = _guide_chart(chart_id, focus)
     try:
-        result = reproduction_guide.generate(chart, focus=focus_id)
+        saved = reproduction_guide.saved_guide(chart, focus=focus_id)
     except reproduction_guide.GuideError as e:
-        status = {"no_key": 401, "auth": 401, "rate_limit": 429, "invalid": 400}.get(e.code, 502)
-        raise HTTPException(status, {"message": str(e), "code": e.code})
-    return {"chart_id": chart_id, "focus": focus_id, **result}
+        raise _guide_http_error(e)
+    return {"chart_id": chart_id, "focus": focus_id, "saved": saved is not None, **(saved or {}),
+            "today": guide_usage.today()}
+
+
+@app.post("/api/chart/{chart_id}/guide")
+def api_chart_guide(chart_id: str, focus: str = Form(""), regenerate: bool = Form(False)):
+    """保存済みのカルテから、再現ガイド（第2層）を作る。
+
+    同じ条件のガイドが保存済みなら、Claude を呼ばずにそれを返す。無いとき（か、``regenerate`` が
+    真のとき）だけ、カルテを Claude に渡して「こう作れば再現できる」という手順の説明を受け取る。
+    Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある
+    （FastAPI がスレッドプールで実行する）。
+
+    Args:
+        chart_id: カルテの ID。
+        focus: 絞り込むセクションの ID。空なら曲全体。
+        regenerate: 真なら、保存済みが在っても作り直す（費用がかかる）。
+
+    Returns:
+        ``{"chart_id", "focus", "guide", "model", "usage", "cost_usd", "duration_sec",
+        "created_at", "cached": bool, "today": 今日の使用量}``。``cost_usd`` は概算。
+
+    Raises:
+        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）、
+            API キーが無い・正しくない（401）、利用制限・1 日の上限（429）、カルテが長すぎる（413）、
+            材料が足りない（422）、Claude 側の失敗（502）。
+            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``。
+    """
+    import guide_usage
+    import reproduction_guide
+
+    chart, focus_id = _guide_chart(chart_id, focus)
+    try:
+        result = reproduction_guide.guide_for(chart, focus=focus_id, regenerate=regenerate)
+    except reproduction_guide.GuideError as e:
+        raise _guide_http_error(e)
+    return {"chart_id": chart_id, "focus": focus_id, **result, "today": guide_usage.today()}
+
+
+@app.get("/api/settings/guide")
+def api_guide_settings():
+    """再現ガイドの費用まわりの設定と、今日の使用量を返す。
+
+    Returns:
+        ``{"settings": {"daily_limit_calls", "daily_limit_usd", "max_input_tokens"},
+        "today": {"date", "calls", "cost_usd", "limit_calls", "limit_usd", "blocked"}}``。
+    """
+    import guide_usage
+
+    return {"settings": guide_usage.settings(), "today": guide_usage.today()}
+
+
+@app.post("/api/settings/guide")
+def api_update_guide_settings(payload: dict = Body(...)):
+    """再現ガイドの費用まわりの設定（1 日の上限など）を書き換える。
+
+    Args:
+        payload: 変える項目だけを持つ JSON。上限なしは ``null``。
+
+    Returns:
+        ``GET /api/settings/guide`` と同じ形。
+
+    Raises:
+        HTTPException: 知らない項目、または値が不正な場合（HTTP 400）。
+    """
+    import guide_usage
+
+    try:
+        guide_usage.update_settings(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"settings": guide_usage.settings(), "today": guide_usage.today()}
 
 
 @app.get("/api/chart/{chart_id}")
