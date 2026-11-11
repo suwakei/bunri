@@ -5,6 +5,7 @@ import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import { apiFetch } from '../lib/api';
+import { notesToMidi } from '../lib/midi';
 
 /**
  * プロジェクトデータの構造を表すインターフェース。
@@ -144,6 +145,31 @@ export default function HeaderBar() {
         });
     }, [withProgress, setStatus, pianoRollRef]);
 
+    /**
+     * ピアノロールのノートを標準 MIDI ファイルとして書き出す。
+     * ノートの在るトラックを 1 本ずつ MIDI のトラックにする。
+     */
+    const handleExportMidi = useCallback(() => {
+        const pr = pianoRollRef.current;
+        if (pr) pr._saveToEngine();
+        try {
+            const bytes = notesToMidi(
+                engine.tracks.map(t => ({ name: t.name, notes: t.pianoNotes || [] })),
+                engine.bpm,
+            );
+            const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'audio/midi' }));
+            const a = document.createElement('a');
+            a.href = url; a.download = 'bunri.mid'; a.style.display = 'none';
+            document.body.appendChild(a); a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+            setStatus('MIDIファイルを書き出しました');
+        } catch (e) {
+            setStatus((e as Error).message === '書き出せるノートがありません'
+                ? '書き出すノートがありません。ピアノロールにノートを置いてください'
+                : 'MIDIの書き出しに失敗しました: ' + (e as Error).message);
+        }
+    }, [setStatus, pianoRollRef]);
+
     const handleSave = useCallback(async () => {
         const pr = pianoRollRef.current;
         if (pr) pr.getNotes();
@@ -224,6 +250,7 @@ export default function HeaderBar() {
                 <button onClick={handleSave} {...h('プロジェクト保存')}>保存</button>
                 <button onClick={handleLoad} {...h('プロジェクト読込')}>読込</button>
                 <button onClick={handleExport} {...h('WAV書き出し')}>書出</button>
+                <button onClick={handleExportMidi} {...h('ピアノロールのノートを MIDI ファイルとして書き出す')}>MIDI</button>
                 <button onClick={() => setShowGuide(true)} {...h('ガイド表示')}>❓</button>
                 <a href="/tools" target="_blank" {...h('ツールを別タブで開く')}>ツール</a>
                 <a href="/help" target="_blank" {...h('使い方ガイド')}>使い方</a>

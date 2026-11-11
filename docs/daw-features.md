@@ -33,6 +33,7 @@ For the quick overview, see [README.md](../README.md).
 | Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar |
 | Recording | Microphone input recorded to a track |
 | Project save/load | JSON format |
+| MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
 | WAV export | Offline mixdown of all tracks to WAV |
 
 ### Tools Screen (`/tools`)

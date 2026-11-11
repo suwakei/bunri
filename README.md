@@ -125,14 +125,15 @@ graph LR
 - **Synth & Drum Machine** — 4 waveforms, 6 instrument presets, GM soundfont, 4 drum patterns
 - **Effects** — EQ, compressor, reverb, delay, pitch shift, time stretch
 - **WAV Optimizer** — Reduce file size with high-quality resampling + TPDF dithering
-- **Project Save/Load/Export** — JSON projects, WAV mixdown export
+- **Project Save/Load/Export** — JSON projects, WAV mixdown export, MIDI export of piano-roll notes
 
 ## Roadmap
 
 - [x] Basic Pitch integration (polyphonic transcription)
 - [x] Docker support
 - [x] AI composition assistant (Ollama + Claude)
-- [ ] MIDI export
+- [x] MIDI export (piano-roll notes to a standard MIDI file)
+- [ ] MIDI import
 - [ ] VST plugin support
 - [ ] Real-time collaboration
 - [ ] Mobile-responsive UI
