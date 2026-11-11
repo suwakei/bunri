@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import MidiInputBar from './MidiInputBar';
 
 /**
  * Canvas ベースのピアノロールエディタエンジン。
@@ -605,7 +606,7 @@ export default function CenterArea() {
             {/* ピアノロール */}
             <div className="resize-handle" id="resize-piano" />
             <div id="piano-roll-area">
-                <div className="area-label">{pianoLabel}</div>
+                <div className="area-label">{pianoLabel}<MidiInputBar /></div>
                 <div ref={keysRef} id="piano-keys" />
                 <div ref={pianoWrapRef} id="piano-grid-wrap">
                     <canvas ref={pianoCanvasRef} id="piano-grid-canvas" />

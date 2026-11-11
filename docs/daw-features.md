@@ -33,6 +33,7 @@ For the quick overview, see [README.md](../README.md).
 | Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar |
 | Recording | Microphone input recorded to a track |
 | Project save/load | JSON format |
+| MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
 | WAV export | Offline mixdown of all tracks to WAV |
 

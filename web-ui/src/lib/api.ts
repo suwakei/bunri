@@ -46,6 +46,7 @@ export interface BootStatus {
 /** `app.withGlobalTauri` で公開される Tauri の API のうち、ここで使うぶん。 */
 interface TauriGlobal {
     core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+    event?: { listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> };
 }
 
 let backend: BackendInfo = { baseUrl: '', token: null };
@@ -126,6 +127,20 @@ export async function initBackend(onStatus?: (status: BootStatus) => void): Prom
 /** 現在の接続情報を返す。 */
 export function getBackend(): BackendInfo {
     return backend;
+}
+
+/**
+ * デスクトップアプリのネイティブ側（Rust）が送るイベントを受け取る。
+ *
+ * @param event - イベント名
+ * @param handler - イベントの中身を受け取る関数
+ * @returns 受け取りをやめる関数
+ * @throws デスクトップアプリの外で呼んだ場合
+ */
+export async function listenDesktop<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
+    const tauri = tauriGlobal();
+    if (!tauri || !tauri.event) throw new Error('デスクトップアプリの中でしか使えません');
+    return tauri.event.listen<T>(event, (e) => handler(e.payload));
 }
 
 /** テスト用: 接続情報を差し替える。 */

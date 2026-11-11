@@ -133,6 +133,7 @@ graph LR
 - [x] Docker support
 - [x] AI composition assistant (Ollama + Claude)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
+- [x] MIDI keyboard input (step input and real-time recording; Chrome / Edge and the desktop app)
 - [ ] MIDI import
 - [ ] VST plugin support
 - [ ] Real-time collaboration

@@ -103,6 +103,22 @@ ad-hoc 署名は、同梱物を含めてバンドルの封印を整えるため�
 署名・公証する場合は、`tauri.conf.json` の `signingIdentity` を差し替える
 (`Entitlements.plist` のマイクの許可は、そのまま要る)。
 
+## MIDI キーボードの入力
+
+mac の WebView（WKWebView）は Web MIDI API を持たない（実測で確認）。そこでデスクトップ版では、
+Rust が OS の MIDI を受けて画面に渡す（`src-tauri/src/midi.rs`）。
+
+- 画面が `midi_start` を呼ぶと、つながっている入力ポートをすべて開く。受けたメッセージは
+  イベント `midi-message` で画面に送る（中身はバイト列 `[status, data1, data2]`）
+- 画面側は、ブラウザ版（Web MIDI API）と同じ経路で処理する。入力元の選び分けは
+  `web-ui/src/lib/midi-input.ts` の `pickMidiSource()`
+- 機器の抜き差しは自動では追わない。画面の「再検出」で開き直す
+- 鍵盤が無くても、仮想の MIDI ポートを使ったテストで OS の MIDI を通して確かめられる
+  （`cargo test -- --ignored 仮想ポート`）
+
+音を鳴らすのは今も画面側（Web Audio）。弾いてから鳴るまでの遅れを詰めたくなったら、
+音声エンジンを Rust に移す段階で一緒に扱う。
+
 ## API キー
 
 Claude の API キー（再現ガイドが使う）は配布物に同梱しない。利用者が設定画面で入れたキーを、
@@ -133,7 +149,7 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 
 ## 今回やっていないこと
 
-- 再生・録音・MIDI 入力の Rust への移行。いまは Web Audio と `MediaRecorder` のまま。
+- 再生・録音の Rust への移行。いまは Web Audio と `MediaRecorder` のまま（MIDI 入力の受け取りだけは Rust に在る）。
   移すときは `src-tauri/src/` に `mod audio;` を足し、`invoke_handler` にコマンドを並べる
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けのデスクトップ配布物 (ブラウザ版と Docker は動く)
