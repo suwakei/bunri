@@ -183,9 +183,9 @@ test.describe('FX', () => {
         // 速度 2 倍 → 長さは半分
         expect(after.seconds).toBeGreaterThan(before.seconds * 0.4);
         expect(after.seconds).toBeLessThan(before.seconds * 0.6);
-        // タイムラインのクリップも短くなる (1 秒 = 80px)
-        const width = await page.locator('#tracks-container .clip').evaluate((el) => el.getBoundingClientRect().width);
-        expect(width).toBeLessThan(before.seconds * 80 * 0.6);
+        // タイムラインのクリップも短くなる (1 秒 = 80px)。応答が返ってから描き直されるまでに間が在るので、待って読む
+        await expect.poll(() => page.locator('#tracks-container .clip').evaluate((el) => el.getBoundingClientRect().width))
+            .toBeLessThan(before.seconds * 80 * 0.6);
     });
 });
 
