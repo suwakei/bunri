@@ -645,28 +645,34 @@ async def api_separate(
 async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
+    split_drums: str = Form("false"),
 ):
     """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
 
-    ``other`` ステムを再帰的に再分離することで最大限レイヤーを分割する。
+    ``other`` ステムを再分離し、指定が在ればドラムも部位ごとに分けて、最大限レイヤーを分割する。
 
     Args:
         file: 分離対象の音声ファイル（マルチパートアップロード）。
-        depth: 再帰分離の深さ（1 = 追加再分離なし）。
+        depth: ``other`` を再分離する深さ（1 = 1 回再分離、0 = 再分離なし）。
+        split_drums: ``"true"`` でドラムをキック / スネア / タム / シンバルに分ける。
+            追加のモデルが手元に無ければ、最初にダウンロードする。
 
     Returns:
         ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
 
     Raises:
-        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+        HTTPException: 追加のモデルを用意できなかった場合（HTTP 503）、
+            分離処理中に例外が発生した場合（HTTP 500）。
     """
     from separate import deep_separate, STEM_LABELS
+    from stem_models import ModelUnavailableError
     src = _save_upload(file)
     out_dir = str(results_dir() / "separated")
     try:
         paths = deep_separate(
             str(src), output_dir=out_dir,
             segment=7, jobs=1, recursive_depth=int(depth),
+            split_drums=split_drums.lower() in ("true", "1", "yes"),
         )
         result = {}
         for key, p in paths.items():
@@ -679,6 +685,8 @@ async def api_deep_separate(
                     "label": STEM_LABELS.get(key, key),
                 }
         return JSONResponse(result)
+    except ModelUnavailableError as e:
+        raise HTTPException(503, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -717,7 +725,7 @@ async def api_model_status(name: str):
     事前に伝えられるようにするための API。
 
     Args:
-        name: Demucs のモデル名（例: ``"htdemucs"``）。
+        name: Demucs のモデル名（例: ``"htdemucs"``）、または追加のモデル名（``"drumsep"``）。
 
     Returns:
         ``{"model": 名前, "cached": bool, "missing": 足りないファイル数}``。
@@ -726,8 +734,11 @@ async def api_model_status(name: str):
         HTTPException: 知らないモデル名の場合（HTTP 404）。
     """
     import model_cache
+    import stem_models
 
     try:
+        if name in stem_models.ADDON_MODELS:
+            return stem_models.model_status(name)
         return model_cache.model_status(name)
     except KeyError:
         raise HTTPException(404, "モデルが見つかりません")

@@ -28,6 +28,11 @@ STEM_LABELS = {
     "guitar": "ギター",
     "piano": "ピアノ・鍵盤",
     "other": "その他（ストリングス・シンセ等）",
+    # ドラムの細分化で生成されるサブステム（stem_models.py の drumsep）
+    "drums_kick": "ドラム → キック",
+    "drums_snare": "ドラム → スネア",
+    "drums_toms": "ドラム → タム",
+    "drums_cymbals": "ドラム → シンバル・ハイハット",
     # 再帰分離で生成されるサブステム
     "other_vocals": "その他 → ボーカル/コーラス成分",
     "other_drums": "その他 → パーカッション成分",
@@ -172,6 +177,73 @@ def _is_silent(file_path: Path, threshold_db: float = -50) -> bool:
     return db < threshold_db
 
 
+DRUM_MODEL = "drumsep"
+
+
+def separate_drums(
+    drums_path: str,
+    output_dir: str = "output",
+    mp3_output: bool = False,
+    segment: int = 7,
+    jobs: int = 1,
+) -> dict[str, Path]:
+    """ドラムのステムを、キック / スネア / タム / シンバルに分ける。
+
+    追加のモデル（``stem_models.py`` の ``drumsep``）を使う。手元に無ければ、先にダウンロードする。
+    入力はドラムだけの音（``htdemucs`` 系で分けたあとの ``drums``）を想定している。
+    曲全体を入れても動くが、ドラム以外の音がどこかの部位に混ざる。
+
+    Args:
+        drums_path (str): ドラムのステムのパス。
+        output_dir (str, optional): 出力先ルートディレクトリ。デフォルト ``"output"``。
+        mp3_output (bool, optional): ``True`` → MP3 出力。デフォルト ``False``（WAV）。
+        segment (int, optional): 処理セグメント長（秒）。デフォルト 7。
+        jobs (int, optional): 並列ジョブ数。デフォルト 1。
+
+    Returns:
+        dict[str, Path]: ``"drums_kick"`` ``"drums_snare"`` ``"drums_toms"`` ``"drums_cymbals"`` を
+            キー、出力ファイルパスを値とする辞書。実際にファイルが在るものだけを含む。
+
+    Raises:
+        FileNotFoundError: ``drums_path`` が存在しない場合。
+        stem_models.ModelUnavailableError: モデルをダウンロードできなかった場合。
+        RuntimeError: Demucs サブプロセスが失敗した場合。
+    """
+    import stem_models
+
+    src = Path(drums_path)
+    if not src.exists():
+        raise FileNotFoundError(f"ファイルが見つかりません: {src}")
+
+    model_file = stem_models.ensure_model(DRUM_MODEL)
+    runner = str(Path(__file__).parent / "_demucs_runner.py")
+    cmd = [
+        sys.executable, runner,
+        "--out", output_dir,
+        "-n", DRUM_MODEL,
+        "--bunri-model-file", str(model_file),
+        "--segment", str(segment),
+        "--jobs", str(jobs),
+    ]
+    if mp3_output:
+        cmd += ["--mp3"]
+    cmd.append(str(src))
+
+    print(f"[*] モデル: {DRUM_MODEL}  ファイル: {src.name}")
+    result = subprocess.run(cmd, capture_output=False, text=True)
+    if result.returncode != 0:
+        raise RuntimeError("ドラムの細分化（Demucs）の実行に失敗しました。")
+
+    ext = ".mp3" if mp3_output else ".wav"
+    base = Path(output_dir) / DRUM_MODEL / src.stem
+    paths = {}
+    for model_stem, key in stem_models.ADDON_MODELS[DRUM_MODEL]["stems"].items():
+        p = base / f"{model_stem}{ext}"
+        if p.exists():
+            paths[key] = p
+    return paths
+
+
 def deep_separate(
     input_path: str,
     output_dir: str = "output",
@@ -179,16 +251,19 @@ def deep_separate(
     segment: int = 7,
     jobs: int = 1,
     recursive_depth: int = 1,
+    split_drums: bool = False,
 ) -> dict[str, Path]:
-    """htdemucs_6s による2段階レイヤー分離を行い、有音ステムのパスを返す。
+    """htdemucs_6s による多段のレイヤー分離を行い、有音ステムのパスを返す。
 
     以下の手順で最大限のレイヤー分離を試みる:
 
     1. ``htdemucs_6s`` で入力を6ステムに分離。
-    2. ``recursive_depth > 0`` の場合、「other」ステムをさらに
+    2. ``split_drums`` が真なら、「drums」ステムをキック / スネア / タム / シンバルに分け、
+       ``"drums_<部位>"`` として追加する（元の ``"drums"`` も残す）。
+    3. ``recursive_depth > 0`` の場合、「other」ステムをさらに
        ``htdemucs_6s`` で再分離し ``"other_<stem>"`` として追加。
-    3. 無音（RMS < -50 dBFS）のステムは結果から除外する。
-    4. 再分離後のサブステムが全て無音の場合は元の ``"other"`` を残す。
+    4. 無音（RMS < -50 dBFS）のステムは結果から除外する。
+    5. 再分離後のサブステムが全て無音の場合は元の ``"other"`` を残す。
 
     Args:
         input_path (str): 入力音声ファイルのパス。
@@ -199,20 +274,27 @@ def deep_separate(
         jobs (int, optional): 並列ジョブ数。デフォルト 1。
         recursive_depth (int, optional): ``"other"`` ステムを再帰分離する深さ。
             ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
+        split_drums (bool, optional): ドラムを部位ごとに分けるか。デフォルト ``False``。
+            真のとき、追加のモデルが手元に無ければ最初にダウンロードする（約 160 MB）。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
             無音ステムは除外済み。再分離ステムのキーは ``"other_vocals"`` 等の
-            形式でプレフィックスされる。
+            形式でプレフィックスされる。ドラムの部位は ``"drums"`` の直後に並ぶ。
 
     Raises:
         RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
+        stem_models.ModelUnavailableError: ``split_drums`` が真で、モデルを用意できなかった場合。
+            分離を始める前に送出する（数分かけて分離したあとで失敗しないように）。
 
     Note:
-        第2段の出力は ``<output_dir>/deep_other/`` に書き出される。
+        第2段の出力は ``<output_dir>/deep_other/`` と ``<output_dir>/deep_drums/`` に書き出される。
         進捗ログは標準出力に直接出力される。
     """
-    input_p = Path(input_path)
+    if split_drums:
+        # 重い処理の前に、モデルを用意しておく。用意できなければここで止まる
+        import stem_models
+        stem_models.ensure_model(DRUM_MODEL)
 
     # 第1段: htdemucs_6s でフル分離
     print("[深層分離] === 第1段: htdemucs_6s フル分離 ===")
@@ -235,6 +317,21 @@ def deep_separate(
             # 無音でなければ結果に含める
             if not _is_silent(p):
                 result[key] = p
+                if key == "drums" and split_drums:
+                    print("\n[深層分離] === ドラムを部位ごとに分離 ===")
+                    parts = separate_drums(
+                        str(p),
+                        output_dir=str(Path(output_dir) / "deep_drums"),
+                        mp3_output=mp3_output,
+                        segment=segment,
+                        jobs=jobs,
+                    )
+                    for part_key, part_p in parts.items():
+                        if not _is_silent(part_p):
+                            result[part_key] = part_p
+                            print(f"[深層分離] {part_key}: 音声あり → 出力")
+                        else:
+                            print(f"[深層分離] {part_key}: ほぼ無音 → スキップ")
             else:
                 print(f"[深層分離] {key} はほぼ無音のためスキップ")
 

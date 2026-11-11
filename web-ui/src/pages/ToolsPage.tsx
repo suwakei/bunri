@@ -47,6 +47,7 @@ const TOOLS_CSS = `
 .tools-page .form-group input, .tools-page .form-group select { width:100%; background:#1c1c25; border:1px solid #2a2a35; color:#e8e4de; padding:8px 10px; border-radius:4px; font-size:13px; }
 .tools-page .form-row { display:flex; gap:12px; }
 .tools-page .form-row .form-group { flex:1; }
+.tools-page .check-row { display:flex; align-items:center; gap:6px; margin-bottom:16px; font-size:13px; color:#e8e4de; cursor:pointer; }
 .tools-page .btn { background:#d4a44c; color:#fff; border:none; padding:10px 24px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600; width:100%; }
 .tools-page .btn:hover { background:#e8bc6a; }
 .tools-page .btn:disabled { opacity:0.5; cursor:not-allowed; }
@@ -104,6 +105,7 @@ function SeparatePanel() {
     const [progress, setProgress] = useState(false);
     const [results, setResults] = useState<AudioResult[]>([]);
     const [disabled, setDisabled] = useState(false);
+    const [mode, setMode] = useState('true');
 
     const handleSeparate = useCallback(async () => {
         const file = ((document.getElementById('sep-file') as HTMLInputElement | null))?.files?.[0];
@@ -112,10 +114,13 @@ function SeparatePanel() {
         const mode = ((document.getElementById('sep-mode') as HTMLInputElement)?.value);
         const isDeep = mode === 'deep';
         let apiUrl; const fd = new FormData();
-        if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
+        const splitDrums = isDeep && ((document.getElementById('sep-split-drums') as HTMLInputElement | null)?.checked ?? false);
+        if (isDeep) { fd.append('file', file); fd.append('depth', '1'); fd.append('split_drums', splitDrums ? 'true' : 'false'); apiUrl = '/api/deep-separate'; }
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
         setStatus(`分離中...（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
-        modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分離中') ? prev + notice : prev); });
+        // ドラムを分けるときは、追加のモデル（drumsep）が手元に在るかも見る。案内は 1 回だけ添える
+        Promise.all([modelDownloadNotice(isDeep ? 'htdemucs_6s' : model), splitDrums ? modelDownloadNotice('drumsep') : Promise.resolve('')])
+            .then((notices) => { const notice = notices.find((n) => n); if (notice) setStatus((prev) => prev.startsWith('分離中') ? prev + notice : prev); });
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
@@ -139,9 +144,15 @@ function SeparatePanel() {
                     <select id="sep-model"><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6ステム</option></select>
                 </div>
                 <div className="form-group"><label>分離モード</label>
-                    <select id="sep-mode"><option value="true">2分割（ボーカル/伴奏）</option><option value="false">フル分割</option><option value="deep">深層分離</option></select>
+                    <select id="sep-mode" value={mode} onChange={(e) => setMode(e.target.value)}><option value="true">2分割（ボーカル/伴奏）</option><option value="false">フル分割</option><option value="deep">深層分離</option></select>
                 </div>
             </div>
+            {mode === 'deep' && (
+                <label className="check-row">
+                    <input type="checkbox" id="sep-split-drums" defaultChecked />
+                    ドラムをさらに分ける（キック / スネア / タム / シンバル）
+                </label>
+            )}
             <button className="btn" onClick={handleSeparate} disabled={disabled}>音源分離を開始</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             {status && <div className={`status ${statusType}`}>{status}</div>}

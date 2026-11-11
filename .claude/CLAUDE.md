@@ -33,7 +33,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `run_web.py` | API サーバの起動スクリプト。デスクトップアプリが sidecar として起動する（`--sidecar`）。開発用に単体でも起動できる |
 | `web/api.py` | FastAPI バックエンド API（API だけ。画面は配らない） |
-| `separate.py` | Demucs 音源分離（htdemucs標準） |
+| `separate.py` | Demucs 音源分離（htdemucs標準）。深層分離（6 ステム + その他の再分離 + ドラムの細分化）もここ |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
 | `effects.py` | エフェクト（3バンドEQ/コンプレッサー/リバーブ/ディレイ） |
@@ -51,7 +51,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
 | `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
-| `_demucs_runner.py` | torchaudio 保存パッチ |
+| `_demucs_runner.py` | torchaudio 保存パッチ。追加のモデルを手元の safetensors から読む指定（`--bunri-model-file`）も受ける |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
 | `guide_cache.py` | 作った再現ガイドの保存（同じ条件なら Claude を呼ばない）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
@@ -59,6 +59,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `llm_pricing.json` | Claude の単価の表（概算の費用の計算に使う。コードに埋めず、ここと設定で持つ） |
 | `coach_diff.py` | 差分コーチ（第3層）の土台。お手本のノートと打ち込みの差分を事実として出す（LLM 不使用） |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
+| `stem_models.py` | Demucs が自分では取りに行けない追加の分離モデル（ドラムの細分化）の置き場とダウンロード。ハッシュを照合してから置く。配るのは safetensors だけ（pickle 形式のモデルを利用者の PC で開かない） |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 
 `backend/` の外:

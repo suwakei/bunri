@@ -85,8 +85,8 @@ kill するが、アプリが強制終了された場合、`uv` は親が居な�
 | `bunri.app/Contents/MacOS/uv` | 同梱した `uv` (版とハッシュは `scripts/prepare-desktop.mjs` で固定) |
 | `bunri.app/Contents/Resources/runtime/` | `backend/` と `pyproject.toml` / `uv.lock` (読み取り専用) |
 | `~/Library/Application Support/io.github.suwakei.bunri/runtime/` | Python 本体、venv、uv のキャッシュ、`.pyc` |
-| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` `soundfonts/` (`BUNRI_DATA_DIR`) |
-| `~/.cache/huggingface/` `~/.cache/torch/` | 音源分離のモデル (ライブラリの既定の置き場のまま) |
+| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` `soundfonts/` `models/` (`BUNRI_DATA_DIR`) |
+| `~/.cache/huggingface/` `~/.cache/torch/` | 音源分離のモデル (ライブラリの既定の置き場のまま)。Demucs が自分で取りに行けない追加のモデルだけは、上の `data/models/` に入る (`backend/stem_models.py`) |
 
 Python 側は、データの場所を `audio_utils.data_dir()` から引く。パスを直書きしない。
 外から受け取ったファイル名は `audio_utils.safe_join()` を通す。

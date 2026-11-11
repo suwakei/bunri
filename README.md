@@ -90,7 +90,7 @@ graph LR
 ## Features
 
 - **Song to Piano Roll** — Upload any audio file, get editable notes on a timeline in one click
-- **Source Separation** — Demucs 6-stem (vocals / drums / bass / guitar / piano / other)
+- **Source Separation** — Demucs 6-stem (vocals / drums / bass / guitar / piano / other), plus an optional drum split (kick / snare / toms / cymbals)
 - **AI Music Assistant** — Describe what you want in natural language, get note suggestions (Ollama local or Claude cloud)
 - **Synth & Drum Machine** — 4 waveforms, 6 instrument presets, GM soundfont, 4 drum patterns
 - **Effects** — EQ, compressor, reverb, delay, pitch shift, time stretch
@@ -129,3 +129,5 @@ We welcome contributions! Please open an issue first to discuss what you'd like 
 ## License
 
 [Apache-2.0](LICENSE)
+
+The optional drum-split model is downloaded on first use and is not part of this repository. It is [drumsep](https://github.com/inagoy/drumsep) by Iñaki Goyeneche (MIT License), converted to safetensors without changing the weights.
