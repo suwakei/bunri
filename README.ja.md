@@ -3,7 +3,7 @@
 あらゆる楽曲を編集可能なピアノロールに変換 — ローカル完結・プライバシー重視・オープンソース
 
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![Node](https://img.shields.io/badge/node-22%2B-green.svg)
 ![Platform](https://img.shields.io/badge/platform-CPU%20only-lightgrey.svg)
 
@@ -31,7 +31,7 @@ docker compose up
 ### 手動セットアップ
 
 ```bash
-# 1. バックエンド依存インストール
+# 1. バックエンド依存インストール（Python 3.11）
 pip install -r requirements.txt
 
 # 2. フロントエンド依存インストール

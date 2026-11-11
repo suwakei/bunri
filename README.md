@@ -3,7 +3,7 @@
 > Turn any song into an editable piano roll — locally, privately, open source.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://python.org)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg)](docker-compose.yml)
 
 [日本語版はこちら](README.ja.md)
@@ -29,7 +29,7 @@ docker compose up
 ### Manual Install
 
 ```bash
-# Backend
+# Backend (Python 3.11)
 pip install -r requirements.txt
 
 # Frontend

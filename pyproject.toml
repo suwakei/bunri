@@ -3,7 +3,47 @@ name = "bunri"
 version = "0.1.0"
 description = "Turn any song into an editable piano roll — locally, privately, open source."
 license = "Apache-2.0"
-requires-python = ">=3.11"
+# 3.11 に固定。basic-pitch が要る tensorflow (<2.15.1) / tensorflow-macos に 3.12 用の配布物が無い
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "demucs",
+    # 2.6 未満だと torchaudio と版が食い違って import できない組み合わせが選ばれる
+    "torch>=2.6",
+    "torchaudio",
+    "soundfile",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pyfluidsynth",
+    "librosa",
+    "basic-pitch",
+    "scipy",
+    "httpx",
+    "dawdreamer",
+    # resampy (basic-pitch の依存) が pkg_resources を import する。setuptools 81 以降には無い
+    "setuptools<81",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.uv]
+# ロックを解く対象の環境。Intel mac は torch の配布物が無いので対象外
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+]
+# basic-pitch は mac 以外で tensorflow を使う。2.14 は numpy の上限を宣言しておらず、
+# numpy 2 系と組まれて実行時に壊れるので、上限を宣言している 2.15 以降に限る
+constraint-dependencies = ["tensorflow>=2.15"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
 
 [tool.ruff]
 target-version = "py311"
