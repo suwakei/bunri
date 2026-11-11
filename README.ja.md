@@ -20,18 +20,57 @@
 
 ## クイックスタート
 
-### Docker（推奨）
+起動方法は 3 通り。どれも同じ Python のバックエンドと同じ画面を使う。
+
+| | デスクトップ版 | ブラウザ版 | Docker |
+|---|---|---|---|
+| 動く環境 | macOS（Apple Silicon） | macOS（Apple Silicon）/ Linux / Windows | Docker が動く環境 |
+| 自分で入れるもの | 無し（アプリが自分で用意する） | Python 3.11、Node.js | Docker |
+| 起動 | `bunri.app` をダブルクリック | `python run_web.py` | `docker compose up` |
+
+### デスクトップ版（macOS / Apple Silicon）
+
+配布済みのバイナリはまだ無いので、自分でビルドする。
 
 ```bash
-docker compose up
+# Rust と Node.js 22 以上、インターネット接続が要る（同梱する uv をビルド時に取得する）
+npm ci
+npm --prefix web-ui ci
+npm run tauri build
+# → src-tauri/target/release/bundle/dmg/bunri_<版>_aarch64.dmg
+# → src-tauri/target/release/bundle/macos/bunri.app
 ```
 
-`http://localhost:8000` をブラウザで開く。
+**初回の起動。** アプリには Python も機械学習のライブラリも入っていない（入れると数 GB になるため）。
+初回の起動時に Python 3.11 と依存（約 1.2GB）を
+`~/Library/Application Support/io.github.suwakei.bunri/` へダウンロードし、その進み具合を表示する。
+数分かかる。途中で終了したり回線が切れたりしても、次回の起動で続きから入る。
+2 回目以降の起動は数秒。音源分離のモデルは、初めて分離するときにダウンロードされる
+（状態表示にその旨が出る）。
 
-### 手動セットアップ
+**未署名のアプリを開く。** このアプリは Apple Developer ID で署名されておらず、公証も受けていない。
+自分でビルドしたものはそのまま開ける。他の人から `.dmg` を受け取った場合は、初回に macOS が開くのを止める。
+
+1. 一度アプリを開く（止められる）。そのあと **システム設定 > プライバシーとセキュリティ** を開き、**このまま開く** を押す
+2. または隔離の印を外す: `xattr -dr com.apple.quarantine /Applications/bunri.app`
+
+**データの場所。** アップロード・処理結果・プロジェクトは
+`~/Library/Application Support/io.github.suwakei.bunri/data/` に保存される。書き出したファイルは `~/Downloads` に保存される。
+
+**任意で入れるもの。** 同梱していない。無くても他の機能は動く。
+
+- GM 音源（FluidSynth）: `brew install fluid-synth` を実行し、
+  [`MuseScore_General.sf3`](https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General/)（MIT ライセンス、38MB）を
+  データの場所の中の `soundfonts/`（`.../io.github.suwakei.bunri/data/soundfonts/`）に置く。
+  無いときは内蔵のシンセで鳴る
+- MP3 / MP4 の変換: `brew install ffmpeg`
+
+デスクトップ版を開発するときは開発モードで起動する。初回だけ `make install-desktop`、以降は `make desktop`。
+
+### ブラウザ版
 
 ```bash
-# 1. バックエンド依存インストール（Python 3.11）
+# 1. バックエンド依存インストール（Python 3.11。uv なら `uv sync`）
 pip install -r requirements.txt
 
 # 2. フロントエンド依存インストール
@@ -40,9 +79,17 @@ cd web-ui && npm ci && cd ..
 # 3. フロントエンドビルド
 make build
 
-# 4. 起動
-make web
+# 4. 起動（http://127.0.0.1:8000 がブラウザで開く）
+python run_web.py
 ```
+
+### Docker
+
+```bash
+docker compose up
+```
+
+`http://localhost:8000` をブラウザで開く。
 
 ## 仕組み
 
@@ -123,3 +170,5 @@ graph LR
 ## 詳細なDAW機能ドキュメント
 
 [DAW機能の詳細はこちら](docs/daw-features.md)
+
+デスクトップ版の構成は [docs/desktop-architecture.md](docs/desktop-architecture.md) を参照。

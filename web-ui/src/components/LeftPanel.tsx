@@ -5,6 +5,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import { apiFetch } from '../lib/api';
+import { modelDownloadNotice } from '../lib/models';
 import AssistantPanel from './AssistantPanel';
 import ChartPanel from './ChartPanel';
 import type { ChartResponse } from '../lib/chart';
@@ -498,8 +499,10 @@ function FilePanel() {
         fd.append('bpm', autoBpm ? '0' : String(bpm));
         fd.append('sensitivity', String(transcribeSensitivity));
 
+        // 分離用のモデルが手元に無ければ、初回ダウンロードが入ることを添える
+        const notice = await modelDownloadNotice('htdemucs_6s');
         await withProgress(
-            `楽曲を解析中...（${file.name}）ステム分離 → ピッチ検出 → 楽器推定。数分かかります`,
+            `楽曲を解析中...（${file.name}）ステム分離 → ピッチ検出 → 楽器推定。数分かかります。${notice}`,
             async () => {
                 const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
                 if (!resp.ok) throw new Error(await resp.text());

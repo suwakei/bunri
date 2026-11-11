@@ -4,6 +4,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch, backendUrl } from '../lib/api';
+import { modelDownloadNotice } from '../lib/models';
 
 interface AudioResult {
     label: string;
@@ -114,6 +115,7 @@ function SeparatePanel() {
         if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
         setStatus(`分離中...（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
+        modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分離中') ? prev + notice : prev); });
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
@@ -491,6 +493,7 @@ function DecomposePanel() {
         fd.append('sensitivity', String(sensitivity));
 
         setStatus(`分解中...（${file.name}）Demucs分離 → ピッチ解析 → 楽器推定。CPU処理のため数分かかります。`);
+        modelDownloadNotice('htdemucs_6s').then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分解中') ? prev + notice : prev); });
         setStatusType('processing'); setProgress(true); setResult(null); setDisabled(true);
 
         try {

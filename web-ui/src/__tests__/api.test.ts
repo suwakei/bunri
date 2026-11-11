@@ -68,6 +68,29 @@ describe('デスクトップ版', () => {
         expect(getBackend().token).toBe('abc');
     });
 
+    it('起動待ちの間、進み具合を onStatus に渡す', async () => {
+        setBackendForTest(BROWSER);
+        let finish: (v: { port: number; token: string }) => void = () => {};
+        const setup = { phase: 'setup', message: '初回セットアップ中です', log: ['Downloading torch'], first_run: true };
+        const invoke = vi.fn((cmd: string) => cmd === 'backend_info'
+            ? new Promise((resolve) => { finish = resolve; })
+            : Promise.resolve(setup));
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+        const seen: unknown[] = [];
+        const done = initBackend((status) => seen.push(status));
+        await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
+        expect(seen[0]).toEqual(setup);
+        finish({ port: 40124, token: 'xyz' });
+        expect(await done).toEqual({ baseUrl: 'http://127.0.0.1:40124', token: 'xyz' });
+    });
+
+    it('Rust 側が理由を文字列で返しても Error として失敗する', async () => {
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = {
+            core: { invoke: vi.fn(async () => { throw 'セットアップに失敗しました'; }) },
+        };
+        await expect(initBackend()).rejects.toThrow('セットアップに失敗しました');
+    });
+
     it('sidecar を起動できなければ initBackend は失敗する', async () => {
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = {
             core: { invoke: vi.fn(async () => { throw new Error('uv が見つかりません'); }) },
