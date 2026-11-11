@@ -38,4 +38,5 @@ RUN mkdir -p results uploads projects
 
 EXPOSE 8000
 
-CMD ["python", "run_web.py"]
+# コンテナの外から届くよう 0.0.0.0 で待ち受ける（127.0.0.1 だとポートを公開しても届かない）
+CMD ["python", "run_web.py", "--host", "0.0.0.0", "--no-browser"]

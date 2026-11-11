@@ -44,3 +44,10 @@ web-ui/node_modules/
 
 # React ビルド出力（ビルドで再生成可能）
 backend/web/static/dist/
+
+# Tauri (Rust のビルド出力と、ビルド時に生成されるスキーマ)
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# デスクトップ用の入口 (直下の package.json) の依存
+/node_modules/
