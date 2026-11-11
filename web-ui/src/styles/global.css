@@ -735,6 +735,16 @@ body::before {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
+/* お手本のノート (薄く重ねて見せるだけ。押しても反応しない) */
+.note-ghost {
+    position: absolute;
+    height: 13px;
+    background: rgba(120, 190, 230, 0.22);
+    border: 1px dashed rgba(120, 190, 230, 0.7);
+    border-radius: 3px;
+    pointer-events: none;
+}
+
 .note-block:hover {
     opacity: 1;
     box-shadow: 0 2px 8px var(--accent-glow);

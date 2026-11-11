@@ -22,7 +22,7 @@ const KIND_ORDER: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing'
  */
 export default function CoachPanel() {
     // trackVersion を読んでおくと、トラックが増減したときに選択肢が更新される
-    const { pianoRollRef, beatsPerBar, trackVersion } = useDaw();
+    const { pianoRollRef, beatsPerBar, trackVersion, bumpTracks } = useDaw();
     const [referenceId, setReferenceId] = useState<number | null>(null);
     const [attemptId, setAttemptId] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
@@ -49,6 +49,17 @@ export default function CoachPanel() {
             setBusy(false);
         }
     }, [reference, attempt, pianoRollRef, beatsPerBar]);
+
+    /** 指摘の在る場所を、ピアノロールで開く（比べた打ち込みのトラックを開いて、その拍まで移動する）。 */
+    const handleJump = useCallback((bar: number, beat: number) => {
+        const pr = pianoRollRef.current;
+        if (!pr || !attempt) return;
+        if (pr.getActiveTrackId() !== attempt.id) {
+            pr.switchToTrack(attempt.id);
+            bumpTracks();
+        }
+        pr.scrollToStep((bar - 1) * (beatsPerBar || 4) * 4 + (beat - 1) * 4);
+    }, [pianoRollRef, attempt, beatsPerBar, bumpTracks]);
 
     const header = (
         <>
@@ -127,7 +138,15 @@ export default function CoachPanel() {
                                 {ordered.flatMap((bar) => bar.issues.map((issue, i) => {
                                     if (shown >= MAX_ISSUES) return [];
                                     shown += 1;
-                                    return [<li key={`${bar.bar}-${i}`} style={{ fontSize: 11, lineHeight: 1.7 }}>{issueText(issue)}</li>];
+                                    return [
+                                        <li key={`${bar.bar}-${i}`} style={{ fontSize: 11, lineHeight: 1.7 }}>
+                                            <button type="button" title="ピアノロールでこの場所を開く"
+                                                onClick={() => handleJump(issue.bar, issue.beat)}
+                                                style={{ display: 'block', width: '100%', background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer', textDecoration: 'underline dotted' }}>
+                                                {issueText(issue)}
+                                            </button>
+                                        </li>,
+                                    ];
                                 }))}
                             </ul>
                             {total > MAX_ISSUES && (
