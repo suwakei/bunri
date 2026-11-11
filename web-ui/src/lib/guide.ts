@@ -36,13 +36,64 @@ export interface Guide {
     unverified_terms: string[];
 }
 
-/** `/api/chart/{id}/guide` のレスポンス。 */
+/**
+ * 1 回の呼び出しの使用量（トークン数）。課金の単位になる 4 つの計器と、出力のうち思考に使われたぶん。
+ * 入力の合計は `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`。
+ */
+export interface GuideUsage {
+    input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+    output_tokens?: number | null;
+    thinking_tokens?: number | null;
+}
+
+/** 今日の使用量と、1 日の上限。 */
+export interface GuideToday {
+    date: string;
+    /** 今日、Claude を呼んだ回数（保存済みを表示しただけの回は数えない）。 */
+    calls: number;
+    /** 今日の費用（USD。単価の表から計算した概算）。 */
+    cost_usd: number;
+    limit_calls: number | null;
+    limit_usd: number | null;
+    /** 上限に達していて呼べないときの理由。呼べるなら null。 */
+    blocked: string | null;
+}
+
+/** `POST /api/chart/{id}/guide` のレスポンス。 */
 export interface GuideResponse {
     chart_id: string;
     focus: string | null;
     guide: Guide;
     model: string;
-    usage: Record<string, number | null>;
+    usage: GuideUsage;
+    /** このガイドを作った呼び出しの費用（USD。概算）。単価が分からないモデルなら null。 */
+    cost_usd?: number | null;
+    duration_sec?: number | null;
+    /** 作った時刻（ISO 形式）。 */
+    created_at?: string | null;
+    /** 保存済みのガイドを返したとき true（Claude は呼んでいない）。 */
+    cached?: boolean;
+    today?: GuideToday;
+}
+
+/** `GET /api/chart/{id}/guide` のレスポンス。保存済みが無ければ `saved` が false で、ガイドは無い。 */
+export type SavedGuideResponse =
+    | ({ saved: true } & GuideResponse)
+    | { saved: false; chart_id: string; focus: string | null; today?: GuideToday };
+
+/** 再現ガイドの費用まわりの設定。上限は null で「上限なし」。 */
+export interface GuideSettings {
+    daily_limit_calls: number | null;
+    daily_limit_usd: number | null;
+    max_input_tokens: number;
+}
+
+/** `/api/settings/guide` のレスポンス。 */
+export interface GuideSettingsResponse {
+    settings: GuideSettings;
+    today: GuideToday;
 }
 
 /** `/api/settings/llm` のレスポンス。API キーそのものは含まない。 */
@@ -54,7 +105,10 @@ export interface LlmSettings {
 
 /** ガイドを作れなかったときのエラー。`code` で理由を出し分ける。 */
 export class GuideRequestError extends Error {
-    /** `no_key` / `auth` / `rate_limit` / `network` / `refused` / `truncated` / `api` / `invalid` */
+    /**
+     * `no_key` / `auth` / `rate_limit` / `network` / `refused` / `truncated` / `api` / `invalid` /
+     * `daily_limit`（1 日の上限）/ `too_long`（カルテが長すぎる）/ `no_material`（材料が足りない）
+     */
     code: string;
 
     constructor(message: string, code: string) {
@@ -85,18 +139,64 @@ async function toError(resp: Response): Promise<GuideRequestError> {
 }
 
 /**
- * 再現ガイドを作る。
+ * 再現ガイドを作る。同じ条件のガイドが保存済みなら、Claude を呼ばずにそれが返る。
  *
  * @param chartId - カルテの ID
  * @param focus - 絞り込むセクションの ID。null なら曲全体
+ * @param regenerate - true なら、保存済みが在っても作り直す（Claude を呼ぶので費用がかかる）
  * @throws {GuideRequestError} 作れなかった場合
  */
-export async function requestGuide(chartId: string, focus: string | null): Promise<GuideResponse> {
+export async function requestGuide(chartId: string, focus: string | null, regenerate = false): Promise<GuideResponse> {
     const body = new FormData();
     body.append('focus', focus ?? '');
+    if (regenerate) body.append('regenerate', 'true');
     const resp = await apiFetch(`/api/chart/${encodeURIComponent(chartId)}/guide`, { method: 'POST', body });
     if (!resp.ok) throw await toError(resp);
     return (await resp.json()) as GuideResponse;
+}
+
+/**
+ * 保存済みの再現ガイドを取得する。Claude は呼ばない（費用はかからない）。
+ *
+ * @param chartId - カルテの ID
+ * @param focus - 絞り込むセクションの ID。null なら曲全体
+ * @throws {GuideRequestError} 取得できなかった場合
+ */
+export async function fetchSavedGuide(chartId: string, focus: string | null): Promise<SavedGuideResponse> {
+    const query = focus ? `?focus=${encodeURIComponent(focus)}` : '';
+    const resp = await apiFetch(`/api/chart/${encodeURIComponent(chartId)}/guide${query}`);
+    if (!resp.ok) throw await toError(resp);
+    return (await resp.json()) as SavedGuideResponse;
+}
+
+/** 再現ガイドの費用まわりの設定と、今日の使用量を取得する。 */
+export async function fetchGuideSettings(): Promise<GuideSettingsResponse> {
+    const resp = await apiFetch('/api/settings/guide');
+    if (!resp.ok) throw await toError(resp);
+    return (await resp.json()) as GuideSettingsResponse;
+}
+
+/**
+ * 再現ガイドの費用まわりの設定を変える。
+ *
+ * @param changes - 変える項目だけ。上限なしは null
+ */
+export async function saveGuideSettings(changes: Partial<GuideSettings>): Promise<GuideSettingsResponse> {
+    const resp = await apiFetch('/api/settings/guide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changes),
+    });
+    if (!resp.ok) throw await toError(resp);
+    return (await resp.json()) as GuideSettingsResponse;
+}
+
+/**
+ * 概算の費用を、画面に出す文字にする。1 セント未満は桁を増やす。
+ * 例: `0.1123` → `$0.11`、`0.0042` → `$0.004`
+ */
+export function formatUsd(value: number): string {
+    return value >= 0.01 || value === 0 ? `$${value.toFixed(2)}` : `$${value.toFixed(3)}`;
 }
 
 /** LLM の設定の状態を取得する。 */
