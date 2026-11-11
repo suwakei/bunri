@@ -1,7 +1,7 @@
 # bunri DAW — コマンド集
 # 使い方: make <コマンド>
 
-.PHONY: help install install-frontend requirements build web dev test lint clean
+.PHONY: help install install-frontend install-desktop requirements build web dev desktop test lint clean
 
 help: ## コマンド一覧を表示
 	@echo ""
@@ -13,6 +13,8 @@ help: ## コマンド一覧を表示
 	@echo "  make build             React フロントエンドをビルド"
 	@echo "  make web               Web DAW を起動 (http://127.0.0.1:8000)"
 	@echo "  make dev               開発モード（Vite HMR + FastAPI）"
+	@echo "  make install-desktop   デスクトップ版の依存（Tauri CLI）をインストール"
+	@echo "  make desktop           デスクトップ版を開発モードで起動（Rust と uv が要る）"
 	@echo "  make test              全テストを実行（フロント + バック）"
 	@echo "  make lint              リント実行（ESLint + ruff）"
 	@echo "  make clean             生成ファイルとキャッシュを削除"
@@ -40,13 +42,21 @@ dev: ## 開発モード（別ターミナルでFastAPIとViteを起動）
 	@echo "  1) uv run python run_web.py  (FastAPI: http://127.0.0.1:8000)"
 	@echo "  2) cd web-ui && npm run dev  (Vite HMR: http://127.0.0.1:3000)"
 
+install-desktop: ## デスクトップ版の依存（Tauri CLI）をインストール
+	npm ci
+
+desktop: ## デスクトップ版を開発モードで起動（窓が開き、Python sidecar も一緒に起動する）
+	npm run tauri dev
+
 test: ## 全テストを実行
 	cd web-ui && npm test
 	uv run python -m pytest test/back/ -v
+	cd src-tauri && cargo test
 
 lint: ## リント実行
 	cd web-ui && npx eslint .
 	uv run ruff check .
+	cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
 clean: ## 生成ファイルとキャッシュを削除
 	rm -rf results uploads projects

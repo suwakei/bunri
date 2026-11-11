@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 録音 (getUserMedia) のために要る。無いとマイクの許可を求める前にアプリが落ちる -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>bunri はマイクから音声を録音するためにマイクを使います。録音した音声はこの Mac の中だけに保存されます。</string>
+</dict>
+</plist>

@@ -4,6 +4,7 @@
 import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { apiFetch } from '../lib/api';
 
 /**
  * プロジェクトデータの構造を表すインターフェース。
@@ -158,16 +159,16 @@ export default function HeaderBar() {
         };
         const fd = new FormData();
         fd.append('data', JSON.stringify(project));
-        await fetch('/api/project/save', { method: 'POST', body: fd });
+        await apiFetch('/api/project/save', { method: 'POST', body: fd });
         setStatus('プロジェクトを保存しました');
     }, [pianoRollRef, automationRef, setStatus]);
 
     const handleLoad = useCallback(async () => {
-        const resp = await fetch('/api/project/list');
+        const resp = await apiFetch('/api/project/list');
         const files = await resp.json();
         if (files.length === 0) { setStatus('保存されたプロジェクトがありません'); return; }
         const name = files[0];
-        const projResp = await fetch(`/api/project/load/${name}`);
+        const projResp = await apiFetch(`/api/project/load/${name}`);
         const project: ProjectData = await projResp.json();
         engine.bpm = project.bpm || 120;
         engine.beatsPerBar = project.beatsPerBar || 4;

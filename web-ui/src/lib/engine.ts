@@ -2,6 +2,7 @@
  * bunri DAW — WebAudio リアルタイム再生エンジン
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
+import { apiFetch } from './api';
 
 /**
  * ピアノロール上の1ノートを表すデータ構造。
@@ -237,7 +238,7 @@ class AudioEngine {
         this.init();
         const track = this.getTrack(trackId);
         if (!track) return;
-        const resp = await fetch(url);
+        const resp = await apiFetch(url);
         const arrayBuf = await resp.arrayBuffer();
         const buffer = await this.ctx!.decodeAudioData(arrayBuf);
         const clip: Clip = { buffer, offset: offsetSec, name: name || 'clip', duration: buffer.duration };

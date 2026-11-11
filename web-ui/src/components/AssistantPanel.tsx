@@ -4,6 +4,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useDaw } from '../lib/store';
+import { apiFetch } from '../lib/api';
 
 /**
  * AIアシスタントが提案する単一ノートのデータ構造。
@@ -90,7 +91,7 @@ export default function AssistantPanel() {
 
     // 起動時にLLMの利用可否を取得
     useEffect(() => {
-        fetch('/api/assistant/status')
+        apiFetch('/api/assistant/status')
             .then(r => r.json())
             .then((data: AvailabilityStatus) => setAvailability(data))
             .catch(() => { /* 無視 */ });
@@ -123,7 +124,7 @@ export default function AssistantPanel() {
         fd.append('context_notes', JSON.stringify(contextNotes));
 
         try {
-            const resp = await fetch('/api/assistant/chat', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/assistant/chat', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data: AssistantResponse = await resp.json();
             setMessages(m => [...m, {

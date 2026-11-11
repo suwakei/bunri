@@ -14,3 +14,7 @@ projects/
 .claude/
 test/
 docs/
+src-tauri/
+package.json
+package-lock.json
+.venv/

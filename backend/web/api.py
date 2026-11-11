@@ -17,6 +17,10 @@ from audio_utils import projects_dir, results_dir, safe_join, uploads_dir
 
 app = FastAPI(title="bunri DAW API")
 
+# デスクトップアプリから起動されたとき（BUNRI_TOKEN が在るとき）だけ、API に鍵をかける
+import access_control
+access_control.install_from_env(app)
+
 # 静的ファイル配信（React ビルド出力 → backend/web/static/dist/）
 STATIC_DIR = Path(__file__).parent / "static"
 DIST_DIR = STATIC_DIR / "dist"

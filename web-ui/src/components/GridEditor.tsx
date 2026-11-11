@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
+import { apiFetch } from '../lib/api';
 import { formatTime, type ChartResponse } from '../lib/chart';
 
 /** 表示する窓の長さの選択肢（秒） */
@@ -163,7 +164,7 @@ export default function GridEditor() {
             body.append('downbeat_offset', String(localOffset));
             body.append('beats_per_bar', String(localBeats));
 
-            const resp = await fetch('/api/chart/regrid', { method: 'POST', body });
+            const resp = await apiFetch('/api/chart/regrid', { method: 'POST', body });
             if (!resp.ok) throw new Error(await resp.text());
 
             const result: ChartResponse = await resp.json();

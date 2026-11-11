@@ -1,0 +1,12 @@
+{
+  "name": "bunri-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "bunri DAW のデスクトップアプリ (Tauri) を起動・ビルドするための入口。画面の本体は web-ui/",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}
