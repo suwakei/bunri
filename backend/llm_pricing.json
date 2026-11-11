@@ -1,0 +1,10 @@
+{
+  "_note": "Claude の単価（USD / 100 万トークン）。画面に出す費用は、この表から計算した概算で、請求額そのものではない。単価が変わったら、このファイルを直すか、データ置き場の results/guide/settings.json の pricing で上書きする（guide_usage.py）。Haiku 5.5 は入力が 10 万トークンを超えると別の単価になるが、再現ガイドは入力に上限を設けているので扱わない。",
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "fetched": "2026-11-11",
+  "models": {
+    "claude-opus-5-5": {"input": 4.0, "cache_write_5m": 5.0, "cache_write_1h": 8.0, "cache_read": 0.2, "output": 20.0},
+    "claude-sonnet-5-5": {"input": 2.0, "cache_write_5m": 2.5, "cache_write_1h": 4.0, "cache_read": 0.1, "output": 10.0},
+    "claude-haiku-5-5": {"input": 0.1, "cache_write_5m": 0.125, "cache_write_1h": 0.2, "cache_read": 0.01, "output": 0.5}
+  }
+}
