@@ -21,6 +21,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
 # 起動ごとのトークンを OS の乱数から作る
 getrandom = "0.3"
+keyring = "4.2"
 
 [target.'cfg(unix)'.dependencies]
 # 止めるとき、子プロセスが起動した孫までプロセスグループごと終わらせる

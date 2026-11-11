@@ -159,6 +159,9 @@ pub struct LaunchConfig {
     pub server: ProcessSpec,
     /// API を呼んでよい origin (CORS の許可先)。
     pub allowed_origins: Vec<String>,
+    /// 保存してある API キーを読むときの、キーチェーン上のサービス名 (アプリの識別子)。
+    /// `None` ならキーチェーンを読まない (テスト用)。
+    pub keychain_service: Option<String>,
 }
 
 impl LaunchConfig {
@@ -213,6 +216,7 @@ impl LaunchConfig {
                 envs: Vec::new(),
             },
             allowed_origins,
+            keychain_service: Some(app.config().identifier.clone()),
         }
     }
 
@@ -239,11 +243,9 @@ impl LaunchConfig {
             .ok()
             .and_then(|p| p.parent().map(PathBuf::from))
             .ok_or_else(|| "実行ファイルの場所が分かりません".to_string())?;
-        Ok(Self::bundled(
-            &exe_dir,
-            &resource_dir.join("runtime"),
-            &app_data,
-        ))
+        let mut config = Self::bundled(&exe_dir, &resource_dir.join("runtime"), &app_data);
+        config.keychain_service = Some(app.config().identifier.clone());
+        Ok(config)
     }
 
     /// 同梱物とデータ置き場の場所から、配布物での起動方法を組み立てる。
@@ -317,6 +319,7 @@ impl LaunchConfig {
                 envs: server_envs,
             },
             allowed_origins: vec!["tauri://localhost".to_string()],
+            keychain_service: None,
         }
     }
 }
@@ -612,9 +615,11 @@ fn run_server(config: &LaunchConfig, progress: &Progress, running: &Running) {
         Ok(token) => token,
         Err(reason) => return progress.fail(reason),
     };
-    let spawned = config
-        .server
-        .command()
+    let mut command = config.server.command();
+    if let Some(key) = saved_api_key(config) {
+        command.env("ANTHROPIC_API_KEY", key);
+    }
+    let spawned = command
         .env("BUNRI_TOKEN", &token)
         .env("BUNRI_ALLOWED_ORIGINS", config.allowed_origins.join(","))
         // ポートの知らせがバッファに溜まって届かない、ということが無いように
@@ -644,6 +649,25 @@ fn run_server(config: &LaunchConfig, progress: &Progress, running: &Running) {
     if !running.stopping.load(Ordering::SeqCst) {
         // 自分から終わった (止める指示は出していない)。後始末だけしておく
         let _ = running.wait();
+    }
+}
+
+/// sidecar に渡す、保存済みの Claude の API キーを返す (無ければ `None`)。
+///
+/// すでに環境変数 `ANTHROPIC_API_KEY` が在る (開発時にシェルで設定している) ならそちらを使い、
+/// キーチェーンは読まない。読めなかったときは、理由をログに出して起動は続ける
+/// (キーが無くても、再現ガイド以外は動く)。
+fn saved_api_key(config: &LaunchConfig) -> Option<String> {
+    let service = config.keychain_service.as_deref()?;
+    if std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    match crate::secrets::load(service) {
+        Ok(key) => key,
+        Err(reason) => {
+            eprintln!("[secrets] {reason}");
+            None
+        }
     }
 }
 
@@ -835,6 +859,7 @@ mod tests {
                 ..Default::default()
             },
             allowed_origins: vec![],
+            keychain_service: None,
         }));
         let status = wait_until(&sidecar, |s| s.phase == Phase::Failed);
         assert_eq!(status.phase, Phase::Failed);
@@ -921,6 +946,7 @@ mod tests {
             setup: None,
             server: sh(script),
             allowed_origins: vec!["tauri://localhost".into()],
+            keychain_service: None,
         }));
         let status = wait_until(&sidecar, |s| s.phase != Phase::Starting);
         assert_eq!(status.phase, Phase::Ready, "{}", status.message);
@@ -959,6 +985,7 @@ mod tests {
             }),
             server,
             allowed_origins: vec![],
+            keychain_service: None,
         }));
         let status = wait_until(&sidecar, |s| {
             matches!(s.phase, Phase::Ready | Phase::Failed)
@@ -1012,6 +1039,7 @@ mod tests {
             }),
             server: sh(r#"echo "{\"event\": \"listening\", \"port\": 5001}"; cat > /dev/null"#),
             allowed_origins: vec![],
+            keychain_service: None,
         }));
         let status = wait_until(&sidecar, |s| {
             matches!(s.phase, Phase::Ready | Phase::Failed)
@@ -1047,6 +1075,7 @@ mod tests {
             }),
             server: sh(&format!("touch '{}'; cat > /dev/null", started.display())),
             allowed_origins: vec![],
+            keychain_service: None,
         }));
         let status = wait_until(&sidecar, |s| !s.log.is_empty());
         assert_eq!(status.phase, Phase::Setup);
