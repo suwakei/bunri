@@ -238,3 +238,22 @@ class TestDetectChords:
         path, _ = chord_song
         assert mt.detect_chords(path, []) == []
         assert mt.detect_chords(path, [1.0]) == []
+
+    def test_audio_length_where_chroma_frame_counts_differ(self, tmp_path):
+        """全帯域と低域でクロマのフレーム数が食い違う長さの音声でも、例外を投げない
+
+        CQT は帯域の低さに応じて音声を間引いてから解析するので、長さによっては
+        低域のクロマのほうが 1 フレーム長くなる（10.1 秒、17.6 秒、25.1 秒、32.6 秒…）。
+        以前はここで IndexError になり、その長さの曲はカルテを作れなかった。
+        """
+        import soundfile as sf
+
+        sr = 22050
+        t = np.arange(int(sr * 10.1)) / sr
+        chord = sum(np.sin(2 * np.pi * hz * t) for hz in (261.63, 329.63, 392.0))
+        path = tmp_path / "length.wav"
+        sf.write(str(path), (0.2 * chord).astype(np.float32), sr)
+
+        events = mt.detect_chords(str(path), [i * 0.5 for i in range(20)])
+        assert events
+        assert events[0]["symbol"] == "C"
