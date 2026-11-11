@@ -176,6 +176,16 @@ class TestBuildRequest:
         for key in ("thinking", "temperature", "top_p", "top_k"):
             assert key not in request
 
+    def test_指示文は確信度を画面と同じ3段階で言わせる(self):
+        """生の数値 (0.71 など) は初心者の判断材料にならない。しきい値はカルテの画面と同じ値"""
+        import song_chart
+
+        assert rg.song_chart_tiers() == (song_chart._TIER_CERTAIN_MIN, song_chart._TIER_LIKELY_MIN)
+        for word in ("確実", "たぶん", "自信なし"):
+            assert word in rg.SYSTEM_PROMPT
+        assert f"{song_chart._TIER_CERTAIN_MIN} 以上は「確実」" in rg.SYSTEM_PROMPT
+        assert "{" not in rg.SYSTEM_PROMPT and "}" not in rg.SYSTEM_PROMPT
+
     def test_モデルは環境変数で差し替えられる(self, chart, monkeypatch):
         monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-sonnet-5-5")
         assert rg.build_request(chart)["model"] == "claude-sonnet-5-5"
@@ -298,14 +308,21 @@ class TestGenerate:
             rg.generate(chart, client=FakeClient(error=TypeError("unexpected keyword argument")))
 
 
+@pytest.fixture
+def no_keys(monkeypatch, tmp_path):
+    """API キーがどこにも無い状態にする（手元の .env や環境変数を読ませない）"""
+    llm_settings.clear_api_key()
+    for name in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(llm_settings, "_dotenv_path", lambda: tmp_path / "no-such.env")
+    yield tmp_path
+    llm_settings.clear_api_key()
+
+
 class TestLlmSettings:
     @pytest.fixture(autouse=True)
-    def clean(self, monkeypatch):
-        llm_settings.clear_api_key()
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    def clean(self, no_keys):
         yield
-        llm_settings.clear_api_key()
 
     def test_何も無ければnone(self):
         assert llm_settings.api_key() is None
@@ -340,16 +357,69 @@ class TestLlmSettings:
         llm_settings.set_api_key("sk-settings")
         assert llm_settings.make_client().api_key == "sk-settings"
 
+    def test_CLAUDE_API_KEYという名前でも読む(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_API_KEY", "sk-claude")
+        assert llm_settings.api_key() == "sk-claude"
+        assert llm_settings.key_source() == "env"
+        # 両方在れば ANTHROPIC_API_KEY を使う
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+        assert llm_settings.api_key() == "sk-anthropic"
+
+
+class TestDotenv:
+    """開発時に、リポジトリ直下の .env から API キーを読む"""
+
+    @pytest.fixture(autouse=True)
+    def clean(self, no_keys):
+        yield
+
+    def _write(self, monkeypatch, tmp_path, text):
+        path = tmp_path / ".env"
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(llm_settings, "_dotenv_path", lambda: path)
+        return path
+
+    def test_envファイルのキーを読む(self, monkeypatch, tmp_path):
+        self._write(monkeypatch, tmp_path, "CLAUDE_API_KEY=sk-from-file\n")
+        assert llm_settings.api_key() == "sk-from-file"
+        assert llm_settings.status()["key_source"] == "env"
+
+    def test_引用符とexportとコメントを扱う(self, monkeypatch, tmp_path):
+        self._write(monkeypatch, tmp_path, '# comment\n\nOTHER=x\nexport ANTHROPIC_API_KEY="sk-quoted"\n')
+        assert llm_settings.api_key() == "sk-quoted"
+        self._write(monkeypatch, tmp_path, "CLAUDE_API_KEY = 'sk-single'\n")
+        assert llm_settings.api_key() == "sk-single"
+
+    def test_両方の名前が在ればANTHROPIC_API_KEYを使う(self, monkeypatch, tmp_path):
+        self._write(monkeypatch, tmp_path, "CLAUDE_API_KEY=sk-claude\nANTHROPIC_API_KEY=sk-anthropic\n")
+        assert llm_settings.api_key() == "sk-anthropic"
+
+    def test_環境変数と設定画面のキーが優先(self, monkeypatch, tmp_path):
+        self._write(monkeypatch, tmp_path, "CLAUDE_API_KEY=sk-from-file\n")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
+        assert llm_settings.api_key() == "sk-env"
+        llm_settings.set_api_key("sk-settings")
+        assert llm_settings.api_key() == "sk-settings"
+
+    @pytest.mark.parametrize("text", ["", "CLAUDE_API_KEY=\n", "OTHER=sk-x\n", "not a dotenv line\n"])
+    def test_キーが無ければNone(self, monkeypatch, tmp_path, text):
+        self._write(monkeypatch, tmp_path, text)
+        assert llm_settings.api_key() is None
+        assert llm_settings.key_source() == "none"
+
+    def test_ファイルが無くても失敗しない(self):
+        assert llm_settings.api_key() is None
+
+    def test_状態にキーそのものは含めない(self, monkeypatch, tmp_path):
+        self._write(monkeypatch, tmp_path, "CLAUDE_API_KEY=sk-secret-in-file\n")
+        assert "sk-secret-in-file" not in json.dumps(llm_settings.status())
+
 
 class TestApi:
     @pytest.fixture(autouse=True)
-    def clean(self, monkeypatch, tmp_path):
-        llm_settings.clear_api_key()
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    def clean(self, monkeypatch, tmp_path, no_keys):
         monkeypatch.setenv("BUNRI_DATA_DIR", str(tmp_path))
         yield
-        llm_settings.clear_api_key()
 
     @pytest.fixture
     def client(self):
