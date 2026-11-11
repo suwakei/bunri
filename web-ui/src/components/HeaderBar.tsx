@@ -4,7 +4,7 @@
 import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { apiFetch } from '../lib/api';
+import { apiFetch, errorDetail } from '../lib/api';
 import { notesToMidi } from '../lib/midi';
 
 /**
@@ -21,6 +21,10 @@ interface ProjectData {
     bpm?: number;
     beatsPerBar?: number;
     tracks?: Array<{
+        name?: string;
+        gain?: number;
+        pan?: number;
+        mute?: boolean;
         pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
         referenceNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
     }>;
@@ -129,14 +133,14 @@ export default function HeaderBar() {
 
     const handleExport = useCallback(async () => {
         engine.init();
-        const totalClips = engine.tracks.reduce((sum, t) => sum + t.clips.length, 0);
-        if (totalClips === 0) {
-            setStatus('書き出すクリップがありません');
+        const pr = pianoRollRef.current;
+        if (pr) pr._saveToEngine();
+        // 書き出すのは、再生で鳴るもの (クリップと、ピアノロールのノート)。どちらも無ければ書き出さない
+        if (engine.getTotalDuration() === 0) {
+            setStatus('書き出すものがありません。クリップかノートを置いてください');
             return;
         }
         await withProgress('ミックスダウン中...', async () => {
-            const pr = pianoRollRef.current;
-            if (pr) pr._saveToEngine();
             const blob = await engine.exportWav();
             if (!blob) { setStatus('書き出しに失敗しました'); return; }
             const url = URL.createObjectURL(blob);
@@ -189,7 +193,8 @@ export default function HeaderBar() {
         };
         const fd = new FormData();
         fd.append('data', JSON.stringify(project));
-        await apiFetch('/api/project/save', { method: 'POST', body: fd });
+        const resp = await apiFetch('/api/project/save', { method: 'POST', body: fd });
+        if (!resp.ok) { setStatus('エラー: プロジェクトを保存できませんでした（' + await errorDetail(resp) + '）'); return; }
         setStatus('プロジェクトを保存しました');
     }, [pianoRollRef, automationRef, setStatus]);
 
@@ -205,8 +210,15 @@ export default function HeaderBar() {
         setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
         if (project.tracks) {
             project.tracks.forEach((pt, i) => {
-                if (engine.tracks[i] && pt.pianoNotes) engine.tracks[i].pianoNotes = pt.pianoNotes;
-                if (engine.tracks[i] && pt.referenceNotes) engine.tracks[i].referenceNotes = pt.referenceNotes;
+                // 保存したときのほうがトラックが多ければ、足りないぶんを作る
+                // (作らないと、3 本目以降のノートが読み込まれずに消える)
+                const track = engine.tracks[i] ?? engine.addTrack(pt.name);
+                if (pt.name) track.name = pt.name;
+                if (typeof pt.gain === 'number') engine.updateTrackGain(track.id, pt.gain);
+                if (typeof pt.pan === 'number') engine.updateTrackPan(track.id, pt.pan);
+                if (typeof pt.mute === 'boolean' && pt.mute !== track.mute) engine.toggleMute(track.id);
+                if (pt.pianoNotes) track.pianoNotes = pt.pianoNotes;
+                if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
             });
         }
         const auto = automationRef.current;

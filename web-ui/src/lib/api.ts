@@ -194,3 +194,24 @@ export function backendUrl(url: string): string {
     const sep = full.includes('?') ? '&' : '?';
     return `${full}${sep}${TOKEN_QUERY}=${encodeURIComponent(backend.token)}`;
 }
+
+/**
+ * 失敗した応答から、利用者に見せる理由の文を取り出す。
+ *
+ * API は失敗の理由を `{"detail": "..."}` の形で返す。応答の本文をそのまま見せると
+ * この JSON が画面に出てしまうので、中の文だけを取り出す。
+ * その形でなければ本文をそのまま、本文も無ければ状態コードを返す。
+ *
+ * @param resp - `ok` でない応答（本文をまだ読んでいないもの）
+ */
+export async function errorDetail(resp: Response): Promise<string> {
+    const text = await resp.text();
+    try {
+        const detail = (JSON.parse(text) as { detail?: unknown } | null)?.detail;
+        if (typeof detail === 'string' && detail) return detail;
+        if (detail !== undefined && detail !== null) return JSON.stringify(detail);
+    } catch {
+        // JSON ではない本文。下でそのまま返す
+    }
+    return text || `HTTP ${resp.status}`;
+}
