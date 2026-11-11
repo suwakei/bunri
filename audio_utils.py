@@ -30,6 +30,32 @@ def load_audio(file_obj):
     return data, sr
 
 
+def results_dir(*parts):
+    """結果ファイルの出力先ディレクトリを解決し、存在しなければ作成して返す。
+
+    出力先を一箇所に集約するための関数。将来デスクトップアプリへ移行する際、
+    署名済みアプリは実行ファイルの隣に書き込めないため OS のアプリデータ
+    ディレクトリへ移す必要がある。その変更をこの関数の差し替えだけで完結
+    させるのが目的。
+
+    新規モジュールはパスを直書きせず、必ずこの関数を経由すること。
+
+    Args:
+        *parts: ``results/`` 以下のサブディレクトリ名。可変長。
+            例: ``results_dir("charts")`` → ``results/charts``。
+            省略した場合は ``results/`` 自体を返す。
+
+    Returns:
+        pathlib.Path: 解決済みのディレクトリパス。呼び出し時点で存在が保証される。
+
+    Side Effects:
+        該当ディレクトリが存在しない場合、親ディレクトリごと作成する。
+    """
+    path = Path("results").joinpath(*parts)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def sec_to_samples(sec, sr):
     """秒をサンプル数に変換する。
 

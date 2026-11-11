@@ -3,6 +3,7 @@
  */
 import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 import engine from './engine';
+import type { ChartResponse, Glossary, SongChart, WaveformPeaks } from './chart';
 
 /**
  * DAW グローバル状態のコンテキスト型定義。
@@ -67,6 +68,26 @@ export interface DawContextType {
     timelineRef: React.MutableRefObject<any>;
     /** AutomationEditor コンポーネントへの ref */
     automationRef: React.MutableRefObject<any>;
+
+    /** 現在読み込まれている楽曲カルテ。未解析なら null */
+    chart: SongChart | null;
+    /** カルテの識別子。`/api/chart/regrid` に渡す */
+    chartId: string | null;
+    /** 波形描画用のピーク配列。カルテ本体には含まれない */
+    chartPeaks: WaveformPeaks | null;
+    /** 初心者向けツールチップの用語辞書 */
+    glossary: Glossary;
+    /**
+     * カルテ API のレスポンスをまとめて状態に反映する。
+     * @param result - `/api/chart` または `/api/chart/regrid` のレスポンス
+     */
+    setChartResult: (result: ChartResponse) => void;
+    /** 読み込み済みのカルテを破棄する */
+    clearChart: () => void;
+    /** グリッド補正モーダルの表示フラグ */
+    showGridEditor: boolean;
+    /** @param v - true でグリッド補正モーダルを開く */
+    setShowGridEditor: (v: boolean) => void;
 }
 
 const DawContext = createContext<DawContextType | null>(null);
@@ -92,7 +113,27 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const timelineRef = useRef<any>(null);
     const automationRef = useRef<any>(null);
 
+    const [chart, setChart] = useState<SongChart | null>(null);
+    const [chartId, setChartId] = useState<string | null>(null);
+    const [chartPeaks, setChartPeaks] = useState<WaveformPeaks | null>(null);
+    const [glossary, setGlossary] = useState<Glossary>({});
+    const [showGridEditor, setShowGridEditor] = useState(false);
+
     const bumpTracks = useCallback(() => setTrackVersion(v => v + 1), []);
+
+    const setChartResult = useCallback((result: ChartResponse) => {
+        setChart(result.chart);
+        setChartId(result.chart_id);
+        // regrid では peaks を返さない場合があるので、その際は既存を保持する
+        if (result.peaks) setChartPeaks(result.peaks);
+        if (result.glossary) setGlossary(result.glossary);
+    }, []);
+
+    const clearChart = useCallback(() => {
+        setChart(null);
+        setChartId(null);
+        setChartPeaks(null);
+    }, []);
 
     const setBpm = useCallback((v: string | number) => {
         const val = parseInt(String(v)) || 120;
@@ -135,6 +176,9 @@ export function DawProvider({ children }: { children: ReactNode }) {
         metronomeEnabled, setMetronomeEnabled,
         trackVersion, bumpTracks,
         pianoRollRef, timelineRef, automationRef,
+        chart, chartId, chartPeaks, glossary,
+        setChartResult, clearChart,
+        showGridEditor, setShowGridEditor,
     };
 
     return <DawContext.Provider value={value}>{children}</DawContext.Provider>;

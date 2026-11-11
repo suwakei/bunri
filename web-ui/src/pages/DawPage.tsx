@@ -7,6 +7,7 @@ import LeftPanel from '../components/LeftPanel';
 import CenterArea from '../components/CenterArea';
 import StatusBar from '../components/StatusBar';
 import WelcomeGuide from '../components/WelcomeGuide';
+import GridEditor from '../components/GridEditor';
 
 /**
  * メイン DAW ページコンポーネント。
@@ -30,6 +31,7 @@ export default function DawPage() {
             </div>
             <StatusBar />
             <WelcomeGuide />
+            <GridEditor />
         </>
     );
 }

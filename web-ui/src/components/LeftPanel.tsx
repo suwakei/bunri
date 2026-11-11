@@ -5,6 +5,8 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import AssistantPanel from './AssistantPanel';
+import ChartPanel from './ChartPanel';
+import type { ChartResponse } from '../lib/chart';
 
 /**
  * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
@@ -408,7 +410,7 @@ const STEM_LABELS_JP: Record<string, string> = {
  */
 // ---- ファイルパネル ----
 function FilePanel() {
-    const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm, setBpm } = useDaw();
+    const { setStatus, bumpTracks, withProgress, pianoRollRef, bpm, setBpm, beatsPerBar, setChartResult } = useDaw();
     const [fileTrack, setFileTrack] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const analyzeFileRef = useRef<HTMLInputElement>(null);
@@ -452,6 +454,39 @@ function FilePanel() {
             setStatus(`${notes.length}個のノートを検出しました`);
         });
     }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus]);
+
+    /**
+     * 楽曲カルテ（速報）を生成する。解析の入口。
+     *
+     * ステム分離を行わないため数秒〜十数秒で返る。まずここで
+     * キー・コード進行・構成・ミックスを掴んでもらい、ステム分離が必要なら
+     * そのあとで「さらに詳しく」に進んでもらう導線にしている。
+     */
+    const handleAnalyzeChart = useCallback(async () => {
+        const file = transcribeFileRef.current?.files?.[0];
+        if (!file) { setStatus('解析する楽曲ファイルを選択してください'); return; }
+
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('bpm', autoBpm ? '0' : String(bpm));
+        fd.append('beats_per_bar', String(beatsPerBar));
+
+        await withProgress(`楽曲を解析中...（${file.name}）`, async () => {
+            const resp = await fetch('/api/chart', { method: 'POST', body: fd });
+            if (!resp.ok) throw new Error(await resp.text());
+
+            const result: ChartResponse = await resp.json();
+            setChartResult(result);
+            if (autoBpm) setBpm(Math.round(result.chart.grid.bpm));
+
+            const chords = result.chart.chords.length;
+            setStatus(
+                `カルテを作成しました（${result.chart.key.tonic
+                    ? `キー ${result.chart.key.tonic} ${result.chart.key.mode === 'minor' ? 'マイナー' : 'メジャー'}`
+                    : 'キー不明'} / ${chords}コード）。カルテタブで確認してください`
+            );
+        });
+    }, [autoBpm, bpm, beatsPerBar, withProgress, setStatus, setBpm, setChartResult]);
 
     const handleFullTranscribe = useCallback(async () => {
         const file = transcribeFileRef.current?.files?.[0];
@@ -563,10 +598,10 @@ function FilePanel() {
 
     return (
         <div id="file-panel" className="panel-content">
-            <h3 style={{ color: 'var(--accent)' }}>楽曲を完全解析して配置</h3>
+            <h3 style={{ color: 'var(--accent)' }}>楽曲を解析する</h3>
             <p className="panel-desc">
-                <strong>アップロード1回で全自動:</strong> ステム分離 → ピッチ検出 → 楽器推定 → トラック自動作成 → ピアノロール配置。
-                既存曲を分解してDAWで再現・編集できます。
+                キー・コード進行・構成・ミックスの特性を数秒で解析します。
+                結果は<strong>カルテ</strong>タブに表示され、自分で再現するための材料になります。
             </p>
             <input type="file" ref={transcribeFileRef} accept=".wav,.mp3,.flac,.ogg,.m4a" />
             <div className="param-row">
@@ -578,16 +613,28 @@ function FilePanel() {
                         BPM自動検出
                     </label>
                 </div>
-                <div>
-                    <label>感度 ({transcribeSensitivity})</label>
-                    <input type="range" min="0.1" max="1" step="0.05"
-                        value={transcribeSensitivity}
-                        onChange={e => setTranscribeSensitivity(+e.target.value)} />
-                </div>
             </div>
-            <button className="action-btn" onClick={handleFullTranscribe}>
-                楽曲を完全解析（数分かかります）
+            <button className="action-btn" onClick={handleAnalyzeChart}>
+                楽曲を解析してカルテを作る
             </button>
+
+            <details style={{ marginTop: 10 }}>
+                <summary style={{ fontSize: 11, color: 'var(--text-mid)', cursor: 'pointer' }}>
+                    さらに詳しく（ステム分離）
+                </summary>
+                <p className="panel-desc" style={{ marginTop: 6 }}>
+                    ステム分離 → ピッチ検出 → 楽器推定を行い、トラックを自動作成してピアノロールに配置します。
+                    <strong style={{ color: 'var(--accent)' }}>答えのノートがそのまま並ぶ</strong>ため、
+                    自分で打ち込んでみたあとに答え合わせとして使うことをおすすめします。
+                </p>
+                <label>感度 ({transcribeSensitivity})</label>
+                <input type="range" min="0.1" max="1" step="0.05"
+                    value={transcribeSensitivity}
+                    onChange={e => setTranscribeSensitivity(+e.target.value)} />
+                <button className="action-btn" onClick={handleFullTranscribe}>
+                    ステム分離して配置（数分かかります）
+                </button>
+            </details>
             <hr style={{ borderColor: 'var(--border)', margin: '12px 0' }} />
             <h3>ファイル読み込み</h3>
             <p className="panel-desc">WAVファイルをトラックに追加します。タイムライン上に直接ドラッグ&ドロップもできます。</p>
@@ -658,6 +705,7 @@ const TABS = [
     { key: 'drum', label: 'ドラム' },
     { key: 'fx', label: 'FX' },
     { key: 'file', label: 'ファイル' },
+    { key: 'chart', label: 'カルテ' },
     { key: 'ai', label: 'AI' },
 ];
 
@@ -693,6 +741,9 @@ export default function LeftPanel() {
             </div>
             <div style={{ display: activeTab === 'file' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
                 <FilePanel />
+            </div>
+            <div style={{ display: activeTab === 'chart' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
+                <ChartPanel />
             </div>
             <div style={{ display: activeTab === 'ai' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
                 <AssistantPanel />

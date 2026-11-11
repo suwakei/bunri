@@ -27,6 +27,11 @@ python run_web.py
 | `metronome.py` | メトロノーム/BPMユーティリティ |
 | `synth.py` | ソフトウェアシンセ + ステップシーケンサー + ドラムマシン（FluidSynth/SoundFont） |
 | `analyze.py` | WAV音声解析 → ピアノロール用ノートデータ |
+| `song_chart.py` | 楽曲カルテの組み立て・正規化（第1層のオーケストレーション） |
+| `structure.py` | グリッド推定（BPM/ダウンビート）とセクション検出 |
+| `music_theory.py` | キー推定・コード検出・ディグリー変換・用語辞書 |
+| `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
+| `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等） |
 | `_demucs_runner.py` | torchaudio 保存パッチ |
 
@@ -52,3 +57,16 @@ python run_web.py
 - 新しいモジュールは `audio_utils.py` の `load_audio` / `save_tmp` を活用する
 - 重いインポート（numpy, librosa等）は関数内で遅延インポートする
 - 一時ファイルは `tempfile` を使い、結果は `results/` に保存する
+- 新規モジュールの出力先は `audio_utils.results_dir()` 経由で解決する（将来のデスクトップアプリ移行のため、パス直書きを避ける）
+
+## AI統合の方針
+このプロジェクトは「生成しないAIアシスタント」を目指す。取り込んだ楽曲を教材として、ユーザー自身が再現できるよう導く。
+
+原則: **DSPが事実を出し、LLMは言語化だけをする。LLMは音符を1つも出力しない。**
+
+3層構成（第1層のみ実装済み）:
+1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
+2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
+3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
+
+詳細は [docs/song-chart-design.md](../docs/song-chart-design.md) を参照。

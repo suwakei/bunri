@@ -1055,3 +1055,201 @@ async def api_assistant_chat(
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ---- 楽曲カルテ API（第1層） ----
+
+def _chart_path(chart_id: str) -> Path:
+    """カルテIDから `.bunri` ファイルのパスを解決する。
+
+    ``chart_id`` にパス区切りや親ディレクトリ参照が含まれていた場合は
+    ファイル名部分だけを取り出し、results/charts/ の外へ出られないようにする。
+
+    Args:
+        chart_id: カルテID（拡張子なし）。
+
+    Returns:
+        `.bunri` ファイルのパス。
+
+    Raises:
+        HTTPException: ``chart_id`` が空、または解決結果が
+            results/charts/ の外を指す場合（HTTP 400）。
+    """
+    from audio_utils import results_dir
+
+    safe = Path(str(chart_id)).name
+    if not safe or safe.startswith("."):
+        raise HTTPException(400, "カルテIDが不正です")
+
+    charts_dir = results_dir("charts").resolve()
+    path = (charts_dir / f"{safe}.bunri").resolve()
+    if path.parent != charts_dir:
+        raise HTTPException(400, "カルテIDが不正です")
+    return path
+
+
+def _chart_response(chart: dict, chart_id: str, audio_path: Path) -> JSONResponse:
+    """カルテ・波形ピーク・用語辞書をまとめた API レスポンスを組み立てる。
+
+    波形ピークと用語辞書はカルテ本体に含めない。カルテはプロンプトキャッシュの
+    プレフィックスとしてバイト安定である必要があり、サイズも抑えたいため。
+
+    Args:
+        chart: ``song_chart.build_chart`` が返したカルテ辞書。
+        chart_id: カルテID。
+        audio_path: 波形ピークを生成する元音声のパス。
+
+    Returns:
+        ``{"chart_id", "chart", "peaks", "glossary"}`` を持つ ``JSONResponse``。
+    """
+    import song_chart
+    from music_theory import GLOSSARY
+
+    return JSONResponse({
+        "chart_id": chart_id,
+        "chart": chart,
+        "peaks": song_chart.waveform_peaks(str(audio_path)),
+        "glossary": GLOSSARY,
+    })
+
+
+@app.post("/api/chart")
+async def api_chart(
+    file: UploadFile = File(...),
+    bpm: float = Form(0),
+    downbeat_offset: float = Form(-1),
+    beats_per_bar: int = Form(4),
+):
+    """音声ファイルから楽曲カルテ（速報）を生成する。
+
+    ステム分離を行わないため数秒〜十数秒で完了する。Demucs を使う詳細解析は
+    別経路（``/api/decompose``）。
+
+    生成したカルテと元音声は `.bunri` ファイルとして results/charts/ に保存し、
+    以後は ``chart_id`` で参照する。v1 では `.bunri` を UI に露出しない。
+
+    Args:
+        file: 解析する音声ファイル（マルチパートアップロード）。
+        bpm: BPM の上書き値。``0`` なら自動検出。
+        downbeat_offset: 1拍目の位置（秒）の上書き値。負値なら自動推定。
+        beats_per_bar: 1小節あたりの拍数。拍子は自動検出せずユーザー指定を信頼する。
+
+    Returns:
+        ``{"chart_id": str, "chart": dict, "peaks": dict, "glossary": dict}``
+        形式の ``JSONResponse``。
+
+    Raises:
+        HTTPException: 解析に失敗した場合（HTTP 500）。
+    """
+    import song_chart
+    import bunri_file
+
+    src = _save_upload(file)
+    chart_id = Path(file.filename).stem or "chart"
+
+    try:
+        chart = song_chart.build_chart(
+            str(src),
+            filename=file.filename,
+            bpm=bpm if bpm > 0 else None,
+            downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
+            beats_per_bar=beats_per_bar,
+        )
+        bunri_file.create(
+            _chart_path(chart_id), chart, audio_path=src, embed_audio=True,
+        )
+        return _chart_response(chart, chart_id, src)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"カルテの生成に失敗しました: {e}")
+
+
+@app.post("/api/chart/regrid")
+async def api_chart_regrid(
+    chart_id: str = Form(...),
+    bpm: float = Form(...),
+    downbeat_offset: float = Form(...),
+    beats_per_bar: int = Form(4),
+):
+    """グリッドを補正した値でカルテを再計算する。
+
+    グリッド補正UIからの経路。BPM やダウンビートがずれているとコード・
+    セクションが全てずれるため、ユーザーが直した値を前提に解析し直す。
+    元音声は `.bunri` から取り出すので再アップロードは不要。
+
+    Args:
+        chart_id: 対象カルテのID（``/api/chart`` が返した値）。
+        bpm: 補正後の BPM。
+        downbeat_offset: 補正後の1拍目の位置（秒）。
+        beats_per_bar: 1小節あたりの拍数。
+
+    Returns:
+        ``/api/chart`` と同じ形式の ``JSONResponse``。
+
+    Raises:
+        HTTPException: カルテが見つからない場合（HTTP 404）。
+        HTTPException: `.bunri` に元音声が保存されていない場合（HTTP 400）。
+        HTTPException: 再計算に失敗した場合（HTTP 500）。
+    """
+    import song_chart
+    import bunri_file
+    from audio_utils import results_dir
+
+    path = _chart_path(chart_id)
+    if not path.exists():
+        raise HTTPException(404, "カルテが見つかりません")
+
+    try:
+        audio = bunri_file.extract_audio(path, results_dir("charts", "audio"))
+        if audio is None:
+            raise HTTPException(400, "このカルテには元音声が保存されていないため再計算できません")
+
+        previous = bunri_file.read_chart(path)
+        chart = song_chart.build_chart(
+            str(audio),
+            filename=(previous.get("source") or {}).get("filename"),
+            bpm=bpm if bpm > 0 else None,
+            downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
+            beats_per_bar=beats_per_bar,
+        )
+        bunri_file.update_chart(path, chart)
+        return _chart_response(chart, chart_id, audio)
+    except HTTPException:
+        raise
+    except bunri_file.BunriFileError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"カルテの再計算に失敗しました: {e}")
+
+
+@app.get("/api/chart/{chart_id}")
+async def api_chart_load(chart_id: str):
+    """保存済みのカルテを読み出す。
+
+    Args:
+        chart_id: 読み出すカルテのID。
+
+    Returns:
+        ``{"chart_id": str, "chart": dict, "glossary": dict}`` 形式の
+        ``JSONResponse``。波形ピークは含まない（必要なら再計算経路で取得する）。
+
+    Raises:
+        HTTPException: カルテが見つからない場合（HTTP 404）。
+        HTTPException: ファイル形式が読み込めない場合（HTTP 400）。
+    """
+    import bunri_file
+    from music_theory import GLOSSARY
+
+    path = _chart_path(chart_id)
+    if not path.exists():
+        raise HTTPException(404, "カルテが見つかりません")
+
+    try:
+        return JSONResponse({
+            "chart_id": chart_id,
+            "chart": bunri_file.read_chart(path),
+            "glossary": GLOSSARY,
+        })
+    except bunri_file.BunriFileError as e:
+        raise HTTPException(400, str(e))
