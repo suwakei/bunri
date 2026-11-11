@@ -246,8 +246,7 @@ class TestBuildRequest:
         monkeypatch.delenv("BUNRI_GUIDE_MODEL", raising=False)
         request = rg.build_request(chart)
         assert request["model"] == "claude-opus-5-5"
-        assert request["output_config"]["effort"] == "medium"
-        assert request["output_config"]["effort"] == rg.EFFORT
+        assert request["output_config"]["effort"] == rg.EFFORT == "low"
         assert request["max_tokens"] == rg.MAX_TOKENS
         assert request["fallbacks"] == "default"
         assert request["betas"] == ["server-side-fallback-2026-07-01"]
@@ -499,7 +498,7 @@ class TestSavedGuide:
     def test_思考の深さを変えると保存分を使わない(self, chart, monkeypatch):
         client = FakeClient()
         rg.guide_for(chart, client=client)
-        monkeypatch.setattr(rg, "EFFORT", "low")
+        monkeypatch.setattr(rg, "EFFORT", "medium")
         assert rg.saved_guide(chart) is None
 
     def test_作り直すと_明示したときだけAPIを呼び_保存分を置き換える(self, chart):
