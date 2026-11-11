@@ -8,6 +8,7 @@ import { apiFetch } from '../lib/api';
 import { modelDownloadNotice } from '../lib/models';
 import AssistantPanel from './AssistantPanel';
 import ChartPanel from './ChartPanel';
+import CoachPanel from './CoachPanel';
 import type { ChartResponse } from '../lib/chart';
 
 /**
@@ -548,6 +549,8 @@ function FilePanel() {
                             step: n.step,
                             length: n.length,
                         }));
+                        // 採譜した時点のノートを、お手本として控えておく（差分コーチが使う）
+                        track.referenceNotes = track.pianoNotes.map(n => ({ ...n }));
                         totalNotes += stem.notes.length;
                     }
 
@@ -748,6 +751,7 @@ export default function LeftPanel() {
             </div>
             <div style={{ display: activeTab === 'chart' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
                 <ChartPanel />
+                <CoachPanel />
             </div>
             <div style={{ display: activeTab === 'ai' ? 'block' : 'none', flex: 1, overflow: 'auto', padding: 16 }}>
                 <AssistantPanel />

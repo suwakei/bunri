@@ -19,7 +19,10 @@ import { apiFetch } from '../lib/api';
 interface ProjectData {
     bpm?: number;
     beatsPerBar?: number;
-    tracks?: Array<{ pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }> }>;
+    tracks?: Array<{
+        pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
+        referenceNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
+    }>;
     pianoRollNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
     automation?: Record<string, unknown>;
 }
@@ -154,6 +157,7 @@ export default function HeaderBar() {
                 name: t.name, gain: t.gain, pan: t.pan, mute: t.mute,
                 clips: t.clips.map(c => ({ name: c.name, offset: c.offset, duration: c.duration })),
                 pianoNotes: t.pianoNotes || [],
+                referenceNotes: t.referenceNotes,
             })),
             automation: auto ? auto.toJSON() : {},
         };
@@ -176,6 +180,7 @@ export default function HeaderBar() {
         if (project.tracks) {
             project.tracks.forEach((pt, i) => {
                 if (engine.tracks[i] && pt.pianoNotes) engine.tracks[i].pianoNotes = pt.pianoNotes;
+                if (engine.tracks[i] && pt.referenceNotes) engine.tracks[i].referenceNotes = pt.referenceNotes;
             });
         }
         const auto = automationRef.current;

@@ -47,6 +47,11 @@ export interface Track {
     clips: Clip[];
     /** ピアノロールのノート一覧 */
     pianoNotes: PianoNote[];
+    /**
+     * お手本のノート（原曲を採譜した時点の控え）。差分コーチが打ち込みと比べる相手。
+     * 採譜で作ったトラックにだけ在り、ピアノロールで編集しても変わらない。
+     */
+    referenceNotes?: PianoNote[];
     /** ゲイン量（dB） */
     gain: number;
     /** パン位置（-1.0〜1.0） */

@@ -6,7 +6,7 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Body, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 import shutil
@@ -1388,4 +1388,31 @@ async def api_chart_load(chart_id: str):
             "glossary": GLOSSARY,
         })
     except bunri_file.BunriFileError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---- 差分コーチ（第3層の土台）API ----
+
+@app.post("/api/coach/diff")
+async def api_coach_diff(payload: dict = Body(...)):
+    """お手本のノートと、利用者の打ち込みの差分を返す。
+
+    LLM は使わない。どの小節のどの音が抜けているか・違っているかを、機械的に決まる形で返す。
+
+    Args:
+        payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みの
+            ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意。
+
+    Returns:
+        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars``）。
+
+    Raises:
+        HTTPException: 入力の形が正しくない、またはお手本が空の場合（HTTP 400）。
+    """
+    import coach_diff
+
+    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance") if key in payload}
+    try:
+        return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"), **options)
+    except coach_diff.DiffError as e:
         raise HTTPException(400, str(e))
