@@ -46,6 +46,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
 | `_demucs_runner.py` | torchaudio 保存パッチ |
+| `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
+| `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 
@@ -54,7 +56,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | 場所 | 役割 |
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了だけを持つ |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存だけを持つ |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係
@@ -88,9 +90,11 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 原則: **DSPが事実を出し、LLMは言語化だけをする。LLMは音符を1つも出力しない。**
 
-3層構成（第1層のみ実装済み）:
+3層構成（第1層と第2層を実装済み。第2層の決定は暫定）:
 1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
 2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
 3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
 
-詳細は [docs/song-chart-design.md](../docs/song-chart-design.md) を参照。
+詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）と [docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）を参照。
+
+Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。

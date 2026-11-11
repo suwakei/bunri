@@ -9,6 +9,7 @@
  */
 import { useMemo, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
+import GuidePanel from './GuidePanel';
 import {
     confidenceTier, formatTime,
     TIER_DISPLAY, SECTION_LABEL_JA, BAND_LABEL_JA,
@@ -293,6 +294,9 @@ export default function ChartPanel() {
                     </>
                 ) : <Unavailable reason={unavailable['mix']} />}
             </Block>
+
+            {/* ---- 再現ガイド（第2層） ---- */}
+            <GuidePanel />
         </div>
     );
 }

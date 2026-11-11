@@ -12,6 +12,7 @@
 //! 将来、再生・録音・MIDI 入力を低レイテンシにするための音声エンジン (cpal / midir) は
 //! このクレートに `mod audio;` として足し、`invoke_handler` にコマンドを並べる想定。
 
+mod secrets;
 mod sidecar;
 mod windows;
 
@@ -32,6 +33,21 @@ fn boot_status(sidecar: State<'_, Sidecar>) -> BootStatus {
     sidecar.status()
 }
 
+/// Claude の API キーを、OS のキーチェーンに保存する。
+///
+/// 次回の起動から、sidecar に環境変数で渡される。いま動いている sidecar には、
+/// 画面が別途 API で渡す (web-ui/src/lib/guide.ts)。
+#[tauri::command]
+fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    secrets::save(&app.config().identifier, &key)
+}
+
+/// キーチェーンに保存した Claude の API キーを消す。
+#[tauri::command]
+fn delete_api_key(app: tauri::AppHandle) -> Result<(), String> {
+    secrets::delete(&app.config().identifier)
+}
+
 /// アプリを起動する (終了するまで戻らない)。
 pub fn run() {
     let app = tauri::Builder::default()
@@ -41,7 +57,12 @@ pub fn run() {
             windows::create_main_window(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_info, boot_status])
+        .invoke_handler(tauri::generate_handler![
+            backend_info,
+            boot_status,
+            save_api_key,
+            delete_api_key
+        ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリの初期化に失敗しました");
 

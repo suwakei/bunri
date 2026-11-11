@@ -1269,6 +1269,96 @@ async def api_chart_regrid(
         raise HTTPException(500, f"カルテの再計算に失敗しました: {e}")
 
 
+@app.get("/api/settings/llm")
+async def api_llm_settings():
+    """LLM（Claude）の設定の状態を返す。API キーそのものは返さない。
+
+    Returns:
+        ``{"has_key": bool, "key_source": "settings" | "env" | "none", "model": str}``。
+    """
+    import llm_settings
+
+    return llm_settings.status()
+
+
+@app.post("/api/settings/anthropic-key")
+async def api_set_anthropic_key(key: str = Form(...)):
+    """設定画面から渡された Claude の API キーを、このプロセスのメモリに持つ。
+
+    ファイルには書かない。デスクトップ版では、アプリが OS のキーチェーンに保存し、
+    次回の起動時に環境変数で渡してくる。
+
+    Args:
+        key: API キー。
+
+    Returns:
+        更新後の設定の状態（``/api/settings/llm`` と同じ形）。
+
+    Raises:
+        HTTPException: キーが空、または不正な文字を含む場合（HTTP 400）。
+    """
+    import llm_settings
+
+    try:
+        llm_settings.set_api_key(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return llm_settings.status()
+
+
+@app.delete("/api/settings/anthropic-key")
+async def api_clear_anthropic_key():
+    """設定画面から渡された API キーを忘れる。
+
+    Returns:
+        更新後の設定の状態（``/api/settings/llm`` と同じ形）。
+    """
+    import llm_settings
+
+    llm_settings.clear_api_key()
+    return llm_settings.status()
+
+
+@app.post("/api/chart/{chart_id}/guide")
+def api_chart_guide(chart_id: str, focus: str = Form("")):
+    """保存済みのカルテから、再現ガイド（第2層）を作る。
+
+    カルテを Claude に渡し、「こう作れば再現できる」という手順の説明を受け取る。
+    Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある
+    （FastAPI がスレッドプールで実行する）。
+
+    Args:
+        chart_id: カルテの ID。
+        focus: 絞り込むセクションの ID。空なら曲全体。
+
+    Returns:
+        ``{"chart_id": str, "focus": str | None, "guide": dict, "model": str, "usage": dict}``。
+
+    Raises:
+        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）、
+            API キーが無い・正しくない（401）、利用制限（429）、Claude 側の失敗（502）。
+            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``。
+    """
+    import bunri_file
+    import reproduction_guide
+
+    path = _chart_path(chart_id)
+    if not path.exists():
+        raise HTTPException(404, "カルテが見つかりません")
+    try:
+        chart = bunri_file.read_chart(path)
+    except bunri_file.BunriFileError as e:
+        raise HTTPException(400, str(e))
+
+    focus_id = focus.strip() or None
+    try:
+        result = reproduction_guide.generate(chart, focus=focus_id)
+    except reproduction_guide.GuideError as e:
+        status = {"no_key": 401, "auth": 401, "rate_limit": 429, "invalid": 400}.get(e.code, 502)
+        raise HTTPException(status, {"message": str(e), "code": e.code})
+    return {"chart_id": chart_id, "focus": focus_id, **result}
+
+
 @app.get("/api/chart/{chart_id}")
 async def api_chart_load(chart_id: str):
     """保存済みのカルテを読み出す。

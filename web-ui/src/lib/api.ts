@@ -61,6 +61,26 @@ export function isDesktop(): boolean {
     return tauriGlobal() !== null;
 }
 
+/**
+ * デスクトップアプリのネイティブ側（Rust）のコマンドを呼ぶ。
+ *
+ * ブラウザ版では呼べないので、先に `isDesktop()` を確かめること。
+ *
+ * @param cmd - コマンド名（`src-tauri/src/lib.rs` の `invoke_handler` に並んでいるもの）
+ * @param args - コマンドに渡す引数
+ * @throws デスクトップアプリの外で呼んだ場合、またはコマンドが失敗した場合
+ */
+export async function invokeDesktop<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    const tauri = tauriGlobal();
+    if (!tauri) throw new Error('デスクトップアプリの中でしか使えません');
+    try {
+        return await tauri.core.invoke<T>(cmd, args);
+    } catch (e) {
+        // Rust 側は理由を文字列で返す
+        throw e instanceof Error ? e : new Error(String(e));
+    }
+}
+
 /** 起動待ちの間、進み具合を聞きにいく間隔（ミリ秒）。 */
 const BOOT_POLL_MS = 500;
 
