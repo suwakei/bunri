@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "メインの窓と、そこから開いた窓 (ツール・使い方) に許す権限。アプリ自身のコマンド (backend_info) は既定で呼べる",
+  "windows": ["main", "window-*"],
+  "permissions": ["core:default"]
+}
