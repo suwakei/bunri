@@ -104,6 +104,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
 3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
 
+グリッド推定（テンポと 1 拍目の位置）を直すときは、[docs/grid-estimation.md](../docs/grid-estimation.md) を読み、
+`uv run python test/back/bench_grid.py` で直す前と後の誤差を比べる（正解の分かっている合成音源 157 件）。
+
 詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層の土台）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
