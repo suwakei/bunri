@@ -1,23 +1,15 @@
-"""bunri DAW — Web版起動スクリプト"""
-import webbrowser
-import threading
-import uvicorn
+"""bunri DAW — Web版起動スクリプト（リポジトリ直下から起動するための入口）
 
+本体は ``backend/run_web.py``。Python のコードは ``backend/`` にまとまっているので、
+ここでは ``backend/`` を import パスに足して本体をそのまま実行するだけ。
+``python run_web.py`` という従来の起動方法を保つために置いている。
+"""
+import runpy
+import sys
+from pathlib import Path
 
-def open_browser():
-    """デフォルトブラウザで bunri DAW の Web UI を開く。
-
-    固定 URL http://127.0.0.1:8000 をデフォルトブラウザで開く。
-    threading.Timer から呼び出されることを前提とし、uvicorn の起動後に
-    遅延実行される。
-
-    Side Effects:
-        OS のデフォルトブラウザで http://127.0.0.1:8000 を開く。
-    """
-    webbrowser.open("http://127.0.0.1:8000")
-
+BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 
 if __name__ == "__main__":
-    # uvicorn 起動から 1.5 秒後にブラウザを開く（サーバー起動を待つため）
-    threading.Timer(1.5, open_browser).start()
-    uvicorn.run("web.api:app", host="127.0.0.1", port=8000, reload=False)
+    sys.path.insert(0, str(BACKEND_DIR))
+    runpy.run_path(str(BACKEND_DIR / "run_web.py"), run_name="__main__")

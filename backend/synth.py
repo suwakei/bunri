@@ -3,11 +3,22 @@ import json
 import numpy as np
 from pathlib import Path
 
-from audio_utils import save_tmp
+from audio_utils import save_tmp, soundfonts_dir
 
 # ---- SoundFont (FluidSynth) ----
 
-SOUNDFONT_PATH = Path(__file__).parent / "soundfonts" / "MuseScore_General.sf3"
+SOUNDFONT_NAME = "MuseScore_General.sf3"
+
+
+def soundfont_path():
+    """GM 音源に使う SoundFont のパスを返す。
+
+    置き場は ``audio_utils.soundfonts_dir()`` が決める。呼び出しのたびに解決する。
+
+    Returns:
+        pathlib.Path: SoundFont ファイルのパス。存在の保証はしない。
+    """
+    return soundfonts_dir() / SOUNDFONT_NAME
 
 # GM楽器マップ（番号: 表示名）
 GM_INSTRUMENTS = {
@@ -98,7 +109,7 @@ def _fluidsynth_render(notes, bpm, program, volume, sr=44100):
     total_samples = int(total_sec * sr)
 
     fs = fluidsynth.Synth(samplerate=float(sr))
-    sfid = fs.sfload(str(SOUNDFONT_PATH))
+    sfid = fs.sfload(str(soundfont_path()))
     fs.program_select(0, sfid, 0, program)
 
     # イベントをタイムライン順にソート
@@ -474,7 +485,7 @@ def step_sequencer(notes_json, bpm, waveform, volume,
         raise ValueError("音符データが空です")
 
     # GM楽器指定時はFluidSynthでレンダリング
-    if gm_program is not None and SOUNDFONT_PATH.exists():
+    if gm_program is not None and soundfont_path().exists():
         return _fluidsynth_render(notes, bpm, int(gm_program), volume, sr)
 
     # 全体の長さを計算

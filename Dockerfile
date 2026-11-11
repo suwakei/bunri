@@ -18,20 +18,20 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg libfluidsynth3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Python 依存
+# Python 依存（requirements.txt は uv.lock からの生成物）
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # アプリケーションコード
-COPY *.py ./
-COPY web/ ./web/
+COPY run_web.py ./
+COPY backend/ ./backend/
 
 # SoundFont（存在する場合のみコピー）
 COPY soundfont[s]/ ./soundfonts/
 
 # フロントエンドビルド出力をコピー
 COPY --from=frontend /app/web-ui/src/ /app/web-ui/src/
-COPY --from=frontend /app/web/static/dist/ /app/web/static/dist/
+COPY --from=frontend /app/backend/web/static/dist/ /app/backend/web/static/dist/
 
 # 作業ディレクトリ
 RUN mkdir -p results uploads projects

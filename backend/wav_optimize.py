@@ -123,8 +123,8 @@ def optimize_wav(file_path, target_sr=44100, target_bit_depth=16):
     data = np.clip(data, -1.0, 1.0)
 
     # 保存
-    out_dir = Path("results") / "optimized"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from audio_utils import results_dir
+    out_dir = results_dir("optimized")
     out_name = f"opt_{Path(file_path).stem}_{target_sr}_{target_bit_depth}bit.wav"
     out_path = out_dir / out_name
     sf.write(str(out_path), data, sr, subtype=subtype)

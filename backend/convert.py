@@ -47,8 +47,8 @@ def _out_path(prefix, ext):
     Side Effects:
         results/converted/ ディレクトリが存在しない場合は作成する。
     """
-    out_dir = Path("results") / "converted"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from audio_utils import results_dir
+    out_dir = results_dir("converted")
     return str(out_dir / f"{prefix}_{np.random.randint(10000):04d}{ext}")
 
 

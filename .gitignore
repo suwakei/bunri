@@ -43,4 +43,4 @@ node_modules/
 web-ui/node_modules/
 
 # React ビルド出力（ビルドで再生成可能）
-web/static/dist/
+backend/web/static/dist/

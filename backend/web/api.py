@@ -2,9 +2,9 @@
 import sys
 from pathlib import Path
 
-# プロジェクトルートをパスに追加（既存モジュール参照用）
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+# backend/ をパスに追加（フラットに並んだ既存モジュールの参照用）
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -13,9 +13,11 @@ import shutil
 import tempfile
 import json
 
+from audio_utils import projects_dir, results_dir, safe_join, uploads_dir
+
 app = FastAPI(title="bunri DAW API")
 
-# 静的ファイル配信（React ビルド出力 → web/static/dist/）
+# 静的ファイル配信（React ビルド出力 → backend/web/static/dist/）
 STATIC_DIR = Path(__file__).parent / "static"
 DIST_DIR = STATIC_DIR / "dist"
 
@@ -23,11 +25,27 @@ DIST_DIR = STATIC_DIR / "dist"
 if DIST_DIR.exists() and (DIST_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
 
-# アップロード一時ディレクトリ
-UPLOAD_DIR = ROOT / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
-RESULTS_DIR = ROOT / "results"
-RESULTS_DIR.mkdir(exist_ok=True)
+# データ置き場（uploads/ results/ projects/）は audio_utils が決める。
+# 置き場は環境変数 BUNRI_DATA_DIR で差し替えられるので、定数に固めず都度引く。
+
+
+def _safe_path(base: Path, name: str) -> Path:
+    """外から受け取ったファイル名を ``base`` 直下のパスに解決する。
+
+    Args:
+        base: 親ディレクトリ。
+        name: リクエストに含まれていたファイル名。
+
+    Returns:
+        ``base`` 直下の絶対パス。
+
+    Raises:
+        HTTPException: 名前が ``base`` の外を指す、またはパス区切りを含む場合（HTTP 400）。
+    """
+    try:
+        return safe_join(base, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def _save_upload(upload: UploadFile) -> Path:
@@ -37,12 +55,13 @@ def _save_upload(upload: UploadFile) -> Path:
         upload: FastAPI の ``UploadFile`` オブジェクト。``filename`` 属性が必要。
 
     Returns:
-        保存先ファイルの絶対パス（``UPLOAD_DIR / upload.filename``）。
+        保存先ファイルの絶対パス（``uploads/`` 直下）。
 
     Raises:
+        HTTPException: ファイル名が ``../`` などで uploads/ の外を指す場合（HTTP 400）。
         OSError: ファイルの書き込みに失敗した場合。
     """
-    dst = UPLOAD_DIR / upload.filename
+    dst = _safe_path(uploads_dir(), upload.filename)
     with open(dst, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dst
@@ -450,7 +469,7 @@ async def api_batch_edit(
         try:
             out = dispatch_fn[action](str(src))
             dst_name = f"batch_{action}_{upload.filename}"
-            dst = RESULTS_DIR / dst_name
+            dst = results_dir() / dst_name
             shutil.copy2(out, str(dst))
             results.append({
                 "filename": upload.filename,
@@ -521,7 +540,7 @@ async def api_batch_effects(
         try:
             out = dispatch_fn[effect_name](str(src))
             dst_name = f"batch_{effect_name}_{upload.filename}"
-            dst = RESULTS_DIR / dst_name
+            dst = results_dir() / dst_name
             shutil.copy2(out, str(dst))
             results.append({
                 "filename": upload.filename,
@@ -645,7 +664,7 @@ async def api_separate(
     """
     from separate import separate_audio, STEM_LABELS
     src = _save_upload(file)
-    out_dir = str(RESULTS_DIR / "separated")
+    out_dir = str(results_dir() / "separated")
     is_two_stems = two_stems.lower() in ("true", "1", "yes")
     try:
         paths = separate_audio(
@@ -657,7 +676,7 @@ async def api_separate(
         for key, p in paths.items():
             p = Path(p)
             if p.exists():
-                dst = RESULTS_DIR / f"sep_{key}_{file.filename}"
+                dst = results_dir() / f"sep_{key}_{file.filename}"
                 shutil.copy2(str(p), str(dst))
                 result[key] = {
                     "url": f"/api/download/{dst.name}",
@@ -689,7 +708,7 @@ async def api_deep_separate(
     """
     from separate import deep_separate, STEM_LABELS
     src = _save_upload(file)
-    out_dir = str(RESULTS_DIR / "separated")
+    out_dir = str(results_dir() / "separated")
     try:
         paths = deep_separate(
             str(src), output_dir=out_dir,
@@ -699,7 +718,7 @@ async def api_deep_separate(
         for key, p in paths.items():
             p = Path(p)
             if p.exists():
-                dst = RESULTS_DIR / f"deep_{key}_{file.filename}"
+                dst = results_dir() / f"deep_{key}_{file.filename}"
                 shutil.copy2(str(p), str(dst))
                 result[key] = {
                     "url": f"/api/download/{dst.name}",
@@ -747,10 +766,11 @@ async def api_download(filename: str):
         指定ファイルの ``FileResponse``（``audio/wav``）。
 
     Raises:
-        HTTPException: ``filename`` が results/ に存在しない場合（HTTP 404）。
+        HTTPException: ``filename`` が results/ の外を指す場合（HTTP 400）、
+            results/ に存在しない場合（HTTP 404）。
     """
-    path = RESULTS_DIR / filename
-    if not path.exists():
+    path = _safe_path(results_dir(), filename)
+    if not path.is_file():
         raise HTTPException(404, "ファイルが見つかりません")
     return FileResponse(str(path), media_type="audio/wav",
                         filename=filename)
@@ -847,8 +867,7 @@ async def save_project(data: str = Form(...)):
     Returns:
         保存されたファイル名を含む辞書（例: ``{"filename": "project_1234567890.json"}``）。
     """
-    project_dir = ROOT / "projects"
-    project_dir.mkdir(exist_ok=True)
+    project_dir = projects_dir()
     import time
     name = f"project_{int(time.time())}.json"
     (project_dir / name).write_text(data, encoding="utf-8")
@@ -863,8 +882,7 @@ async def list_projects():
         プロジェクトファイル名（文字列）のリスト（JSON）。
         新しいものが先頭になるよう降順ソートされる。
     """
-    project_dir = ROOT / "projects"
-    project_dir.mkdir(exist_ok=True)
+    project_dir = projects_dir()
     files = sorted(project_dir.glob("*.json"), reverse=True)
     return [f.name for f in files]
 
@@ -880,11 +898,11 @@ async def load_project(name: str):
         プロジェクトデータの ``JSONResponse``。
 
     Raises:
-        HTTPException: 指定したファイルが projects/ に存在しない場合（HTTP 404）。
+        HTTPException: ``name`` が projects/ の外を指す場合（HTTP 400）、
+            projects/ に存在しない場合（HTTP 404）。
     """
-    project_dir = ROOT / "projects"
-    path = project_dir / name
-    if not path.exists():
+    path = _safe_path(projects_dir(), name)
+    if not path.is_file():
         raise HTTPException(404, "プロジェクトが見つかりません")
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
 
@@ -927,7 +945,7 @@ async def api_decompose(
             audio_path = Path(stem_data["audio_path"])
             if audio_path.exists():
                 dst_name = f"decompose_{stem_name}_{file.filename}"
-                dst = RESULTS_DIR / dst_name
+                dst = results_dir() / dst_name
                 import shutil
                 shutil.copy2(str(audio_path), str(dst))
                 stem_data["audio_url"] = f"/api/download/{dst_name}"
@@ -989,7 +1007,7 @@ async def api_wav_optimize(
         result = optimize_wav(str(src), target_sr, target_bit_depth)
         opt_path = Path(result["path"])
         dst_name = f"optimized_{file.filename}"
-        dst = RESULTS_DIR / dst_name
+        dst = results_dir() / dst_name
         import shutil
         shutil.copy2(str(opt_path), str(dst))
         result["download_url"] = f"/api/download/{dst_name}"

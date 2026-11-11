@@ -42,18 +42,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # Python の版は .python-version、依存は uv.lock のとおりに入れる
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.11"
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: requirements.txt が uv.lock と一致しているか
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio httpx ruff
+          make requirements
+          git diff --exit-code requirements.txt
 
       - name: Lint (ruff)
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Test
-        run: python -m pytest test/back/ -v --ignore=test/back/test_api.py --ignore=test/back/test_decompose.py
+        run: uv run python -m pytest test/back/ -v --ignore=test/back/test_api.py --ignore=test/back/test_decompose.py

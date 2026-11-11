@@ -432,8 +432,6 @@ def export_mp3(file_obj, bitrate):
     import subprocess
     import sys
     data, sr = load_audio(file_obj)
-    out_dir = Path("results") / "edited"
-    out_dir.mkdir(parents=True, exist_ok=True)
     wav_path = save_tmp(data, sr, "tmp_export")
     mp3_path = wav_path.replace(".wav", ".mp3")
     # lame または ffmpeg で変換を試みる

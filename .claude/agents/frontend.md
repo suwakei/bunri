@@ -27,7 +27,7 @@ model: sonnet
 ## 絶対に触らないもの
 
 - ルート直下のPythonファイルは一切編集しない
-- `web/api.py` も編集しない（APIはバックエンド担当）
+- `backend/web/api.py` も編集しない（APIはバックエンド担当）
 
 ## デザインテーマ: Analog Warmth
 
