@@ -759,6 +759,30 @@ async def api_deep_analyze(
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/models/{name}/status")
+async def api_model_status(name: str):
+    """音源分離モデルが手元に在るか（初回ダウンロードが要るか）を返す。
+
+    モデルは初めて使うときにネットワークから落ちてくる。画面がその待ち時間を
+    事前に伝えられるようにするための API。
+
+    Args:
+        name: Demucs のモデル名（例: ``"htdemucs"``）。
+
+    Returns:
+        ``{"model": 名前, "cached": bool, "missing": 足りないファイル数}``。
+
+    Raises:
+        HTTPException: 知らないモデル名の場合（HTTP 404）。
+    """
+    import model_cache
+
+    try:
+        return model_cache.model_status(name)
+    except KeyError:
+        raise HTTPException(404, "モデルが見つかりません")
+
+
 @app.get("/api/download/{filename}")
 async def api_download(filename: str):
     """results/ ディレクトリ内のファイルをダウンロードとして返す。
