@@ -3,7 +3,8 @@
 //! 役割は 3 つだけ。
 //!
 //! - 画面 (web-ui の React) を表示する窓を開く
-//! - Python sidecar (今までの FastAPI) を起動し、見張り、アプリと一緒に終わらせる
+//! - Python sidecar (今までの FastAPI) を起動し、見張り、アプリと一緒に終わらせる。
+//!   配布物では、その前に Python 環境を用意する (初回セットアップ)
 //! - sidecar のポートとトークンを画面に渡す
 //!
 //! AI・音声処理は Python、画面は Web のまま。ここには書き直さない。
@@ -14,7 +15,7 @@
 mod sidecar;
 mod windows;
 
-use sidecar::{BackendInfo, LaunchConfig, Sidecar};
+use sidecar::{BackendInfo, BootStatus, LaunchConfig, Sidecar};
 use tauri::{Manager, RunEvent, State};
 
 /// 画面に sidecar の接続先 (ポート) とトークンを渡す。
@@ -23,6 +24,12 @@ use tauri::{Manager, RunEvent, State};
 #[tauri::command]
 async fn backend_info(sidecar: State<'_, Sidecar>) -> Result<BackendInfo, String> {
     sidecar.wait_ready().await
+}
+
+/// 起動の進み具合を返す。画面が起動待ちの間に繰り返し呼び、セットアップの様子を表示する。
+#[tauri::command]
+fn boot_status(sidecar: State<'_, Sidecar>) -> BootStatus {
+    sidecar.status()
 }
 
 /// アプリを起動する (終了するまで戻らない)。
@@ -34,7 +41,7 @@ pub fn run() {
             windows::create_main_window(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_info])
+        .invoke_handler(tauri::generate_handler![backend_info, boot_status])
         .build(tauri::generate_context!())
         .expect("Tauri アプリの初期化に失敗しました");
 

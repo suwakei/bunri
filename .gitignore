@@ -51,3 +51,7 @@ src-tauri/gen/schemas/
 
 # デスクトップ用の入口 (直下の package.json) の依存
 /node_modules/
+
+# デスクトップアプリに同梱する生成物 (scripts/prepare-desktop.mjs が用意する)
+src-tauri/binaries/
+src-tauri/runtime/

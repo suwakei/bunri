@@ -69,7 +69,7 @@ fn open_window(
 ///
 /// 配布物では `tauri://localhost`、`tauri dev` では開発サーバの origin が該当する。
 fn is_app_url(app: &AppHandle, url: &Url) -> bool {
-    let dev_url = if cfg!(debug_assertions) {
+    let dev_url = if tauri::is_dev() {
         app.config().build.dev_url.as_ref()
     } else {
         None
