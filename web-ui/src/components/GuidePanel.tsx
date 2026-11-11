@@ -83,7 +83,7 @@ export default function GuidePanel() {
                 カルテの内容を「こう作れば再現できる」という手順に言い換えます。
             </p>
 
-            <div className="field">
+            <div>
                 <label htmlFor="guide-focus">対象</label>
                 <select id="guide-focus" value={focus} onChange={(e) => setFocus(e.target.value)} disabled={busy}>
                     <option value="">曲全体</option>
@@ -94,7 +94,7 @@ export default function GuidePanel() {
                     })}
                 </select>
             </div>
-            <button className="btn btn-primary" onClick={handleGenerate} disabled={busy}>
+            <button className="action-btn" onClick={handleGenerate} disabled={busy}>
                 {busy ? '作成中…（数十秒かかります）' : guide ? 'ガイドを作り直す' : 'ガイドを作る'}
             </button>
             <p style={{ ...noteStyle, marginTop: 6 }}>
@@ -110,14 +110,14 @@ export default function GuidePanel() {
 
             {showKeyForm && (
                 <div style={{ marginTop: 8, padding: 8, border: '1px solid var(--border, #2a2a35)', borderRadius: 4 }}>
-                    <div className="field">
+                    <div>
                         <label htmlFor="guide-api-key">Claude の API キー</label>
                         <input id="guide-api-key" type="password" autoComplete="off" value={keyInput}
                             placeholder="sk-ant-…" onChange={(e) => setKeyInput(e.target.value)} />
                     </div>
-                    <button className="btn" onClick={handleSaveKey}>設定する</button>
+                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveKey}>設定する</button>
                     {' '}
-                    <button className="btn" onClick={handleDeleteKey}>設定を消す</button>
+                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleDeleteKey}>設定を消す</button>
                     <p style={{ ...noteStyle, marginTop: 6 }}>
                         この Mac のキーチェーンに保存します。開発用にブラウザで開いているときは、バックエンドを再起動すると消えます
                         （続けて使うなら、環境変数 ANTHROPIC_API_KEY を設定して起動してください）。

@@ -36,6 +36,14 @@ make e2e
 音声ファイルの解析からカルテの表示まで、ツールの画面でのファイルの読み取り、
 `../` を含むファイル名の拒否。
 
+再現ガイドを本物の Claude で通すテスト（`e2e/guide.spec.ts`）だけは、普段は走らない。
+API を実際に呼んで費用がかかるためで、`BUNRI_E2E_LLM=1` を付けたときだけ走る。
+API キーは、環境変数（`ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`）かリポジトリ直下の `.env` から読まれる。
+
+```bash
+cd web-ui && BUNRI_E2E_LLM=1 npx playwright test e2e/guide.spec.ts --project=chromium
+```
+
 ## 2. Claude Code がその場で操作して確かめる（Playwright MCP）
 
 リポジトリの `.mcp.json` に、Playwright の MCP サーバを登録してある。Claude Code をこのリポジトリで

@@ -58,11 +58,11 @@ export default function CoachPanel() {
             </p>
         </>
     );
-    const wrapper = { marginTop: 20, paddingTop: 12, borderTop: '1px solid var(--border, #2a2a35)' } as const;
+    const wrapper = { marginTop: 20, padding: '12px 0 0', borderTop: '1px solid var(--border, #2a2a35)', overflow: 'visible' } as const;
 
     if (!reference) {
         return (
-            <div id="coach-panel" style={wrapper}>
+            <div id="coach-panel" className="panel-content" style={wrapper}>
                 {header}
                 <p style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6 }}>
                     お手本になるトラックがまだありません。「ファイル」タブで楽曲を解析すると、採譜したノートがお手本になります。
@@ -82,23 +82,23 @@ export default function CoachPanel() {
     const total = result ? result.bars.reduce((sum, b) => sum + b.issues.length, 0) : 0;
 
     return (
-        <div id="coach-panel" style={wrapper}>
+        <div id="coach-panel" className="panel-content" style={wrapper}>
             {header}
-            <div className="field">
+            <div>
                 <label htmlFor="coach-reference">お手本</label>
                 <select id="coach-reference" value={reference.id} disabled={busy}
                     onChange={(e) => { setReferenceId(Number(e.target.value)); setResult(null); }}>
                     {withReference.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.referenceNotes!.length} 音）</option>)}
                 </select>
             </div>
-            <div className="field">
+            <div>
                 <label htmlFor="coach-attempt">比べる打ち込み</label>
                 <select id="coach-attempt" value={attempt?.id ?? reference.id} disabled={busy}
                     onChange={(e) => { setAttemptId(Number(e.target.value)); setResult(null); }}>
                     {engine.tracks.map((t) => <option key={t.id} value={t.id}>{t.name}（{(t.pianoNotes || []).length} 音）</option>)}
                 </select>
             </div>
-            <button className="btn btn-primary" onClick={handleCompare} disabled={busy}>
+            <button className="action-btn" onClick={handleCompare} disabled={busy}>
                 {busy ? '比べています…' : 'お手本と比べる'}
             </button>
 
