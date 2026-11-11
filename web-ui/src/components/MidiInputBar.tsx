@@ -20,7 +20,9 @@ import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, type M
 const STEP_LENGTHS: [number, string][] = [[1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
 
 const controlStyle = {
-    fontSize: 10, padding: '1px 4px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
+    fontSize: 10, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
+    background: 'var(--bg-deep)', color: 'var(--text-mid)', border: '1px solid var(--border)',
+    borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
 } as const;
 
 /**

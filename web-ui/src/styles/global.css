@@ -318,14 +318,15 @@ body::before {
     text-shadow: 0 0 12px var(--accent-glow);
 }
 
+/* どのタブを見せるかは LeftPanel が外側の div の display で切り替える。
+   ここで display: none にすると、active クラスを持たないパネル (シンセ以外) が
+   タブを選んでも表示されなくなる */
 .panel-content {
-    display: none;
+    display: block;
     padding: 16px;
     overflow-y: auto;
     flex: 1;
 }
-
-.panel-content.active { display: block; }
 
 .panel-content h3 {
     font-size: 12px;
@@ -645,7 +646,16 @@ body::before {
     border-top: 1px solid var(--border);
     position: relative;
     display: flex;
+    /* 見出しを上に、鍵盤とグリッドをその下に並べる。見出しを横に並べると、
+       見出しの幅のぶんだけピアノロールが右に押しやられる */
+    flex-direction: column;
     background: var(--bg-deep);
+}
+
+#piano-roll-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
 }
 
 #piano-keys {

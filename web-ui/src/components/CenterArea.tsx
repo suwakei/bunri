@@ -565,9 +565,12 @@ export default function CenterArea() {
         auto.init({ canvas: autoCanvasRef.current });
         automationRef.current = auto;
 
-        // 初期トラック
-        engine.addTrack('Track 1');
-        engine.addTrack('Track 2');
+        // 初期トラック。開発モード (React の StrictMode) ではこの effect が 2 回走るので、
+        // すでにトラックが在れば足さない (足すと 4 本になる)
+        if (engine.tracks.length === 0) {
+            engine.addTrack('Track 1');
+            engine.addTrack('Track 2');
+        }
         tl.render(pr);
         auto.draw();
         bumpTracks();
@@ -607,10 +610,12 @@ export default function CenterArea() {
             <div className="resize-handle" id="resize-piano" />
             <div id="piano-roll-area">
                 <div className="area-label">{pianoLabel}<MidiInputBar /></div>
-                <div ref={keysRef} id="piano-keys" />
-                <div ref={pianoWrapRef} id="piano-grid-wrap">
-                    <canvas ref={pianoCanvasRef} id="piano-grid-canvas" />
-                    <div ref={noteLayerRef} id="note-layer" />
+                <div id="piano-roll-body">
+                    <div ref={keysRef} id="piano-keys" />
+                    <div ref={pianoWrapRef} id="piano-grid-wrap">
+                        <canvas ref={pianoCanvasRef} id="piano-grid-canvas" />
+                        <div ref={noteLayerRef} id="note-layer" />
+                    </div>
                 </div>
             </div>
 
