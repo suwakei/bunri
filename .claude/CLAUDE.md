@@ -48,6 +48,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `_demucs_runner.py` | torchaudio 保存パッチ |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
+| `coach_diff.py` | 差分コーチ（第3層）の土台。お手本のノートと打ち込みの差分を事実として出す（LLM 不使用） |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 
@@ -90,11 +91,11 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 原則: **DSPが事実を出し、LLMは言語化だけをする。LLMは音符を1つも出力しない。**
 
-3層構成（第1層と第2層を実装済み。第2層の決定は暫定）:
+3層構成（第1層と第2層を実装済み。第3層は差分を出す部分だけ。第2層・第3層の決定は暫定）:
 1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
 2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
 3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
 
-詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）と [docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）を参照。
+詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層の土台）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
