@@ -57,7 +57,7 @@ Operation guide, screen layout explanation, and keyboard shortcut reference.
 
 ## API Endpoints
 
-All endpoints are served by FastAPI (`web/api.py`).
+All endpoints are served by FastAPI (`backend/web/api.py`).
 
 ### Page delivery
 
@@ -193,7 +193,7 @@ Response schema:
 ```bash
 make install           # Install backend Python dependencies
 make install-frontend  # Install frontend npm dependencies (web-ui/)
-make build             # Build React frontend (output: web/static/dist/)
+make build             # Build React frontend (output: backend/web/static/dist/)
 make web               # build + start FastAPI server at http://127.0.0.1:8000
 make dev               # Print instructions for running Vite + FastAPI in parallel
 make test              # Run all tests (frontend + backend)
@@ -232,8 +232,6 @@ cd web-ui && npx tsc --noEmit
 ```
 bunri/
 ├── .github/workflows/ci.yml     CI (lint → type-check → test → build)
-├── web/
-│   └── api.py                   FastAPI backend (30+ endpoints)
 ├── web-ui/                      React 19 + TypeScript + Vite 8 frontend
 │   └── src/
 │       ├── pages/               DawPage / ToolsPage / HelpPage
@@ -244,26 +242,30 @@ bunri/
 │       └── __tests__/           Vitest tests
 ├── test/back/                   pytest tests (12 files)
 │
-├── separate.py                  Demucs source separation (htdemucs standard)
-├── deep_separate.py             6-stem detailed separation (htdemucs_6s)
-├── decompose.py                 Separation → pitch detect → instrument estimate pipeline
-├── analyze.py                   pyin pitch detection → note data conversion
-├── music_assistant.py           Hybrid LLM music assistant
-├── synth.py                     Synth / drum machine / step sequencer / GM voices
-├── edit.py                      15 audio edit operations
-├── effects.py                   EQ / compressor / reverb / delay
-├── pitch_time.py                Phase vocoder pitch shift / time stretch
-├── wav_optimize.py              Polyphase resample + TPDF dither
-├── mixer.py                     Up to 4-track mixer
-├── metronome.py                 Metronome generation / BPM utilities
-├── overlay.py                   Audio merge (overlay)
-├── convert.py                   Format conversion via ffmpeg
-├── recorder.py                  Microphone recording
-├── audio_utils.py               load_audio / save_tmp / to_stereo utilities
-├── _demucs_runner.py            torchaudio save patch
-├── run_web.py                   Entry point (uvicorn + auto-open browser)
-├── requirements.txt             Python dependencies
-├── pyproject.toml               ruff configuration
+├── backend/                     All Python code (flat modules; bundled as one directory)
+│   ├── web/api.py           FastAPI backend (30+ endpoints)
+│   ├── separate.py              Demucs source separation (htdemucs standard)
+│   ├── deep_separate.py         6-stem detailed separation (htdemucs_6s)
+│   ├── decompose.py             Separation → pitch detect → instrument estimate pipeline
+│   ├── analyze.py               pyin pitch detection → note data conversion
+│   ├── music_assistant.py       Hybrid LLM music assistant
+│   ├── synth.py                 Synth / drum machine / step sequencer / GM voices
+│   ├── edit.py                  15 audio edit operations
+│   ├── effects.py               EQ / compressor / reverb / delay
+│   ├── pitch_time.py            Phase vocoder pitch shift / time stretch
+│   ├── wav_optimize.py          Polyphase resample + TPDF dither
+│   ├── mixer.py                 Up to 4-track mixer
+│   ├── metronome.py             Metronome generation / BPM utilities
+│   ├── overlay.py               Audio merge (overlay)
+│   ├── convert.py               Format conversion via ffmpeg
+│   ├── recorder.py              Microphone recording
+│   ├── audio_utils.py           load_audio / save_tmp / to_stereo utilities
+│   ├── _demucs_runner.py        torchaudio save patch
+│   └── run_web.py               Server entry point (uvicorn + auto-open browser)
+├── run_web.py                   Thin launcher that runs backend/run_web.py
+├── pyproject.toml               Python dependencies / ruff configuration
+├── uv.lock                      Locked dependency versions
+├── requirements.txt             Generated from uv.lock (for pip and Docker)
 └── Makefile                     Development commands
 ```
 

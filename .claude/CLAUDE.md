@@ -10,11 +10,14 @@ python run_web.py
 ブラウザが自動で `http://127.0.0.1:8000` を開く。
 
 ## ファイル構成
+Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
+下の表のファイル名は `backend/` からの相対。直下の `run_web.py` は `backend/run_web.py` を呼ぶだけの入口。
+
 | ファイル | 役割 |
 |---|---|
 | `run_web.py` | エントリーポイント（FastAPI + uvicorn + ブラウザ自動起動） |
 | `web/api.py` | FastAPI バックエンド API |
-| `web/static/` | フロントエンド（HTML/CSS/JS） |
+| `web/static/dist/` | フロントエンドのビルド出力（ソースは直下の `web-ui/`。React + Vite + TypeScript） |
 | `separate.py` | Demucs 音源分離（htdemucs標準） |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
@@ -32,11 +35,12 @@ python run_web.py
 | `music_theory.py` | キー推定・コード検出・ディグリー変換・用語辞書 |
 | `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
 | `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
-| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等） |
+| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
 | `_demucs_runner.py` | torchaudio 保存パッチ |
 
 ## 依存関係
-`requirements.txt` に記載。主要なもの:
+`pyproject.toml` に記載し、`uv.lock` で版を固定する（`uv sync` で入る。Python は 3.11）。
+`requirements.txt` は pip と Docker 用の生成物で、`make requirements` で作り直す。主要なもの:
 - `demucs`, `torch`, `torchaudio` — 音源分離
 - `fastapi`, `uvicorn`, `python-multipart` — Web API
 - `soundfile` — WAV読み書き
@@ -57,7 +61,8 @@ python run_web.py
 - 新しいモジュールは `audio_utils.py` の `load_audio` / `save_tmp` を活用する
 - 重いインポート（numpy, librosa等）は関数内で遅延インポートする
 - 一時ファイルは `tempfile` を使い、結果は `results/` に保存する
-- 新規モジュールの出力先は `audio_utils.results_dir()` 経由で解決する（将来のデスクトップアプリ移行のため、パス直書きを避ける）
+- 新規モジュールの出力先は `audio_utils.results_dir()` 経由で解決する（デスクトップアプリでは環境変数 `BUNRI_DATA_DIR` で置き場を差し替えるため、パス直書きを避ける）
+- 外から受け取ったファイル名は `audio_utils.safe_join()` を通してからパスにする
 
 ## AI統合の方針
 このプロジェクトは「生成しないAIアシスタント」を目指す。取り込んだ楽曲を教材として、ユーザー自身が再現できるよう導く。

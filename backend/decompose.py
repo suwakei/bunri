@@ -681,8 +681,8 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
     import shutil
     from pathlib import Path
 
-    results_dir = Path("results") / "decompose"
-    results_dir.mkdir(parents=True, exist_ok=True)
+    import audio_utils
+    results_dir = audio_utils.results_dir("decompose")
 
     stem_paths = deep_separate(
         input_path,

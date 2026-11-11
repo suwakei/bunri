@@ -20,9 +20,9 @@ argument-hint: "[機能の説明]"
 - 既存モジュールとの依存関係
 
 現在の構成:
-- バックエンド: !`ls *.py`
-- フロントエンド: !`ls web/static/`
-- API: !`grep -n "^@app\." web/api.py | head -30`
+- バックエンド: !`ls backend/*.py`
+- フロントエンド: !`ls web-ui/src/`
+- API: !`grep -n "^@app\." backend/web/api.py | head -30`
 
 ### 2. サブエージェントへの振り分け
 

@@ -27,12 +27,12 @@ model: sonnet
 - `analyze.py` — WAV解析
 - `audio_utils.py` — 共通ユーティリティ
 - `_demucs_runner.py` — torchaudio保存パッチ
-- `web/api.py` — FastAPI APIエンドポイント（APIルーティングのみ、フロントエンドは触らない）
-- `run_web.py` — Web版起動スクリプト
+- `backend/web/api.py` — FastAPI APIエンドポイント（APIルーティングのみ、フロントエンドは触らない）
+- `backend/run_web.py` — Web版起動スクリプト（直下の `run_web.py` はこれを呼ぶだけの入口）
 
 ## 絶対に触らないもの
 
-- `web/static/` 以下のファイル（HTML/CSS/JS）は一切編集しない
+- `backend/web/static/` 以下と `web-ui/` 以下のファイルは一切編集しない
 - フロントエンドのUIやデザインには関与しない
 
 ## 設計方針

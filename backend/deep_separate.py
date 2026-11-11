@@ -290,8 +290,8 @@ def deep_separate(
         ext = ".mp3" if mp3_output else ".wav"
         base = out_dir / "htdemucs_6s" / src.stem
 
-        result_dir = Path("results") / "layers" / src.stem
-        result_dir.mkdir(parents=True, exist_ok=True)
+        from audio_utils import results_dir
+        result_dir = results_dir("layers", src.stem)
 
         output = {}
         for stem in STEMS_6:
