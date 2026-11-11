@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["sync"] }
 # 起動ごとのトークンを OS の乱数から作る
 getrandom = "0.3"
 keyring = "4.2"
+midir = "0.11.1"
 
 [target.'cfg(unix)'.dependencies]
 # 止めるとき、子プロセスが起動した孫までプロセスグループごと終わらせる

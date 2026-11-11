@@ -6,12 +6,14 @@
 //! - Python sidecar (今までの FastAPI) を起動し、見張り、アプリと一緒に終わらせる。
 //!   配布物では、その前に Python 環境を用意する (初回セットアップ)
 //! - sidecar のポートとトークンを画面に渡す
+//! - MIDI キーボードの入力を受けて画面に渡す (WebView が Web MIDI を持たないため)
 //!
 //! AI・音声処理は Python、画面は Web のまま。ここには書き直さない。
 //!
 //! 将来、再生・録音・MIDI 入力を低レイテンシにするための音声エンジン (cpal / midir) は
 //! このクレートに `mod audio;` として足し、`invoke_handler` にコマンドを並べる想定。
 
+mod midi;
 mod secrets;
 mod sidecar;
 mod windows;
@@ -48,12 +50,34 @@ fn delete_api_key(app: tauri::AppHandle) -> Result<(), String> {
     secrets::delete(&app.config().identifier)
 }
 
+/// MIDI 入力を開く。つながっている入力ポートをすべて開き、開けたポートの名前を返す。
+///
+/// 受けたメッセージは、イベント `midi-message` で画面に送る (中身はバイト列)。
+/// すでに開いていれば開き直すので、機器を挿し直したあとの再検出にも使う。
+#[tauri::command]
+fn midi_start(
+    app: tauri::AppHandle,
+    inputs: State<'_, midi::MidiInputs>,
+) -> Result<Vec<String>, String> {
+    use tauri::Emitter;
+    inputs.start(move |message| {
+        let _ = app.emit(midi::EVENT, message.to_vec());
+    })
+}
+
+/// MIDI 入力を閉じる。
+#[tauri::command]
+fn midi_stop(inputs: State<'_, midi::MidiInputs>) {
+    inputs.stop();
+}
+
 /// アプリを起動する (終了するまで戻らない)。
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
             let config = LaunchConfig::for_app(app.handle());
             app.manage(Sidecar::spawn(config));
+            app.manage(midi::MidiInputs::default());
             windows::create_main_window(app)?;
             Ok(())
         })
@@ -61,7 +85,9 @@ pub fn run() {
             backend_info,
             boot_status,
             save_api_key,
-            delete_api_key
+            delete_api_key,
+            midi_start,
+            midi_stop
         ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリの初期化に失敗しました");
