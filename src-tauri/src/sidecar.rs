@@ -62,7 +62,7 @@ pub struct BootStatus {
     pub message: String,
     /// 直近のログ (uv の出力など)。進んでいることが分かるように見せる。
     pub log: Vec<String>,
-    /// 初めての環境づくりか (時間がかかることを伝えるため)。
+    /// 依存のダウンロードが入るか (初回など。時間がかかることを伝えるため)。
     pub first_run: bool,
     /// 待ち受け中になったときの接続情報。
     #[serde(skip)]
@@ -133,8 +133,21 @@ fn kill_tree(child: &mut Child) {
 pub struct SetupSpec {
     /// `uv sync` の起動方法。
     pub process: ProcessSpec,
-    /// 環境が出来ていれば在るはずのファイル (venv の python)。無ければ「初回」と判断する。
-    pub ready_marker: PathBuf,
+    /// セットアップが最後まで済んだ印のファイル。中身は、そのとき使った `uv.lock` の指紋。
+    ///
+    /// 途中で落ちた環境 (venv は在るが依存が揃っていない) を「済み」と見誤らないよう、
+    /// venv の有無ではなく、`uv sync` が成功したあとに書くこの印で判断する。
+    pub done_marker: PathBuf,
+    /// 同梱している `uv.lock` の指紋 (`runtime/lock.sha256`)。
+    pub lock_hash: String,
+}
+
+impl SetupSpec {
+    /// 依存を入れる作業が残っているか (初回、途中で落ちた、アプリの更新で `uv.lock` が変わった)。
+    fn needs_install(&self) -> bool {
+        std::fs::read_to_string(&self.done_marker)
+            .map_or(true, |done| done.trim() != self.lock_hash)
+    }
 }
 
 /// sidecar の起動に要る設定。
@@ -287,7 +300,11 @@ impl LaunchConfig {
         Self {
             setup: Some(SetupSpec {
                 process: setup,
-                ready_marker: python.clone(),
+                done_marker: work.join("setup-done"),
+                // 読めなければ空。その場合は毎回「依存を入れる作業が残っている」扱いになるだけ
+                lock_hash: std::fs::read_to_string(runtime.join("lock.sha256"))
+                    .map(|hash| hash.trim().to_string())
+                    .unwrap_or_default(),
             }),
             server: ProcessSpec {
                 program: python,
@@ -527,7 +544,7 @@ fn boot(config: LaunchConfig, progress: &Progress, running: &Running) {
 
 /// Python 環境を用意する (`uv sync`)。出力を進み具合として流す。
 fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Result<(), String> {
-    let first_run = !setup.ready_marker.exists();
+    let first_run = setup.needs_install();
     progress.first_run(first_run);
     progress.set(
         Phase::Setup,
@@ -574,7 +591,13 @@ fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Resul
         }
     }
     match running.wait() {
-        Some(status) if status.success() => Ok(()),
+        Some(status) if status.success() => {
+            // 済んだ印を書く。書けなくても起動は続ける (次回も同じ確認をするだけ)
+            if !setup.lock_hash.is_empty() {
+                let _ = std::fs::write(&setup.done_marker, &setup.lock_hash);
+            }
+            Ok(())
+        }
         Some(status) => Err(format!(
             "セットアップに失敗しました ({status})。ネットワークと空き容量を確認して、アプリを起動し直してください。済んだぶんは次回に引き継がれます。\n{}",
             tail.join("\n")
@@ -882,8 +905,9 @@ mod tests {
                 "{key} がデータ置き場を指していない"
             );
         }
-        assert!(setup.ready_marker.starts_with(app_data));
-        assert_eq!(config.server.program, setup.ready_marker);
+        assert!(setup.done_marker.starts_with(app_data));
+        assert!(config.server.program.starts_with(app_data));
+        assert!(config.server.program.to_string_lossy().contains("venv"));
         assert_eq!(config.allowed_origins, ["tauri://localhost"]);
     }
 
@@ -930,7 +954,8 @@ mod tests {
         let sidecar = Sidecar::spawn(Ok(LaunchConfig {
             setup: Some(SetupSpec {
                 process: setup,
-                ready_marker: marker.clone(),
+                done_marker: dir.join("setup-done"),
+                lock_hash: "abc123".into(),
             }),
             server,
             allowed_origins: vec![],
@@ -939,24 +964,51 @@ mod tests {
             matches!(s.phase, Phase::Ready | Phase::Failed)
         });
         assert_eq!(status.phase, Phase::Ready, "{}", status.message);
-        assert!(status.first_run, "印のファイルが無かったので初回のはず");
+        assert!(status.first_run, "済んだ印が無かったので初回のはず");
         assert_eq!(
             status.log,
             ["Downloading torch (75.0MiB)", "Installed 84 packages"]
         );
         sidecar.stop();
+        // 成功したら、使ったロックの指紋を印として残す
+        assert_eq!(
+            std::fs::read_to_string(dir.join("setup-done")).unwrap(),
+            "abc123"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 済んだ印がロックの指紋と合うときだけ_依存は揃っていると見なす() {
+        let dir = std::env::temp_dir().join(format!("bunri-test-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = SetupSpec {
+            process: ProcessSpec::default(),
+            done_marker: dir.join("setup-done"),
+            lock_hash: "abc123".into(),
+        };
+        assert!(spec.needs_install(), "印が無ければ、初回か途中で落ちた");
+        std::fs::write(&spec.done_marker, "abc123\n").unwrap();
+        assert!(!spec.needs_install());
+        std::fs::write(&spec.done_marker, "old-lock").unwrap();
+        assert!(spec.needs_install(), "アプリの更新で uv.lock が変わった");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn セットアップが失敗したら起動せず_理由と出力を見せる() {
+        let dir = std::env::temp_dir().join(format!("bunri-test-fail-{}", std::process::id()));
+        let marker = dir.join("setup-done");
+        let _ = std::fs::remove_dir_all(&dir);
         let mut setup = sh("echo 'error: Failed to fetch' >&2; exit 2");
-        setup.cwd = std::env::temp_dir();
+        setup.cwd = dir.clone();
         let sidecar = Sidecar::spawn(Ok(LaunchConfig {
             setup: Some(SetupSpec {
                 process: setup,
-                ready_marker: PathBuf::from("/nonexistent/python"),
+                done_marker: marker.clone(),
+                lock_hash: "abc123".into(),
             }),
             server: sh(r#"echo "{\"event\": \"listening\", \"port\": 5001}"; cat > /dev/null"#),
             allowed_origins: vec![],
@@ -975,6 +1027,8 @@ mod tests {
             sidecar.running.child.lock().unwrap().is_none(),
             "失敗したのに sidecar を起動している"
         );
+        assert!(!marker.exists(), "失敗したのに済んだ印を書いている");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
@@ -988,7 +1042,8 @@ mod tests {
         let sidecar = Sidecar::spawn(Ok(LaunchConfig {
             setup: Some(SetupSpec {
                 process: setup,
-                ready_marker: dir.join("python"),
+                done_marker: dir.join("setup-done"),
+                lock_hash: "abc123".into(),
             }),
             server: sh(&format!("touch '{}'; cat > /dev/null", started.display())),
             allowed_origins: vec![],
