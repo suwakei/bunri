@@ -78,6 +78,29 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
     expect(titles.map((t) => t.match(/step:(\d+)/)![1])).toEqual(['0', '8']);
 });
 
+test('トラックをピアノロールで開いたまま読み込んでも、そのトラックのノートが読み込んだ内容になる', async ({ page }) => {
+    await openDaw(page);
+    await placeNotes(page);
+    const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    expect((await saved).status()).toBe(200);
+
+    // 保存した後で、開いているトラックのノートを全部消す (保存した内容とは違う状態にする)
+    for (let remaining = 2; remaining > 0; remaining--) {
+        await page.locator('#note-layer .note-block').first().click();
+        await page.keyboard.press('Delete');
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(remaining - 1);
+    }
+    await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveCount(0);
+
+    // トラックを開いたまま読み込む。以前は、開いていたトラックだけ、画面に出ていた内容 (空) に戻った
+    await page.getByRole('button', { name: '読込', exact: true }).click();
+    await expect(statusText(page)).toContainText('を読み込みました');
+    await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('2');
+    await page.locator('#tracks-container .track-name').first().click();
+    await expect(page.locator('#note-layer .note-block')).toHaveCount(2);
+});
+
 test.describe('書出', () => {
     test('何も無いときは、書き出さずに理由を出す', async ({ page }) => {
         await openDaw(page);

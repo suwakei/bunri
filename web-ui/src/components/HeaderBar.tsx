@@ -208,6 +208,11 @@ export default function HeaderBar() {
         engine.bpm = project.bpm || 120;
         engine.beatsPerBar = project.beatsPerBar || 4;
         setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
+        // ピアノロールは、トラックを読み込む「前」に閉じる。ピアノロールは別のトラックへ移るとき、
+        // 画面に出しているノートを、開いていたトラックへ書き戻す。読み込んだ後に閉じると、
+        // 開いていたトラックのノートが、読み込んだ内容ではなく、画面に出ていた古い内容に戻ってしまう
+        const pr = pianoRollRef.current;
+        if (pr) pr.switchToTrack(null);
         if (project.tracks) {
             project.tracks.forEach((pt, i) => {
                 // 保存したときのほうがトラックが多ければ、足りないぶんを作る
@@ -223,8 +228,6 @@ export default function HeaderBar() {
         }
         const auto = automationRef.current;
         if (auto) auto.fromJSON(project.automation || {});
-        const pr = pianoRollRef.current;
-        if (pr) pr.switchToTrack(null);
         bumpTracks();
         setStatus(`プロジェクト ${name} を読み込みました（※音声データは再インポートが必要です）`);
     }, [setBpm, setBeatsPerBar, automationRef, pianoRollRef, bumpTracks, setStatus]);
