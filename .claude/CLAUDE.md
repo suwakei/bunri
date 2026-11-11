@@ -54,6 +54,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `_demucs_runner.py` | torchaudio 保存パッチ |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
+| `guide_cache.py` | 作った再現ガイドの保存（同じ条件なら Claude を呼ばない）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
+| `guide_usage.py` | 再現ガイドの使用量の記録（`results/guide/usage.jsonl`。中身とキーは残さない）、概算の費用、1 日の上限 |
+| `llm_pricing.json` | Claude の単価の表（概算の費用の計算に使う。コードに埋めず、ここと設定で持つ） |
 | `coach_diff.py` | 差分コーチ（第3層）の土台。お手本のノートと打ち込みの差分を事実として出す（LLM 不使用） |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
@@ -65,6 +68,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
 | `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取りだけを持つ |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
+| `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
@@ -107,3 +111,12 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層の土台）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
+
+Claude の呼び出しは費用がかかる。再現ガイドには、無駄に呼ばないための仕組みが入っている
+（[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md) の「費用」）。手を入れるときの決まり:
+
+- 通常のテスト（`make test`、`make e2e`）は Claude を呼ばない。e2e は偽の Claude サーバ（`web-ui/e2e/fake-anthropic.mjs`）を相手にする。本物を呼ぶのは `BUNRI_E2E_LLM=1` を付けたときと、`scripts/guide_probe.py` に `--yes` を付けたときだけ。**どちらも、実行の前に利用者の了承を取る**
+- 指示文（`SYSTEM_PROMPT`）・出力の形（`GUIDE_SCHEMA`）・カルテの渡し方（`prompt_chart`）・検証を変えたら、`GUIDE_VERSION` を上げる（保存済みのガイドを使わせないため）
+- リクエストの組み立てを変えたら、プロンプトキャッシュが効いているかを、コードを読んで判断せず `scripts/guide_probe.py cache --yes` で確かめる
+- キャッシュの区切りより前（指示文とカルテ）に、時刻・乱数・呼び出しごとに変わる値を入れない。モデル・思考の深さ・出力の形を、呼び出しごとに変えない
+- `max_tokens` は切れたときの歯止めで、節約の手段ではない。出力を短くしたいときは指示文で行う
