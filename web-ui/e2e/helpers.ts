@@ -3,6 +3,10 @@
  */
 import type { Page } from '@playwright/test';
 
+/** 偽の Claude API サーバ (fake-anthropic.mjs) のポートと URL。playwright.config.ts が起動する。 */
+export const FAKE_LLM_PORT = 5198;
+export const FAKE_LLM_URL = `http://127.0.0.1:${FAKE_LLM_PORT}`;
+
 /**
  * 初回の案内 (ウェルカムガイド) を出さない状態で DAW の画面を開く。
  * 案内は初めて開いたときだけ出て、画面全体を覆うので、普段のテストでは既読にしておく。
