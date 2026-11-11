@@ -136,6 +136,20 @@ class AudioEngine {
     }
 
     /**
+     * 新しいトラックの既定の名前を返す。いま在る "Track N" のいちばん大きい番号の次を使う。
+     * 本数 + 1 にすると、途中のトラックを消してから足したときに、同じ名前が 2 本できる。
+     * @returns "Track N" の形の、ほかのトラックと重ならない名前
+     */
+    _nextTrackName(): string {
+        let last = 0;
+        for (const track of this.tracks) {
+            const match = /^Track (\d+)$/.exec(track.name);
+            if (match) last = Math.max(last, Number(match[1]));
+        }
+        return `Track ${last + 1}`;
+    }
+
+    /**
      * 新しいトラックを追加し、WebAudio ノードをマスターに接続する。
      * @param name - トラック名（省略時は "Track N"）
      * @returns 作成した Track オブジェクト
@@ -144,7 +158,7 @@ class AudioEngine {
         this.init();
         const track: Track = {
             id: this.nextTrackId++,
-            name: name || `Track ${this.tracks.length + 1}`,
+            name: name || this._nextTrackName(),
             clips: [],
             pianoNotes: [],
             gain: 0,
