@@ -3,6 +3,7 @@
  */
 import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { apiFetch, backendUrl } from '../lib/api';
 
 interface AudioResult {
     label: string;
@@ -114,7 +115,7 @@ function SeparatePanel() {
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
         setStatus(`分離中...（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
         try {
-            const resp = await fetch(apiUrl, { method: 'POST', body: fd });
+            const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const result = await resp.json();
             const items = Object.entries(result).map(([key, info]) => {
@@ -145,7 +146,7 @@ function SeparatePanel() {
             {results.length > 0 && (
                 <div className="result-area">
                     <h3>分離結果</h3>
-                    {results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}
+                    {results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}
                 </div>
             )}
         </div>
@@ -165,7 +166,7 @@ function AnalyzePanel() {
         const fd = new FormData(); fd.append('file', file);
         setStatus(`解析中...（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
         try {
-            const resp = await fetch('/api/deep-analyze', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/deep-analyze', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data = await resp.json();
             const html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:#d4a44c;margin-top:16px">$1</h3>')
@@ -213,7 +214,7 @@ function EditPanel() {
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
         setStatus('処理中...'); setStatusType('processing');
         try {
-            const resp = await fetch(`/api/edit/${action}`, { method: 'POST', body: fd });
+            const resp = await apiFetch(`/api/edit/${action}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('編集結果', url)]); setStatus('完了'); setStatusType('');
@@ -244,7 +245,7 @@ function EditPanel() {
             <div className="hint" dangerouslySetInnerHTML={{ __html: EDIT_HINTS[action] || '' }} />
             <button className="btn" onClick={handleEdit}>編集を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
         </div>
     );
 }
@@ -269,7 +270,7 @@ function EffectsPanel() {
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
         setStatus('処理中...'); setStatusType('processing');
         try {
-            const resp = await fetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
+            const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult(`${fxType} 適用結果`, url)]); setStatus('完了'); setStatusType('');
@@ -302,7 +303,7 @@ function EffectsPanel() {
             </div>
             <button className="btn" onClick={handleApply}>エフェクト適用</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
         </div>
     );
 }
@@ -334,7 +335,7 @@ function BatchPanel() {
         else { fd.append('effect_name', action); apiUrl = '/api/batch/effects'; }
         setStatus(`${files.length}個のファイルに「${action}」を適用中...`); setStatusType('processing'); setProgress(true); setResults([]);
         try {
-            const resp = await fetch(apiUrl, { method: 'POST', body: fd });
+            const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data = await resp.json();
             const items = (data as Array<{status: string; url?: string; filename: string}>).filter(r => r.status === 'ok' && r.url).map(r => makeAudioResult(r.filename, r.url!));
@@ -356,7 +357,7 @@ function BatchPanel() {
             <button className="btn" onClick={handleBatch}>一括実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
         </div>
     );
 }
@@ -379,7 +380,7 @@ function OverlayPanel() {
         fd.append('offset_sec', String(offset)); fd.append('base_vol_db', String(baseVol)); fd.append('overlay_vol_db', String(overVol));
         setStatus('合成中...'); setStatusType('processing');
         try {
-            const resp = await fetch('/api/overlay', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/overlay', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('合成結果', url)]); setStatus('完了'); setStatusType('');
@@ -401,7 +402,7 @@ function OverlayPanel() {
             </div>
             <button className="btn" onClick={handleOverlay}>合成を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
         </div>
     );
 }
@@ -420,7 +421,7 @@ function ConvertPanel() {
         const fd = new FormData(); fd.append('file', file); fd.append('bitrate', bitrate);
         setStatus('変換中...'); setStatusType('processing');
         try {
-            const resp = await fetch(`/api/convert/${target}`, { method: 'POST', body: fd });
+            const resp = await apiFetch(`/api/convert/${target}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult(`${target.toUpperCase()} 変換結果`, url)]); setStatus('完了'); setStatusType('');
@@ -446,7 +447,7 @@ function ConvertPanel() {
             </div>
             <button className="btn" onClick={handleConvert}>変換を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={r.url} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
         </div>
     );
 }
@@ -493,7 +494,7 @@ function DecomposePanel() {
         setStatusType('processing'); setProgress(true); setResult(null); setDisabled(true);
 
         try {
-            const resp = await fetch('/api/decompose', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data: DecomposeResult = await resp.json();
             setResult(data);
@@ -554,7 +555,7 @@ function DecomposePanel() {
                                 {stem.gm_program != null && <span style={{ marginLeft: 8, color: '#9e9a92' }}>GM#{stem.gm_program}</span>}
                             </div>
 
-                            {stem.audio_url && <audio controls src={stem.audio_url} style={{ width: '100%', marginBottom: 8 }} />}
+                            {stem.audio_url && <audio controls src={backendUrl(stem.audio_url)} style={{ width: '100%', marginBottom: 8 }} />}
 
                             <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#9e9a92', marginBottom: 8 }}>
                                 <span>音量: {stem.mix.volume_db}dB</span>
@@ -582,7 +583,7 @@ function DecomposePanel() {
                                 </div>
                             )}
 
-                            {stem.audio_url && <a href={stem.audio_url} download style={{ fontSize: 12 }}>WAVダウンロード</a>}
+                            {stem.audio_url && <a href={backendUrl(stem.audio_url)} download style={{ fontSize: 12 }}>WAVダウンロード</a>}
                         </div>
                     ))}
 
@@ -640,7 +641,7 @@ function WavOptimizePanel() {
         if (!file) return;
         const fd = new FormData(); fd.append('file', file);
         try {
-            const resp = await fetch('/api/wav/info', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/wav/info', { method: 'POST', body: fd });
             if (resp.ok) setInfo(await resp.json());
         } catch (_e) { /* ignore */ }
     }, []);
@@ -656,7 +657,7 @@ function WavOptimizePanel() {
 
         setStatus('最適化中...'); setStatusType('processing'); setProgress(true); setResult(null);
         try {
-            const resp = await fetch('/api/wav/optimize', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/wav/optimize', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const data: OptimizeResult = await resp.json();
             setResult(data);
@@ -735,8 +736,8 @@ function WavOptimizePanel() {
                     </table>
                     {result.download_url && (
                         <div style={{ marginTop: 12 }}>
-                            <audio controls src={result.download_url} style={{ width: '100%', marginBottom: 8 }} />
-                            <a href={result.download_url} download style={{ color: '#e8bc6a', fontSize: 13 }}>最適化済みWAVをダウンロード</a>
+                            <audio controls src={backendUrl(result.download_url)} style={{ width: '100%', marginBottom: 8 }} />
+                            <a href={backendUrl(result.download_url)} download style={{ color: '#e8bc6a', fontSize: 13 }}>最適化済みWAVをダウンロード</a>
                         </div>
                     )}
                 </div>

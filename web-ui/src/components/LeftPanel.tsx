@@ -4,6 +4,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { apiFetch } from '../lib/api';
 import AssistantPanel from './AssistantPanel';
 import ChartPanel from './ChartPanel';
 import type { ChartResponse } from '../lib/chart';
@@ -116,7 +117,7 @@ function SynthPanel() {
     const [gmInstruments, setGmInstruments] = useState<GmInstrument[]>([]);
 
     useEffect(() => {
-        fetch('/api/gm-instruments').then(r => r.json())
+        apiFetch('/api/gm-instruments').then(r => r.json())
             .then((data: GmInstrument[]) => setGmInstruments(data)).catch(() => {});
     }, []);
 
@@ -139,7 +140,7 @@ function SynthPanel() {
         fd.append('gm_program', gmProgram);
 
         await withProgress('シーケンスをレンダリング中...', async () => {
-            const resp = await fetch('/api/synth/sequence', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/synth/sequence', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
@@ -240,7 +241,7 @@ function DrumPanel() {
         fd.append('volume', String(vol));
 
         await withProgress('ドラム生成中...', async () => {
-            const resp = await fetch('/api/synth/drum', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/synth/drum', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
@@ -317,7 +318,7 @@ function FxPanel() {
             const fd = new FormData();
             fd.append('file', wavBlob, 'clip.wav');
             fd.append('params', JSON.stringify(params));
-            const resp = await fetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
+            const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
@@ -446,7 +447,7 @@ function FilePanel() {
         fd.append('bpm', String(bpm));
         fd.append('sensitivity', String(sensitivity));
         await withProgress(`音声を解析中...（${file.name}）`, async () => {
-            const resp = await fetch('/api/analyze', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/analyze', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
             const notes = await resp.json();
             if (notes.length === 0) { setStatus('ノートが検出されませんでした'); return; }
@@ -472,7 +473,7 @@ function FilePanel() {
         fd.append('beats_per_bar', String(beatsPerBar));
 
         await withProgress(`楽曲を解析中...（${file.name}）`, async () => {
-            const resp = await fetch('/api/chart', { method: 'POST', body: fd });
+            const resp = await apiFetch('/api/chart', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await resp.text());
 
             const result: ChartResponse = await resp.json();
@@ -500,7 +501,7 @@ function FilePanel() {
         await withProgress(
             `楽曲を解析中...（${file.name}）ステム分離 → ピッチ検出 → 楽器推定。数分かかります`,
             async () => {
-                const resp = await fetch('/api/decompose', { method: 'POST', body: fd });
+                const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
                 if (!resp.ok) throw new Error(await resp.text());
                 const result: DecomposeResult = await resp.json();
 
