@@ -17,7 +17,8 @@ import json
 
 SCHEMA_VERSION = 1
 
-# 確信度をこの3段階に丸めて画面に出す。生値はカルテに残して LLM へ渡す
+# 確信度をこの3段階に丸めて画面に出す。生値はカルテに残す。
+# LLM にも同じ3段階で渡す（reproduction_guide.prompt_chart。数値を比べさせると言い間違えるため）
 TIER_CERTAIN = "certain"
 TIER_LIKELY = "likely"
 TIER_UNSURE = "unsure"
@@ -36,7 +37,8 @@ def confidence_tier(value):
     """確信度の生値を初心者向けの3段階に丸める。
 
     「キーはCメジャー（0.71）」と出されても初心者には判断材料にならないため、
-    画面表示には段階を使う。生値はカルテに残り LLM へ渡される。
+    画面表示には段階を使う。生値はカルテに残る。LLM に渡すときも、この関数で
+    段階に直してから渡す（``reproduction_guide.prompt_chart``）。
 
     Args:
         value (float | None): 確信度（0.0〜1.0）。None は最低段階として扱う。
