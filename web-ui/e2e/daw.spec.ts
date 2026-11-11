@@ -29,7 +29,7 @@ test('トラックを選んでピアノロールをダブルクリックする�
     await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 1');
     await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
-    await page.locator('#piano-grid-canvas').dblclick({ position: { x: 90, y: 200 } });
+    await page.locator('#note-layer').dblclick({ position: { x: 90, y: 200 } });
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
     // トラックの見出しにも、ノートの数が出る
     await expect(page.locator('#tracks-container .track-name').first()).toContainText('1');
@@ -44,7 +44,7 @@ test('トラックを追加できる', async ({ page }) => {
 test('ノートを置いて MIDI を書き出すと、標準 MIDI ファイルが落ちてくる', async ({ page }) => {
     await openDaw(page);
     await page.locator('#tracks-container .track-name').first().click();
-    await page.locator('#piano-grid-canvas').dblclick({ position: { x: 10, y: 200 } });
+    await page.locator('#note-layer').dblclick({ position: { x: 10, y: 200 } });
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
 
     const download = page.waitForEvent('download');

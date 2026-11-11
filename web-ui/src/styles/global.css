@@ -694,8 +694,28 @@ body::before {
 
 #piano-grid-wrap {
     flex: 1;
+    /* 中の canvas の幅に押し広げられないようにする */
+    min-width: 0;
     overflow: auto;
     position: relative;
+}
+
+/* グリッドは見えている範囲だけを描く canvas。スクロールしても同じ場所に留める */
+#piano-grid-canvas {
+    position: sticky;
+    top: 0;
+    left: 0;
+    display: block;
+    pointer-events: none;
+}
+
+/* ノートを置く層。曲全体の大きさを持ち、スクロールできる範囲を決める。
+   canvas の上に重ねる (canvas の下に並べると、その高さのぶん空の領域ができる) */
+#note-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    cursor: crosshair;
 }
 
 #piano-grid {
