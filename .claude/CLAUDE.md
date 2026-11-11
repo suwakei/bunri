@@ -15,6 +15,16 @@ make desktop           # = npm run tauri dev
 ブラウザで開く版と Docker は廃止した。画面をブラウザで開く経路は、開発と自動テスト用にだけ残してある
 （Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
 
+## テスト
+```bash
+make test    # 単体テスト（フロント + バック + Rust）
+make lint
+make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
+```
+画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
+不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
+Claude Code が画面をその場で操作して確かめるときは、Playwright MCP（`.mcp.json`）と `make dev-web` を使う。
+
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
 下の表のファイル名は `backend/` からの相対。
@@ -54,6 +64,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
 | `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取りだけを持つ |
+| `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
+| `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係

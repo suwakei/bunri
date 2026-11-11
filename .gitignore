@@ -59,3 +59,7 @@ src-tauri/runtime/
 # 環境変数のファイル (API キーなどを書くことがあるので、コミットしない)
 .env
 .env.*
+
+# ブラウザを自動操作するテスト (Playwright) の出力
+web-ui/e2e-results/
+web-ui/playwright-report/
