@@ -60,3 +60,26 @@ jobs:
 
       - name: Test
         run: uv run python -m pytest test/back/ -v --ignore=test/back/test_api.py --ignore=test/back/test_decompose.py
+
+  # ---- デスクトップ (src-tauri): フォーマット → リント ----
+  # mac で回す。Linux だと WebView のビルドに追加のシステムパッケージが要るため
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # ビルドに要る同梱物 (uv のバイナリと runtime/) を用意する
+      - name: Prepare bundled files
+        run: node scripts/prepare-desktop.mjs
+
+      - name: Format (cargo fmt)
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Lint (cargo clippy)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
