@@ -142,13 +142,41 @@ class TestPromptChart:
         """長い曲では入力のほとんどがコードの一覧。項目名を繰り返さず、値は変えない"""
         table = json.loads(rg.prompt_chart(chart))["chords"]
         assert table["columns"] == ["bar", "beat", "length_beats", "symbol", "degree", "confidence"]
-        assert table["rows"][1] == [2, 1, 4, "G7", "V7", 0.8]
-        # 元のカルテの値と 1 件ずつ一致する（事実を変えていない）
+        assert table["rows"][1] == [2, 1, 4, "G7", "V7", "確実"]
+        # 元のカルテの値と 1 件ずつ一致する（確信度を 3 段階にするほかは、事実を変えていない）
         for row, chord in zip(table["rows"], chart["chords"]):
-            assert row == [chord["bar"], chord["beat"], chord["beat_count"], chord["symbol"], chord["degree"], chord["confidence"]]
+            assert row[:5] == [chord["bar"], chord["beat"], chord["beat_count"], chord["symbol"], chord["degree"]]
         text = rg.prompt_chart(chart)
         for dropped in ("start_sec\":0.0,\"symbol", "beat_index", "quality", "root"):
             assert dropped not in text
+
+    def test_確信度は_画面と同じ3段階にして渡す(self, chart):
+        """数値をしきい値と比べるのは機械的に決まる計算。LLM にさせると言い間違えるので、コードで直す"""
+        import song_chart
+
+        chart["grid"]["bpm_confidence"] = 0.4436
+        chart["sections"][0]["suggested_confidence"] = 0.39
+        slim = json.loads(rg.prompt_chart(chart))
+        assert slim["grid"]["bpm_confidence"] == "たぶん"
+        assert slim["key"]["confidence"] == "確実"
+        assert slim["key"]["alternatives"][0]["confidence"] == "たぶん"
+        assert [s["suggested_confidence"] for s in slim["sections"]] == ["自信なし", "確実"]
+        # コードの表も同じ。0.9 0.8 0.8 0.4
+        assert [row[5] for row in slim["chords"]["rows"]] == ["確実", "確実", "確実", "たぶん"]
+        # しきい値は、カルテの画面と同じ関数で決まる（境目の値も画面と一致する）
+        for value, tier in ((0.7, "certain"), (0.6999, "likely"), (0.4, "likely"), (0.3999, "unsure"), (None, "unsure")):
+            assert song_chart.confidence_tier(value) == tier
+            assert rg._tier_label(value) == rg._TIER_LABEL[tier]
+        # 生の数値は 1 つも渡らない。元のカルテは書き換えない
+        assert "0.4436" not in rg.prompt_chart(chart) and "0.39" not in rg.prompt_chart(chart)
+        assert chart["key"]["confidence"] == 0.8 and chart["chords"][0]["confidence"] == 0.9
+
+    def test_確信度が無い項目は_自信なしとして渡す(self, chart):
+        chart["key"] = {"tonic": None, "mode": None, "confidence": 0.0, "alternatives": []}
+        chart["chords"][0]["confidence"] = None
+        slim = json.loads(rg.prompt_chart(chart))
+        assert slim["key"]["confidence"] == "自信なし"
+        assert slim["chords"]["rows"][0][5] == "自信なし"
 
     def test_ファイル名は送らない(self, chart):
         """曲の事実ではなく、言語化に使わない。利用者のファイル名を外に出さない"""
@@ -218,8 +246,7 @@ class TestBuildRequest:
         monkeypatch.delenv("BUNRI_GUIDE_MODEL", raising=False)
         request = rg.build_request(chart)
         assert request["model"] == "claude-opus-5-5"
-        assert request["output_config"]["effort"] == "medium"
-        assert request["output_config"]["effort"] == rg.EFFORT
+        assert request["output_config"]["effort"] == rg.EFFORT == "low"
         assert request["max_tokens"] == rg.MAX_TOKENS
         assert request["fallbacks"] == "default"
         assert request["betas"] == ["server-side-fallback-2026-07-01"]
@@ -227,14 +254,12 @@ class TestBuildRequest:
         for key in ("thinking", "temperature", "top_p", "top_k"):
             assert key not in request
 
-    def test_指示文は確信度を画面と同じ3段階で言わせる(self):
-        """生の数値 (0.71 など) は初心者の判断材料にならない。しきい値はカルテの画面と同じ値"""
-        import song_chart
-
-        assert rg.song_chart_tiers() == (song_chart._TIER_CERTAIN_MIN, song_chart._TIER_LIKELY_MIN)
+    def test_指示文は確信度を_与えられた3段階のまま言わせる(self):
+        """段階はコードが決めて渡す。指示文にしきい値を書かない（LLM に数値を比べさせない）"""
         for word in ("確実", "たぶん", "自信なし"):
             assert word in rg.SYSTEM_PROMPT
-        assert f"{song_chart._TIER_CERTAIN_MIN} 以上は「確実」" in rg.SYSTEM_PROMPT
+        assert "その言い方のまま書く" in rg.SYSTEM_PROMPT
+        assert "以上は" not in rg.SYSTEM_PROMPT
         assert "{" not in rg.SYSTEM_PROMPT and "}" not in rg.SYSTEM_PROMPT
 
     def test_モデルは環境変数で差し替えられる(self, chart, monkeypatch):
@@ -473,7 +498,7 @@ class TestSavedGuide:
     def test_思考の深さを変えると保存分を使わない(self, chart, monkeypatch):
         client = FakeClient()
         rg.guide_for(chart, client=client)
-        monkeypatch.setattr(rg, "EFFORT", "low")
+        monkeypatch.setattr(rg, "EFFORT", "medium")
         assert rg.saved_guide(chart) is None
 
     def test_作り直すと_明示したときだけAPIを呼び_保存分を置き換える(self, chart):

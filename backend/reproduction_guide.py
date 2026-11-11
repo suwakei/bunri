@@ -36,11 +36,14 @@ MAX_TOKENS = 16000
 # 指示文・出力の形・検証・カルテの渡し方の版。どれかを変えたら上げる。上げると、保存済みのガイドは
 # 使われなくなる。指示文と出力の形は、上げ忘れても指紋（``request_fingerprint``）が変わるので、
 # 古い保存分が使われることは無い
-GUIDE_VERSION = 2
+GUIDE_VERSION = 3
 
-# 思考の深さ。このモデルの既定と同じ値を、明示して固定する。呼び出しごとに変えると
-# プロンプトキャッシュが効かなくなる（モデル・出力の形も同じ）
-EFFORT = "medium"
+# 思考の深さ。Opus 5.5 の既定（medium）より 1 段浅い low に固定する。確信度をコードの側で 3 段階に
+# 直して渡すようにしたうえで、low でも内容の誤りが出ないことを実測で確かめた（2026-11-11。短い曲・
+# 長い曲・セクション指定の計 8 回。docs/reproduction-guide-design.md の「費用」）。medium より
+# 1〜2 割安く、2 割ほど速い。モデルや指示文を変えたら、測り直してから決め直す。
+# 呼び出しごとに変えると、プロンプトキャッシュが効かなくなることがある（モデル・出力の形も同じ）
+EFFORT = "low"
 
 # プロンプトキャッシュの保持時間。"5m"（既定。書き込みは入力の 1.25 倍）か "1h"（2 倍）。
 # None ならキャッシュの区切りを打たない
@@ -106,17 +109,6 @@ GUIDE_SCHEMA = {
     "additionalProperties": False,
 }
 
-def song_chart_tiers():
-    """確信度を 3 段階に分けるしきい値 ``(確実の下限, たぶんの下限)`` を返す。
-
-    カルテの画面（``song_chart.confidence_tier``）と同じ値。指示文に埋め込んで、
-    LLM の言い方を画面の表示とそろえる。
-    """
-    import song_chart
-
-    return song_chart._TIER_CERTAIN_MIN, song_chart._TIER_LIKELY_MIN
-
-
 SYSTEM_PROMPT = """\
 あなたは、DAW「bunri」に組み込まれた音楽制作のアシスタントです。利用者は、取り込んだ楽曲を\
 教材にして、自分の手で再現できるようになりたい初心者です。
@@ -136,10 +128,9 @@ SYSTEM_PROMPT = """\
 カルテの値をそのまま引く。カルテに無いコードや音名を挙げない。
 - 音符は書かない。具体的な旋律・音高の並び・MIDI のデータは、あなたの担当ではない。\
 「この小節は I → V → vi → IV の進行」のように、カルテのコードと度数を使って説明する。
-- 確信度（confidence、0〜1）は数値のまま書かず、画面と同じ 3 段階の言い方にする: \
-{certain} 以上は「確実」、{likely} 以上は「たぶん」、それ未満は「自信なし」。初心者には 0.71 と \
-0.68 の違いは判断材料にならないため。「自信なし」の項目は断定せず、「解析では〜と出ているが \
-自信なし」と伝えて、cautions に注意書きを入れる。値が null の項目や unavailable に理由が在る \
+- 確信度（confidence の付く項目）は、画面と同じ 3 段階（「確実」「たぶん」「自信なし」）で\
+与えられる。その言い方のまま書く。「自信なし」の項目は断定せず、「解析では〜と出ているが\
+自信なし」と伝えて、cautions に注意書きを入れる。値が null の項目や unavailable に理由が在る\
 項目は、「検出できませんでした」と伝える。
 - 数値は、利用者が設定や確認に使う桁まで丸める。テンポは整数（揺れが在るなら小数 1 桁）、\
 秒は小数 1 桁、dB や LUFS は小数 1 桁。119.9993 のような解析の生の桁は書かない。
@@ -172,7 +163,7 @@ focus が指定されたら、そのセクションの再現に絞る。
 body の長さと書き方の例（内容は必ずカルテから取る。○○ はカルテの値）:
 「テンポを ○○ BPM に設定し、メトロノームを鳴らして曲の頭と合うか確かめます。解析では 1 拍目が \
 ○○ 秒の位置に在ります（たぶん）。ずれて聞こえたら、カルテのグリッド補正で直してから次へ進みます。」
-""".format(certain=song_chart_tiers()[0], likely=song_chart_tiers()[1])
+"""
 
 
 class GuideError(Exception):
@@ -201,10 +192,40 @@ _CHORD_COLUMNS = ("bar", "beat", "length_beats", "symbol", "degree", "confidence
 _CHORD_SOURCE_KEYS = ("bar", "beat", "beat_count", "symbol", "degree", "confidence")
 
 
+# 確信度の 3 段階の言い方。画面（web-ui/src/lib/chart.ts）と同じ
+_TIER_LABEL = {"certain": "確実", "likely": "たぶん", "unsure": "自信なし"}
+
+
+def _tier_label(value):
+    """確信度の生値を、画面と同じ 3 段階の言い方にする（しきい値は ``song_chart.confidence_tier``）。"""
+    import song_chart
+
+    return _TIER_LABEL[song_chart.confidence_tier(value)]
+
+
+def _label_confidences(node):
+    """辞書・リストをたどり、確信度の項目（名前が ``confidence`` で終わる）を 3 段階の言い方に置き換える。"""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.endswith("confidence") and (value is None or isinstance(value, (int, float))) \
+                    and not isinstance(value, bool):
+                node[key] = _tier_label(value)
+            else:
+                _label_confidences(value)
+    elif isinstance(node, list):
+        for value in node:
+            _label_confidences(value)
+
+
 def prompt_chart(chart, only_section=None):
     """カルテから、LLM に渡すぶんを取り出して JSON 文字列にする。
 
-    言語化に使わない項目を外し、数の多いコードは表の形に詰める。事実（値）は変えない。
+    言語化に使わない項目を外し、数の多いコードは表の形に詰める。確信度のほかは、値を変えない。
+
+    - 確信度（``confidence`` ``bpm_confidence`` ``suggested_confidence``）: 生値（0〜1）ではなく、
+      画面と同じ 3 段階（確実 / たぶん / 自信なし）にして渡す。数値をしきい値と比べて段階に直すのは
+      機械的に決まる計算で、LLM にさせると言い間違える（実測で、思考の浅い設定や小さいモデルほど
+      間違えた）。コードで直せば、画面の表示とも必ず一致する。生値はカルテに残る
 
     - ``grid.beat_times_sec``: 実測ビート列。数百個の数値で、言語化には使わない
       （小節・拍の位置は sections と chords が持っている）。数（``beat_count``）だけ残す
@@ -247,7 +268,13 @@ def prompt_chart(chart, only_section=None):
             first, last = section.get("start_bar") or 0, section.get("end_bar") or 0
             chords = [c for c in chords if isinstance(c.get("bar"), int) and first <= c["bar"] <= last]
             table["only_section"] = only_section
-    table["rows"] = [[c.get(key) for key in _CHORD_SOURCE_KEYS] for c in chords]
+    slim["chords"] = []
+    _label_confidences(slim)
+    confidence_at = _CHORD_SOURCE_KEYS.index("confidence")
+    rows = [[c.get(key) for key in _CHORD_SOURCE_KEYS] for c in chords]
+    for row in rows:
+        row[confidence_at] = _tier_label(row[confidence_at])
+    table["rows"] = rows
     slim["chords"] = table
     return json.dumps(slim, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
