@@ -263,6 +263,9 @@ bunri/
 │   ├── _demucs_runner.py        torchaudio save patch
 │   └── run_web.py               Server entry point (uvicorn + auto-open browser)
 ├── run_web.py                   Thin launcher that runs backend/run_web.py
+├── src-tauri/                   Desktop app shell (Tauri v2 / Rust): window, first-run setup, sidecar lifecycle
+├── scripts/prepare-desktop.mjs  Fetches the bundled uv binary and stages backend/ for the desktop build
+├── package.json                 Entry point for `npm run tauri dev` / `npm run tauri build`
 ├── pyproject.toml               Python dependencies / ruff configuration
 ├── uv.lock                      Locked dependency versions
 ├── requirements.txt             Generated from uv.lock (for pip and Docker)
@@ -274,6 +277,7 @@ bunri/
 | Layer | Technology |
 |---|---|
 | Backend | Python 3.11 / FastAPI / uvicorn |
+| Desktop shell | Tauri v2 (Rust) + Python sidecar — see [desktop-architecture.md](desktop-architecture.md) |
 | Audio processing | Demucs / librosa / NumPy / SciPy / soundfile / PyFluidSynth |
 | Frontend | React 19 / TypeScript / Vite 8 / React Router 7 |
 | Testing | Vitest + Testing Library (frontend) / pytest (backend) |
