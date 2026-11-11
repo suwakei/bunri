@@ -43,7 +43,7 @@ node_modules/
 web-ui/node_modules/
 
 # React ビルド出力（ビルドで再生成可能）
-backend/web/static/dist/
+web-ui/dist/
 
 # Tauri (Rust のビルド出力と、ビルド時に生成されるスキーマ)
 src-tauri/target/
@@ -55,3 +55,7 @@ src-tauri/gen/schemas/
 # デスクトップアプリに同梱する生成物 (scripts/prepare-desktop.mjs が用意する)
 src-tauri/binaries/
 src-tauri/runtime/
+
+# 環境変数のファイル (API キーなどを書くことがあるので、コミットしない)
+.env
+.env.*

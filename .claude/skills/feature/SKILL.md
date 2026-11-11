@@ -52,7 +52,7 @@ Web UIの追加・変更を担当。
 ### 4. 動作確認
 
 ```bash
-python run_web.py
+make desktop
 ```
 で起動し、追加した機能が正しく動作するか確認。
 

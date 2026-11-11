@@ -13,20 +13,19 @@ model: sonnet
 ## 担当範囲
 
 以下のファイル**のみ**編集可能:
-- `web/static/index.html` — メインページ
-- `web/static/style.css` — スタイルシート
-- `web/static/app.js` — アプリケーション統合・UIイベント
-- `web/static/engine.js` — WebAudioリアルタイム再生エンジン
-- `web/static/timeline.js` — タイムライン/アレンジメントビュー
-- `web/static/pianoroll.js` — ピアノロールエディタ
-- `web/static/automation.js` — オートメーション曲線エディタ
-- `web/static/help.html` — 使い方ガイドページ
-- `web/static/tools.html` — ツールページ
-- `web/__init__.py` — パッケージ初期化（必要時のみ）
+- `web-ui/src/` 以下 — 画面（React + Vite + TypeScript）
+  - `pages/` — DawPage / ToolsPage / HelpPage
+  - `components/` — 各パネル（HeaderBar / LeftPanel / CenterArea / ChartPanel など）
+  - `lib/` — engine.ts（WebAudio 再生エンジン）、store.tsx（状態）、api.ts（API の接続口）ほか
+  - `styles/global.css` — スタイルシート
+  - `__tests__/` — Vitest のテスト
+- `web-ui/index.html`、`web-ui/vite.config.js`
+
+API を呼ぶときは、必ず `lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない）。
 
 ## 絶対に触らないもの
 
-- ルート直下のPythonファイルは一切編集しない
+- `backend/` 以下の Python ファイルと、`src-tauri/` 以下は一切編集しない
 - `backend/web/api.py` も編集しない（APIはバックエンド担当）
 
 ## デザインテーマ: Analog Warmth

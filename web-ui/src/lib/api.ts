@@ -3,7 +3,8 @@
  *
  * 画面からの API 呼び出しは、すべてここを通す。接続先とトークンをここで付ける。
  *
- * - ブラウザ版（`python run_web.py`）: 画面と API は同じ origin。接続先は空文字（相対パス）、
+ * - 開発用のブラウザ起動（Vite の開発サーバ + `backend/run_web.py`）: 画面をブラウザで開いて直すときや、
+ *   自動操作でテストするときの経路。Vite が `/api` をバックエンドへ中継する。接続先は空文字（相対パス）、
  *   トークンは無し。`apiFetch(path, init)` は `fetch(path, init)` とまったく同じに動く
  * - デスクトップ版（Tauri）: 画面は `tauri://localhost`、API は `http://127.0.0.1:<port>` の
  *   Python sidecar。ポートとトークンは起動ごとに変わるので、Rust 側に問い合わせて受け取る
@@ -11,9 +12,9 @@
 
 /** バックエンドの接続情報。 */
 export interface BackendInfo {
-    /** API の接続先。ブラウザ版では空文字（相対パスのまま）。末尾にスラッシュは付けない。 */
+    /** API の接続先。開発用のブラウザ起動では空文字（相対パスのまま）。末尾にスラッシュは付けない。 */
     baseUrl: string;
-    /** API の鍵。ブラウザ版では null。 */
+    /** API の鍵。開発用のブラウザ起動では null。 */
     token: string | null;
 }
 
@@ -65,7 +66,7 @@ export function isDesktop(): boolean {
 /**
  * デスクトップアプリのネイティブ側（Rust）のコマンドを呼ぶ。
  *
- * ブラウザ版では呼べないので、先に `isDesktop()` を確かめること。
+ * 開発用のブラウザ起動では呼べないので、先に `isDesktop()` を確かめること。
  *
  * @param cmd - コマンド名（`src-tauri/src/lib.rs` の `invoke_handler` に並んでいるもの）
  * @param args - コマンドに渡す引数
@@ -91,7 +92,7 @@ const BOOT_POLL_MS = 500;
  * デスクトップ版では、sidecar が待ち受けを始めるまで待つ（Rust 側のコマンドが待つ）。
  * 初回は Python 環境の用意に数分かかるので、その間 `onStatus` に進み具合を渡す。
  * 用意や起動に失敗した場合は、理由を載せた Error で失敗する。
- * ブラウザ版では何も問い合わせず、すぐに終わる。
+ * 開発用のブラウザ起動では何も問い合わせず、すぐに終わる。
  *
  * @param onStatus - 起動待ちの間、進み具合が変わるたびに呼ばれる（デスクトップ版のみ）
  */
@@ -170,7 +171,7 @@ function withBase(url: string): string {
  */
 export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
     if (!isBackendUrl(url) || (backend.baseUrl === '' && backend.token === null)) {
-        // ブラウザ版はここを通る。今までの fetch(url, init) とまったく同じ呼び出し
+        // 開発用のブラウザ起動はここを通る。今までの fetch(url, init) とまったく同じ呼び出し
         return init === undefined ? fetch(url) : fetch(url, init);
     }
     const headers = new Headers(init?.headers);
@@ -182,7 +183,7 @@ export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
  * `<audio src>` や `<a href>` に渡す URL を作る。
  *
  * これらの経路はヘッダを付けられないので、トークンをクエリに載せる。
- * ブラウザ版では受け取った URL をそのまま返す。blob: や外部の URL もそのまま返す。
+ * 開発用のブラウザ起動では受け取った URL をそのまま返す。blob: や外部の URL もそのまま返す。
  *
  * @param url - API が返した `/api/download/...` のような相対パス、または任意の URL
  */

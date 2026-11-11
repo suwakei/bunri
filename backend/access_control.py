@@ -6,7 +6,7 @@ API は 127.0.0.1 で待っていても、同じ PC のブラウザで開いた�
 
 - トークンは環境変数 ``BUNRI_TOKEN`` で受け取る（引数だと ``ps`` で見えるため）
 - 許可する origin は環境変数 ``BUNRI_ALLOWED_ORIGINS``（カンマ区切り）で受け取る
-- ``BUNRI_TOKEN`` が無いとき（ブラウザ版 = ``python run_web.py``）は何も足さない。
+- ``BUNRI_TOKEN`` が無いとき（開発用の起動 = ``python run_web.py``、およびテスト）は何も足さない。
   挙動は今までと同じ
 """
 import hmac
@@ -103,7 +103,7 @@ def install(app, token, allowed_origins):
 def install_from_env(app):
     """環境変数に従ってトークン検証と CORS を足す。
 
-    ``BUNRI_TOKEN`` が無ければ何もしない（ブラウザ版の挙動を変えない）。
+    ``BUNRI_TOKEN`` が無ければ何もしない（開発用のブラウザ起動の挙動を変えない）。
 
     Args:
         app: ``fastapi.FastAPI`` のインスタンス。

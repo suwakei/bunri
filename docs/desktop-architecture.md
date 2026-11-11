@@ -15,7 +15,9 @@ bunri.app (Tauri v2)
 ```
 
 Python (AI・音声処理)、Web (画面)、Rust (ネイティブ) が、それぞれ得意な部分だけを持つ。
-ブラウザ版 (`python run_web.py`) と Docker は、同じ Python と同じ画面をそのまま使う。
+製品としての形はデスクトップアプリだけ。ブラウザで開く版と Docker は廃止した。
+開発用に、画面をブラウザで開く経路 (Vite の開発サーバ + `backend/run_web.py`) だけを残してある
+(「開発用のブラウザ起動」の節)。
 
 | 決めたこと | 理由 |
 |---|---|
@@ -59,9 +61,9 @@ CORS は `BUNRI_ALLOWED_ORIGINS` (アプリの origin) だけ許す。
 
 - `<audio src>` と `<a href download>` はヘッダを付けられないので、クエリ `?token=` でも受け付ける。
   画面側は `backendUrl()` を通す
-- `BUNRI_TOKEN` が無いとき (ブラウザ版) は、トークンも CORS も足さない。今までと同じ挙動
+- `BUNRI_TOKEN` が無いとき (開発用の起動とテスト) は、トークンも CORS も足さない
 - **画面から API を呼ぶときは、必ず `apiFetch` / `backendUrl` を通す。** 素の `fetch('/api/...')` は
-  ブラウザ版では動くが、デスクトップ版では接続先もトークンも付かず失敗する
+  開発用のブラウザ起動では動くが、デスクトップアプリでは接続先もトークンも付かず失敗する
 
 ### sidecar を孤児にしない
 
@@ -89,6 +91,16 @@ kill するが、アプリが強制終了された場合、`uv` は親が居な�
 Python 側は、データの場所を `audio_utils.data_dir()` から引く。パスを直書きしない。
 外から受け取ったファイル名は `audio_utils.safe_join()` を通す。
 
+## 開発用のブラウザ起動
+
+画面をブラウザで開いて直すとき、またはブラウザを自動操作してテストするときの経路。製品の形ではない。
+
+- バックエンド: `uv run python backend/run_web.py --port <N>`。トークン無しで API だけを待ち受ける
+- 画面: `cd web-ui && npm run dev`。Vite の開発サーバが画面を出し、`/api` をバックエンドへ中継する
+  (中継先のポートは環境変数 `BUNRI_API_PORT`)
+- この経路では、ネイティブ側 (Rust) の機能は動かない: API キーのキーチェーン保存、MIDI のネイティブ入力、
+  別窓、初回セットアップ。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+
 ## ビルド
 
 `npm run tauri build` (または `npm run tauri dev`) の前に、`scripts/prepare-desktop.mjs` が自動で走る。
@@ -110,7 +122,7 @@ Rust が OS の MIDI を受けて画面に渡す（`src-tauri/src/midi.rs`）。
 
 - 画面が `midi_start` を呼ぶと、つながっている入力ポートをすべて開く。受けたメッセージは
   イベント `midi-message` で画面に送る（中身はバイト列 `[status, data1, data2]`）
-- 画面側は、ブラウザ版（Web MIDI API）と同じ経路で処理する。入力元の選び分けは
+- 画面側は、Web MIDI API（開発用に Chrome で開いたとき）から来たメッセージと同じ経路で処理する。入力元の選び分けは
   `web-ui/src/lib/midi-input.ts` の `pickMidiSource()`
 - 機器の抜き差しは自動では追わない。画面の「再検出」で開き直す
 - 鍵盤が無くても、仮想の MIDI ポートを使ったテストで OS の MIDI を通して確かめられる
@@ -152,6 +164,6 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 - 再生・録音の Rust への移行。いまは Web Audio と `MediaRecorder` のまま（MIDI 入力の受け取りだけは Rust に在る）。
   移すときは `src-tauri/src/` に `mod audio;` を足し、`invoke_handler` にコマンドを並べる
 - VST プラグインの GUI ホスト
-- Windows / Linux 向けのデスクトップ配布物 (ブラウザ版と Docker は動く)
+- Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新
 - 書き出しの保存先を選ぶダイアログ (WebView の既定の動きで `~/Downloads` に保存される)

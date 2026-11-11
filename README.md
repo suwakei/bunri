@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg)](docker-compose.yml)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-lightgrey.svg)](#quick-start)
 
 [日本語版はこちら](README.ja.md)
 
@@ -19,15 +19,7 @@
 
 ## Quick Start
 
-There are three ways to run bunri. They share the same Python backend and the same UI.
-
-| | Desktop app | Browser | Docker |
-|---|---|---|---|
-| Runs on | macOS (Apple Silicon) | macOS (Apple Silicon) / Linux / Windows | anywhere Docker runs |
-| You install | nothing (the app sets itself up) | Python 3.11, Node.js | Docker |
-| Start with | double-click `bunri.app` | `python run_web.py` | `docker compose up` |
-
-### Desktop app (macOS, Apple Silicon)
+bunri is a desktop app for macOS (Apple Silicon). The Python backend and the ML libraries run on your machine; the app sets them up for you.
 
 There is no prebuilt download yet. Build the app yourself:
 
@@ -65,28 +57,7 @@ blocks it the first time:
   Without it, the built-in synth is used instead.
 - MP3 / MP4 conversion: `brew install ffmpeg`
 
-To work on the desktop app, run it in development mode: `make install-desktop` once, then `make desktop`.
-
-### Browser
-
-```bash
-# Backend (Python 3.11). With uv: `uv sync`
-pip install -r requirements.txt
-
-# Frontend
-cd web-ui && npm ci && npm run build && cd ..
-
-# Start
-python run_web.py
-# Opens http://127.0.0.1:8000
-```
-
-### Docker
-
-```bash
-docker compose up
-# Open http://localhost:8000
-```
+To work on the app, run it in development mode: `make install`, `make install-frontend` and `make install-desktop` once, then `make desktop`.
 
 ## How It Works
 
@@ -113,7 +84,6 @@ graph LR
 | Polyphonic transcription | Yes | No | Yes | No | Yes |
 | Editable piano roll | Yes | No | Yes | No | No |
 | Built-in DAW | Yes | Limited | Yes | No | No |
-| Docker support | Yes | N/A | No | No | No |
 | AI composition assistant | Yes | No | No | No | No |
 | Price | Free | $4-25/mo | $200+ | Free | Free |
 
@@ -130,14 +100,14 @@ graph LR
 ## Roadmap
 
 - [x] Basic Pitch integration (polyphonic transcription)
-- [x] Docker support
+- [x] Desktop app (macOS, Apple Silicon)
 - [x] AI composition assistant (Ollama + Claude)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
-- [x] MIDI keyboard input (step input and real-time recording; Chrome / Edge and the desktop app)
+- [x] MIDI keyboard input (step input and real-time recording)
 - [ ] MIDI import
 - [ ] VST plugin support
 - [ ] Real-time collaboration
-- [ ] Mobile-responsive UI
+- [ ] Windows / Linux builds
 
 ## Development
 

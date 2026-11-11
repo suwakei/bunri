@@ -5,7 +5,7 @@
  * - `/tools` → ToolsPage（音源分離・変換ツール群）
  * - `/help`  → HelpPage（使い方ガイド）
  *
- * 描画の前に、バックエンドの接続先を決める（lib/api.ts）。ブラウザ版ではすぐ終わる。
+ * 描画の前に、バックエンドの接続先を決める（lib/api.ts）。開発用のブラウザ起動ではすぐ終わる。
  * デスクトップ版では Python sidecar が待ち受けを始めるまで待つので、その間は
  * 「起動中」を、起動できなかったときは理由を表示する。
  */
@@ -46,6 +46,6 @@ if (isDesktop()) {
     root.render(<BootMessage title="bunri を起動できませんでした" detail={String((e as Error)?.message ?? e)} />);
   });
 } else {
-  // ブラウザ版: 接続先は相対パスのままなので、待たずに描画する
+  // 開発用のブラウザ起動: 接続先は相対パスのままなので、待たずに描画する
   renderApp();
 }

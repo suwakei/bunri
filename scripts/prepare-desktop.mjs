@@ -9,7 +9,7 @@
  *    Python は PyInstaller で固めず (torch 込みで数 GB になる)、uv だけを同梱して
  *    初回起動時に依存をアプリのデータ置き場へ入れる。版とハッシュはここで固定する。
  * 2. Python のコードと依存の定義 → src-tauri/runtime/
- *    backend/ の .py と pyproject.toml / uv.lock。__pycache__ やビルド済みの画面は入れない。
+ *    backend/ の .py と pyproject.toml / uv.lock。__pycache__ は入れない。
  *
  * どちらも生成物なのでコミットしない (.gitignore 済み)。何度実行してもよい。
  */
@@ -127,8 +127,6 @@ function prepareRuntime() {
         filter: (src) => {
             const rel = src.slice(join(ROOT, 'backend').length).replaceAll('\\', '/');
             if (rel.includes('/__pycache__')) return false;
-            // 画面は Tauri が同梱するので、FastAPI から配るためのビルド出力は要らない
-            if (rel.startsWith('/web/static')) return false;
             if (rel.endsWith('.py')) count += 1;
             return true;
         },

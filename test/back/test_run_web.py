@@ -24,17 +24,22 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent / "backend"
 
 
 class TestParseArgs:
-    def test_ブラウザ版の既定値は今までどおり(self):
+    def test_開発用の既定のポートは8000(self):
         args = run_web.parse_args([])
-        assert (args.host, args.port, args.no_browser, args.sidecar) == ("127.0.0.1", 8000, False, False)
+        assert (args.port, args.sidecar) == (8000, False)
 
-    def test_sidecarは空きポートでブラウザを開かない(self):
+    def test_sidecarは空きポート(self):
         args = run_web.parse_args(["--sidecar"])
-        assert (args.port, args.no_browser, args.sidecar) == (0, True, True)
+        assert (args.port, args.sidecar) == (0, True)
 
-    def test_ポートとホストを指定できる(self):
-        args = run_web.parse_args(["--host", "0.0.0.0", "--port", "9000", "--no-browser"])
-        assert (args.host, args.port, args.no_browser) == ("0.0.0.0", 9000, True)
+    def test_ポートを指定できる(self):
+        assert run_web.parse_args(["--port", "9000"]).port == 9000
+        assert run_web.parse_args(["--sidecar", "--port", "9001"]).port == 9001
+
+    @pytest.mark.parametrize("removed", [["--host", "0.0.0.0"], ["--no-browser"]])
+    def test_ほかのPCに公開する指定やブラウザを開く指定は無い(self, removed):
+        with pytest.raises(SystemExit):
+            run_web.parse_args(removed)
 
 
 class TestBindSocket:

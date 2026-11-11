@@ -2,7 +2,7 @@
 
 - トークン無しは 401、ヘッダまたはクエリで正しいトークンを付ければ通る
 - 許可した origin だけに CORS ヘッダが付く。preflight はトークン無しで通る
-- ``BUNRI_TOKEN`` が無いとき（ブラウザ版）は何も足されない
+- ``BUNRI_TOKEN`` が無いとき（開発用のブラウザ起動）は何も足されない
 """
 import pytest
 from fastapi import FastAPI
@@ -127,7 +127,7 @@ class TestCors:
 class TestInstallFromEnv:
     @pytest.mark.asyncio
     async def test_トークンが無ければ何も足さない(self, monkeypatch):
-        """ブラウザ版（python run_web.py）の挙動を変えない"""
+        """開発用のブラウザ起動（python run_web.py）の挙動を変えない"""
         monkeypatch.delenv("BUNRI_TOKEN", raising=False)
         app = _make_app()
         assert access_control.install_from_env(app) is False

@@ -1,4 +1,7 @@
-"""bunri DAW — FastAPI バックエンド"""
+"""bunri DAW — FastAPI バックエンド
+
+API だけを持つ。画面（web-ui）はデスクトップアプリ（Tauri）が表示するので、ここからは配らない。
+"""
 import sys
 from pathlib import Path
 
@@ -7,7 +10,6 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi import Body, FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 import shutil
 import tempfile
@@ -20,14 +22,6 @@ app = FastAPI(title="bunri DAW API")
 # デスクトップアプリから起動されたとき（BUNRI_TOKEN が在るとき）だけ、API に鍵をかける
 import access_control
 access_control.install_from_env(app)
-
-# 静的ファイル配信（React ビルド出力 → backend/web/static/dist/）
-STATIC_DIR = Path(__file__).parent / "static"
-DIST_DIR = STATIC_DIR / "dist"
-
-# React ビルド出力の assets を配信
-if DIST_DIR.exists() and (DIST_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
 
 # データ置き場（uploads/ results/ projects/）は audio_utils が決める。
 # 置き場は環境変数 BUNRI_DATA_DIR で差し替えられるので、定数に固めず都度引く。
@@ -69,50 +63,6 @@ def _save_upload(upload: UploadFile) -> Path:
     with open(dst, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dst
-
-
-# ---- ルート ----
-
-@app.get("/")
-async def index():
-    """React SPA のエントリーポイント HTML を返す。
-
-    Returns:
-        ``web/static/dist/index.html`` の ``FileResponse``。
-
-    Raises:
-        HTTPException: ビルド済み ``index.html`` が存在しない場合（HTTP 500）。
-    """
-    react_index = DIST_DIR / "index.html"
-    if not react_index.exists():
-        raise HTTPException(500, "React build が見つかりません。`cd web-ui && npm run build` を実行してください")
-    return FileResponse(str(react_index))
-
-
-@app.get("/help")
-async def help_page():
-    """ヘルプページ（React SPA）を返す。
-
-    Returns:
-        ``index()`` の結果と同一の ``FileResponse``。
-
-    Raises:
-        HTTPException: React ビルドが存在しない場合（HTTP 500）。
-    """
-    return await index()
-
-
-@app.get("/tools")
-async def tools_page():
-    """ツールページ（React SPA）を返す。
-
-    Returns:
-        ``index()`` の結果と同一の ``FileResponse``。
-
-    Raises:
-        HTTPException: React ビルドが存在しない場合（HTTP 500）。
-    """
-    return await index()
 
 
 # ---- シンセ / シーケンサー API ----

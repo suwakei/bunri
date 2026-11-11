@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "io.github.suwakei.bunri",
   "build": {
-    "frontendDist": "../backend/web/static/dist",
+    "frontendDist": "../web-ui/dist",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "node scripts/prepare-desktop.mjs && npm --prefix web-ui run dev -- --strictPort",
     "beforeBuildCommand": "node scripts/prepare-desktop.mjs && npm --prefix web-ui run build"

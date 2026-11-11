@@ -28,11 +28,11 @@ model: sonnet
 - `audio_utils.py` — 共通ユーティリティ
 - `_demucs_runner.py` — torchaudio保存パッチ
 - `backend/web/api.py` — FastAPI APIエンドポイント（APIルーティングのみ、フロントエンドは触らない）
-- `backend/run_web.py` — Web版起動スクリプト（直下の `run_web.py` はこれを呼ぶだけの入口）
+- `backend/run_web.py` — API サーバの起動スクリプト（デスクトップアプリが sidecar として起動する）
 
 ## 絶対に触らないもの
 
-- `backend/web/static/` 以下と `web-ui/` 以下のファイルは一切編集しない
+- `web-ui/` 以下のファイルは一切編集しない
 - フロントエンドのUIやデザインには関与しない
 
 ## 設計方針

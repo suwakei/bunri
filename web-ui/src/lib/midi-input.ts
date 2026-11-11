@@ -257,7 +257,7 @@ class DesktopMidiSource implements MidiSource {
  * この環境で使える MIDI の入力元を返す。使えなければ null。
  *
  * Web MIDI API が在ればそれを使う（Chrome / Edge）。無くて、デスクトップ版の中なら
- * ネイティブ側を使う。どちらでもなければ（Safari や Firefox のブラウザ版など）null。
+ * ネイティブ側を使う。どちらでもなければ（開発用に Safari や Firefox で開いているときなど）null。
  */
 export function pickMidiSource(): MidiSource | null {
     if (webMidiRequest()) return new WebMidiSource();

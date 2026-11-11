@@ -20,15 +20,7 @@
 
 ## クイックスタート
 
-起動方法は 3 通り。どれも同じ Python のバックエンドと同じ画面を使う。
-
-| | デスクトップ版 | ブラウザ版 | Docker |
-|---|---|---|---|
-| 動く環境 | macOS（Apple Silicon） | macOS（Apple Silicon）/ Linux / Windows | Docker が動く環境 |
-| 自分で入れるもの | 無し（アプリが自分で用意する） | Python 3.11、Node.js | Docker |
-| 起動 | `bunri.app` をダブルクリック | `python run_web.py` | `docker compose up` |
-
-### デスクトップ版（macOS / Apple Silicon）
+bunri は macOS（Apple Silicon）のデスクトップアプリ。Python のバックエンドと機械学習のライブラリは手元の Mac で動き、その用意はアプリが自分で行う。
 
 配布済みのバイナリはまだ無いので、自分でビルドする。
 
@@ -65,31 +57,7 @@ npm run tauri build
   無いときは内蔵のシンセで鳴る
 - MP3 / MP4 の変換: `brew install ffmpeg`
 
-デスクトップ版を開発するときは開発モードで起動する。初回だけ `make install-desktop`、以降は `make desktop`。
-
-### ブラウザ版
-
-```bash
-# 1. バックエンド依存インストール（Python 3.11。uv なら `uv sync`）
-pip install -r requirements.txt
-
-# 2. フロントエンド依存インストール
-cd web-ui && npm ci && cd ..
-
-# 3. フロントエンドビルド
-make build
-
-# 4. 起動（http://127.0.0.1:8000 がブラウザで開く）
-python run_web.py
-```
-
-### Docker
-
-```bash
-docker compose up
-```
-
-`http://localhost:8000` をブラウザで開く。
+開発するときは開発モードで起動する。初回だけ `make install` `make install-frontend` `make install-desktop`、以降は `make desktop`。
 
 ## 仕組み
 
@@ -132,7 +100,7 @@ graph LR
 | 録音 | マイク入力からトラックに直接録音 |
 | プロジェクト保存・読込 | JSON 形式で保存・復元 |
 | WAV 書き出し | 全トラックをオフラインミックスダウンして WAV エクスポート |
-| MIDI キーボード入力 | つないだ鍵盤を弾いてピアノロールに打ち込む。ステップ入力（弾くたびに 1 つ進む）とリアルタイム録音（再生に合わせて弾く）。ブラウザ版は Chrome / Edge、デスクトップ版はそのまま使える |
+| MIDI キーボード入力 | つないだ鍵盤を弾いてピアノロールに打ち込む。ステップ入力（弾くたびに 1 つ進む）とリアルタイム録音（再生に合わせて弾く） |
 | MIDI 書き出し | ピアノロールのノートを標準 MIDI ファイル（SMF）としてエクスポート。ほかの DAW や楽譜ソフトで開ける |
 
 ### ツール画面 (`/tools`)
@@ -156,7 +124,7 @@ graph LR
 ## ロードマップ
 
 - [x] MIDI エクスポート（ピアノロールのノートを標準 MIDI ファイルに書き出す）
-- [x] MIDI キーボード入力（ステップ入力とリアルタイム録音。Chrome / Edge とデスクトップ版）
+- [x] MIDI キーボード入力（ステップ入力とリアルタイム録音）
 - [ ] MIDI インポート
 - [ ] VST プラグインサポート
 - [ ] リアルタイムコラボレーション

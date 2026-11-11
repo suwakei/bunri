@@ -61,13 +61,7 @@ Operation guide, screen layout explanation, and keyboard shortcut reference.
 
 All endpoints are served by FastAPI (`backend/web/api.py`).
 
-### Page delivery
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/` | React SPA entry point (DAW screen) |
-| GET | `/tools` | Tools screen |
-| GET | `/help` | Help screen |
+The backend serves the API only. The screens (`/` DAW, `/tools`, `/help`) are routes of the React app, which the desktop app displays.
 
 ### Synth / Sequencer
 
@@ -195,9 +189,9 @@ Response schema:
 ```bash
 make install           # Install backend Python dependencies
 make install-frontend  # Install frontend npm dependencies (web-ui/)
-make build             # Build React frontend (output: backend/web/static/dist/)
-make web               # build + start FastAPI server at http://127.0.0.1:8000
-make dev               # Print instructions for running Vite + FastAPI in parallel
+make install-desktop   # Install the Tauri CLI
+make desktop           # Run the desktop app in development mode (npm run tauri dev)
+make desktop-build     # Build the .app / .dmg
 make test              # Run all tests (frontend + backend)
 make lint              # Run ESLint + ruff
 make clean             # Delete results/, uploads/, projects/, dist/, node_modules/, caches
@@ -263,14 +257,12 @@ bunri/
 │   ├── recorder.py              Microphone recording
 │   ├── audio_utils.py           load_audio / save_tmp / to_stereo utilities
 │   ├── _demucs_runner.py        torchaudio save patch
-│   └── run_web.py               Server entry point (uvicorn + auto-open browser)
-├── run_web.py                   Thin launcher that runs backend/run_web.py
+│   └── run_web.py               API server entry point (started by the desktop app as a sidecar)
 ├── src-tauri/                   Desktop app shell (Tauri v2 / Rust): window, first-run setup, sidecar lifecycle
 ├── scripts/prepare-desktop.mjs  Fetches the bundled uv binary and stages backend/ for the desktop build
 ├── package.json                 Entry point for `npm run tauri dev` / `npm run tauri build`
 ├── pyproject.toml               Python dependencies / ruff configuration
 ├── uv.lock                      Locked dependency versions
-├── requirements.txt             Generated from uv.lock (for pip and Docker)
 └── Makefile                     Development commands
 ```
 

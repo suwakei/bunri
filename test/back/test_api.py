@@ -33,9 +33,11 @@ def client():
 
 
 @pytest.mark.asyncio
-async def test_ルートページ(client):
-    resp = await client.get("/")
-    assert resp.status_code == 200
+async def test_画面は配らない(client):
+    """画面はデスクトップアプリが表示する。API サーバは API だけを持つ"""
+    for path in ("/", "/tools", "/help", "/assets/index.js"):
+        resp = await client.get(path)
+        assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

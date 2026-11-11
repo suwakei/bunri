@@ -4,29 +4,25 @@
 Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。FastAPI + HTML/CSS/JS の Web UI で操作。
 
 ## 起動
-ブラウザ版:
+デスクトップアプリ（Tauri v2）。開発モード（Rust と uv が要る）:
 ```bash
-python run_web.py
-```
-ブラウザが自動で `http://127.0.0.1:8000` を開く。
-
-デスクトップ版（Tauri v2。開発モード。Rust と uv が要る）:
-```bash
-make install-desktop   # 初回のみ
+make install && make install-frontend && make install-desktop   # 初回のみ
 make desktop           # = npm run tauri dev
 ```
 窓が開き、Python は sidecar として空きポートで一緒に起動する。配布物は `make desktop-build`（= `npm run tauri build`）。
 構成と、変えてはいけない約束ごとは [docs/desktop-architecture.md](../docs/desktop-architecture.md)。
 
+ブラウザで開く版と Docker は廃止した。画面をブラウザで開く経路は、開発と自動テスト用にだけ残してある
+（Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
+
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
-下の表のファイル名は `backend/` からの相対。直下の `run_web.py` は `backend/run_web.py` を呼ぶだけの入口。
+下の表のファイル名は `backend/` からの相対。
 
 | ファイル | 役割 |
 |---|---|
-| `run_web.py` | エントリーポイント（FastAPI + uvicorn + ブラウザ自動起動） |
-| `web/api.py` | FastAPI バックエンド API |
-| `web/static/dist/` | フロントエンドのビルド出力（ソースは直下の `web-ui/`。React + Vite + TypeScript） |
+| `run_web.py` | API サーバの起動スクリプト。デスクトップアプリが sidecar として起動する（`--sidecar`）。開発用に単体でも起動できる |
+| `web/api.py` | FastAPI バックエンド API（API だけ。画面は配らない） |
 | `separate.py` | Demucs 音源分離（htdemucs標準） |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
@@ -62,7 +58,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 ## 依存関係
 `pyproject.toml` に記載し、`uv.lock` で版を固定する（`uv sync` で入る。Python は 3.11）。
-`requirements.txt` は pip と Docker 用の生成物で、`make requirements` で作り直す。主要なもの:
+主要なもの:
 - `demucs`, `torch`, `torchaudio` — 音源分離
 - `fastapi`, `uvicorn`, `python-multipart` — Web API
 - `soundfile` — WAV読み書き

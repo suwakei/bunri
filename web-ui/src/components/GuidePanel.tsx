@@ -119,7 +119,7 @@ export default function GuidePanel() {
                     {' '}
                     <button className="btn" onClick={handleDeleteKey}>設定を消す</button>
                     <p style={{ ...noteStyle, marginTop: 6 }}>
-                        デスクトップ版では、この Mac のキーチェーンに保存します。ブラウザ版では、バックエンドを再起動すると消えます
+                        この Mac のキーチェーンに保存します。開発用にブラウザで開いているときは、バックエンドを再起動すると消えます
                         （続けて使うなら、環境変数 ANTHROPIC_API_KEY を設定して起動してください）。
                     </p>
                 </div>

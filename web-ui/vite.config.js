@@ -20,12 +20,13 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
-      '/download': 'http://127.0.0.1:8000',
+      // 開発用: 画面をブラウザで開いたとき、API をバックエンドへ中継する。
+      // 中継先のポートは BUNRI_API_PORT で変えられる（既定は backend/run_web.py と同じ 8000）
+      '/api': `http://127.0.0.1:${process.env.BUNRI_API_PORT || 8000}`,
     },
   },
   build: {
-    outDir: '../backend/web/static/dist',
+    outDir: 'dist',
     emptyOutDir: true,
   },
 })

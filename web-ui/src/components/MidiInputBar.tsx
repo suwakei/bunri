@@ -8,7 +8,7 @@
  * - ステップ入力: 弾くたびに、カーソルの位置へ決まった長さのノートを置いて進む
  * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く
  *
- * 入力元は環境で変わる（lib/midi-input.ts）。ブラウザ版は Web MIDI API（Chrome / Edge）、
+ * 入力元は環境で変わる（lib/midi-input.ts）。開発用のブラウザ起動は Web MIDI API（Chrome / Edge）、
  * デスクトップ版はネイティブ側。どちらも無い環境では、使えない旨だけを出す。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';

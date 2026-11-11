@@ -122,7 +122,7 @@ describe('requestGuide', () => {
 describe('API キーの保存', () => {
     const settings = { has_key: true, key_source: 'settings', model: 'claude-opus-5-5' };
 
-    it('ブラウザ版ではバックエンドに渡すだけ', async () => {
+    it('開発用のブラウザ起動ではバックエンドに渡すだけ', async () => {
         stubFetch(async () => Response.json(settings));
         expect(await saveApiKey('sk-abc')).toEqual(settings);
         const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];

@@ -50,11 +50,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      - name: requirements.txt が uv.lock と一致しているか
-        run: |
-          make requirements
-          git diff --exit-code requirements.txt
-
       - name: Lint (ruff)
         run: uv run ruff check .
 

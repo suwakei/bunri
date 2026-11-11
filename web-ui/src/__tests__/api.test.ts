@@ -1,7 +1,7 @@
 /**
  * lib/api.ts のテスト。
  *
- * - ブラウザ版では fetch(url, init) とまったく同じ呼び出しになること（今までと同じに動く）
+ * - 開発用のブラウザ起動では fetch(url, init) とまったく同じ呼び出しになること（今までと同じに動く）
  * - デスクトップ版では接続先とトークンが付くこと
  * - バックエンド宛てでない URL（blob: や外部）にはトークンを付けないこと
  */
@@ -29,7 +29,7 @@ function lastCall(): FetchArgs {
     return fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as FetchArgs;
 }
 
-describe('ブラウザ版', () => {
+describe('開発用のブラウザ起動', () => {
     it('isDesktop は false で、initBackend は何も変えない', async () => {
         expect(isDesktop()).toBe(false);
         expect(await initBackend()).toEqual(BROWSER);
