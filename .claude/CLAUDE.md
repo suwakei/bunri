@@ -15,7 +15,8 @@ python run_web.py
 make install-desktop   # 初回のみ
 make desktop           # = npm run tauri dev
 ```
-窓が開き、Python は sidecar として空きポートで一緒に起動する。構成と理由は [docs/desktop-rebuild.md](../docs/desktop-rebuild.md)。
+窓が開き、Python は sidecar として空きポートで一緒に起動する。配布物は `make desktop-build`（= `npm run tauri build`）。
+構成と、変えてはいけない約束ごとは [docs/desktop-architecture.md](../docs/desktop-architecture.md)。
 
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
@@ -45,6 +46,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
 | `_demucs_runner.py` | torchaudio 保存パッチ |
+| `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 
 `backend/` の外:
@@ -52,7 +54,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | 場所 | 役割 |
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成と、Python sidecar の起動・監視・終了だけを持つ |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了だけを持つ |
+| `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係
 `pyproject.toml` に記載し、`uv.lock` で版を固定する（`uv sync` で入る。Python は 3.11）。

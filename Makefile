@@ -1,7 +1,7 @@
 # bunri DAW — コマンド集
 # 使い方: make <コマンド>
 
-.PHONY: help install install-frontend install-desktop requirements build web dev desktop test lint clean
+.PHONY: help install install-frontend install-desktop requirements build web dev desktop desktop-build test lint clean
 
 help: ## コマンド一覧を表示
 	@echo ""
@@ -15,6 +15,7 @@ help: ## コマンド一覧を表示
 	@echo "  make dev               開発モード（Vite HMR + FastAPI）"
 	@echo "  make install-desktop   デスクトップ版の依存（Tauri CLI）をインストール"
 	@echo "  make desktop           デスクトップ版を開発モードで起動（Rust と uv が要る）"
+	@echo "  make desktop-build     デスクトップ版の配布物（.app / .dmg）をビルド"
 	@echo "  make test              全テストを実行（フロント + バック）"
 	@echo "  make lint              リント実行（ESLint + ruff）"
 	@echo "  make clean             生成ファイルとキャッシュを削除"
@@ -47,6 +48,9 @@ install-desktop: ## デスクトップ版の依存（Tauri CLI）をインスト
 
 desktop: ## デスクトップ版を開発モードで起動（窓が開き、Python sidecar も一緒に起動する）
 	npm run tauri dev
+
+desktop-build: ## デスクトップ版の配布物（.app / .dmg）をビルド（出力: src-tauri/target/release/bundle/）
+	npm run tauri build
 
 test: ## 全テストを実行
 	cd web-ui && npm test

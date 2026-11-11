@@ -19,17 +19,58 @@
 
 ## Quick Start
 
-### Docker (recommended)
+There are three ways to run bunri. They share the same Python backend and the same UI.
+
+| | Desktop app | Browser | Docker |
+|---|---|---|---|
+| Runs on | macOS (Apple Silicon) | macOS (Apple Silicon) / Linux / Windows | anywhere Docker runs |
+| You install | nothing (the app sets itself up) | Python 3.11, Node.js | Docker |
+| Start with | double-click `bunri.app` | `python run_web.py` | `docker compose up` |
+
+### Desktop app (macOS, Apple Silicon)
+
+There is no prebuilt download yet. Build the app yourself:
 
 ```bash
-docker compose up
-# Open http://localhost:8000
+# Needs Rust, Node.js 22+ and an internet connection (the build downloads the `uv` binary it bundles)
+npm ci
+npm --prefix web-ui ci
+npm run tauri build
+# -> src-tauri/target/release/bundle/dmg/bunri_<version>_aarch64.dmg
+# -> src-tauri/target/release/bundle/macos/bunri.app
 ```
 
-### Manual Install
+**First launch.** The app does not ship Python or the ML libraries (that would be several GB).
+On first launch it downloads Python 3.11 and the dependencies (about 1.2 GB) into
+`~/Library/Application Support/io.github.suwakei.bunri/` and shows the progress. This takes a few
+minutes. If you quit or lose the connection midway, the next launch continues where it stopped.
+Later launches take a couple of seconds. The separation models are downloaded the first time
+you separate a song; the status line says so.
+
+**Opening an unsigned app.** The app is not signed with an Apple Developer ID and not notarized.
+An app you built yourself opens normally. If you received the `.dmg` from someone else, macOS
+blocks it the first time:
+
+1. Open the app once (it is blocked), then go to **System Settings > Privacy & Security** and click **Open Anyway**.
+2. Or remove the quarantine flag: `xattr -dr com.apple.quarantine /Applications/bunri.app`
+
+**Where your data lives.** Uploads, results and projects are stored in
+`~/Library/Application Support/io.github.suwakei.bunri/data/`. Files you export are saved to `~/Downloads`.
+
+**Optional tools.** These are not bundled. Everything else works without them.
+
+- GM instruments (FluidSynth): `brew install fluid-synth`, then put
+  [`MuseScore_General.sf3`](https://ftp.osuosl.org/pub/musescore/soundfont/MuseScore_General/) (MIT, 38 MB)
+  into a `soundfonts/` folder inside the data folder (`.../io.github.suwakei.bunri/data/soundfonts/`).
+  Without it, the built-in synth is used instead.
+- MP3 / MP4 conversion: `brew install ffmpeg`
+
+To work on the desktop app, run it in development mode: `make install-desktop` once, then `make desktop`.
+
+### Browser
 
 ```bash
-# Backend (Python 3.11)
+# Backend (Python 3.11). With uv: `uv sync`
 pip install -r requirements.txt
 
 # Frontend
@@ -38,6 +79,13 @@ cd web-ui && npm ci && npm run build && cd ..
 # Start
 python run_web.py
 # Opens http://127.0.0.1:8000
+```
+
+### Docker
+
+```bash
+docker compose up
+# Open http://localhost:8000
 ```
 
 ## How It Works
@@ -92,12 +140,15 @@ graph LR
 ## Development
 
 ```bash
-make test              # Run all tests (frontend + backend)
-make lint              # ESLint + ruff
+make install           # Backend dependencies (uv sync)
+make test              # Run all tests (frontend + backend + Rust)
+make lint              # ESLint + ruff + cargo fmt / clippy
 cd web-ui && npx tsc --noEmit  # Type check
+make desktop           # Desktop app in development mode (npm run tauri dev)
 ```
 
-See [docs/daw-features.md](docs/daw-features.md) for detailed architecture and API documentation.
+See [docs/daw-features.md](docs/daw-features.md) for detailed architecture and API documentation,
+and [docs/desktop-architecture.md](docs/desktop-architecture.md) for how the desktop app is put together.
 
 ## Contributing
 
