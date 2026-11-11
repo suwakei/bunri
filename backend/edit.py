@@ -20,7 +20,8 @@ def trim_audio(file_obj, start_sec, end_sec):
         str: 保存された一時 WAV ファイルのパス。
 
     Raises:
-        ValueError: start_sec >= end_sec の場合。
+        ValueError: start_sec >= end_sec の場合、または範囲がファイルの長さの外で
+            何も残らない場合。
 
     Side Effects:
         results/edited/ にファイルを書き出す。
@@ -30,7 +31,13 @@ def trim_audio(file_obj, start_sec, end_sec):
     e = sec_to_samples(end_sec, sr)
     if s >= e:
         raise ValueError("開始が終了以降になっています")
-    return save_tmp(data[s:e], sr, "trim")
+    trimmed = data[s:e]
+    if len(trimmed) == 0:
+        # 空の WAV を返しても再生できない。範囲の指定が誤っていることを伝える
+        raise ValueError(
+            f"指定した範囲に音声が残りません（ファイルの長さは {len(data) / sr:.1f} 秒です）"
+        )
+    return save_tmp(trimmed, sr, "trim")
 
 
 def cut_audio(file_obj, start_sec, end_sec):
@@ -48,7 +55,8 @@ def cut_audio(file_obj, start_sec, end_sec):
         str: 保存された一時 WAV ファイルのパス。
 
     Raises:
-        ValueError: start_sec >= end_sec の場合。
+        ValueError: start_sec >= end_sec の場合、または範囲がファイル全体を覆っていて
+            何も残らない場合。
 
     Side Effects:
         results/edited/ にファイルを書き出す。
@@ -58,7 +66,13 @@ def cut_audio(file_obj, start_sec, end_sec):
     e = sec_to_samples(end_sec, sr)
     if s >= e:
         raise ValueError("開始が終了以降になっています")
-    return save_tmp(np.concatenate([data[:s], data[e:]]), sr, "cut")
+    remaining = np.concatenate([data[:s], data[e:]])
+    if len(remaining) == 0:
+        # 空の WAV を返しても再生できない。範囲の指定が誤っていることを伝える
+        raise ValueError(
+            f"この範囲をカットすると音声が残りません（ファイルの長さは {len(data) / sr:.1f} 秒です）"
+        )
+    return save_tmp(remaining, sr, "cut")
 
 
 def split_at(file_obj, split_sec):

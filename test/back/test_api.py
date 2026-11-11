@@ -106,6 +106,41 @@ async def test_edit_trim(client, wav_bytes):
 
 
 @pytest.mark.asyncio
+async def test_edit_パラメータが足りないと理由を文で返す(client, wav_bytes):
+    resp = await client.post("/api/edit/trim",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"params": "{}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "パラメータが足りません: start"
+
+
+@pytest.mark.asyncio
+async def test_edit_全体をカットすると空の音声を返さずに断る(client, wav_bytes):
+    resp = await client.post("/api/edit/cut",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"params": '{"start": 0, "end": 10}'},
+    )
+    assert resp.status_code == 400
+    assert "残りません" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_batch_edit_パラメータを渡すと処理され足りないと理由が返る(client, wav_bytes):
+    files = [("files", ("batch_a.wav", wav_bytes, "audio/wav"))]
+    resp = await client.post("/api/batch/edit", files=files,
+        data={"action": "trim", "params": '{"start": 0.0, "end": 0.3}'})
+    assert resp.status_code == 200
+    assert resp.json()[0]["status"] == "ok"
+
+    resp = await client.post("/api/batch/edit", files=files, data={"action": "trim", "params": "{}"})
+    assert resp.status_code == 200
+    assert resp.json()[0] == {
+        "filename": "batch_a.wav", "url": None, "status": "error: パラメータが足りません: start",
+    }
+
+
+@pytest.mark.asyncio
 async def test_effects_normalize(client, wav_bytes):
     resp = await client.post("/api/effects/normalize",
         files={"file": ("test.wav", wav_bytes, "audio/wav")},
