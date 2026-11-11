@@ -37,9 +37,13 @@ function renderApp() {
 }
 
 if (isDesktop()) {
-  root.render(<BootMessage title="bunri を起動しています…" />);
-  initBackend().then(renderApp, (e: unknown) => {
-    root.render(<BootMessage title="バックエンドを起動できませんでした" detail={String((e as Error)?.message ?? e)} />);
+  root.render(<BootMessage title="bunri を起動しています…" busy />);
+  initBackend((status) => {
+    if (status.phase === 'setup' || status.phase === 'starting') {
+      root.render(<BootMessage title={status.message} log={status.log} busy />);
+    }
+  }).then(renderApp, (e: unknown) => {
+    root.render(<BootMessage title="bunri を起動できませんでした" detail={String((e as Error)?.message ?? e)} />);
   });
 } else {
   // ブラウザ版: 接続先は相対パスのままなので、待たずに描画する

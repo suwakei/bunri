@@ -28,6 +28,21 @@ interface TauriBackendInfo {
     token: string;
 }
 
+/**
+ * 起動の進み具合（Rust 側の `boot_status` コマンドが返す値）。
+ * デスクトップ版で、起動待ちの間に表示する。
+ */
+export interface BootStatus {
+    /** setup: Python 環境を用意中 / starting: sidecar を起動中 / ready: 待ち受け中 / failed: 失敗 */
+    phase: 'setup' | 'starting' | 'ready' | 'failed';
+    /** 利用者に見せる 1 行の説明。失敗のときは理由。 */
+    message: string;
+    /** 直近のログ（ダウンロード中の部品の名前など）。 */
+    log: string[];
+    /** 初めての環境づくりか（時間がかかる）。 */
+    first_run: boolean;
+}
+
 /** `app.withGlobalTauri` で公開される Tauri の API のうち、ここで使うぶん。 */
 interface TauriGlobal {
     core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -46,18 +61,44 @@ export function isDesktop(): boolean {
     return tauriGlobal() !== null;
 }
 
+/** 起動待ちの間、進み具合を聞きにいく間隔（ミリ秒）。 */
+const BOOT_POLL_MS = 500;
+
 /**
  * 接続先とトークンを決める。アプリの描画を始める前に 1 回呼ぶ。
  *
  * デスクトップ版では、sidecar が待ち受けを始めるまで待つ（Rust 側のコマンドが待つ）。
- * sidecar を起動できなかった場合は、理由を載せた Error で失敗する。
+ * 初回は Python 環境の用意に数分かかるので、その間 `onStatus` に進み具合を渡す。
+ * 用意や起動に失敗した場合は、理由を載せた Error で失敗する。
  * ブラウザ版では何も問い合わせず、すぐに終わる。
+ *
+ * @param onStatus - 起動待ちの間、進み具合が変わるたびに呼ばれる（デスクトップ版のみ）
  */
-export async function initBackend(): Promise<BackendInfo> {
+export async function initBackend(onStatus?: (status: BootStatus) => void): Promise<BackendInfo> {
     const tauri = tauriGlobal();
-    if (tauri) {
+    if (!tauri) return backend;
+
+    let waiting = true;
+    const poll = async () => {
+        while (waiting) {
+            try {
+                const status = await tauri.core.invoke<BootStatus>('boot_status');
+                if (waiting) onStatus?.(status);
+            } catch {
+                // 進み具合が取れなくても、起動そのものは backend_info の結果で決まる
+            }
+            await new Promise((resolve) => setTimeout(resolve, BOOT_POLL_MS));
+        }
+    };
+    if (onStatus) void poll();
+    try {
         const info = await tauri.core.invoke<TauriBackendInfo>('backend_info');
         backend = { baseUrl: `http://127.0.0.1:${info.port}`, token: info.token };
+    } catch (e) {
+        // Rust 側は理由を文字列で返す
+        throw e instanceof Error ? e : new Error(String(e));
+    } finally {
+        waiting = false;
     }
     return backend;
 }
