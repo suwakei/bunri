@@ -103,6 +103,9 @@ class AudioEngine {
     tracks: Track[] = [];
     nextTrackId: number;
 
+    /** 鍵盤を押している間だけ鳴らす音（MIDI 入力のモニター用）。キーは MIDI ノート番号 */
+    liveVoices: Map<number, { osc: OscillatorNode; gain: GainNode }> = new Map();
+
     mediaStream: MediaStream | null = null;
     mediaRecorder: MediaRecorder | null = null;
     recordedChunks: Blob[] = [];
@@ -417,6 +420,58 @@ class AudioEngine {
         this.activeSources = [];
         this._stopMetronome();
         this.playOffset = 0;
+    }
+
+    /**
+     * 現在の再生位置（秒）を返す。再生中でなければ null。
+     * MIDI 入力のリアルタイム録音が、鍵盤を押した位置を知るために使う。
+     */
+    getPlayPosition(): number | null {
+        if (!this.isPlaying || !this.ctx) return null;
+        return this.playOffset + (this.ctx.currentTime - this.startTime);
+    }
+
+    /**
+     * 鍵盤を押している間だけ音を鳴らす（MIDI 入力のモニター用）。
+     * `liveNoteOff` を呼ぶまで鳴り続ける。同じ高さをもう一度呼ぶと鳴らし直す。
+     * @param pitch - MIDI ノート番号（60 = C4）
+     * @param velocity - 強さ（1〜127）
+     */
+    liveNoteOn(pitch: number, velocity = 96): void {
+        this.init();
+        const ctx = this.ctx!;
+        this.liveNoteOff(pitch);
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
+        const level = 0.25 * Math.max(0.2, Math.min(1, velocity / 127));
+        gain.gain.setValueAtTime(0, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(level, ctx.currentTime + 0.005);
+        osc.connect(gain);
+        gain.connect(this.masterGain!);
+        osc.start();
+        this.liveVoices.set(pitch, { osc, gain });
+    }
+
+    /**
+     * `liveNoteOn` で鳴らした音を止める。鳴っていなければ何もしない。
+     * @param pitch - MIDI ノート番号
+     */
+    liveNoteOff(pitch: number): void {
+        const voice = this.liveVoices.get(pitch);
+        if (!voice || !this.ctx) return;
+        this.liveVoices.delete(pitch);
+        const now = this.ctx.currentTime;
+        // ぷつっという音が出ないよう、短く減衰させてから止める
+        voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+        voice.gain.gain.linearRampToValueAtTime(0, now + 0.05);
+        try { voice.osc.stop(now + 0.06); } catch { /* 既に停止済み */ }
+    }
+
+    /** `liveNoteOn` で鳴らしている音をすべて止める。 */
+    liveAllNotesOff(): void {
+        for (const pitch of Array.from(this.liveVoices.keys())) this.liveNoteOff(pitch);
     }
 
     /**
