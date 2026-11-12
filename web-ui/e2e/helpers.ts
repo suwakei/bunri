@@ -3,8 +3,25 @@
  */
 import type { Page } from '@playwright/test';
 
-/** 偽の Claude API サーバ (fake-anthropic.mjs) のポートと URL。playwright.config.ts が起動する。 */
-export const FAKE_LLM_PORT = 5198;
+/**
+ * 画面 (Vite の開発サーバ) のポートと URL。ほかの開発サーバとぶつからないよう、よく使われる番号を避けている。
+ * 同じリポジトリの別の作業ツリーで同時に走らせるときは、BUNRI_E2E_PORT で番号を変える
+ * (同じ番号だと、後から始めたほうが起動に失敗する)。
+ */
+export const E2E_PORT = Number(process.env.BUNRI_E2E_PORT) || 5199;
+export const E2E_URL = `http://127.0.0.1:${E2E_PORT}`;
+
+/**
+ * 「CSP が効いているか」を確かめるときに、わざと読み込ませて止めさせる先 (ポート 9 は使われない番号)。
+ * ここへの違反だけは、最後の違反の確かめ (csp-check.ts) で数えない。
+ */
+export const CSP_PROBE_ORIGIN = 'http://127.0.0.1:9';
+
+/**
+ * 偽の Claude API サーバ (fake-anthropic.mjs) のポートと URL。playwright.config.ts が起動する。
+ * 別の作業ツリーで同時に走らせるときは、BUNRI_E2E_PORT と一緒に BUNRI_E2E_FAKE_LLM_PORT も変える。
+ */
+export const FAKE_LLM_PORT = Number(process.env.BUNRI_E2E_FAKE_LLM_PORT) || 5198;
 export const FAKE_LLM_URL = `http://127.0.0.1:${FAKE_LLM_PORT}`;
 
 /**

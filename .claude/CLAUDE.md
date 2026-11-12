@@ -20,9 +20,15 @@ make desktop           # = npm run tauri dev
 make test    # 単体テスト（フロント + バック + Rust）
 make lint
 make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
+make e2e-desktop  # 本物の窓（テスト用にビルドしたデスクトップアプリ）を自動操作するテスト（mac のみ）
 ```
 画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
 不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
+`make e2e` の画面にはデスクトップ版と同じ CSP が掛かっていて、違反があれば失敗する。
+
+CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の起動や鍵・書き出しを変えたら、`make e2e-desktop` も回す
+（初回はビルドで数分、2 回目からは 20 秒ほど）。テスト用のビルドはアプリの中で WebDriver サーバを動かすので、
+機能 `e2e` は配布物に入れない（[docs/desktop-architecture.md](../docs/desktop-architecture.md)「窓を自動操作するテスト」）。
 Claude Code が画面をその場で操作して確かめるときは、Playwright MCP（`.mcp.json`）と `make dev-web` を使う。
 
 ## ファイル構成
@@ -74,6 +80,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
+| `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係

@@ -8,7 +8,8 @@
  *
  * やること:
  * 1. API サーバ (backend/run_web.py) を、空きポートで、トークン無しで起動する
- * 2. Vite の開発サーバを起動し、/api をそのポートへ中継させる
+ * 2. Vite の開発サーバを起動し、/api をそのポートへ中継させる。画面にはデスクトップアプリと同じ CSP を掛ける
+ *    (src-tauri/tauri.conf.json から読む。scripts/desktop-csp.mjs)
  * 3. 準備ができたら、標準出力に 1 行の JSON で URL を知らせる:
  *    {"event": "ready", "url": "http://127.0.0.1:5199", "api_port": 54321, "data_dir": "..."}
  *
@@ -103,7 +104,8 @@ function startVite(apiPort) {
     return new Promise((resolveUrl, reject) => {
         const child = spawn('npx', ['vite', '--port', String(webPort), '--strictPort', '--host', '127.0.0.1'], {
             cwd: join(ROOT, 'web-ui'),
-            env: { ...process.env, BUNRI_API_PORT: String(apiPort), NO_COLOR: '1' },
+            // BUNRI_DEV_CSP: デスクトップアプリと同じ CSP を掛ける (web-ui/vite.config.js)
+            env: { ...process.env, BUNRI_API_PORT: String(apiPort), BUNRI_DEV_CSP: '1', NO_COLOR: '1' },
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         children.push(child);
