@@ -8,6 +8,7 @@ import type { SongChart } from '../lib/chart';
 import {
     clampLoop, defaultLoop, issuesInOrder, listenTrackIds, loopSeconds, loopSteps, markNotes, matchRate, noteMarkLabel,
     notesInRange, notesOfIssue, secondsToLoop, shiftLoop, speedLabel, MAX_LOOP_BARS,
+    practiceFromSection, practiceToSection, samePracticeSettings, type PracticeState,
 } from '../lib/practice';
 import { beatsInSegment, clampToLoop, clipInSegment, loopPosition, loopSegment, noteInSegment } from '../lib/loop';
 import { extractRegion, stretchedLength, wsolaStretch } from '../lib/stretch';
@@ -65,6 +66,56 @@ describe('区間', () => {
         expect(listenTrackIds({ partId: 1, trackId: 2, listen: 'self' })).toEqual([2]);
         expect(listenTrackIds({ partId: 1, trackId: 2, listen: 'both' })).toEqual([1, 2]);
         expect(speedLabel(0.75)).toBe('75%');
+    });
+});
+
+describe('プロジェクトへの保存 (状態の節 practice)', () => {
+    const tracks = [
+        { id: 11, referenceNotes: undefined },
+        { id: 12, referenceNotes: [n('C', 2, 0)] },
+        { id: 13, referenceNotes: undefined },
+    ];
+    const state: PracticeState = {
+        partId: 12, trackId: 13, loop: { startBar: 5, endBar: 8, enabled: false }, speed: 0.75, listen: 'part', showGhost: false, input: 'midi-step',
+    };
+
+    it('トラックは並びの番号で持ち、開いたトラックの ID に戻す', () => {
+        const saved = practiceToSection(state, tracks);
+        expect(saved).toEqual({ part: 1, track: 2, loop: { startBar: 5, endBar: 8, enabled: false }, speed: 0.75, listen: 'part', showGhost: false, input: 'midi-step' });
+        // 開き直すと ID は変わる
+        const reopened = [{ id: 21, referenceNotes: undefined }, { id: 22, referenceNotes: [n('C', 2, 0)] }, { id: 23, referenceNotes: undefined }];
+        expect(practiceFromSection(JSON.parse(JSON.stringify({ ...saved, version: 1 })), reopened)).toEqual({ ...state, partId: 22, trackId: 23 });
+    });
+
+    it('パートか練習のトラックが無くなっていたら、保存しない', () => {
+        expect(practiceToSection({ ...state, trackId: 99 }, tracks)).toBeNull();
+        expect(practiceToSection({ ...state, partId: 99 }, tracks)).toBeNull();
+    });
+
+    it('トラックの番号が範囲の外・お手本の無いトラック・節が無いときは、状態を持たない', () => {
+        const base = practiceToSection(state, tracks)!;
+        expect(practiceFromSection({ ...base, track: 3 }, tracks)).toBeNull();
+        expect(practiceFromSection({ ...base, track: -1 }, tracks)).toBeNull();
+        expect(practiceFromSection({ ...base, part: 1.5 }, tracks)).toBeNull();
+        expect(practiceFromSection({ ...base, part: 0 }, tracks)).toBeNull();
+        expect(practiceFromSection({ ...base, part: null }, tracks)).toBeNull();
+        expect(practiceFromSection(null, tracks)).toBeNull();
+        expect(practiceFromSection('practice', tracks)).toBeNull();
+    });
+
+    it('おかしな値は既定に直す (区間は収める。速度・聴く・入力は知らない値なら 100% / 両方 / マウス)', () => {
+        const got = practiceFromSection({ part: 1, track: 2, loop: { startBar: 0, endBar: 999 }, speed: 0.33, listen: 'all', showGhost: 'yes', input: 'keyboard' }, tracks);
+        expect(got).toEqual({
+            partId: 12, trackId: 13, loop: { startBar: 1, endBar: MAX_LOOP_BARS, enabled: true }, speed: 1, listen: 'both', showGhost: true, input: 'mouse',
+        });
+        expect(practiceFromSection({ part: 1, track: 2 }, tracks)?.loop).toEqual({ startBar: 1, endBar: 4, enabled: true });
+    });
+
+    it('保存に使う設定が同じか', () => {
+        expect(samePracticeSettings(state, { ...state, loop: { ...state.loop } })).toBe(true);
+        expect(samePracticeSettings(state, { ...state, loop: { ...state.loop, enabled: true } })).toBe(false);
+        expect(samePracticeSettings(state, { ...state, speed: 1 })).toBe(false);
+        expect(samePracticeSettings(state, { ...state, input: 'mouse' })).toBe(false);
     });
 });
 

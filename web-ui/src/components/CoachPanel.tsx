@@ -25,24 +25,23 @@ import engine, { type PianoNote } from '../lib/engine';
 import { describeError } from '../lib/api';
 import { chartIdOfParts, practiceTrackOf } from '../lib/learn';
 import {
-    ExplainRequestError, KIND_LABEL, explanationRefLabel, fetchSavedExplanation, issueText, issuesById, requestDiff,
-    requestExplanation, type DiffIssue, type DiffResult, type ExplainRequest, type ExplanationRef,
+    ExplainRequestError, KIND_LABEL, comparedOf, explanationRefLabel, fetchSavedExplanation, issueText, issuesById,
+    rememberCompared, requestDiff, requestExplanation, type DiffIssue, type DiffResult, type ExplainRequest, type ExplanationRef,
     type ExplanationResponse, type IssueKind,
 } from '../lib/coach';
 import { formatUsd, type GuideToday } from '../lib/guide';
 import { todayLine, usageLine } from '../lib/claude-usage';
 import { ClaudeSendNote, ClaudeSettings, UnverifiedTerms } from './ClaudeParts';
+import LearnHistory from './LearnHistory';
+import { attemptFromDiff } from '../lib/learn-history';
 
 /** 一覧に出す指摘の上限。多すぎると読めないので、重い小節から順に出して打ち切る。 */
 const MAX_ISSUES = 40;
 
 const KIND_ORDER: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing', 'length'];
 
-/**
- * 比べた結果ごとの、比べたときのノートと 1 小節のステップ数。説明は、画面に出ている差分と同じノートで頼む
- * （比べたあとにノートを直していても、説明の指摘の ID が一覧とずれないように）。
- */
-const comparedWith = new WeakMap<DiffResult, { reference: PianoNote[]; attempt: PianoNote[]; stepsPerBar: number }>();
+/** 比べた結果ごとの、学習の記録の番号（説明の鍵を、その記録に結び付けるため）。 */
+const attemptEntry = new WeakMap<DiffResult, number>();
 
 /** Claude に頼むまでもないとき（決まった文）の、理由の一言。 */
 const RULE_NOTE: Record<string, string> = {
@@ -69,7 +68,7 @@ export default function CoachPanel() {
     // trackVersion を読んでおくと、トラックが増減したときに選択肢が更新される
     const {
         pianoRollRef, beatsPerBar, trackVersion, bumpTracks, coachPair, setCoachPair, coachResult, setCoachResult, jumpTo,
-        openLearn, chart, chartId, bpm, gridOffset,
+        openLearn, chart, chartId, bpm, gridOffset, recordLearnAttempt, setAttemptExplanation,
     } = useDaw();
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -102,7 +101,12 @@ export default function CoachPanel() {
             const attemptNotes = attempt.pianoNotes ?? [];
             const stepsPerBar = (beatsPerBar || 4) * 4;
             const diff = await requestDiff(referenceNotes, attemptNotes, stepsPerBar);
-            comparedWith.set(diff, { reference: referenceNotes.map((n) => ({ ...n })), attempt: attemptNotes.map((n) => ({ ...n })), stepsPerBar });
+            rememberCompared(diff, { reference: referenceNotes.map((n) => ({ ...n })), attempt: attemptNotes.map((n) => ({ ...n })), stepsPerBar });
+            // 学習の記録に 1 件足す (説明ができたら、その鍵を結び付ける)
+            attemptEntry.set(diff, recordLearnAttempt(attemptFromDiff(diff, {
+                referenceId: reference.id, attemptId: attempt.id, part: reference.part ?? attempt.part ?? null,
+                reference: referenceNotes, stepsPerBar,
+            })));
             setCoachResult({ referenceId: reference.id, attemptId: attempt.id, result: diff });
         } catch (e) {
             setCoachResult(null);
@@ -110,7 +114,14 @@ export default function CoachPanel() {
         } finally {
             setBusy(false);
         }
-    }, [reference, attempt, pianoRollRef, beatsPerBar, setCoachResult]);
+    }, [reference, attempt, pianoRollRef, beatsPerBar, setCoachResult, recordLearnAttempt]);
+
+    // Claude の説明 (作った・保存済みを出した) を、この比較の記録に結び付ける
+    useEffect(() => {
+        if (!result || !explain || explain.source !== 'claude' || !explain.key) return;
+        const entry = attemptEntry.get(result);
+        if (entry !== undefined) setAttemptExplanation(entry, explain.key);
+    }, [result, explain, setAttemptExplanation]);
 
     /**
      * 指摘の在る場所を開く。比べた打ち込みのトラックをピアノロールで開き、再生位置をその拍へ移して、
@@ -132,7 +143,7 @@ export default function CoachPanel() {
      * 別の曲を取り込んだあとの古いパートには、新しい曲のカルテを添えない）。
      */
     const request = useMemo<ExplainRequest | null>(() => {
-        const compared = result ? comparedWith.get(result) : undefined;
+        const compared = result ? comparedOf(result) : undefined;
         if (!compared) return null;
         const body: ExplainRequest = { reference: compared.reference, attempt: compared.attempt, steps_per_bar: compared.stepsPerBar };
         if (chart && chartId && reference?.role === 'part' && chartIdOfParts() === chartId) {
@@ -291,6 +302,7 @@ export default function CoachPanel() {
                             )}
                         </>
                     )}
+                    {reference && attempt && <LearnHistory referenceId={reference.id} attemptId={attempt.id} />}
                     {request && (
                         <ExplanationSection explain={explain} explaining={explaining} error={explainError} today={today}
                             showKeyForm={showKeyForm} onToggleKeyForm={() => setShowKeyForm((v) => !v)}

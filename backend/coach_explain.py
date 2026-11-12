@@ -795,9 +795,14 @@ def _input_summary(facts):
             "chart_context": facts["chart_context"]}
 
 
-def _public(entry, cached, facts):
-    """保存した説明の 1 件を、API の応答に載せる形にする。"""
+def _public(entry, cached, facts, key=None):
+    """保存した説明の 1 件を、API の応答に載せる形にする。
+
+    ``key`` は保存の鍵。学習の記録が「この比較の説明」を指す識別子にし、プロジェクトの保存が
+    説明の写しを `.bunri` に入れるのに使う（``project_store``）。
+    """
     return {
+        "key": key,
         "explanation": entry["explanation"],
         "source": "claude",
         "reason": None,
@@ -812,8 +817,9 @@ def _public(entry, cached, facts):
 
 
 def _public_rule(reason, explanation, facts):
-    """LLM を使わない説明を、API の応答に載せる形にする（費用は 0）。"""
+    """LLM を使わない説明を、API の応答に載せる形にする（費用は 0）。保存しないので鍵は無い。"""
     return {
+        "key": None,
         "explanation": explanation,
         "source": "rule",
         "reason": reason,
@@ -858,8 +864,9 @@ def saved_explanation(facts):
     if rule:
         return _public_rule(*rule, facts)
     request = build_request(facts)
-    entry = guide_cache.load(explanation_key(facts, request["model"], request["output_config"]["effort"]), kind="coach")
-    return _public(entry, cached=True, facts=facts) if entry else None
+    key = explanation_key(facts, request["model"], request["output_config"]["effort"])
+    entry = guide_cache.load(key, kind="coach")
+    return _public(entry, cached=True, facts=facts, key=key) if entry else None
 
 
 def explain_for(facts, regenerate=False, client=None):
@@ -899,14 +906,14 @@ def explain_for(facts, regenerate=False, client=None):
     if not regenerate:
         entry = guide_cache.load(key, kind="coach")
         if entry:
-            return _public(entry, cached=True, facts=facts)
+            return _public(entry, cached=True, facts=facts, key=key)
 
     facts_id = facts_hash(facts)
     asked_at = time.time()
     with guide_cache.lock_for("coach"):
         entry = guide_cache.load(key, kind="coach")
         if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
-            return _public(entry, cached=True, facts=facts)
+            return _public(entry, cached=True, facts=facts, key=key)
 
         blocked = _blocked_message(guide_usage.today())
         if blocked:
@@ -948,4 +955,4 @@ def explain_for(facts, regenerate=False, client=None):
             "fingerprint": request_fingerprint(),
         }
         guide_cache.save(key, entry, kind="coach")
-        return _public(entry, cached=False, facts=facts)
+        return _public(entry, cached=False, facts=facts, key=key)

@@ -3,7 +3,7 @@
  * ピアノロールの複数選択・矢印キー・コピーと貼り付け・表示の大きさ。
  */
 import { expect, test, type Download, type Page } from '@playwright/test';
-import { deleteTrack, openDaw, readWav, startFree, statusText } from './helpers';
+import { deleteTrack, openDaw, openProject, readWav, saveProject, startFree, statusText } from './helpers';
 
 const STEP_WIDTH = 20;
 const NOTE_HEIGHT = 14;
@@ -252,18 +252,18 @@ test.describe('トラックの音量とパン', () => {
         expect(quiet / loud).toBeLessThan(0.12);
 
         await page.getByRole('slider', { name: '「Track 1」のパン' }).fill('-50');
-        await page.getByRole('button', { name: '保存', exact: true }).click();
-        await expect(statusText(page)).toHaveText('プロジェクトを保存しました');
+        const name = await saveProject(page, `undo-mix-${Date.now()}`);
 
         await page.reload();
         await page.getByText('準備完了').waitFor();
-        await page.getByRole('button', { name: '読み込む', exact: true }).click();
-        await expect(statusText(page)).toContainText('を読み込みました');
+        await openProject(page, name);
         await expect(page.getByRole('slider', { name: '「Track 1」の音量' })).toHaveAttribute('aria-valuetext', '−20.0 dB');
         await expect(page.getByRole('slider', { name: '「Track 1」のパン' })).toHaveAttribute('aria-valuetext', '左 50');
-        // 読み込みも元に戻せる (読み込む前は、トラックが無かった)
+        // 開くと新しい文書になるので、元に戻すの履歴は空 (開く前のプロジェクトに戻さない。
+        // 戻したいときは「開く」で前のプロジェクトを開く)
+        await expect(page.locator('#btn-undo')).toBeDisabled();
         await page.keyboard.press('ControlOrMeta+z');
-        await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
+        await expect(page.locator('#tracks-container .track-row')).toHaveCount(1);
     });
 });
 

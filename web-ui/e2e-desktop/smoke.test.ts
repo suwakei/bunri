@@ -8,7 +8,7 @@
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { makeWav, readWav } from '../e2e/helpers.ts';
@@ -284,5 +284,84 @@ describe('sidecar が止まったとき', () => {
         // 前の sidecar のポートは、もう誰も待ち受けていない
         expect(listenersOn(before.port)).toEqual([]);
         expect((await record())).toEqual({ csp: [], errors: [] });
+    });
+});
+
+describe('プロジェクトのファイル', () => {
+    /** 押せるボタンを、画面のことばで押す (メニューの項目も)。 */
+    const press = (label: string) => app.click(`//button[normalize-space()="${label}"]`);
+
+    it('保存すると、ダイアログで選んだ場所に .bunri ができ、題名に名前が出る。新しくしてから開くと、トラックと音声とテンポが戻る', async () => {
+        const target = inject('projectPath');
+        // テンポを変えて、保存していない変更にする (前のテストで置いたクリップも在る)
+        await app.run(() => {
+            const input = document.querySelector<HTMLInputElement>('#transport-bpm')!;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '96');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await app.waitFor('保存していない変更のしるし', () => document.querySelector('#project-title .unsaved-mark') !== null, []);
+
+        // 保存 (テスト用のビルドでは、ダイアログの代わりに BUNRI_E2E_SAVE_PATH が選ばれる)
+        await press('保存');
+        await waitStatus('プロジェクト「e2e-project」を保存しました', 60_000);
+        expect(existsSync(target)).toBe(true);
+        // SQLite の .bunri (v2)。音声 (WKWebView でデコードした WAV の元のバイト列) も中に入っている
+        expect(readFileSync(target).subarray(0, 15).toString()).toBe('SQLite format 3');
+        await app.waitFor('題名', () => document.title === 'e2e-project — bunri' ? true : document.title, []);
+        expect(await app.run(() => document.querySelector('#project-title .unsaved-mark') === null)).toBe(true);
+        // 最近使ったプロジェクトは、データ置き場に書かれる (利用者のアプリのデータには書かない)
+        const recent = JSON.parse(readFileSync(join(inject('dataDir'), 'recent-projects.json'), 'utf8'));
+        // Rust は実体のパスで覚える (mac の一時ディレクトリは /var → /private/var)
+        expect(recent.entries[0].path).toBe(realpathSync(target));
+
+        // 新しいプロジェクト (保存したばかりなので確かめは出ない)
+        await app.click('//button[@aria-label="プロジェクトのメニュー"]');
+        await app.click('//button[@role="menuitem"][normalize-space()="新しいプロジェクト"]');
+        await waitStatus('新しいプロジェクトにしました');
+        // タイムラインは描き直しのあとで消える (知らせより少し遅れることがある)
+        await app.waitFor('クリップが無くなる', () => document.querySelectorAll('#tracks-container .clip').length === 0, []);
+
+        // 開く: 最近使ったプロジェクトから
+        await press('開く');
+        await app.waitFor('開く一覧に出る', () => [...document.querySelectorAll('[role="dialog"] .project-entry-name')]
+            .some((el) => el.textContent === 'e2e-project') ? true : document.querySelector('[role="dialog"]')?.textContent ?? '一覧が無い', []);
+        await app.click('//*[@role="dialog"]//button[contains(@class,"project-entry-open")][.//*[normalize-space()="e2e-project"]]');
+        await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
+        await app.waitFor('クリップが戻る', () => document.querySelectorAll('#tracks-container .clip').length === 1, []);
+        expect(await app.run(() => document.querySelector<HTMLInputElement>('#transport-bpm')!.value)).toBe('96');
+
+        // 開く: 「ほかのファイルを選ぶ…」(テスト用のビルドでは BUNRI_E2E_OPEN_PATH が選ばれる)
+        await press('開く');
+        await app.waitFor('開く一覧', () => document.querySelector('[role="dialog"]') !== null, []);
+        await press('ほかのファイルを選ぶ…');
+        await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
+        // 開いた音声は再生できる
+        await app.click('//button[@aria-label="再生"]');
+        await waitStatus('再生中');
+        await app.click('//button[@aria-label="停止"]');
+        expect(await record()).toEqual({ csp: [], errors: [] });
+        writeFileSync(join(import.meta.dirname, '..', 'e2e-desktop-results', 'project-reopened.png'), await app.screenshot());
+    });
+
+    it('保存していない変更があるときに窓を閉じようとすると、閉じずに尋ねる。キャンセルすれば窓はそのまま', async () => {
+        await app.run(() => {
+            const input = document.querySelector<HTMLInputElement>('#transport-bpm')!;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '100');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await app.waitFor('保存していない変更のしるし', () => document.querySelector('#project-title .unsaved-mark') !== null, []);
+        // Rust に、保存していない変更が在ることが届くまで少し待つ (題名と一緒に送っている)
+        await app.waitFor('題名', () => document.title.includes('●') ? true : document.title, []);
+        await app.closeWindow();
+        await app.waitFor('確かめの窓', () => {
+            const dialog = document.querySelector('[role="alertdialog"]');
+            return dialog?.textContent?.includes('窓を閉じる前に') ? true : `いま: ${dialog?.textContent ?? '無し'}`;
+        }, [], 10_000);
+        await app.click('//*[@role="alertdialog"]//button[normalize-space()="キャンセル"]');
+        await app.waitFor('確かめの窓が閉じる', () => document.querySelector('[role="alertdialog"]') === null, []);
+        expect(await app.run(() => document.querySelector('#status-text') !== null)).toBe(true);
+        // 後片付け (窓を閉じて終わる) で止まらないよう、保存しておく
+        await press('保存');
+        await waitStatus('を保存しました', 60_000);
     });
 });

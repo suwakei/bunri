@@ -201,12 +201,12 @@ class TestVersioning:
         assert song_chart.to_canonical_json(bunri_file.read_chart(path)) == expected
 
     def test_rejects_newer_major_version(self, tmp_path, sample_chart):
-        """メジャーバージョンが上のファイルは拒否する"""
+        """メジャーバージョンが上のファイルは拒否する（いまは 2.0 なので 3.0）"""
         path = tmp_path / "demo.bunri"
         bunri_file.create(path, sample_chart)
 
         conn = sqlite3.connect(str(path))
-        conn.execute("UPDATE bunri_meta SET value = '2.0' WHERE key = 'format_version'")
+        conn.execute("UPDATE bunri_meta SET value = '3.0' WHERE key = 'format_version'")
         conn.commit()
         conn.close()
 

@@ -3,7 +3,7 @@
  * 音域 (C0〜B8) の端の音も扱えること。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw, startFree, recordOscillators, soundedFrequencies } from './helpers';
+import { openDaw, startFree, recordOscillators, soundedFrequencies, openNewestLegacy } from './helpers';
 
 const STEP_WIDTH = 20;
 const NOTE_HEIGHT = 14;
@@ -15,7 +15,7 @@ const rowOf = (name: string, octave: number) => (8 - octave) * 12 + NOTE_NAMES.i
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 
-/** ノート入りのプロジェクトを API で保存し、画面の「読み込む」で読み込む。 */
+/** ノート入りのプロジェクトを API で保存し、画面の「開く」で以前の形式として開く。 */
 async function loadProjectWithNotes(page: Page, request: APIRequestContext, tracks: ReturnType<typeof note>[][]) {
     const project = {
         bpm: 120, beatsPerBar: 4,
@@ -24,8 +24,8 @@ async function loadProjectWithNotes(page: Page, request: APIRequestContext, trac
     };
     expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
     await openDaw(page);
-    await page.getByRole('button', { name: '読み込む', exact: true }).click();
-    await expect(page.getByText(/を読み込みました/)).toBeVisible();
+    // 以前の形式 (API で用意した projects/*.json) として開く
+    await openNewestLegacy(page);
 }
 
 /** ノートが、ピアノロールの見えている範囲の中に在るか。 */

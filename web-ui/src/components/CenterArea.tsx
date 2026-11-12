@@ -17,6 +17,7 @@ import { secToStep, stepSeconds } from '../lib/grid';
 import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
 import PopupMenu from './PopupMenu';
+import RecentProjects from './RecentProjects';
 
 /** 音名を低い順に並べたもの (MIDI ノート番号を出すのに使う)。 */
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -1633,6 +1634,7 @@ function EmptyState() {
                 <button type="button" className="action-btn secondary" onClick={startFree}>自由に作る</button>
             </div>
             <p className="empty-note">MP3・WAV・FLAC・M4A などの曲のファイルを選びます。「自由に作る」は、空のトラックを 1 本作ります。</p>
+            <RecentProjects />
         </div>
     );
 }

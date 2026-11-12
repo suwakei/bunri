@@ -1,8 +1,12 @@
 /**
- * ヘッダの保存・読み込む・WAV 書き出し・再生 (ボタンと Space キー) と、画面の下端のステータスバー。
+ * ヘッダの保存・開く・WAV 書き出し・再生 (ボタンと Space キー) と、画面の下端のステータスバー。
+ * プロジェクトのファイル (名前・以前の形式・保存していない変更・学習の記録) は project.spec.ts。
  */
 import { expect, test, type Download, type Page } from '@playwright/test';
-import { openDaw, startFree, openTab, readWav, statusText, trackSummary } from './helpers';
+import { openDaw, startFree, openTab, readWav, statusText, trackSummary, saveProject, openProject, openNewestLegacy } from './helpers';
+
+/** テストごとに違うプロジェクトの名前 (置き場は全部のテストで共有する)。 */
+const uniqueName = (label: string) => `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 /** ダウンロードされたファイルの中身を読む。 */
 async function downloadBytes(file: Download): Promise<Buffer> {
@@ -42,11 +46,11 @@ test('ボタンにマウスを載せると、ステータスバーの右に説�
     await openDaw(page);
     await startFree(page);
     await page.getByRole('button', { name: '保存', exact: true }).hover();
-    await expect(page.locator('#hint-text')).toHaveText('プロジェクト（テンポ・トラック・ノート）を保存します');
+    await expect(page.locator('#hint-text')).toHaveText(/^プロジェクト（トラック・ノート・音声・カルテ・学習の記録）を 1 つのファイルに保存します（(⌘|Ctrl\+)S）$/);
     await expect(page.locator('#hint-text')).toBeInViewport();
 });
 
-test('保存して開き直し、読み込むと、テンポ・トラック・ノートが戻る', async ({ page }) => {
+test('保存して開き直し、開くと、テンポ・トラック・ノートが戻る', async ({ page }) => {
     await openDaw(page);
     await startFree(page);
     await page.locator('#transport input[type="number"]').fill('96');
@@ -57,18 +61,15 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
     await page.locator('#note-layer').dblclick({ position: { x: 10, y: 100 } });
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
 
-    const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
-    await page.getByRole('button', { name: '保存', exact: true }).click();
-    expect((await saved).status()).toBe(200);
-    await expect(statusText(page)).toHaveText('プロジェクトを保存しました');
+    const name = await saveProject(page, uniqueName('header-roundtrip'));
+    await expect(statusText(page)).toContainText(`プロジェクト「${name}」を保存しました`);
 
     await page.reload();
     await page.getByText('準備完了').waitFor();
     // 開き直したときはトラックが無く、空の状態の案内が出る
     await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
     await expect(page.locator('#empty-state')).toBeVisible();
-    await page.getByRole('button', { name: '読み込む', exact: true }).click();
-    await expect(statusText(page)).toContainText('を読み込みました');
+    await openProject(page, name);
 
     await expect(page.locator('#transport input[type="number"]')).toHaveValue('96');
     // 保存したときの 3 本が戻り、それぞれのノートの数が見出しに出る
@@ -83,13 +84,11 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
     expect(titles.map((t) => t.match(/step:(\d+)/)![1])).toEqual(['0', '8']);
 });
 
-test('トラックをピアノロールで開いたまま読み込んでも、そのトラックのノートが読み込んだ内容になる', async ({ page }) => {
+test('トラックをピアノロールで開いたまま開いても、そのトラックのノートが開いた内容になる', async ({ page }) => {
     await openDaw(page);
     await startFree(page);
     await placeNotes(page);
-    const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
-    await page.getByRole('button', { name: '保存', exact: true }).click();
-    expect((await saved).status()).toBe(200);
+    const name = await saveProject(page, uniqueName('header-open-while-editing'));
 
     // 保存した後で、開いているトラックのノートを全部消す (保存した内容とは違う状態にする)
     for (let remaining = 2; remaining > 0; remaining--) {
@@ -99,9 +98,12 @@ test('トラックをピアノロールで開いたまま読み込んでも、�
     }
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveCount(0);
 
-    // トラックを開いたまま読み込む。以前は、開いていたトラックだけ、画面に出ていた内容 (空) に戻った
-    await page.getByRole('button', { name: '読み込む', exact: true }).click();
-    await expect(statusText(page)).toContainText('を読み込みました');
+    // トラックを開いたまま開く。以前は、開いていたトラックだけ、画面に出ていた内容 (空) に戻った。
+    // 消した変更は保存していないので、確かめの窓で「保存しない」を選ぶ
+    await page.getByRole('button', { name: '開く', exact: true }).click();
+    await page.getByRole('dialog', { name: 'プロジェクトを開く' }).locator('.project-entry-open', { hasText: name }).first().click();
+    await page.getByRole('alertdialog', { name: '保存していない変更があります' }).getByRole('button', { name: '保存しない' }).click();
+    await expect(statusText(page)).toContainText('を開きました');
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('2');
     await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#note-layer .note-block')).toHaveCount(2);
@@ -284,14 +286,13 @@ test.describe('ステータスバーの知らせ', () => {
         await expect(statusText(page)).not.toHaveClass(/error/);
     });
 
-    test('長い知らせは 1 行に収まり、はみ出すぶんは … になる (全文は title で読める)', async ({ page }) => {
+    test('長い知らせは 1 行に収まり、はみ出すぶんは … になる (全文は title で読める)', async ({ page, request }) => {
         await page.setViewportSize({ width: 700, height: 720 });
+        // 以前の形式のプロジェクト (音声の無いクリップを含む) を開いたときの知らせは長い
+        const legacy = { bpm: 120, tracks: [{ name: 'Track 1', pianoNotes: [], clips: [{ name: 'long-status.wav', offset: 0, duration: 1 }] }] };
+        expect((await request.post('/api/project/save', { form: { data: JSON.stringify(legacy) } })).ok()).toBe(true);
         await openDaw(page);
-        const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
-        await page.getByRole('button', { name: '保存', exact: true }).click();
-        expect((await saved).status()).toBe(200);
-        await page.getByRole('button', { name: '読み込む', exact: true }).click();
-        await expect(statusText(page)).toContainText('を読み込みました');
+        await openNewestLegacy(page);
         // マウスを載せたままだと右側に説明が出るので、ボタンから外す
         await page.mouse.move(350, 400);
         const layout = await statusText(page).evaluate((el) => {

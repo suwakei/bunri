@@ -202,6 +202,23 @@ impl LaunchConfig {
         config
     }
 
+    /// sidecar のデータ置き場 (`BUNRI_DATA_DIR`)。sidecar が同じ場所を使うように、渡す環境変数と同じ決め方をする。
+    ///
+    /// - 起動に渡す環境変数に在ればそれ (配布物: アプリのデータ置き場の `data/`)
+    /// - アプリが環境変数で受け取っていればそれ (sidecar はそれを受け継ぐ。テストの一時ディレクトリなど)
+    /// - どちらも無ければ作業ディレクトリ (開発時: リポジトリの直下。backend/audio_utils.py の既定と同じ)
+    ///
+    /// プロジェクトのファイルを写すとき (`project.rs`) に使う。
+    pub fn data_dir(&self) -> PathBuf {
+        if let Some((_, value)) = self.server.envs.iter().find(|(k, _)| k == "BUNRI_DATA_DIR") {
+            return PathBuf::from(value);
+        }
+        if let Some(value) = std::env::var_os("BUNRI_DATA_DIR") {
+            return PathBuf::from(value);
+        }
+        self.server.cwd.clone()
+    }
+
     /// 開発時の起動方法。
     ///
     /// 環境変数 `BUNRI_UV` で `uv` の場所を、`BUNRI_REPO_ROOT` でリポジトリの場所を上書きできる。

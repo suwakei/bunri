@@ -4,6 +4,7 @@
 //!   つないで、本物の窓 (WKWebView) を操作する。ポートは環境変数 `TAURI_WEBDRIVER_PORT`
 //! - 利用者のデータに触れないようにする: WebView の保存領域 (localStorage など) は使い捨てにし、
 //!   キーチェーンは本番とは別の項目名にし、書き出したファイルはテストが指定した場所に保存する
+//! - プロジェクトの保存・開くのダイアログは出さず、テストが環境変数で渡した場所を使う
 //! - 画面の外から確かめにくいこと (CSP の違反、捕まえられなかった例外) を記録しておき、
 //!   テストが `window.__bunriE2E` で読めるようにする
 //!
@@ -17,6 +18,21 @@ use tauri::{Runtime, WebviewWindowBuilder};
 
 /// 書き出したファイルの保存先を差し替える環境変数 (テストが一時ディレクトリを渡す)。
 pub const DOWNLOAD_DIR_ENV: &str = "BUNRI_E2E_DOWNLOAD_DIR";
+
+/// プロジェクトの保存のダイアログの代わりに使う場所 (テストが一時ディレクトリの中を渡す)。
+///
+/// WebDriver はネイティブのダイアログ (NSSavePanel) を操作できない。テスト用のビルドだけ、
+/// ダイアログを出さずにこの場所が選ばれたことにする (`project.rs` の `pick_save_path`)。
+pub const SAVE_PATH_ENV: &str = "BUNRI_E2E_SAVE_PATH";
+/// プロジェクトを開くダイアログの代わりに使う場所。
+pub const OPEN_PATH_ENV: &str = "BUNRI_E2E_OPEN_PATH";
+
+/// ダイアログの代わりに使う場所を、環境変数から読む (無ければ None で、本物のダイアログを出す)。
+pub fn dialog_path(env: &str) -> Option<PathBuf> {
+    std::env::var_os(env)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
 
 /// 画面の読み込みより前に入れるスクリプト。CSP の違反と、捕まえられなかった例外を記録する。
 ///

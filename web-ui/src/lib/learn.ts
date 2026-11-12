@@ -18,7 +18,11 @@ import engine, { type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
-import type { ChartResponse } from './chart';
+import { isChartResponse } from './chart';
+import { decodeWithSource } from './audio-sources';
+
+/** カルテの作成のジョブが終わったのに、結果にカルテが入っていなかったときの知らせ。 */
+export const CHART_RESULT_INVALID = 'カルテの作成は終わりましたが、結果にカルテが入っていませんでした。もう一度取り込んでください';
 
 /** 原曲のトラックの名前。 */
 export const SONG_TRACK_NAME = '原曲';
@@ -41,6 +45,11 @@ let partsChartId: string | null = null;
 /** いまのパートのトラックを採譜したときのカルテの ID（カルテ無しで分けた、またはまだ分けていなければ null）。 */
 export function chartIdOfParts(): string | null {
     return partsChartId;
+}
+
+/** パートを採譜したときのカルテの ID を設定する（プロジェクトを開いたとき。lib/project-file.ts）。 */
+export function setChartIdOfParts(id: string | null): void {
+    partsChartId = id;
 }
 
 /** パートの名前（API の識別子）から、画面に出す名前へ。 */
@@ -74,6 +83,13 @@ export interface DecomposeResult {
     bpm: number;
     grid_offset_sec?: number;
     stems: Record<string, DecomposeStem>;
+}
+
+/** ジョブの結果（`unknown`）が、`/api/decompose` の結果の形か（パートの表を持つか）。 */
+export function isDecomposeResult(value: unknown): value is DecomposeResult {
+    if (!value || typeof value !== 'object') return false;
+    const stems = (value as { stems?: unknown }).stems;
+    return !!stems && typeof stems === 'object' && !Array.isArray(stems);
 }
 
 /** パートのトラック（パート分離で作ったもの）。トラックの並び順。 */
@@ -197,7 +213,8 @@ export function useLearnActions() {
         fd.append('file', file);
         const resp = await apiFetch('/api/convert/wav', { method: 'POST', body: fd });
         if (!resp.ok) throw new Error(await errorDetail(resp));
-        const buffer = await engine.ctx!.decodeAudioData(await resp.arrayBuffer());
+        // 変換した WAV を元のバイト列として覚える (プロジェクトの保存で、そのまま入れる)
+        const buffer = await decodeWithSource(engine.ctx!, await resp.arrayBuffer(), file.name.replace(/\.[^.]+$/, '') + '.wav');
         await engine.addClipFromBuffer(trackId, buffer, file.name, offsetSec);
     }, []);
 
@@ -205,10 +222,18 @@ export function useLearnActions() {
      * カルテの結果を画面に当てる。テンポ・拍子・1 小節目の位置をカルテに合わせ、カルテの段を開く。
      * 曲の取り込みの最後と、画面を開き直す前に始めたカルテの作成が終わったとき（つなぎ直し）に使う。
      *
-     * @param result - `/api/chart` の結果
+     * ジョブの結果は形を確かめてから当てる（`isChartResponse`）。形が違えば（カルテの入っていない結果）、
+     * 何も変えずに失敗として知らせる（例外にすると、取り込みが「解析しています…」のまま止まる）。
+     *
+     * @param result - `/api/chart` のジョブの結果
      * @param placed - 原曲の音声をタイムラインに置けたか（置けなかったら、その旨を添える）
+     * @returns カルテを当てたら true
      */
-    const finishChart = useCallback((result: ChartResponse, placed = true) => {
+    const finishChart = useCallback((result: unknown, placed = true): boolean => {
+        if (!isChartResponse(result)) {
+            setStatus(CHART_RESULT_INVALID, 'error');
+            return false;
+        }
         setChartResult(result);
         // テンポ・拍子・1 小節目の位置を、カルテに合わせる (カルテとピアノロールの小節番号をそろえる)
         const applied = applyChartGrid(result.chart);
@@ -222,6 +247,7 @@ export function useLearnActions() {
         if (!applied) notes.push('テンポと小節の位置は、パートに分けたときのままにしました');
         setStatus(`カルテを作りました（${key} / ${result.chart.chords.length} コード）${notes.length ? '。' + notes.join('。') : ''}`,
             placed ? 'info' : 'error');
+        return true;
     }, [setChartResult, applyChartGrid, openLearn, bumpTracks, setStatus]);
 
     /**
@@ -272,7 +298,7 @@ export function useLearnActions() {
 
         // 2. カルテ
         const final = await jobTracker.wait(job.id);
-        if (final.state === 'done') finishChart(final.result as ChartResponse, placed);
+        if (final.state === 'done') finishChart(final.result, placed);
         else if (final.state === 'cancelled') setStatus('カルテの作成を中止しました。原曲はトラックに置いてあります。もう一度取り込むと、カルテを作り直せます');
         else setStatus(jobErrorMessage(final), 'error');
     }, [placeAudio, setSongFile, bumpTracks, bpm, beatsPerBar, finishChart, setStatus, recordAsync]);
@@ -282,9 +308,15 @@ export function useLearnActions() {
      * 前に分けたパート（と練習のトラック）は入れ替える。
      * パートに分けたときの最後と、画面を開き直す前に始めたパート分離が終わったとき（つなぎ直し）に使う。
      *
-     * @param result - `/api/decompose` の結果
+     * 結果の形は確かめてから当てる（`isDecomposeResult`。理由は `finishChart` と同じ）。
+     *
+     * @param result - `/api/decompose` のジョブの結果
      */
-    const applyParts = useCallback(async (result: DecomposeResult) => {
+    const applyParts = useCallback(async (result: unknown) => {
+        if (!isDecomposeResult(result)) {
+            setStatus('パート分離は終わりましたが、結果にパートが入っていませんでした。いまのパートはそのままです', 'error');
+            return;
+        }
         // パートのトラックの入れ替えは、まとめて元に戻せる。記録を開くのは結果が届いてから
         // (ジョブの間ずっと開いておくと、その間のほかの操作がこの記録に混ざるため)
         let created = 0, withReference = 0;
@@ -371,7 +403,7 @@ export function useLearnActions() {
         const notice = await modelDownloadNotice('htdemucs_6s');
         setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
         try {
-            const result = await jobTracker.run<DecomposeResult>('learn-parts', '/api/decompose', fd);
+            const result = await jobTracker.run<unknown>('learn-parts', '/api/decompose', fd);
             partsChartId = usedChart;
             await applyParts(result);
         } catch (e) {

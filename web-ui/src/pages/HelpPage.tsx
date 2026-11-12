@@ -56,6 +56,7 @@ export default function HelpPage() {
                     <ul>
                         <li><a href="#overview">画面の構成</a></li>
                         <li><a href="#learn">曲を教材にして学ぶ（5 つの段階）</a></li>
+                        <li><a href="#project">プロジェクトの保存と開く</a></li>
                         <li><a href="#quickstart">自由に作る</a></li>
                         <li><a href="#timeline">タイムライン</a></li>
                         <li><a href="#pianoroll">ピアノロール</a></li>
@@ -71,13 +72,13 @@ export default function HelpPage() {
                 <section id="overview">
                     <h2>画面の構成</h2>
                     <div className="layout-box">
-                        <p><strong>ヘッダー（上部）:</strong> BPM、拍子、再生 / 停止 / 録音、メトロノーム、元に戻す（↶）/ やり直す（↷）、「保存」「読み込む」「WAV 書き出し」「MIDI 書き出し」のボタン。↶ にマウスを載せると、何が戻るかが出ます</p>
+                        <p><strong>ヘッダー（上部）:</strong> BPM、拍子、再生 / 停止 / 録音、メトロノーム、元に戻す（↶）/ やり直す（↷）、「保存」「開く」「▾」（新しいプロジェクト・別名で保存・最近使ったプロジェクト）「WAV 書き出し」「MIDI 書き出し」のボタン。↶ にマウスを載せると、何が戻るかが出ます。左上にプロジェクトの名前が出て、保存していない変更があると「●」が付きます</p>
                         <p><strong>進み具合（ヘッダーの下）:</strong> ① 曲を取り込む ② カルテを見る ③ パートに分ける ④ 打ち込む ⑤ 差分で直す の、どこまで済んだかが出ます。段階を押すと、その作業をする場所が開きます。「進み具合」を押すと畳めます</p>
                         <p><strong>左パネル:</strong> 3 つのタブ</p>
                         <ul>
                             <li><strong>学ぶ:</strong> 「曲とパート」「カルテ」「ガイド」「差分」の 4 つの段。曲を取り込んでから差分チェックまでの流れ</li>
                             <li><strong>音作り:</strong> 「シンセ」「ドラム」「FX」</li>
-                            <li><strong>ファイル:</strong> 音声ファイルの読み込み、単音メロディ解析、録音</li>
+                            <li><strong>ファイル:</strong> 音声ファイルの読み込み、単音メロディ解析、録音、データの整理</li>
                         </ul>
                         <p>左パネルの右端の境目をドラッグすると、幅を変えられます。</p>
                         <p><strong>中央:</strong></p>
@@ -113,6 +114,21 @@ export default function HelpPage() {
                     </ul>
                     <p>「ガイド」では、カルテの内容を「こう作れば再現できる」という手順の説明にできます（Claude の API キーが要ります）。手順の小節を押すと、その小節へ移動します。</p>
                     <p>お手本は自動で採譜したもので、原曲とぴったり同じとは限りません。耳でも確かめながら使ってください。ドラムは差分チェックの対象外です。</p>
+                </section>
+
+                <section id="project">
+                    <h2>プロジェクトの保存と開く</h2>
+                    <p>1 曲の作業（トラック・ノート・お手本・音声・カルテ・ガイド・差分の結果・学習の記録）を、1 つの <code>.bunri</code> ファイルに保存します。開くと、続きからそのまま始められます（解析し直したり、Claude を呼び直したりはしません）。</p>
+                    <ul>
+                        <li><strong>保存</strong>（<span className="kbd">⌘S</span>）: 初めての保存では保存先を選びます（はじめは「書類」の中の bunri フォルダ）。2 回目からは同じファイルに上書きします</li>
+                        <li><strong>別名で保存</strong>（<span className="kbd">⌘⇧S</span>）: 別の名前・場所に保存します。以後はそのファイルが開いているプロジェクトになります</li>
+                        <li><strong>開く</strong>（<span className="kbd">⌘O</span>）: 最近使ったプロジェクトから選ぶか、「ほかのファイルを選ぶ…」で .bunri を選びます。一覧の「×」は一覧から外すだけで、ファイルは消しません</li>
+                        <li><strong>保存していない変更</strong>: 名前の後ろに「●」が付きます。開く・新しいプロジェクト・窓を閉じる前に「保存 / 保存しない / キャンセル」を尋ねます</li>
+                        <li><strong>以前の形式</strong>: 前の版で保存したプロジェクトは、一覧に「以前の形式」と出ます。音声は保存されていないので、音声の無いクリップは上に一覧で出ます。「音声を読み込み直す」で手元のファイルを選んでください。保存すると .bunri になります（前のファイルは残ります）</li>
+                        <li><strong>学習の記録</strong>: 「お手本と比べる」を押すたびに、一致率と違いの件数が残ります。「差分」に「一致 72% 前回より +8%」のように出ます。記録もプロジェクトに保存されます</li>
+                        <li><strong>データの整理</strong>: 「ファイル」タブの下で、アプリのデータの置き場の使用量を見て、一時ファイルを消せます。保存したプロジェクトは音声とカルテを中に持っているので、整理しても開けます</li>
+                    </ul>
+                    <p>開くと、元に戻すの履歴は空になります（前のプロジェクトの操作は戻せません）。</p>
                 </section>
 
                 <section id="quickstart">
@@ -236,6 +252,7 @@ export default function HelpPage() {
                     <h2>キーボードとマウスの操作</h2>
                     <ul>
                         <li><span className="kbd">Space</span> — 再生 / 一時停止（文字を入力する欄に居るときは効きません）。練習画面では区間の中で再生します</li>
+                        <li><span className="kbd">⌘S</span> / <span className="kbd">⌘⇧S</span> / <span className="kbd">⌘O</span>（<span className="kbd">Ctrl</span> でも） — プロジェクトを保存 / 別名で保存 / 開く</li>
                         <li><span className="kbd">⌘Z</span>（<span className="kbd">Ctrl+Z</span>） — 元に戻す。ノート・トラック・クリップ・音量とパンの変更を、1 つずつ戻します（文字を入力する欄の中では、その欄の文字を戻します）</li>
                         <li><span className="kbd">⌘⇧Z</span>（<span className="kbd">Ctrl+Shift+Z</span> / <span className="kbd">Ctrl+Y</span>） — やり直す</li>
                         <li><span className="kbd">Delete</span> / <span className="kbd">Backspace</span> — 選んでいるノートを削除（クリップを選んでいるときは、そのクリップを削除）</li>

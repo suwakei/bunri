@@ -76,6 +76,10 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    // テストの出力 (Playwright の trace が書く .html など) を見張らない。見張ると、テストの途中で画面が
+    // 再読み込みされ (自動再読み込みの仕組みが blob の worker を作り、CSP の違反にもなる)、テストが壊れる
+    // (trace は e2e-results/.playwright-artifacts-*/ のような「.」で始まるフォルダに書くので、glob ではなく正規表現で外す)
+    watch: { ignored: [/[\\/](e2e-results|e2e-desktop-results|playwright-report)[\\/]/] },
     proxy: {
       // 開発用: 画面をブラウザで開いたとき、API をバックエンドへ中継する。
       // 中継先のポートは BUNRI_API_PORT で変えられる（既定は backend/run_web.py と同じ 8000）

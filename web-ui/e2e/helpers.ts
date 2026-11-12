@@ -1,7 +1,7 @@
 /**
  * ブラウザのテストで使う共通の部品。
  */
-import type { Page, Request } from '@playwright/test';
+import { expect, type Page, type Request } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
 /** テスト用の小さな MP3 (C4 E4 G4 C5 を 2 秒ずつ、8 秒)。WAV 以外の曲の取り込みを確かめるのに使う。 */
@@ -256,4 +256,42 @@ export async function cancelActiveJobs(page: Page): Promise<void> {
         await new Promise((r) => setTimeout(r, 100));
     }
     throw new Error('ジョブが止まりませんでした');
+}
+
+/**
+ * プロジェクトを保存する (開発用のブラウザ起動: 初めての保存は名前を尋ねられ、データ置き場の projects/ に置く)。
+ *
+ * @param name - 初めての保存で付ける名前 (尋ねられる)。省略すると保存し直し (尋ねられない)。
+ *   テストごとに違う名前にすること (置き場は全部のテストで共有する)
+ * @returns 保存した名前 (同じ名前が在れば「名前 (2)」になる)
+ */
+export async function saveProject(page: Page, name?: string): Promise<string> {
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    if (name !== undefined) {
+        const dialog = page.getByRole('dialog', { name: 'プロジェクトを保存' });
+        await dialog.getByLabel('プロジェクトの名前').fill(name);
+        await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    }
+    await expect(statusText(page)).toContainText('を保存しました', { timeout: 30_000 });
+    const text = (await statusText(page).textContent()) ?? '';
+    return /プロジェクト「(.+?)」を保存しました/.exec(text)?.[1] ?? name ?? '';
+}
+
+/** 「開く」の一覧から、名前で選んで開く。 */
+export async function openProject(page: Page, name: string): Promise<void> {
+    await page.getByRole('button', { name: '開く', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'プロジェクトを開く' });
+    await dialog.locator('.project-entry-open').filter({ has: page.locator('.project-entry-name', { hasText: new RegExp(`^${name.replace(/[()]/g, '\\$&')}$`) }) }).first().click();
+    await expect(statusText(page)).toContainText(/を開きました|を読み込みました/, { timeout: 30_000 });
+}
+
+/**
+ * 「開く」の一覧から、いちばん新しい以前の形式 (projects/*.json) を開く。
+ * テストは、以前の形式を API (`/api/project/save`) で用意してから、これで開く。
+ */
+export async function openNewestLegacy(page: Page): Promise<void> {
+    await page.getByRole('button', { name: '開く', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'プロジェクトを開く' });
+    await dialog.locator('.project-entry-open').filter({ has: page.locator('.project-badge', { hasText: '以前の形式' }) }).first().click();
+    await expect(statusText(page)).toContainText('を読み込みました');
 }

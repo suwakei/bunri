@@ -18,7 +18,7 @@ import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
 import { useJob } from '../lib/useJob';
 import JobCard from './JobCard';
 import { cssVar } from '../lib/theme';
-import { formatTime, type ChartResponse } from '../lib/chart';
+import { formatTime, isChartResponse, type ChartResponse } from '../lib/chart';
 
 /** 表示する窓の長さの選択肢（秒） */
 const WINDOW_OPTIONS = [4, 8, 16];
@@ -63,7 +63,9 @@ export default function GridEditor() {
     }, [setChartResult, applyChartGrid, setStatus]);
     // 再計算は時間のかかる処理 (ジョブ)。進み具合はこのモーダルの中に出す
     const regrid = useJob('grid', (job) => {
-        if (job.state === 'done') applyResult(job.result as ChartResponse);
+        // 結果の形は確かめてから当てる (カルテの入っていない結果を当てると、グリッドを読むところで例外になる)
+        if (job.state === 'done' && isChartResponse(job.result)) applyResult(job.result);
+        else if (job.state === 'done') setStatus('グリッドの再計算は終わりましたが、結果にカルテが入っていませんでした。カルテは前のままです', 'error');
         else if (job.state === 'cancelled') setStatus('グリッドの再計算を中止しました。カルテは前のままです');
         else setStatus('グリッドを確定できませんでした。' + jobErrorMessage(job), 'error');
     });

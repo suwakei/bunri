@@ -10,7 +10,11 @@ import { cancelActiveJobs, importSong, makeWav, openDaw, openTab, runJob, startS
 
 const wav = (name: string) => ({ name, mimeType: 'audio/wav', buffer: makeWav(4, [261.63, 329.63, 392.0, 523.25]) });
 
-/** 画面が `path?async=1` で始めるジョブを、同じ種類の遅いジョブへ付け替える。 */
+/**
+ * 画面が `path?async=1` で始めるジョブを、同じ種類の遅いジョブへ付け替える。
+ * 遅いジョブの結果は本物の形ではない (`{ok, kind, filename}`)。テストが中止する前に終わらないよう、
+ * テストより十分長くする (30 秒だと、遅い WebKit では中止の前に終わり、画面が結果をカルテとして読もうとしていた)。
+ */
 async function slowRoute(page: Page, path: string, kind: string, seconds: number, filename: string) {
     await page.route((url) => url.pathname === path && url.searchParams.get('async') === '1', (route) =>
         route.continue({ url: new URL(`/api/e2e/slow-job?kind=${kind}&seconds=${seconds}&filename=${encodeURIComponent(filename)}`, route.request().url()).toString() }));
@@ -28,7 +32,7 @@ test.afterEach(async ({ page }) => {
 
 test('曲を取り込むと、進み具合のカードに処理の名前・段階・経過時間が出て、中止できる', async ({ page }) => {
     await openDaw(page);
-    await slowRoute(page, '/api/chart', 'chart', 30, 'e2e-card.wav');
+    await slowRoute(page, '/api/chart', 'chart', 300, 'e2e-card.wav');
     const started = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/e2e/slow-job');
     await importSong(page, wav('e2e-card.wav'));
     const { id } = await (await started).json();
@@ -106,7 +110,7 @@ test('ほかの処理が動いているときに始めると断られ、何が�
 
 test('画面を開き直しても、動いている処理のカードに戻れる', async ({ page }) => {
     await openDaw(page);
-    await slowRoute(page, '/api/chart', 'chart', 30, 'e2e-reload.wav');
+    await slowRoute(page, '/api/chart', 'chart', 300, 'e2e-reload.wav');
     const started = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/e2e/slow-job');
     await importSong(page, wav('e2e-reload.wav'));
     const { id } = await (await started).json();

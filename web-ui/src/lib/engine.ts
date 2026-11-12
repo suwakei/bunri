@@ -3,6 +3,7 @@
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
 import { apiFetch } from './api';
+import { rememberSource } from './audio-sources';
 import { stepSeconds, type ProjectGrid } from './grid';
 import { beatsInSegment, clampToLoop, clipInSegment, loopLength, loopPosition, loopSegment, noteInSegment, type LoopRange, type LoopSegment } from './loop';
 
@@ -67,6 +68,11 @@ export interface Clip {
     name: string;
     /** クリップの長さ（秒） */
     duration: number;
+    /**
+     * 音声が無いクリップ（以前の形式のプロジェクトは音声を持っていない）。`buffer` は無音の置き場所で、
+     * 画面は「音声を読み込み直す」を出す（components/MissingAudioBar.tsx）。
+     */
+    missing?: boolean;
 }
 
 /**
@@ -365,6 +371,8 @@ class AudioEngine {
         if (!track) return;
         const arrayBuf = await file.arrayBuffer();
         const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+        // プロジェクトの保存は、デコードし直した音ではなく元のファイルを入れる (lib/audio-sources.ts)
+        rememberSource(buffer, file, file.name);
         const clip: Clip = { buffer, offset: offsetSec, name: file.name, duration: buffer.duration };
         track.clips.push(clip);
         return clip;
@@ -384,7 +392,10 @@ class AudioEngine {
         if (!track) return;
         const resp = await apiFetch(url);
         const arrayBuf = await resp.arrayBuffer();
+        // decodeAudioData は渡した ArrayBuffer を使えなくするので、元のバイト列は先に写しておく
+        const original = new Blob([arrayBuf]);
         const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+        rememberSource(buffer, original, decodeURIComponent(url.split('?')[0].split('/').pop() || name || 'clip'));
         const clip: Clip = { buffer, offset: offsetSec, name: name || 'clip', duration: buffer.duration };
         track.clips.push(clip);
         return clip;
@@ -971,6 +982,7 @@ class AudioEngine {
                 const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
                 const arrayBuf = await blob.arrayBuffer();
                 const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+                rememberSource(buffer, blob, 'recording.webm');
                 resolve(buffer);
             };
             this.mediaRecorder!.stop();

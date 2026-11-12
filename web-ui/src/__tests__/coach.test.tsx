@@ -3,7 +3,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
 expect.extend(matchers);
@@ -124,7 +124,8 @@ describe('CoachPanel', () => {
 
         expect(screen.getByText('抜け 1 / 位置のずれ 1')).toBeInTheDocument();
         expect(screen.getByText('まず見るとよい小節: 2 小節、1 小節')).toBeInTheDocument();
-        const items = screen.getAllByRole('listitem').map((li) => li.textContent);
+        // 指摘の一覧の行 (学習の記録の行は数えない)
+        const items = within(screen.getByRole('list', { name: '指摘の一覧' })).getAllByRole('listitem').map((li) => li.textContent);
         expect(items).toEqual(['2 小節 1 拍目: C5 が抜けています', '1 小節 2 拍目: E4 が16 分音符 1 個ぶん遅い']);
     });
 

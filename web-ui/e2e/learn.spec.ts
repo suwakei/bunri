@@ -210,7 +210,7 @@ test('パートに分けると、お手本は重ねて見せるだけで、打�
     await expect(coach.getByLabel('比べる打ち込み')).toHaveValue(await row('ベースの練習').locator('.track-header').getAttribute('data-track-id') ?? '');
     await coach.getByRole('button', { name: 'お手本と比べる' }).click();
     // 3 ノートのうち 1 つだけ置いたので 33% (最初から 100% にはならない)
-    await expect(coach.getByText('33%')).toBeVisible();
+    await expect(coach.getByText('33%', { exact: true })).toBeVisible();
     await expect(coach.getByText(/E2 が抜けています/)).toBeVisible();
     expect(await stepState(page, 'diff')).toBe('done');
 

@@ -7,6 +7,8 @@
 //!   配布物では、その前に Python 環境を用意する (初回セットアップ)
 //! - sidecar のポートとトークンを画面に渡す (sidecar が止まったら、画面の求めで起動し直して渡し直す)
 //! - MIDI キーボードの入力を受けて画面に渡す (WebView が Web MIDI を持たないため)
+//! - プロジェクトのファイル (`.bunri`) を、利用者が選んだ場所とデータ置き場の間で写す。
+//!   保存していない変更が在るときに、窓を閉じる前に画面に尋ねさせる (`project.rs`)
 //!
 //! AI・音声処理は Python、画面は Web のまま。ここには書き直さない。
 //!
@@ -23,12 +25,13 @@ compile_error!(
 #[cfg(feature = "e2e")]
 mod e2e;
 mod midi;
+mod project;
 mod secrets;
 mod sidecar;
 mod windows;
 
 use sidecar::{BackendInfo, BootStatus, LaunchConfig, Sidecar};
-use tauri::{Manager, RunEvent, State};
+use tauri::{Manager, RunEvent, State, WindowEvent};
 
 /// 画面に sidecar の接続先 (ポート) とトークンを渡す。
 ///
@@ -110,8 +113,11 @@ pub fn run() {
     #[cfg(all(feature = "e2e", debug_assertions))]
     let builder = builder.plugin(e2e::webdriver_plugin());
     let app = builder
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = LaunchConfig::for_app(app.handle());
+            let data_dir = config.as_ref().ok().map(LaunchConfig::data_dir);
+            app.manage(project::ProjectFiles::new(data_dir));
             app.manage(Sidecar::spawn(config));
             app.manage(midi::MidiInputs::default());
             windows::create_main_window(app)?;
@@ -124,19 +130,42 @@ pub fn run() {
             save_api_key,
             delete_api_key,
             midi_start,
-            midi_stop
+            midi_stop,
+            project::project_pick_save,
+            project::project_pick_open,
+            project::project_commit,
+            project::project_open_recent,
+            project::recent_projects,
+            project::recent_project_remove,
+            project::document_state,
+            project::close_confirmed
         ])
+        // 保存していない変更が在るときは、窓を閉じる前に画面に尋ねさせる
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                project::on_close_requested(window, api);
+            }
+        })
         .build(tauri::generate_context!())
         .expect("Tauri アプリの初期化に失敗しました");
 
-    app.run(|app_handle, event| {
+    app.run(|app_handle, event| match event {
+        // 利用者が終えようとした (⌘Q。code が None)。保存していない変更が在れば止めて、画面に尋ねさせる
+        RunEvent::ExitRequested {
+            api, code: None, ..
+        } => {
+            if project::on_exit_requested(app_handle) {
+                api.prevent_exit();
+            }
+        }
         // 終了時に sidecar を止める。ここを通らない終わり方 (強制終了など) をしても、
         // sidecar は標準入力のパイプが閉じたことで自分から終わる (backend/run_web.py)。
-        if let RunEvent::Exit = event {
+        RunEvent::Exit => {
             if let Some(sidecar) = app_handle.try_state::<Sidecar>() {
                 sidecar.stop();
             }
         }
+        _ => {}
     });
 }
 

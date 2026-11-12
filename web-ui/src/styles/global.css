@@ -2164,6 +2164,96 @@ button.link-btn:hover {
     border-radius: 2px;
 }
 
+/* ---- プロジェクトの保存・開く (components/ProjectDialogs.tsx ほか) ---- */
+#project-title {
+    flex: 0 1 220px;
+    min-width: 60px;
+    margin: 0 12px;
+    font-size: 13px;
+    color: var(--text-mid);
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+}
+#project-title .project-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#project-title .unsaved-mark { color: var(--warn); flex: none; }
+/* ヘッダのボタンは折り返さない (プロジェクトの名前のほうを縮める) */
+#header button, #header a { white-space: nowrap; }
+
+.project-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+}
+.project-modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    max-width: 480px;
+    width: 90%;
+    box-shadow: var(--shadow-lg);
+}
+.project-modal.wide { max-width: 640px; }
+.project-modal h2 { font-size: 16px; margin-bottom: 12px; color: var(--text); }
+.project-modal p { font-size: 13px; color: var(--text-mid); margin-bottom: 12px; line-height: 1.6; }
+.project-modal input[type="text"] { width: 100%; margin: 4px 0 8px; }
+.project-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap; }
+.project-actions .action-btn { width: auto; margin: 0; }
+.action-btn.danger { color: var(--error); }
+
+.project-entries { list-style: none; padding: 0; margin: 0; max-height: 50vh; overflow-y: auto; }
+.project-entry { display: flex; align-items: stretch; gap: 4px; border-bottom: 1px solid var(--border); }
+.project-entry-open {
+    flex: 1; min-width: 0; display: grid; grid-template-columns: auto auto 1fr auto; align-items: baseline; gap: 2px 8px;
+    background: none; border: none; color: var(--text); text-align: left; padding: 8px 6px; cursor: pointer; font: inherit;
+}
+.project-entry-open:hover:not(:disabled) { background: var(--bg-elevated); }
+.project-entry-open:disabled { cursor: not-allowed; }
+.project-entry.missing .project-entry-name { color: var(--text-dim); text-decoration: line-through; }
+.project-entry-name { font-size: 13px; font-weight: 600; }
+.project-entry-detail { grid-column: 1 / 4; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-entry-time { font-size: 11px; color: var(--text-dim); grid-column: 4; grid-row: 1; }
+.project-entry-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 0 8px; font-size: 14px; }
+.project-entry-remove:hover { color: var(--error); }
+.project-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--bg-elevated); color: var(--text-mid); }
+.project-badge.warn { color: var(--warn); }
+
+.recent-projects { margin-top: 20px; width: 100%; max-width: 520px; text-align: left; }
+.recent-projects h3 { font-size: 13px; color: var(--text-mid); margin-bottom: 6px; }
+
+#missing-audio {
+    background: var(--error-dim);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 20px;
+    font-size: 12px;
+    color: var(--text);
+    max-height: 120px;
+    overflow-y: auto;
+}
+#missing-audio ul { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+#missing-audio .action-btn { width: auto; margin: 0 0 0 6px; padding: 2px 8px; font-size: 11px; }
+
+/* ---- 学習の記録 (components/LearnHistory.tsx) ---- */
+.learn-history { margin-top: 10px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.learn-history h4 { font-size: 12px; color: var(--text-mid); margin-bottom: 4px; }
+.learn-delta { font-size: 12px; color: var(--text-mid); }
+.learn-delta.up { color: var(--ok); }
+.learn-delta.down { color: var(--warn); }
+.learn-trend { display: inline-flex; align-items: flex-end; gap: 2px; height: 24px; margin: 4px 0; }
+.learn-trend-bar { width: 6px; background: var(--secondary); border-radius: 1px; }
+.learn-attempts { padding-left: 16px; margin: 4px 0 0; }
+
+/* ---- データの整理 (components/DataCleanup.tsx) ---- */
+.usage-table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 6px 0 8px; }
+.usage-table th { text-align: left; font-weight: 400; color: var(--text-mid); padding: 2px 4px 2px 0; }
+.usage-table td { text-align: right; white-space: nowrap; padding: 2px 0; }
+
 
 /* ---- 練習画面 (components/PracticeView.tsx) ----
    タイムライン・左パネル・進み具合の段は隠すだけで外さない (ピアノロールと再生エンジンを作り直さないため)。
@@ -2246,7 +2336,10 @@ button.link-btn:hover {
 
 .practice-match strong { font-size: 18px; color: var(--accent); font-family: var(--font-mono); }
 .practice-match.stale strong { color: var(--text-dim); }
-.practice-match-delta { color: var(--ok); }
+/* 前回との差。上がった: 緑の ▲ / 下がった: 黄色の ▼ / 同じ・はじめて: 地の色 (色だけでなく ▲▼ と文でも分かる) */
+.practice-match-delta { color: var(--text-mid); }
+.practice-match-delta.up { color: var(--ok); }
+.practice-match-delta.down { color: var(--warn); }
 
 /* 構成・コード・小節の段。左の列は鍵盤の列と同じ幅にして、ピアノロールと横の位置をそろえる */
 #practice-bands {

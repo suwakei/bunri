@@ -2,9 +2,9 @@
  * 学ぶ流れ（lib/learn.ts）と、「曲とパート」の段のテスト
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useEffect } from 'react';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
 expect.extend(matchers);
@@ -27,7 +27,8 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const engine = (await import('../lib/engine')).default;
-const { progressFacts, stepStates, referenceTrackFor } = await import('../lib/learn');
+const { progressFacts, stepStates, referenceTrackFor, useLearnActions, isDecomposeResult, CHART_RESULT_INVALID } = await import('../lib/learn');
+const { jobTracker } = await import('../lib/jobs');
 const { DawProvider, useDaw } = await import('../lib/store');
 const LearnPanel = (await import('../components/LearnPanel')).default;
 const ProgressSteps = (await import('../components/ProgressSteps')).default;
@@ -192,5 +193,74 @@ describe('進み具合の段', () => {
         cleanup();
         render(<DawProvider><ProgressSteps /></DawProvider>);
         expect(screen.queryByRole('button', { name: /② カルテを見る/ })).not.toBeInTheDocument();
+    });
+});
+
+describe('ジョブの結果の形が違うとき', () => {
+    type Actions = ReturnType<typeof useLearnActions>;
+    type Daw = ReturnType<typeof useDaw>;
+    const latest: { actions?: Actions; daw?: Daw } = {};
+    function Harness() {
+        const actions = useLearnActions();
+        const daw = useDaw();
+        useEffect(() => { latest.actions = actions; latest.daw = daw; });
+        return null;
+    }
+    /** ジョブの API を差し替える。カルテの作成は「終わった」と、`result` を返す。 */
+    function stubJobApi(result: unknown) {
+        const job = (state: string, extra: object = {}) => ({
+            id: 'j1', kind: 'chart', title: '楽曲カルテの作成', filename: 'song.wav', state, cancel_requested: false,
+            stage: null, stage_key: null, stage_index: null, stage_count: 1, progress: null, elapsed_sec: 0, error: null,
+            result: null, ...extra,
+        });
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (url.startsWith('/api/chart?async=1')) return Response.json(job('running'), { status: 202 });
+            if (url === '/api/jobs/j1') return Response.json(job('done', { result }));
+            // 原曲の音声の変換 (この環境ではデコードできないので呼ばれる)。置けなかったことにする
+            return Response.json({ detail: 'テストでは変換しない' }, { status: 500 });
+        }));
+    }
+
+    beforeEach(() => {
+        jobTracker.resetForTest();
+        jobTracker.configure({ poll: 5, hiddenPoll: 5, discover: 5, hiddenDiscover: 5 });
+    });
+    afterEach(() => {
+        jobTracker.resetForTest();
+        vi.unstubAllGlobals();
+    });
+
+    it('カルテの作成が「終わった」のに結果にカルテが無ければ、例外にせず失敗として知らせ、グリッドも変えない', async () => {
+        // e2e の遅いジョブ (backend/web/e2e_routes.py) は、本物の形ではない結果で終わる。
+        // 以前は gridFromChart で「chart.grid」を読めずに例外になり、取り込みが途中で止まっていた
+        stubJobApi({ ok: true, kind: 'chart', filename: 'song.wav' });
+        render(<DawProvider><Harness /></DawProvider>);
+        const before = latest.daw!.bpm;
+        await act(async () => {
+            await latest.actions!.importSong(new File([new Uint8Array(16)], 'song.wav', { type: 'audio/wav' }));
+        });
+        expect(latest.daw!.status).toBe(CHART_RESULT_INVALID);
+        expect(latest.daw!.statusKind).toBe('error');
+        expect(latest.daw!.chart).toBeNull();
+        expect(latest.daw!.bpm).toBe(before);
+    });
+
+    it('つなぎ直したジョブの結果も同じ。finishChart は当てなかったら false を返す', () => {
+        render(<DawProvider><Harness /></DawProvider>);
+        let applied = true;
+        act(() => { applied = latest.actions!.finishChart({ ok: true }); });
+        expect(applied).toBe(false);
+        expect(latest.daw!.status).toBe(CHART_RESULT_INVALID);
+    });
+
+    it('パート分離の結果にパートの表が無ければ、トラックを変えずに知らせる', async () => {
+        const song = engine.addTrack('原曲'); song.role = 'song';
+        render(<DawProvider><Harness /></DawProvider>);
+        expect(isDecomposeResult({ ok: true })).toBe(false);
+        expect(isDecomposeResult({ bpm: 120, stems: {} })).toBe(true);
+        await act(async () => { await latest.actions!.applyParts({ ok: true, kind: 'decompose' }); });
+        expect(engine.tracks.map(t => t.name)).toEqual(['原曲']);
+        expect(latest.daw!.statusKind).toBe('error');
+        expect(latest.daw!.status).toContain('結果にパートが入っていませんでした');
     });
 });

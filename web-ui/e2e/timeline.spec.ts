@@ -4,7 +4,7 @@
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { deleteTrack, makeWav, openDaw, startFree, openTab, statusText, SONG_MP3 } from './helpers';
+import { deleteTrack, makeWav, openDaw, startFree, openTab, statusText, SONG_MP3, openNewestLegacy } from './helpers';
 
 /** タイムラインの縮尺 (1 秒 = 80px) と、トラックの見出しの幅。 */
 const PX_PER_SEC = 80;
@@ -217,8 +217,7 @@ test.describe('トラックとクリップ', () => {
         const project = { bpm: 120, beatsPerBar: 4, automation: {}, tracks: [{ name, pianoNotes: [{ note: 'C', octave: 4, step: 0, length: 4 }] }] };
         expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
         await openDaw(page);
-        await page.getByRole('button', { name: '読み込む', exact: true }).click();
-        await expect(statusText(page)).toContainText('を読み込みました');
+        await openNewestLegacy(page);
         const nameEl = page.locator('#tracks-container .track-name').first();
         // 名前の後ろに、ノートの数の印が付く
         await expect(nameEl).toHaveText(`${name} 1`);

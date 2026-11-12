@@ -39,6 +39,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `run_web.py` | API サーバの起動スクリプト。デスクトップアプリが sidecar として起動する（`--sidecar`）。開発用に単体でも起動できる |
 | `web/api.py` | FastAPI バックエンド API（API だけ。画面は配らない） |
+| `web/project_routes.py` | プロジェクトの保存・開く（`/api/project/*`）とデータの整理（`/api/storage*`）の API |
 | `web/job_routes.py` | ジョブの API（`/api/jobs…`）と、時間のかかる API を `?async=1` でジョブとして始めるための共通処理（`dispatch`） |
 | `separate.py` | Demucs 音源分離（htdemucs標準） |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
@@ -56,8 +57,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `structure.py` | グリッド推定（BPM/ダウンビート）とセクション検出 |
 | `music_theory.py` | キー推定・コード検出・ディグリー変換・用語辞書 |
 | `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
-| `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
-| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
+| `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き。v2（2.0）はプロジェクト全体（トラック・ノート・音声 FLAC・カルテ・学ぶ流れの状態・学習の記録・ガイドと説明の写し）。v1 は `migrate` で上げる |
+| `project_store.py` | プロジェクトの保存と開く（作業用の写し `work/`・音声の預かり・開発用の置き場 `projects/`・以前の形式 JSON・データの整理）。sidecar はデータ置き場の外を読み書きしない |
+| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir / work_dir 等） |
 | `_demucs_runner.py` | Demucs を子プロセスとして動かすスクリプト（torchaudio 保存パッチ。API から起動されたときは `demucs_progress` で進み具合を報告する） |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
@@ -76,7 +78,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | 場所 | 役割 |
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取りだけを持つ |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）だけを持つ |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
