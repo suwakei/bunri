@@ -3,12 +3,14 @@
  */
 import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { apiFetch, backendUrl } from '../lib/api';
+import { apiFetch, backendUrl, errorDetail } from '../lib/api';
 import { modelDownloadNotice } from '../lib/models';
 
 interface AudioResult {
     label: string;
     url: string;
+    /** ダウンロードするときのファイル名。API の URL のときは要らない（API が名前を付けて返す） */
+    filename?: string;
 }
 
 interface FxToolParam {
@@ -21,8 +23,31 @@ interface FxToolParam {
 }
 
 // ---- ユーティリティ ----
-function makeAudioResult(label: string, url: string): AudioResult {
-    return { label, url };
+function makeAudioResult(label: string, url: string, filename?: string): AudioResult {
+    return { label, url, filename };
+}
+
+/** ファイル名から拡張子を除く（結果のファイル名を、元の名前から作るため）。 */
+function stem(filename: string): string {
+    return filename.replace(/\.[^.]+$/, '');
+}
+
+/**
+ * 処理結果の 1 件。聴くためのプレーヤーと、ダウンロードのリンク。
+ *
+ * どちらの URL も `backendUrl` を通す。デスクトップ版では API が別の origin に在り、鍵も要るため
+ * （通さないと、リンクが画面側の origin を指してしまい、ダウンロードできない）。
+ * 手元で作った blob: の URL には名前が無いので、`filename` で付ける
+ * （付けないと、ランダムな文字列がファイル名になる）。
+ */
+function ResultItem({ result }: { result: AudioResult }) {
+    return (
+        <div className="result-item">
+            <div className="result-label">{result.label}</div>
+            <audio controls src={backendUrl(result.url)} />
+            <a href={backendUrl(result.url)} download={result.filename || true}>ダウンロード</a>
+        </div>
+    );
 }
 
 // ---- スタイル（tools.html 内蔵CSSを移植）----
@@ -89,6 +114,9 @@ const EDIT_HINTS: Record<string, string> = {
     loop: '<strong>ループ：</strong>開始〜終了の範囲を指定回数繰り返します。',
 };
 
+/** 編集の「追加の欄」（挿入位置 / 無音の長さ / ループ回数）の、操作ごとの初期値。 */
+const EDIT_EXTRA_DEFAULTS: Record<string, number> = { copy_range: 0, silence: 2, loop: 3 };
+
 const TABS = [
     { key: 'decompose', label: '完全分解' },
     { key: 'separate', label: '音源分離' }, { key: 'analyze', label: '解析' },
@@ -118,7 +146,7 @@ function SeparatePanel() {
         modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分離中') ? prev + notice : prev); });
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const result = await resp.json();
             const items = Object.entries(result).map(([key, info]) => {
                 const v = info as { label?: string; url: string };
@@ -148,7 +176,7 @@ function SeparatePanel() {
             {results.length > 0 && (
                 <div className="result-area">
                     <h3>分離結果</h3>
-                    {results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}
+                    {results.map((r, i) => <ResultItem key={i} result={r} />)}
                 </div>
             )}
         </div>
@@ -169,11 +197,13 @@ function AnalyzePanel() {
         setStatus(`解析中...（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
         try {
             const resp = await apiFetch('/api/deep-analyze', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const data = await resp.json();
             const html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:#d4a44c;margin-top:16px">$1</h3>')
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/^- (.+)$/gm, '<div style="padding-left:12px">・ $1</div>');
+                .replace(/^- (.+)$/gm, '<div style="padding-left:12px">・ $1</div>')
+                // 見出しと箇条書きは、それ自体が 1 行を占める。後ろの改行を残すと 1 行ずつ空く
+                .replace(/(<\/h3>|<\/div>)\n/g, '$1');
             setReport(html); setStatus('解析完了'); setStatusType('');
         } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
         finally { setProgress(false); }
@@ -217,10 +247,10 @@ function EditPanel() {
         setStatus('処理中...'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/edit/${action}`, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
-            setResults([makeAudioResult('編集結果', url)]); setStatus('完了'); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+            setResults([makeAudioResult('編集結果', url, `${stem(file.name)}_${action}.wav`)]); setStatus('完了'); setStatusType('');
+        } catch (e: unknown) { setResults([]); setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [action, start, end, extra]);
 
     return (
@@ -229,7 +259,12 @@ function EditPanel() {
             <p className="desc">WAVファイルに対してトリム・カット・コピー・無音挿入・ループなどを行います。</p>
             <div className="form-group"><label>WAVファイル</label><input type="file" id="edit-file" accept=".wav" /></div>
             <div className="form-group"><label>編集操作</label>
-                <select value={action} onChange={e => setAction(e.target.value)}>
+                <select value={action} onChange={e => {
+                    setAction(e.target.value);
+                    // 追加の欄は操作ごとに意味が違うので、その操作でそのまま実行できる値にしておく
+                    // (ループの回数は 2 以上でないと断られる)
+                    setExtra(EDIT_EXTRA_DEFAULTS[e.target.value] ?? 0);
+                }}>
                     <option value="trim">トリム</option><option value="cut">カット</option>
                     <option value="copy_range">範囲コピー</option><option value="silence">無音挿入</option><option value="loop">ループ</option>
                 </select>
@@ -247,7 +282,7 @@ function EditPanel() {
             <div className="hint" dangerouslySetInnerHTML={{ __html: EDIT_HINTS[action] || '' }} />
             <button className="btn" onClick={handleEdit}>編集を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
@@ -273,9 +308,9 @@ function EffectsPanel() {
         setStatus('処理中...'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
-            setResults([makeAudioResult(`${fxType} 適用結果`, url)]); setStatus('完了'); setStatusType('');
+            setResults([makeAudioResult(`${fxType} 適用結果`, url, `${stem(file.name)}_${fxType}.wav`)]); setStatus('完了'); setStatusType('');
         } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [fxType, params]);
 
@@ -305,46 +340,120 @@ function EffectsPanel() {
             </div>
             <button className="btn" onClick={handleApply}>エフェクト適用</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
 
 // ---- 一括編集パネル ----
+/** 一括編集の操作の 1 つ。`label` は一覧に出す名前、`params` は入力欄（API に渡すパラメータ）。 */
+interface BatchAction {
+    label: string;
+    params: FxToolParam[];
+}
+
+/** 開始〜終了の範囲を取る操作（トリム・カット・ループ）の入力欄。 */
+const BATCH_RANGE: FxToolParam[] = [
+    { id: 'start', label: '開始（秒）', def: 0, min: 0, step: 0.1 },
+    { id: 'end', label: '終了（秒）', def: 10, min: 0, step: 0.1 },
+];
+
+/**
+ * 一括編集で選べる操作と、その入力欄。キーは API に渡す操作名。
+ *
+ * トリム・カット・ループ・無音挿入は、範囲などのパラメータが無いと API が処理できない。
+ * 入力欄を出さずに空のパラメータを送ると、全部のファイルが失敗する。
+ */
+const BATCH_ACTIONS: Record<string, Record<string, BatchAction>> = {
+    edit: {
+        normalize: { label: 'ノーマライズ', params: [] },
+        volume: { label: '音量変更', params: FX_TOOL_PARAMS.volume },
+        fade_in: { label: 'フェードイン', params: FX_TOOL_PARAMS.fade_in },
+        fade_out: { label: 'フェードアウト', params: FX_TOOL_PARAMS.fade_out },
+        reverse: { label: 'リバース', params: [] },
+        speed: { label: '速度変更', params: FX_TOOL_PARAMS.speed },
+        trim: { label: 'トリム', params: BATCH_RANGE },
+        cut: { label: 'カット', params: BATCH_RANGE },
+        loop: { label: 'ループ', params: [...BATCH_RANGE, { id: 'count', label: '回数', def: 3, min: 2, max: 50 }] },
+        silence: {
+            label: '無音挿入',
+            params: [
+                { id: 'position', label: '位置（秒）', def: 0, min: 0, step: 0.1 },
+                { id: 'length', label: '長さ（秒）', def: 2, min: 0.1, step: 0.1 },
+            ],
+        },
+    },
+    effects: {
+        normalize: { label: 'ノーマライズ', params: [] },
+        eq: { label: 'EQ（3バンド）', params: FX_TOOL_PARAMS.eq },
+        compressor: { label: 'コンプレッサー', params: FX_TOOL_PARAMS.compressor },
+        reverb: { label: 'リバーブ', params: FX_TOOL_PARAMS.reverb },
+        delay: { label: 'ディレイ', params: FX_TOOL_PARAMS.delay },
+        volume: { label: '音量変更', params: FX_TOOL_PARAMS.volume },
+        fade_in: { label: 'フェードイン', params: FX_TOOL_PARAMS.fade_in },
+        fade_out: { label: 'フェードアウト', params: FX_TOOL_PARAMS.fade_out },
+        pan: { label: 'パン', params: FX_TOOL_PARAMS.pan },
+        reverse: { label: 'リバース', params: [] },
+        pitch_shift: { label: 'ピッチシフト', params: FX_TOOL_PARAMS.pitch_shift },
+        time_stretch: { label: 'タイムストレッチ', params: FX_TOOL_PARAMS.time_stretch },
+        speed: { label: '速度変更', params: FX_TOOL_PARAMS.speed },
+    },
+};
+
+/** 入力欄の定義から、初期値の組を作る。 */
+function defaultParams(defs: FxToolParam[]): Record<string, number> {
+    const values: Record<string, number> = {};
+    defs.forEach(p => { values[p.id] = p.def; });
+    return values;
+}
+
 function BatchPanel() {
     const [category, setCategory] = useState('edit');
     const [action, setAction] = useState('normalize');
+    const [params, setParams] = useState<Record<string, number>>({});
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
     const [progress, setProgress] = useState(false);
     const [results, setResults] = useState<AudioResult[]>([]);
+    const [failures, setFailures] = useState<Array<{ filename: string; reason: string }>>([]);
     const [fileCount, setFileCount] = useState(0);
 
-    const editActions = ['normalize', 'volume', 'fade_in', 'fade_out', 'reverse', 'speed', 'trim', 'cut', 'loop', 'silence'];
-    const effectActions = ['normalize', 'eq', 'compressor', 'reverb', 'delay', 'volume', 'fade_in', 'fade_out', 'pan', 'reverse', 'pitch_shift', 'time_stretch', 'speed'];
-    const actions = category === 'edit' ? editActions : effectActions;
+    const actions = BATCH_ACTIONS[category];
+    const paramDefs = actions[action]?.params ?? [];
 
-    useEffect(() => { setAction(actions[0]); }, [category]);
+    /** カテゴリと操作を選び直す。入力欄は、その操作の初期値に戻す。 */
+    const choose = (nextCategory: string, nextAction: string) => {
+        setCategory(nextCategory);
+        setAction(nextAction);
+        setParams(defaultParams(BATCH_ACTIONS[nextCategory][nextAction].params));
+    };
 
     const handleBatch = useCallback(async () => {
         const files = ((document.getElementById('batch-files') as HTMLInputElement | null))?.files;
         if (!files?.length) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        const defs = BATCH_ACTIONS[category][action].params;
         const fd = new FormData();
         for (const f of files) fd.append('files', f);
-        fd.append('params', JSON.stringify({}));
+        fd.append('params', JSON.stringify({ ...defaultParams(defs), ...params }));
         let apiUrl;
         if (category === 'edit') { fd.append('action', action); apiUrl = '/api/batch/edit'; }
         else { fd.append('effect_name', action); apiUrl = '/api/batch/effects'; }
-        setStatus(`${files.length}個のファイルに「${action}」を適用中...`); setStatusType('processing'); setProgress(true); setResults([]);
+        const label = BATCH_ACTIONS[category][action].label;
+        setStatus(`${files.length}個のファイルに「${label}」を適用中...`); setStatusType('processing'); setProgress(true); setResults([]); setFailures([]);
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
-            const data = await resp.json();
-            const items = (data as Array<{status: string; url?: string; filename: string}>).filter(r => r.status === 'ok' && r.url).map(r => makeAudioResult(r.filename, r.url!));
-            setResults(items); setStatus(`完了: ${items.length}個成功`); setStatusType('');
+            if (!resp.ok) throw new Error(await errorDetail(resp));
+            const data = await resp.json() as Array<{ status: string; url?: string | null; filename: string }>;
+            const items = data.filter(r => r.status === 'ok' && r.url).map(r => makeAudioResult(r.filename, r.url!));
+            // 失敗したファイルは、理由と一緒に見せる (見せないと「0個成功」としか分からない)
+            const failed = data.filter(r => !(r.status === 'ok' && r.url))
+                .map(r => ({ filename: r.filename, reason: r.status.replace(/^error:\s*/, '') }));
+            setResults(items); setFailures(failed);
+            setStatus(`完了: ${items.length}個成功` + (failed.length > 0 ? ` / ${failed.length}個失敗` : ''));
+            setStatusType(failed.length > 0 ? 'error' : '');
         } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
         finally { setProgress(false); }
-    }, [category, action]);
+    }, [category, action, params]);
 
     return (
         <div className="tool-panel active">
@@ -353,13 +462,36 @@ function BatchPanel() {
             <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files?.length ?? 0)} /></div>
             {fileCount > 0 && <div style={{ fontSize: 12, color: '#9e9a92', marginBottom: 12 }}>{fileCount}個のファイルを選択</div>}
             <div className="form-row">
-                <div className="form-group"><label>カテゴリ</label><select value={category} onChange={e => setCategory(e.target.value)}><option value="edit">編集</option><option value="effects">エフェクト</option></select></div>
-                <div className="form-group"><label>操作</label><select value={action} onChange={e => setAction(e.target.value)}>{actions.map(a => <option key={a} value={a}>{a}</option>)}</select></div>
+                <div className="form-group"><label>カテゴリ</label>
+                    <select value={category} onChange={e => choose(e.target.value, Object.keys(BATCH_ACTIONS[e.target.value])[0])}>
+                        <option value="edit">編集</option><option value="effects">エフェクト</option>
+                    </select>
+                </div>
+                <div className="form-group"><label>操作</label>
+                    <select value={action} onChange={e => choose(category, e.target.value)}>
+                        {Object.entries(actions).map(([key, a]) => <option key={key} value={key}>{a.label}</option>)}
+                    </select>
+                </div>
             </div>
+            {paramDefs.length > 0 && (
+                <div className="form-row batch-params" style={{ flexWrap: 'wrap' }}>
+                    {paramDefs.map(p => (
+                        <div className="form-group" key={p.id}><label>{p.label}</label>
+                            <input type="number" value={params[p.id] ?? p.def} min={p.min} max={p.max} step={p.step || 1}
+                                onChange={e => setParams(prev => ({ ...prev, [p.id]: +e.target.value }))} />
+                        </div>
+                    ))}
+                </div>
+            )}
             <button className="btn" onClick={handleBatch}>一括実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {failures.length > 0 && (
+                <div className="batch-failures" style={{ fontSize: 12, color: '#e74c3c', marginTop: 8, lineHeight: 1.7 }}>
+                    {failures.map((f, i) => <div key={i}>{f.filename}: {f.reason}</div>)}
+                </div>
+            )}
+            {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
@@ -383,9 +515,9 @@ function OverlayPanel() {
         setStatus('合成中...'); setStatusType('processing');
         try {
             const resp = await apiFetch('/api/overlay', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
-            setResults([makeAudioResult('合成結果', url)]); setStatus('完了'); setStatusType('');
+            setResults([makeAudioResult('合成結果', url, `${stem(baseFile.name)}_overlay.wav`)]); setStatus('完了'); setStatusType('');
         } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [offset, baseVol, overVol]);
 
@@ -404,7 +536,7 @@ function OverlayPanel() {
             </div>
             <button className="btn" onClick={handleOverlay}>合成を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
@@ -424,9 +556,9 @@ function ConvertPanel() {
         setStatus('変換中...'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/convert/${target}`, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
-            setResults([makeAudioResult(`${target.toUpperCase()} 変換結果`, url)]); setStatus('完了'); setStatusType('');
+            setResults([makeAudioResult(`${target.toUpperCase()} 変換結果`, url, `${stem(file.name)}.${target}`)]); setStatus('完了'); setStatusType('');
         } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
     }, [target, bitrate]);
 
@@ -434,7 +566,7 @@ function ConvertPanel() {
         <div className="tool-panel active">
             <h2>フォーマット変換</h2>
             <p className="desc">動画ファイル（MP4等）や音声ファイルからWAVまたはMP3に変換します。</p>
-            <div className="form-group"><label>変換元ファイル</label><input type="file" id="conv-file" accept=".mp4,.avi,.mkv,.webm,.mov,.flv,.m4a,.aac,.ogg,.flac" /></div>
+            <div className="form-group"><label>変換元ファイル</label><input type="file" id="conv-file" accept=".mp4,.avi,.mkv,.webm,.mov,.flv,.m4a,.aac,.ogg,.flac,.wav,.mp3" /></div>
             <div className="form-row">
                 <div className="form-group"><label>出力フォーマット</label>
                     <select value={target} onChange={e => setTarget(e.target.value)}><option value="wav">WAV</option><option value="mp3">MP3</option></select>
@@ -449,7 +581,7 @@ function ConvertPanel() {
             </div>
             <button className="btn" onClick={handleConvert}>変換を実行</button>
             {status && <div className={`status ${statusType}`}>{status}</div>}
-            {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <div key={i} className="result-item"><div className="result-label">{r.label}</div><audio controls src={backendUrl(r.url)} /><a href={r.url} download>ダウンロード</a></div>)}</div>}
+            {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
@@ -498,7 +630,7 @@ function DecomposePanel() {
 
         try {
             const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const data: DecomposeResult = await resp.json();
             setResult(data);
             const stemCount = Object.keys(data.stems).length;
@@ -661,7 +793,7 @@ function WavOptimizePanel() {
         setStatus('最適化中...'); setStatusType('processing'); setProgress(true); setResult(null);
         try {
             const resp = await apiFetch('/api/wav/optimize', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const data: OptimizeResult = await resp.json();
             setResult(data);
             setStatus(`完了！容量 ${data.reduction_pct}% 削減（${data.original.file_size_mb}MB → ${data.optimized.file_size_mb}MB）`);

@@ -370,7 +370,10 @@ async def api_edit(
             # split_at 等の複数返却は最初のファイルを返す
             return FileResponse(result[0], media_type="audio/wav")
         return FileResponse(result, media_type="audio/wav")
-    except (ValueError, KeyError) as e:
+    except KeyError as e:
+        # str(KeyError) は "'start'" のような引用符付きの名前だけになるので、文にして返す
+        raise HTTPException(400, f"パラメータが足りません: {e.args[0]}")
+    except ValueError as e:
         raise HTTPException(400, str(e))
 
 
@@ -429,6 +432,13 @@ async def api_batch_edit(
                 "filename": upload.filename,
                 "url": f"/api/download/{dst_name}",
                 "status": "ok",
+            })
+        except KeyError as e:
+            # str(KeyError) は "'start'" のような引用符付きの名前だけになるので、文にして返す
+            results.append({
+                "filename": upload.filename,
+                "url": None,
+                "status": f"error: パラメータが足りません: {e.args[0]}",
             })
         except Exception as e:
             results.append({
@@ -500,6 +510,13 @@ async def api_batch_effects(
                 "filename": upload.filename,
                 "url": f"/api/download/{dst_name}",
                 "status": "ok",
+            })
+        except KeyError as e:
+            # str(KeyError) は "'start'" のような引用符付きの名前だけになるので、文にして返す
+            results.append({
+                "filename": upload.filename,
+                "url": None,
+                "status": f"error: パラメータが足りません: {e.args[0]}",
             })
         except Exception as e:
             results.append({

@@ -4,7 +4,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { apiFetch } from '../lib/api';
+import { apiFetch, errorDetail } from '../lib/api';
 import { modelDownloadNotice } from '../lib/models';
 import AssistantPanel from './AssistantPanel';
 import ChartPanel from './ChartPanel';
@@ -143,15 +143,16 @@ function SynthPanel() {
 
         await withProgress('シーケンスをレンダリング中...', async () => {
             const resp = await apiFetch('/api/synth/sequence', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
             const buffer = await engine.ctx!.decodeAudioData(buf);
 
-            let trackId = pr.getActiveTrackId();
-            if (!trackId || !engine.tracks.find(t => t.id === trackId)) {
-                trackId = synthTrack || (engine.tracks[0]?.id);
-                if (!trackId) { engine.addTrack('Synth'); trackId = engine.tracks[0].id; }
+            // 追加先は、セレクタで選んだトラック。選んでいなければ、ピアノロールで開いているトラック
+            let trackId: number | string | null = synthTrack && engine.getTrack(synthTrack) ? synthTrack : pr.getActiveTrackId();
+            if (!trackId || !engine.getTrack(trackId)) {
+                if (engine.tracks.length === 0) engine.addTrack('Synth');
+                trackId = engine.tracks[0].id;
             }
             const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
             await engine.addClipFromBuffer(trackId, buffer, 'synth-seq');
@@ -214,7 +215,7 @@ function SynthPanel() {
             <label>音量</label>
             <input type="range" min="0" max="1" step="0.05" value={vol} onChange={e => setVol(+e.target.value)} />
             <label>追加先トラック</label>
-            <TrackSelector value={synthTrack} onChange={setSynthTrack} />
+            <TrackSelector value={synthTrack} onChange={setSynthTrack} emptyLabel="ピアノロールで開いているトラック" />
             <button className="action-btn" onClick={handleRender}>シーケンスをレンダリング</button>
         </div>
     );
@@ -244,7 +245,7 @@ function DrumPanel() {
 
         await withProgress('ドラム生成中...', async () => {
             const resp = await apiFetch('/api/synth/drum', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
             const buffer = await engine.ctx!.decodeAudioData(buf);
@@ -308,7 +309,7 @@ function FxPanel() {
     }, [defaultParams]);
 
     const handleApply = useCallback(async () => {
-        const track = engine.getTrack(fxTrack);
+        const track = engine.getTrack(resolveTrackId(fxTrack));
         if (!track || track.clips.length === 0) {
             setStatus('エフェクト対象のトラックにクリップがありません');
             return;
@@ -321,7 +322,7 @@ function FxPanel() {
             fd.append('file', wavBlob, 'clip.wav');
             fd.append('params', JSON.stringify(params));
             const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
             const buffer = await engine.ctx!.decodeAudioData(buf);
@@ -426,11 +427,8 @@ function FilePanel() {
     const handleImport = useCallback(async () => {
         const files = fileInputRef.current?.files;
         if (!files?.length) return;
-        let trackId = fileTrack;
-        if (!trackId || !engine.tracks.find(t => String(t.id) === String(trackId))) {
-            if (engine.tracks.length === 0) engine.addTrack();
-            trackId = String(engine.tracks[engine.tracks.length - 1].id);
-        }
+        if (engine.tracks.length === 0) engine.addTrack();
+        const trackId = resolveTrackId(fileTrack);
         const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
         for (const file of files) {
             await engine.addClipFromFile(trackId, file);
@@ -450,13 +448,15 @@ function FilePanel() {
         fd.append('sensitivity', String(sensitivity));
         await withProgress(`音声を解析中...（${file.name}）`, async () => {
             const resp = await apiFetch('/api/analyze', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
             const notes = await resp.json();
             if (notes.length === 0) { setStatus('ノートが検出されませんでした'); return; }
             pr.setNotes(notes);
+            // タイムラインのトラックの見出しに出るノートの数を、置いた数に合わせる
+            bumpTracks();
             setStatus(`${notes.length}個のノートを検出しました`);
         });
-    }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus]);
+    }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus, bumpTracks]);
 
     /**
      * 楽曲カルテ（速報）を生成する。解析の入口。
@@ -476,7 +476,7 @@ function FilePanel() {
 
         await withProgress(`楽曲を解析中...（${file.name}）`, async () => {
             const resp = await apiFetch('/api/chart', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await resp.text());
+            if (!resp.ok) throw new Error(await errorDetail(resp));
 
             const result: ChartResponse = await resp.json();
             setChartResult(result);
@@ -506,7 +506,7 @@ function FilePanel() {
             `楽曲を解析中...（${file.name}）ステム分離 → ピッチ検出 → 楽器推定。数分かかります。${notice}`,
             async () => {
                 const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
-                if (!resp.ok) throw new Error(await resp.text());
+                if (!resp.ok) throw new Error(await errorDetail(resp));
                 const result: DecomposeResult = await resp.json();
 
                 // BPM を自動検出値で更新
@@ -674,12 +674,28 @@ function FilePanel() {
  * @property value - 現在選択中のトラック ID 文字列（`engine.tracks[].id` を文字列化したもの）
  * @property onChange - トラック ID が変更されたときに呼ばれるコールバック
  * @property includeNew - `true` のとき「新規作成」オプションを先頭に表示する（省略時 `false`）
+ * @property emptyLabel - 指定すると、トラックを選ばない選択肢（値は空文字）をこの文で先頭に表示する
  */
 // ---- トラック選択セレクタ（共通部品）----
 interface TrackSelectorProps {
     value: string;
     onChange: (v: string) => void;
     includeNew?: boolean;
+    emptyLabel?: string;
+}
+
+/**
+ * セレクタの値を、実在するトラックの ID にする。
+ *
+ * セレクタの状態は、選び直すまで空文字のまま。その間も画面には先頭のトラックが表示されているので、
+ * 表示と食い違わないよう、空文字や、消されたトラックを指す値は、先頭のトラックとして扱う。
+ *
+ * @param value - セレクタの状態（トラック ID の文字列、または空文字）
+ * @returns 実在するトラックの ID の文字列。トラックが 1 本も無ければ空文字
+ */
+function resolveTrackId(value: string): string {
+    if (value && engine.tracks.some(t => String(t.id) === value)) return value;
+    return engine.tracks[0] ? String(engine.tracks[0].id) : '';
 }
 
 /**
@@ -689,12 +705,20 @@ interface TrackSelectorProps {
  * @param value - 現在選択中のトラック ID 文字列
  * @param onChange - 選択変更時のコールバック（新しいトラック ID を引数に受け取る）
  * @param includeNew - `true` のとき「新規作成（Drum）」オプションを先頭に追加する
+ * @param emptyLabel - 指定すると、トラックを選ばない選択肢をこの文で先頭に追加する
  * @returns エンジントラック一覧を選択肢として持つ `<select>` 要素
  */
-function TrackSelector({ value, onChange, includeNew }: TrackSelectorProps) {
+function TrackSelector({ value, onChange, includeNew, emptyLabel }: TrackSelectorProps) {
+    // trackVersion を読んでおくと、トラックが増減するたびに描き直されて、選択肢に反映される
     const { trackVersion } = useDaw();
+    // トラック以外の選択肢 (新規作成・選ばない) が在るときは、その値をそのまま表示する。
+    // 無いときは、表示されるトラックと、処理で使うトラック (resolveTrackId) を一致させる
+    const shown = includeNew || emptyLabel !== undefined
+        ? (value === '__new__' || engine.tracks.some(t => String(t.id) === value) ? value : (includeNew ? '__new__' : ''))
+        : resolveTrackId(value);
     return (
-        <select value={value} onChange={e => onChange(e.target.value)}>
+        <select value={shown} onChange={e => onChange(e.target.value)}>
+            {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
             {includeNew && <option value="__new__">新規作成（Drum）</option>}
             {engine.tracks.map(t => (
                 <option key={t.id} value={String(t.id)}>{t.name}</option>

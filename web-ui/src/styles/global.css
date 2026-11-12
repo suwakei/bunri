@@ -209,6 +209,11 @@ body::before {
     padding: 8px 16px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border);
+    /* タイムラインの枠の下端に留める。窓が低いときやトラックが多いときに、
+       トラックの下へ押し出されて見えなくなるのを防ぐ */
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
 }
 
 #seek-bar-area span {
@@ -266,9 +271,11 @@ body::before {
 #seek-bar:hover::-moz-range-thumb { transform: scale(1.2); }
 
 /* ---- Main layout ---- */
+/* 上のヘッダ (52px) と下のステータスバー (28px) を引いた残り。
+   ステータスバーのぶんを引き忘れると、その高さだけ画面の下にはみ出して見えなくなる */
 #main {
     display: flex;
-    height: calc(100vh - 52px);
+    height: calc(100vh - 52px - 28px);
 }
 
 /* ---- Left panel ---- */
@@ -291,7 +298,9 @@ body::before {
 }
 
 #panel-tabs button {
-    flex: 1;
+    /* 幅は文字数に応じて配る。均等に割ると、文字の多いタブ (ファイル) が 2 行に折り返す */
+    flex: 1 1 auto;
+    white-space: nowrap;
     background: none;
     border: none;
     color: var(--text-dim);
@@ -359,6 +368,13 @@ body::before {
     font-size: 12px;
     font-family: inherit;
     transition: all var(--transition);
+}
+
+/* チェックボックスは、見出しの文と同じ行に並べる (幅 100% だと 1 行を占めて、文の上に離れて出る) */
+.panel-content input[type="checkbox"] {
+    width: auto;
+    padding: 0;
+    vertical-align: middle;
 }
 
 .panel-content input:focus,

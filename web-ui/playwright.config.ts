@@ -11,8 +11,12 @@
 import { defineConfig, devices } from '@playwright/test';
 import { FAKE_LLM_PORT, FAKE_LLM_URL } from './e2e/helpers';
 
-/** 画面のポート。ほかの開発サーバとぶつからないよう、よく使われる番号を避けている。 */
-const PORT = 5199;
+/**
+ * 画面のポート。ほかの開発サーバとぶつからないよう、よく使われる番号を避けている。
+ * 同じリポジトリの別の作業ツリーで同時に走らせるときは、BUNRI_E2E_PORT で番号を変える
+ * (同じ番号だと、後から始めたほうが起動に失敗する)。
+ */
+const PORT = Number(process.env.BUNRI_E2E_PORT) || 5199;
 const URL = `http://127.0.0.1:${PORT}`;
 
 /*

@@ -19,8 +19,17 @@ class TestTrimAudio:
         data, sr = load_audio(result)
         assert len(data) == sr  # 1秒
 
+    def test_ファイルの長さの外をトリムすると空の音声を返さずに断る(self, tmp_wav):
+        with pytest.raises(ValueError, match="残りません"):
+            edit.trim_audio(tmp_wav, 5.0, 6.0)
+
 
 class TestCutAudio:
+    def test_ファイル全体をカットすると空の音声を返さずに断る(self, tmp_wav):
+        # 終了位置がファイルより長くても、全部が消えることに変わりはない
+        with pytest.raises(ValueError, match="残りません"):
+            edit.cut_audio(tmp_wav, 0.0, 10.0)
+
     def test_範囲をカットできる(self, tmp_wav):
         result = edit.cut_audio(tmp_wav, 0.2, 0.4)
         assert Path(result).exists()
