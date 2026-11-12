@@ -47,7 +47,8 @@ export default function MidiInputBar() {
                 return sec === null ? null : sec / (60 / engine.bpm / 4);
             },
             addNote: (n) => pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length),
-            get totalSteps() { return pianoRollRef.current?.totalSteps ?? 128; },
+            // ピアノロールは打ち込むと伸びるので、末尾の制限は「伸ばせる上限」にする
+            get totalSteps() { return pianoRollRef.current?.maxSteps ?? pianoRollRef.current?.totalSteps ?? 128; },
             get minOctave() { return pianoRollRef.current?.octaveRange?.[0] ?? 2; },
             get maxOctave() { return pianoRollRef.current?.octaveRange?.[1] ?? 7; },
         });

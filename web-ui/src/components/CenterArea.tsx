@@ -27,7 +27,13 @@ import MidiInputBar from './MidiInputBar';
 class PianoRollEngine {
     constructor() {
         this.canvas = null; this.noteLayer = null; this.keysDiv = null; this.wrap = null; this.ctx = null;
-        this.noteHeight = 14; this.stepWidth = 20; this.totalSteps = 128;
+        this.noteHeight = 14; this.stepWidth = 20;
+        // 長さ (ステップ)。中身に合わせて伸び縮みする (_fitLength)。最短は 8 小節ぶん
+        this.minSteps = 128; this.totalSteps = this.minSteps;
+        // 伸ばせる上限 (999 小節ぶん)。グリッドは見えている範囲だけ描くので、長くしても描画は重くならない
+        this.maxSteps = 16 * 999;
+        // 最後のノートの後ろに空けておく余白 (小節)。続きを打ち込めるように
+        this.tailBars = 4;
         this.octaveRange = [2, 7];
         this.noteNames = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
         this.blackKeys = new Set(['A#','G#','F#','D#','C#']);
@@ -53,6 +59,44 @@ class PianoRollEngine {
         this.keysDiv = el.keysDiv; this.wrap = el.wrap;
         this.ctx = this.canvas.getContext('2d');
         this._buildKeys(); this._resize(); this._drawGrid(); this._bindEvents();
+        // グリッドは見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す。
+        // 鍵盤の列は別の要素なので、縦のスクロール位置を合わせる
+        this.wrap.addEventListener('scroll', () => {
+            this.keysDiv.scrollTop = this.wrap.scrollTop;
+            this._drawGrid();
+        });
+        if (typeof ResizeObserver !== 'undefined') {
+            // 大きさの変更は次の描画のタイミングに回す (その場で canvas の大きさを変えると、
+            // それがまた大きさの変化として通知されて、通知が循環する)
+            this._resizeObserver = new ResizeObserver(() => {
+                cancelAnimationFrame(this._resizeFrame);
+                this._resizeFrame = requestAnimationFrame(() => { this._resize(); this._drawGrid(); });
+            });
+            this._resizeObserver.observe(this.wrap);
+        }
+    }
+    /** 1 小節のステップ数 (拍子に従う。4/4 なら 16)。 */
+    _stepsPerBar() { return Math.max(1, engine.beatsPerBar || 4) * 4; }
+    /**
+     * 長さを中身に合わせる。最後のノートの後ろに余白の小節を足し、小節の区切りに切り上げる。
+     * 取り込んだ音声クリップが在れば、その長さも覆う。最短は 8 小節ぶん。
+     * @returns 長さが変わったら true
+     */
+    _fitLength() {
+        const bar = this._stepsPerBar();
+        let last = 0;
+        for (const n of this.notes) last = Math.max(last, n.step + n.length);
+        const track = this.activeTrackId !== null ? engine.getTrack(this.activeTrackId) : null;
+        if (track) {
+            const stepSec = 60 / engine.bpm / 4;
+            for (const clip of track.clips || []) last = Math.max(last, Math.ceil((clip.offset + clip.duration) / stepSec));
+        }
+        const wanted = Math.min(this.maxSteps, Math.max(this.minSteps, (Math.ceil(last / bar) + this.tailBars) * bar));
+        if (wanted === this.totalSteps) return false;
+        this.totalSteps = wanted;
+        this._resize();
+        this._drawGrid();
+        return true;
     }
     /**
      * アクティブトラックを切り替えてピアノロールを再描画する。
@@ -65,7 +109,7 @@ class PianoRollEngine {
         this._saveToEngine();
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
         this.selectedNote = null;
-        this._loadFromEngine(); this._renderNotes();
+        this._loadFromEngine(); this._fitLength(); this._renderNotes();
         if (this.onTrackSwitch) this.onTrackSwitch(this.activeTrackId);
     }
     _saveToEngine() {
@@ -93,34 +137,57 @@ class PianoRollEngine {
         }
     }
     _resize() {
+        // ノートを置く層が、スクロールできる範囲の大きさを決める
         const w = this.totalSteps * this.stepWidth, h = this.totalRows * this.noteHeight;
-        this.canvas.width = w; this.canvas.height = h;
-        this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px';
         this.noteLayer.style.width = w + 'px'; this.noteLayer.style.height = h + 'px';
+        // グリッドの canvas は、見えている範囲の大きさにする。曲全体の大きさにすると、
+        // 長い曲でブラウザの canvas の上限 (幅 32767px 前後) を超えて何も描けなくなる
+        const vw = Math.max(1, this.wrap.clientWidth), vh = Math.max(1, this.wrap.clientHeight);
+        if (this.canvas.width !== vw || this.canvas.height !== vh) {
+            this.canvas.width = vw; this.canvas.height = vh;
+            this.canvas.style.width = vw + 'px'; this.canvas.style.height = vh + 'px';
+        }
     }
     _drawGrid() {
         const { ctx, canvas } = this; const w = canvas.width, h = canvas.height;
+        const sx = this.wrap.scrollLeft, sy = this.wrap.scrollTop;
+        const bar = this._stepsPerBar();
         ctx.clearRect(0, 0, w, h);
-        for (let row = 0; row < this.totalRows; row++) {
-            const y = row * this.noteHeight, noteIdx = row % 12;
+        // 横線 (音の高さ)。見えている行だけ
+        const firstRow = Math.max(0, Math.floor(sy / this.noteHeight));
+        const lastRow = Math.min(this.totalRows, Math.ceil((sy + h) / this.noteHeight));
+        for (let row = firstRow; row < lastRow; row++) {
+            const y = row * this.noteHeight - sy, noteIdx = row % 12;
             if (this.blackKeys.has(this.noteNames[noteIdx])) { ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(0, y, w, this.noteHeight); }
             ctx.strokeStyle = noteIdx === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
             ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
         }
-        for (let step = 0; step <= this.totalSteps; step++) {
-            const x = step * this.stepWidth, isBeat = step % 4 === 0, isBar = step % 16 === 0;
+        // 縦線 (ステップ・拍・小節)。見えているステップだけ
+        const firstStep = Math.max(0, Math.floor(sx / this.stepWidth));
+        const lastStep = Math.min(this.totalSteps, Math.ceil((sx + w) / this.stepWidth));
+        const bottom = Math.min(h, this.totalRows * this.noteHeight - sy);
+        for (let step = firstStep; step <= lastStep; step++) {
+            const x = step * this.stepWidth - sx, isBeat = step % 4 === 0, isBar = step % bar === 0;
             ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.25)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.03)';
-            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
+            // 小節番号 (上の端に小さく)
+            if (isBar && step < this.totalSteps) {
+                ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = '9px sans-serif';
+                ctx.fillText(String(step / bar + 1), x + 3, 9);
+            }
         }
     }
     _bindEvents() {
-        this.canvas.addEventListener('dblclick', (e) => {
+        this.noteLayer.addEventListener('dblclick', (e) => {
             if (this.activeTrackId === null) return;
-            const rect = this.canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left + this.wrap.scrollLeft, y = e.clientY - rect.top + this.wrap.scrollTop;
+            if (e.target.classList.contains('note-block')) return;
+            // ノートの層は中身と一緒にスクロールするので、層の左上からの距離がそのまま曲の中の位置になる
+            const rect = this.noteLayer.getBoundingClientRect();
+            const x = e.clientX - rect.left, y = e.clientY - rect.top;
             let step = Math.floor(x / this.stepWidth);
             if (this.snapToGrid) step = Math.floor(step / this.gridSize) * this.gridSize;
             const row = Math.floor(y / this.noteHeight);
+            if (row < 0 || row >= this.totalRows || step < 0) return;
             const { note, octave } = this._rowToNote(row);
             this._addNote(note, octave, step, this.gridSize);
         });
@@ -146,13 +213,13 @@ class PianoRollEngine {
             else if (this.isResizing) { let nl = this._dragLength + dSteps; if (this.snapToGrid) nl = Math.max(this.gridSize, Math.round(nl / this.gridSize) * this.gridSize); else nl = Math.max(1, nl); note.length = nl; }
             this._renderNotes();
         });
-        document.addEventListener('mouseup', () => { if (this.isDragging || this.isResizing) this._saveToEngine(); this.isDragging = false; this.isResizing = false; });
+        document.addEventListener('mouseup', () => { if (this.isDragging || this.isResizing) { this._saveToEngine(); this._fitLength(); } this.isDragging = false; this.isResizing = false; });
         document.addEventListener('keydown', (e) => { if (e.key === 'Delete' && this.selectedNote !== null) this._removeNote(this.selectedNote); });
     }
     _rowToNote(row) { return { note: this.noteNames[row % 12], octave: this.octaveRange[1] - 1 - Math.floor(row / 12) }; }
     _noteToRow(name, oct) { return (this.octaveRange[1] - 1 - oct) * 12 + this.noteNames.indexOf(name); }
-    _addNote(note, octave, step, length) { this.notes.push({ note, octave, step, length }); this._saveToEngine(); this._renderNotes(); }
-    _removeNote(idx) { this.notes.splice(idx, 1); this.selectedNote = null; this._saveToEngine(); this._renderNotes(); }
+    _addNote(note, octave, step, length) { this.notes.push({ note, octave, step, length }); this._saveToEngine(); this._fitLength(); this._renderNotes(); }
+    _removeNote(idx) { this.notes.splice(idx, 1); this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); }
     _selectNote(idx) { this.selectedNote = idx; this._renderNotes(); }
     _renderNotes() {
         if (!this.noteLayer) return; this.noteLayer.innerHTML = '';
@@ -184,7 +251,7 @@ class PianoRollEngine {
      *
      * @param notes - セットするノート情報の配列（`note`, `octave`, `step`, `length` を含む）
      */
-    setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._renderNotes(); }
+    setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); }
     /**
      * 現在アクティブなトラックの ID を返す。
      *
@@ -195,7 +262,7 @@ class PianoRollEngine {
      * 全ノートを削除してピアノロールをクリアする。
      * エンジン側のピアノノートも同時に空にする。
      */
-    clear() { this.notes = []; this.selectedNote = null; this._saveToEngine(); this._renderNotes(); }
+    clear() { this.notes = []; this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); }
 }
 
 /**
@@ -543,6 +610,10 @@ export default function CenterArea() {
     const autoCanvasRef = useRef(null);
 
     useEffect(() => {
+        // 初期化は 1 回だけ。開発モード (React の StrictMode) ではこの effect が 2 回走るが、
+        // 2 回作ると、同じ要素に操作の受け口が二重に付いて、古いほうが空の状態で反応してしまう
+        if (pianoRollRef.current) return;
+
         // PianoRoll 初期化
         const pr = new PianoRollEngine();
         pr.init({ canvas: pianoCanvasRef.current, noteLayer: noteLayerRef.current, keysDiv: keysRef.current, wrap: pianoWrapRef.current });
