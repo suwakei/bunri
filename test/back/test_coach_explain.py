@@ -301,6 +301,20 @@ class TestChartContext:
         assert rows["i8"] == [2, "G7", "確実", "5度", None]
         assert rows["i10"] == [2, "G7", "確実", None, "7度"]
 
+    def test_ピアノロールの1小節目がカルテの1拍目に在るときは_同じ番号のコードを当てる(self, chart):
+        """画面はカルテのテンポと 1 拍目の位置をピアノロールに使う。その位置 (grid_offset_sec) を渡す"""
+        result = ce.build_facts(REFERENCE, ATTEMPT, chart=chart, bpm=120, grid_offset_sec=2.0)
+        rows = {row[0]: row[1:] for row in _rows(result, "id", "bar", "chord")}
+        # ピアノロールの 1 小節目 = カルテの 1 小節目 (G7)、2 小節目 = カルテの 2 小節目 (Am)
+        assert rows["i2"] == [1, "G7"]
+        assert rows["i6"] == [2, "Am"]
+        assert result["sections"][0] == {"name": "verse", "name_confidence": "たぶん", "first_bar": 1, "last_bar": 2}
+
+    @pytest.mark.parametrize("bad", [-1, "2", True, 99999])
+    def test_1小節目の位置が正しくなければ断る(self, chart, bad):
+        with pytest.raises(coach_diff.DiffError):
+            ce.build_facts(REFERENCE, ATTEMPT, chart=chart, bpm=120, grid_offset_sec=bad)
+
     def test_セクションは_ピアノロールの小節に直して渡す(self, chart):
         reference = REFERENCE + [n("A", 2, 16 * 3)]
         result = ce.build_facts(reference, ATTEMPT, chart=chart, bpm=120)

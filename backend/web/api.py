@@ -942,7 +942,8 @@ async def load_project(name: str):
 @app.post("/api/decompose")
 async def api_decompose(
     file: UploadFile = File(...),
-    bpm: int = Form(0),
+    bpm: float = Form(0),
+    grid_offset: float = Form(0),
     sensitivity: float = Form(0.5),
     run_async: bool = Query(False, alias="async"),
 ):
@@ -950,7 +951,9 @@ async def api_decompose(
 
     Args:
         file: 処理対象の音声ファイル（マルチパートアップロード）。
-        bpm: プロジェクトの BPM。``0`` を指定すると自動検出する。
+        bpm: プロジェクトの BPM（小数も可）。``0`` を指定すると自動検出する。
+        grid_offset: ノートのステップ 0 を置く位置（秒）。楽曲カルテの 1 拍目の位置を渡すと、
+            カルテとピアノロールの小節番号がそろう（``decompose.seconds_to_step``）。
         sensitivity: ノート検出感度（0.0〜1.0）。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
@@ -971,7 +974,7 @@ async def api_decompose(
         from decompose import decompose
         result = decompose(
             str(src), bpm=detected_bpm, sensitivity=sensitivity,
-            segment=7, jobs=1, job=job,
+            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset),
         )
 
         # 音声ファイルのパスをダウンロードURLに変換
@@ -1510,7 +1513,8 @@ def _coach_facts(payload: dict):
         chart, _ = _guide_chart(str(payload["chart_id"]), "")
     try:
         return coach_explain.build_facts(payload.get("reference"), payload.get("attempt"),
-                                         chart=chart, bpm=payload.get("bpm"), **options)
+                                         chart=chart, bpm=payload.get("bpm"),
+                                         grid_offset_sec=payload.get("grid_offset_sec"), **options)
     except coach_diff.DiffError as e:
         raise HTTPException(400, {"message": str(e), "code": "invalid"})
 
@@ -1557,6 +1561,8 @@ def api_coach_explain(payload: dict = Body(...)):
             ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ）。
             ``chart_id``（お手本と同じ曲のカルテ）を付けると、キーを事実に足す。さらに ``bpm``
             （お手本を採譜したときのテンポ）も付けると、その場のコードとセクションも足す。
+            ``grid_offset_sec``（ピアノロールのステップ 0 の位置。画面ではカルテの 1 拍目の位置）を
+            付けると、ステップを秒に直すときに足す（無ければ 0）。
             ``regenerate`` が真なら、保存済みが在っても作り直す（費用がかかる）。
 
     Returns:
