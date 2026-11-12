@@ -1,12 +1,16 @@
 /**
- * bunri DAW — 差分コーチ（第3層の土台）の型と API 呼び出し。
+ * bunri DAW — 差分コーチ（第3層）の型と API 呼び出し。
  *
  * お手本（原曲を採譜したノート）と、利用者の打ち込みの差分を受け取り、画面に出す文にする。
  * 差分は信号処理側が機械的に出す事実で、LLM は使っていない（backend/coach_diff.py）。
  * ここでの文も決まった型どおりに組み立てる。
+ *
+ * 差分の説明（言語化。backend/coach_explain.py）は Claude を使う。説明が持てるのは文と、指摘の ID・小節だけ
+ * （音符は出さない）。費用まわりの仕組み（保存・1 日の上限・使用量）は再現ガイドと共通。
  */
 import { apiFetch, errorDetail } from './api';
 import type { PianoNote } from './engine';
+import { GuideRequestError, toError, type GuideToday, type GuideUsage } from './guide';
 
 /** 差分の種類。 */
 export type IssueKind = 'missing' | 'pitch' | 'octave' | 'extra' | 'timing' | 'length';
@@ -106,4 +110,135 @@ export function issueText(issue: DiffIssue): string {
         case 'length':
             return `${where}: ${expected} が${steps(issue.length_diff ?? 0)}${(issue.length_diff ?? 0) > 0 ? '長い' : '短い'}`;
     }
+}
+
+// ---- 差分の説明（言語化） ----
+
+/** 説明の点が指す場所。指摘を指すもの（`issue_id` が在る）と、小節だけを指すもの。 */
+export interface ExplanationRef {
+    /** 指摘の ID（`i1` `i2` …。`/api/coach/diff` の `bars[].issues[]` を上から数えた番号） */
+    issue_id: string | null;
+    bar: number;
+    beat: number | null;
+    kind: IssueKind | null;
+}
+
+/** 見直すとよい点 1 つ。 */
+export interface ExplanationPoint {
+    title: string;
+    /** どんな傾向の違いか */
+    observation: string;
+    /** なぜと考えられるか（推測） */
+    cause: string;
+    /** どこを、何と見比べて直すか */
+    fix: string;
+    refs: ExplanationRef[];
+}
+
+/** 差分の説明。 */
+export interface Explanation {
+    summary: string;
+    points: ExplanationPoint[];
+    next_step: string;
+    next_step_bar: number | null;
+    /** 事実に無い場所を指していて落とした参照の数 */
+    dropped_refs: number;
+    /** 事実と結び付けられず落とした点の数 */
+    dropped_points: number;
+    /** 説明文に出てきたが、差分の結果に無い音名・コード名・小節番号 */
+    unverified_terms: string[];
+    /** 決まった文に差し替えた欄の名前（`summary` / `next_step`） */
+    replaced: string[];
+}
+
+/** `POST /api/coach/explain` のレスポンス。 */
+export interface ExplanationResponse {
+    explanation: Explanation;
+    /** claude: Claude が作った / rule: Claude に頼むまでもないときの決まった文（費用 0） */
+    source: 'claude' | 'rule';
+    /** 決まった文の理由（rule のとき）。no_diff / no_attempt / few_notes / few_issues */
+    reason: 'no_diff' | 'no_attempt' | 'few_notes' | 'few_issues' | null;
+    model: string | null;
+    usage: GuideUsage;
+    cost_usd?: number | null;
+    duration_sec?: number | null;
+    created_at?: string | null;
+    /** 保存済みの説明を返したとき true（Claude は呼んでいない） */
+    cached: boolean;
+    /** 材料の要約（指摘の全件数と、Claude に渡した件数） */
+    input?: { issues: number; issues_sent: number; chart_context: string };
+    today?: GuideToday;
+}
+
+/** `POST /api/coach/explain/saved` のレスポンス。返せる説明が無ければ `saved` が false。 */
+export type SavedExplanationResponse =
+    | ({ saved: true } & ExplanationResponse)
+    | { saved: false; today?: GuideToday };
+
+/** 説明の材料（差分チェックと同じノートと、同じ曲のカルテ）。 */
+export interface ExplainRequest {
+    reference: PianoNote[];
+    attempt: PianoNote[];
+    steps_per_bar: number;
+    /** お手本と同じ曲のカルテ。付けるとキー（と、bpm も在ればその場のコード）を説明の材料に足す */
+    chart_id?: string;
+    /** お手本を採譜したときのテンポ */
+    bpm?: number;
+    /** ピアノロールのステップ 0 の位置（秒） */
+    grid_offset_sec?: number;
+}
+
+/** 失敗のときの文の頭（理由が取れなかったとき）。 */
+const EXPLAIN_FAILED = '説明を作れませんでした。';
+
+/**
+ * 差分の説明を作る。同じ材料の説明が保存済みなら、Claude を呼ばずにそれが返る。
+ * 違いが無い・少ないときは、Claude を呼ばずに決まった文が返る（`source: 'rule'`）。
+ *
+ * @param request - 差分チェックと同じノートと、カルテ
+ * @param regenerate - true なら、保存済みが在っても作り直す（Claude を呼ぶので費用がかかる）
+ * @throws {GuideRequestError} 作れなかった場合（`code` で理由を出し分ける。再現ガイドと同じ種類）
+ */
+export async function requestExplanation(request: ExplainRequest, regenerate = false): Promise<ExplanationResponse> {
+    const resp = await apiFetch('/api/coach/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(regenerate ? { ...request, regenerate: true } : request),
+    });
+    if (!resp.ok) throw await toError(resp, EXPLAIN_FAILED);
+    return (await resp.json()) as ExplanationResponse;
+}
+
+/**
+ * Claude を呼ばずに返せる説明（保存済み、または決まった文）を取得する。費用はかからない。
+ *
+ * @param request - 差分チェックと同じノートと、カルテ
+ * @throws {GuideRequestError} 取得できなかった場合
+ */
+export async function fetchSavedExplanation(request: ExplainRequest): Promise<SavedExplanationResponse> {
+    const resp = await apiFetch('/api/coach/explain/saved', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!resp.ok) throw await toError(resp, EXPLAIN_FAILED);
+    return (await resp.json()) as SavedExplanationResponse;
+}
+
+export { GuideRequestError as ExplainRequestError };
+
+/**
+ * 指摘の ID（`i1` `i2` …）から指摘を引く表を作る。ID は `bars[].issues[]` を上から数えた番号
+ * （backend/coach_explain.py の `build_facts` と同じ数え方）。
+ */
+export function issuesById(result: DiffResult): Map<string, DiffIssue> {
+    const map = new Map<string, DiffIssue>();
+    for (const bar of result.bars) for (const issue of bar.issues) map.set(`i${map.size + 1}`, issue);
+    return map;
+}
+
+/** 説明の参照を、画面に出す短い文にする。例: 「2 小節 3 拍目（抜け）」「5 小節」 */
+export function explanationRefLabel(ref: ExplanationRef): string {
+    const where = ref.beat !== null ? `${ref.bar} 小節 ${ref.beat} 拍目` : `${ref.bar} 小節`;
+    return ref.kind ? `${where}（${KIND_LABEL[ref.kind]}）` : where;
 }

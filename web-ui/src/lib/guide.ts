@@ -123,8 +123,13 @@ export class GuideRequestError extends Error {
     }
 }
 
-/** 失敗したレスポンスから、利用者向けの文と種類を取り出す。 */
-async function toError(resp: Response): Promise<GuideRequestError> {
+/**
+ * 失敗したレスポンスから、利用者向けの文と種類を取り出す。差分の説明（lib/coach.ts）も同じ形で失敗を返すので、共用する。
+ *
+ * @param resp - `ok` でない応答
+ * @param what - 理由が取れなかったときの文の頭（「再現ガイドを作れませんでした。」など）
+ */
+export async function toError(resp: Response, what = '再現ガイドを作れませんでした。'): Promise<GuideRequestError> {
     try {
         const body = await resp.json();
         const detail = body?.detail;
@@ -136,7 +141,7 @@ async function toError(resp: Response): Promise<GuideRequestError> {
         // JSON でない応答。下の既定の文にする
     }
     // 理由が取れなかったときも、状態コードの番号ではなく、次にどうすればよいかを出す
-    return new GuideRequestError(`再現ガイドを作れませんでした。${statusMessage(resp.status)}`, 'api');
+    return new GuideRequestError(`${what}${statusMessage(resp.status)}`, 'api');
 }
 
 /**

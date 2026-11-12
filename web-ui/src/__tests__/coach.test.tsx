@@ -163,3 +163,120 @@ describe('CoachPanel', () => {
         expect(await screen.findByRole('alert')).toHaveTextContent('打ち込みのノートの形式が正しくありません');
     });
 });
+
+describe('差分の説明', () => {
+    const today = { date: '2026-11-12', calls: 3, cost_usd: 0.3, limit_calls: 20, limit_usd: null, blocked: null };
+    const explanation = {
+        explanation: {
+            summary: '抜けと位置のずれが 1〜2 小節に出ています。',
+            points: [
+                { title: '2 小節目の抜け', observation: '2 小節目の頭が抜けています。', cause: '拍の頭を数え落としたのかもしれません。',
+                    fix: 'お手本と見比べてください。', refs: [{ issue_id: 'i2', bar: 2, beat: 1, kind: 'missing' }, { issue_id: null, bar: 1, beat: null, kind: null }] },
+            ],
+            next_step: 'まず 2 小節目を開いてください。', next_step_bar: 2,
+            dropped_refs: 0, dropped_points: 1, unverified_terms: ['Dm7'], replaced: [],
+        },
+        source: 'claude', reason: null, model: 'claude-opus-5-5',
+        usage: { input_tokens: 20, cache_creation_input_tokens: 3000, cache_read_input_tokens: 0, output_tokens: 400 },
+        cost_usd: 0.12, cached: false, created_at: '2026-11-12T01:00:00+00:00',
+        input: { issues: 2, issues_sent: 2, chart_context: 'none' }, today,
+    };
+
+    /** お手本のトラックと、URL ごとの応答を用意して、パネルを出して比べる。 */
+    async function setup(routes: Record<string, (body: Record<string, unknown>) => Response>) {
+        const stem = engine.addTrack('ピアノ');
+        stem.referenceNotes = [note('C', 4, 0), note('E', 4, 4), note('G', 4, 8), note('C', 5, 16)];
+        stem.pianoNotes = [note('C', 4, 0), note('E', 4, 5), note('G', 4, 8)];
+        stubFetch(async (url, init) => {
+            const handler = routes[url];
+            if (!handler) throw new Error(`想定外: ${url}`);
+            return handler(JSON.parse(String(init?.body ?? '{}')));
+        });
+        render(<DawProvider><CoachPanel /></DawProvider>);
+        fireEvent.click(screen.getByRole('button', { name: 'お手本と比べる' }));
+        await waitFor(() => expect(screen.getByText('75%')).toBeInTheDocument());
+        return stem;
+    }
+
+    const calls = (url: string) => fetchMock.mock.calls.filter(([u]) => u === url);
+
+    it('比べた直後に保存済みを探し (費用はかからない)、無ければ頼むボタンを出す。頼むと点と場所の札が出る', async () => {
+        await setup({
+            '/api/coach/diff': () => Response.json(result),
+            '/api/coach/explain/saved': () => Response.json({ saved: false, today }),
+            '/api/coach/explain': () => Response.json(explanation),
+        });
+        await waitFor(() => expect(calls('/api/coach/explain/saved')).toHaveLength(1));
+        // 説明は、比べたときと同じノートで頼む
+        const savedBody = JSON.parse((calls('/api/coach/explain/saved')[0] as [string, RequestInit])[1].body as string);
+        expect(savedBody.reference).toHaveLength(4);
+        expect(savedBody.attempt).toHaveLength(3);
+        expect(savedBody.steps_per_bar).toBe(16);
+        expect(savedBody.chart_id).toBeUndefined();
+        expect(await screen.findByText(/今日 Claude を呼んだ回数: 3 回/)).toBeInTheDocument();
+        expect(calls('/api/coach/explain')).toHaveLength(0);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Claude に説明してもらう' }));
+        expect(await screen.findByText('2 小節目の抜け')).toBeInTheDocument();
+        expect(screen.getByText('抜けと位置のずれが 1〜2 小節に出ています。')).toBeInTheDocument();
+        expect(screen.getByRole('note')).toHaveTextContent('差分の結果に無い音名・コード名・小節番号が説明に含まれています: Dm7');
+        expect(screen.getByText(/結び付けられなかった点を 1 個省きました/)).toBeInTheDocument();
+        expect(screen.getByText(/この説明を作ったときの使用量: 入力 3,020 トークン、出力 400 トークン、概算 \$0.12/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '説明を作り直す（費用がかかります）' })).toBeInTheDocument();
+
+        // 指摘を指す札を押すと、一覧のその行を示す (i2 = 2 つ目の小節の 1 つ目の指摘)
+        fireEvent.click(screen.getByRole('button', { name: '2 小節 1 拍目（抜け）' }));
+        const row = screen.getByText('2 小節 1 拍目: C5 が抜けています').closest('li')!;
+        expect(row).toHaveAttribute('aria-current', 'true');
+        expect(row).toHaveAttribute('data-issue-id', 'i2');
+        // 小節だけの札は、一覧の行を示さない
+        fireEvent.click(screen.getByRole('button', { name: '1 小節' }));
+        expect(row).not.toHaveAttribute('aria-current');
+
+        // 作り直すときだけ regenerate を付ける
+        fireEvent.click(screen.getByRole('button', { name: '説明を作り直す（費用がかかります）' }));
+        await waitFor(() => expect(calls('/api/coach/explain')).toHaveLength(2));
+        const bodies = calls('/api/coach/explain').map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0].regenerate).toBeUndefined();
+        expect(bodies[1].regenerate).toBe(true);
+    });
+
+    it('保存済みの説明が在れば、押さなくても最初から出す', async () => {
+        await setup({
+            '/api/coach/diff': () => Response.json(result),
+            '/api/coach/explain/saved': () => Response.json({ saved: true, ...explanation, cached: true }),
+        });
+        expect(await screen.findByText('2 小節目の抜け')).toBeInTheDocument();
+        expect(screen.getByText(/この説明は保存済みです/)).toHaveTextContent('前回は概算 $0.12');
+        expect(calls('/api/coach/explain')).toHaveLength(0);
+    });
+
+    it('Claude に頼むまでもないとき (決まった文) は、案内だけを出し、ボタンも費用も出さない', async () => {
+        await setup({
+            '/api/coach/diff': () => Response.json(result),
+            '/api/coach/explain/saved': () => Response.json({
+                saved: true, today, source: 'rule', reason: 'few_issues', model: null, usage: {}, cost_usd: 0, cached: false,
+                explanation: { ...explanation.explanation, summary: 'お手本 4 ノートのうち、75% が合っています。', points: [],
+                    next_step: '違いは 2 か所だけです。', next_step_bar: 2, unverified_terms: [], dropped_points: 0 },
+            }),
+        });
+        expect(await screen.findByText('違いは 2 か所だけです。', { exact: false })).toBeInTheDocument();
+        // 要約は上の正確さの言い直しなので出さない
+        expect(screen.queryByText('お手本 4 ノートのうち、75% が合っています。')).not.toBeInTheDocument();
+        expect(screen.getByText(/違いが少なく一覧を読めば足りるので、Claude は呼んでいません/)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Claude に説明してもらう' })).not.toBeInTheDocument();
+        expect(screen.queryByText(/使用量/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '2 小節へ' })).toBeInTheDocument();
+    });
+
+    it('API キーが無ければ理由を出し、キーの設定を開く', async () => {
+        await setup({
+            '/api/coach/diff': () => Response.json(result),
+            '/api/coach/explain/saved': () => Response.json({ saved: false, today }),
+            '/api/coach/explain': () => Response.json({ detail: { message: 'Claude の API キーが設定されていません', code: 'no_key' } }, { status: 401 }),
+        });
+        fireEvent.click(await screen.findByRole('button', { name: 'Claude に説明してもらう' }));
+        expect(await screen.findByRole('alert')).toHaveTextContent('Claude の API キーが設定されていません');
+        expect(screen.getByLabelText('Claude の API キー')).toBeInTheDocument();
+    });
+});
