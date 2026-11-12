@@ -12,8 +12,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
-import { apiFetch, errorDetail } from '../lib/api';
+import { describeError } from '../lib/api';
 import { useDialog } from '../lib/dialog';
+import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
+import { useJob } from '../lib/useJob';
+import JobCard from './JobCard';
 import { cssVar } from '../lib/theme';
 import { formatTime, type ChartResponse } from '../lib/chart';
 
@@ -31,12 +34,12 @@ const TIME_SIGNATURES = [
 /**
  * グリッド補正モーダル。
  * BPM・小節頭・拍子を波形と見比べながら直し、カルテを再計算する。
- * Esc キー・外側のクリック・「キャンセル」で閉じる（再計算の途中は閉じない）。
+ * Esc キー・外側のクリック・「キャンセル」で閉じる（再計算の途中は閉じない。やめるときは進み具合のカードの「中止」）。
  */
 export default function GridEditor() {
     const {
         chart, chartId, chartPeaks, showGridEditor, setShowGridEditor,
-        setChartResult, setStatus, applyChartGrid, withProgress,
+        setChartResult, setStatus, applyChartGrid, showProgress,
     } = useDaw();
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -48,7 +51,23 @@ export default function GridEditor() {
     const [localBeats, setLocalBeats] = useState(4);
     const [viewStart, setViewStart] = useState(0);
     const [windowSec, setWindowSec] = useState(8);
-    const [applying, setApplying] = useState(false);
+    // 再計算の結果を画面に当てる (確定したときと、画面を開き直す前に始めた再計算が終わったとき)
+    const applyResult = useCallback((result: ChartResponse) => {
+        setChartResult(result);
+        // DAW 本体のテンポ・拍子・1 小節目の位置もカルテに合わせる (カルテとピアノロールの小節番号をそろえる)。
+        // パートに分けた後は合わせない。お手本は分けたときのグリッドに載っているので、変えると原曲とずれる
+        const applied = applyChartGrid(result.chart);
+        setStatus(applied
+            ? `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`
+            : `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）。お手本は直す前のグリッドで採譜したものなので、ピアノロールのテンポと小節の位置はそのままにしました。合わせるには、もう一度パートに分けてください`);
+    }, [setChartResult, applyChartGrid, setStatus]);
+    // 再計算は時間のかかる処理 (ジョブ)。進み具合はこのモーダルの中に出す
+    const regrid = useJob('grid', (job) => {
+        if (job.state === 'done') applyResult(job.result as ChartResponse);
+        else if (job.state === 'cancelled') setStatus('グリッドの再計算を中止しました。カルテは前のままです');
+        else setStatus('グリッドを確定できませんでした。' + jobErrorMessage(job), 'error');
+    });
+    const applying = regrid.job !== null;
 
     // モーダルを開くたびに現在のカルテの値へ初期化する
     useEffect(() => {
@@ -162,31 +181,21 @@ export default function GridEditor() {
 
     const handleApply = useCallback(async () => {
         if (!chartId) return;
-        setApplying(true);
-        await withProgress('補正したグリッドでカルテを再計算しています…', async () => {
-            const body = new FormData();
-            body.append('chart_id', chartId);
-            body.append('bpm', String(localBpm));
-            body.append('downbeat_offset', String(localOffset));
-            body.append('beats_per_bar', String(localBeats));
-
-            const resp = await apiFetch('/api/chart/regrid', { method: 'POST', body });
-            // 応答の本文をそのまま出すと、生の JSON が画面に出る。理由の文は errorDetail が作る
-            if (!resp.ok) throw new Error('グリッドを確定できませんでした。' + await errorDetail(resp));
-
-            const result: ChartResponse = await resp.json();
-            setChartResult(result);
-            // DAW 本体のテンポ・拍子・1 小節目の位置もカルテに合わせる (カルテとピアノロールの小節番号をそろえる)。
-            // パートに分けた後は合わせない。お手本は分けたときのグリッドに載っているので、変えると原曲とずれる
-            const applied = applyChartGrid(result.chart);
-            setStatus(applied
-                ? `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`
-                : `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）。お手本は直す前のグリッドで採譜したものなので、ピアノロールのテンポと小節の位置はそのままにしました。合わせるには、もう一度パートに分けてください`);
+        const body = new FormData();
+        body.append('chart_id', chartId);
+        body.append('bpm', String(localBpm));
+        body.append('downbeat_offset', String(localOffset));
+        body.append('beats_per_bar', String(localBeats));
+        setStatus('補正したグリッドでカルテを再計算しています…');
+        try {
+            applyResult(await regrid.run<ChartResponse>('/api/chart/regrid', body));
             setShowGridEditor(false);
-        });
-        setApplying(false);
-    }, [chartId, localBpm, localOffset, localBeats, withProgress,
-        setChartResult, applyChartGrid, setStatus, setShowGridEditor]);
+        } catch (e) {
+            // 中止したときは、モーダルを開いたままにする (値を直して確定し直せるように)
+            if (e instanceof JobCancelledError) setStatus('グリッドの再計算を中止しました。カルテは前のままです');
+            else setStatus('グリッドを確定できませんでした。' + describeError(e), 'error');
+        }
+    }, [chartId, localBpm, localOffset, localBeats, regrid, applyResult, setStatus, setShowGridEditor]);
 
     const open = showGridEditor && chart !== null;
     // 再計算の途中は閉じない (閉じると、結果がどうなったか分からなくなる)
@@ -295,8 +304,11 @@ export default function GridEditor() {
                     </div>
                 </div>
 
+                <JobCard slot="grid" job={regrid.job} busyJob={regrid.busyJob} onCancel={() => void regrid.cancel()}
+                    hint="数秒〜十数秒かかります。中止すると、カルテは前のままです。" />
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                    <button className="action-btn" data-autofocus style={{ flex: 2, marginTop: 0 }} disabled={applying} onClick={handleApply}>
+                    <button className="action-btn" data-autofocus style={{ flex: 2, marginTop: 0 }}
+                        disabled={applying || showProgress || regrid.heavyBusy} onClick={handleApply}>
                         {applying ? '再計算中…' : 'この設定で確定して再計算'}
                     </button>
                     <button type="button" style={{ ...secondaryButton, flex: 1 }} disabled={applying}

@@ -3,11 +3,16 @@
  *
  * 文は docs/ui-terms.md の決まりに合わせる。色は styles/global.css のトークンを使う。
  * 時間のかかる処理を始めるボタンは、その処理が走っているあいだ押せなくする（二重に始めないため）。
+ * パート分離は時間のかかる処理（ジョブ）として動かし、進み具合のカードをボタンの下に出す。
+ * 重い処理は同時に 1 つなので、DAW の画面（別の窓）で動いている処理があれば、ページの上に出して中止できるようにする。
  */
 import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch, backendUrl, describeError, errorDetail } from '../lib/api';
 import { modelDownloadNotice } from '../lib/models';
+import { JobCancelledError, jobErrorMessage, jobTracker, slotOf, type Job, type JobSlot } from '../lib/jobs';
+import { useJob, useJobs } from '../lib/useJob';
+import JobCard from '../components/JobCard';
 
 interface AudioResult {
     label: string;
@@ -149,12 +154,33 @@ const TABS = [
 ];
 
 // ---- パート分離パネル ----
+/** 音源分離の結果（パートごとの音声）を、結果の一覧にする。 */
+function separateResults(result: unknown): AudioResult[] {
+    return Object.entries((result ?? {}) as Record<string, { label?: string; url?: unknown } | null>)
+        .filter(([, v]) => typeof v?.url === 'string')
+        .map(([key, v]) => makeAudioResult(v!.label || key, v!.url as string));
+}
+
+/** 「〇〇を中止しました」/ 失敗の文を、ジョブの終わり方から作る（つなぎ直したジョブ用）。 */
+function endedText(name: string, job: Job): [string, string] {
+    if (job.state === 'cancelled') return [`${name}を中止しました`, ''];
+    return [jobErrorMessage(job), 'error'];
+}
+
 function SeparatePanel() {
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [progress, setProgress] = useState(false);
     const [results, setResults] = useState<AudioResult[]>([]);
-    const [disabled, setDisabled] = useState(false);
+    // 画面を開き直す前に始めた分離が終わったら、その結果を出す
+    const separate = useJob('tools-separate', (job) => {
+        if (job.state === 'done') {
+            const items = separateResults(job.result);
+            setResults(items); setStatus(`${items.length} 個のパートに分けました`); setStatusType('');
+        } else {
+            const [text, type] = endedText('パート分離', job);
+            setStatus(text); setStatusType(type);
+        }
+    });
 
     const handleSeparate = useCallback(async () => {
         const file = ((document.getElementById('sep-file') as HTMLInputElement | null))?.files?.[0];
@@ -165,20 +191,16 @@ function SeparatePanel() {
         let apiUrl; const fd = new FormData();
         if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
-        setStatus(`パートに分けています…（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
+        setStatus(`パートに分けています…（${file.name}）`); setStatusType('processing'); setResults([]);
         modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('パートに分けています') ? prev + notice : prev); });
         try {
-            const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const result = await resp.json();
-            const items = Object.entries(result).map(([key, info]) => {
-                const v = info as { label?: string; url: string };
-                return makeAudioResult(v.label || key, v.url);
-            });
+            const items = separateResults(await separate.run(apiUrl, fd));
             setResults(items); setStatus(`${items.length} 個のパートに分けました`); setStatusType('');
-        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
-        finally { setProgress(false); setDisabled(false); }
-    }, []);
+        } catch (e: unknown) {
+            if (e instanceof JobCancelledError) { setStatus('パート分離を中止しました'); setStatusType(''); }
+            else { setStatus(describeError(e)); setStatusType('error'); }
+        }
+    }, [separate]);
 
     return (
         <div className={`tool-panel active`}>
@@ -193,8 +215,8 @@ function SeparatePanel() {
                     <select id="sep-mode"><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
                 </div>
             </div>
-            <button className="btn" onClick={handleSeparate} disabled={disabled}>パート分離を始める</button>
-            {progress && <div className="progress-bar"><div className="fill" /></div>}
+            <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy}>パート分離を始める</button>
+            <ToolsJobCard slot="tools-separate" handle={separate} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && (
                 <div className="result-area">
@@ -623,14 +645,30 @@ const STEM_LABELS: Record<string, string> = {
     guitar: 'ギター', piano: 'ピアノ', other: 'その他',
 };
 
+/** 分解の結果を、状態の 1 行にする。 */
+function decomposeSummary(data: DecomposeResult): string {
+    const stemCount = Object.keys(data.stems).length;
+    const totalNotes = Object.values(data.stems).reduce((sum, s) =>
+        sum + (s.notes?.length || 0) + (s.drum_events?.length || 0), 0);
+    return `パートに分けて採譜しました（BPM ${data.bpm} / ${stemCount} パート / ${totalNotes} ノート）`;
+}
+
 function DecomposePanel() {
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
-    const [progress, setProgress] = useState(false);
     const [bpm, setBpm] = useState(0);
     const [sensitivity, setSensitivity] = useState(0.5);
     const [result, setResult] = useState<DecomposeResult | null>(null);
-    const [disabled, setDisabled] = useState(false);
+    // 画面を開き直す前に始めた分解が終わったら、その結果を出す
+    const decompose = useJob('tools-decompose', (job) => {
+        if (job.state === 'done') {
+            const data = job.result as DecomposeResult;
+            setResult(data); setStatus(decomposeSummary(data)); setStatusType('');
+        } else {
+            const [text, type] = endedText('パート分離と採譜', job);
+            setStatus(text); setStatusType(type);
+        }
+    });
 
     const handleDecompose = useCallback(async () => {
         const file = (document.getElementById('decompose-file') as HTMLInputElement | null)?.files?.[0];
@@ -643,21 +681,18 @@ function DecomposePanel() {
 
         setStatus(`パートに分けて採譜しています…（${file.name}）パート分離 → 採譜 → 楽器の推定。CPU で処理するため数分かかります。`);
         modelDownloadNotice('htdemucs_6s').then((notice) => { if (notice) setStatus((prev) => prev.startsWith('パートに分けて採譜しています') ? prev + notice : prev); });
-        setStatusType('processing'); setProgress(true); setResult(null); setDisabled(true);
+        setStatusType('processing'); setResult(null);
 
         try {
-            const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const data: DecomposeResult = await resp.json();
+            const data = await decompose.run<DecomposeResult>('/api/decompose', fd);
             setResult(data);
-            const stemCount = Object.keys(data.stems).length;
-            const totalNotes = Object.values(data.stems).reduce((sum, s) =>
-                sum + (s.notes?.length || 0) + (s.drum_events?.length || 0), 0);
-            setStatus(`パートに分けて採譜しました（BPM ${data.bpm} / ${stemCount} パート / ${totalNotes} ノート）`);
+            setStatus(decomposeSummary(data));
             setStatusType('');
-        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
-        finally { setProgress(false); setDisabled(false); }
-    }, [bpm, sensitivity]);
+        } catch (e: unknown) {
+            if (e instanceof JobCancelledError) { setStatus('パート分離と採譜を中止しました'); setStatusType(''); }
+            else { setStatus(describeError(e)); setStatusType('error'); }
+        }
+    }, [bpm, sensitivity, decompose]);
 
     return (
         <div className="tool-panel active">
@@ -690,10 +725,10 @@ function DecomposePanel() {
                 そちらを使うと、分けたパートがそのままトラックになり、採譜したノートがピアノロールに並びます
                 （お手本としても残ります）。
             </div>
-            <button className="btn" onClick={handleDecompose} disabled={disabled}>
+            <button className="btn" onClick={handleDecompose} disabled={decompose.heavyBusy}>
                 パート分離と採譜を始める
             </button>
-            {progress && <div className="progress-bar"><div className="fill" /></div>}
+            <ToolsJobCard slot="tools-decompose" handle={decompose} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
             <StatusLine text={status} type={statusType} />
 
             {result && (
@@ -897,6 +932,37 @@ function WavOptimizePanel() {
     );
 }
 
+/** ツールの画面の、進み具合のカード。断られたときの「実行中の処理を見る」は、ページの上のカードへ移る。 */
+function ToolsJobCard({ slot, handle, hint }: { slot: JobSlot; handle: ReturnType<typeof useJob>; hint?: string }) {
+    return (
+        <JobCard slot={slot} job={handle.job} busyJob={handle.busyJob} onCancel={() => void handle.cancel()} hint={hint}
+            onShowBusy={(job) => jobTracker.requestFocus(slotOf(job) ?? OTHER_SLOT)} />
+    );
+}
+
+/** どこで始めたか分からない処理を、ページの上のカードで受けるときの置き場所。 */
+const OTHER_SLOT: JobSlot = 'tools-separate';
+
+/** タブごとの置き場所（そのタブの中にカードが在るもの）。 */
+const TAB_SLOT: Record<string, JobSlot> = { separate: 'tools-separate', decompose: 'tools-decompose' };
+
+/**
+ * いま開いているタブの外で動いている処理（DAW の画面や、別のタブで始めたもの）を、ページの上に出す。
+ * 重い処理は同時に 1 つなので、何が動いているか分からないまま始めるボタンが押せない、ということにしない。
+ */
+function OtherJobCard({ activeTab }: { activeTab: string }) {
+    const { active } = useJobs();
+    if (!active) return null;
+    const slot = slotOf(active);
+    if (slot && slot === TAB_SLOT[activeTab]) return null;
+    return (
+        <div style={{ marginBottom: 16 }}>
+            <JobCard slot={slot ?? OTHER_SLOT} job={active} onCancel={() => void jobTracker.cancel(active.id)}
+                hint="重い処理は 1 つずつ動きます。終わると、パート分離などを始められます。" />
+        </div>
+    );
+}
+
 const PANELS: Record<string, () => React.ReactElement> = {
     decompose: DecomposePanel,
     separate: SeparatePanel, analyze: AnalyzePanel, edit: EditPanel,
@@ -925,6 +991,7 @@ export default function ToolsPage() {
                             onClick={() => setActiveTab(tab.key)}>{tab.label}</button>
                     ))}
                 </div>
+                <OtherJobCard activeTab={activeTab} />
                 <ActivePanel />
             </div>
         </div>

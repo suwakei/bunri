@@ -12,9 +12,13 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw, type LeftTab, type SoundTab } from '../lib/store';
 import { LEFT_WIDTH_MAX, LEFT_WIDTH_MIN } from '../lib/storage';
-import engine from '../lib/engine';
-import { apiFetch, errorDetail } from '../lib/api';
+import engine, { type PianoNote } from '../lib/engine';
+import { apiFetch, describeError, errorDetail } from '../lib/api';
 import { useLearnActions } from '../lib/learn';
+import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
+import { useJob } from '../lib/useJob';
+import { useShowJob } from '../lib/job-focus';
+import JobCard from './JobCard';
 import SubTabs from './SubTabs';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
@@ -413,8 +417,9 @@ function FxPanel() {
  */
 // ---- ファイルパネル ----
 function FilePanel() {
-    const { setStatus, bumpTracks, withProgress, showProgress, pianoRollRef, bpm } = useDaw();
+    const { setStatus, bumpTracks, showProgress, pianoRollRef, bpm } = useDaw();
     const { placeAudio } = useLearnActions();
+    const showJob = useShowJob();
     const [fileTrack, setFileTrack] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const analyzeFileRef = useRef<HTMLInputElement>(null);
@@ -441,6 +446,13 @@ function FilePanel() {
         bumpTracks();
     }, [fileTrack, setStatus, bumpTracks, placeAudio]);
 
+    // 単音メロディの解析は時間のかかる処理 (ジョブ)。進み具合は解析のボタンの下に出す
+    const analyzeJob = useJob('file-analyze', (job) => {
+        // 画面を開き直す前に始めた解析は、置く先のピアノロールが分からないので、終わったことだけ知らせる
+        if (job.state === 'done') setStatus('前に始めた単音メロディの解析が終わりました。結果を置くには、トラックを開いてもう一度解析してください');
+        else if (job.state === 'error') setStatus(jobErrorMessage(job), 'error');
+    });
+
     const handleAnalyze = useCallback(async () => {
         const file = analyzeFileRef.current?.files?.[0];
         if (!file) { setStatus('解析するWAVファイルを選択してください', 'error'); return; }
@@ -450,17 +462,19 @@ function FilePanel() {
         fd.append('file', file);
         fd.append('bpm', String(bpm));
         fd.append('sensitivity', String(sensitivity));
-        await withProgress(`音声を解析しています…（${file.name}）`, async () => {
-            const resp = await apiFetch('/api/analyze', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const notes = await resp.json();
+        setStatus(`音声を解析しています…（${file.name}）`);
+        try {
+            const notes = await analyzeJob.run<PianoNote[]>('/api/analyze', fd);
             if (notes.length === 0) { setStatus('ノートが見つかりませんでした。感度を上げて、もう一度試してください', 'error'); return; }
             pr.setNotes(notes);
             // タイムラインのトラックの見出しに出るノートの数を、置いた数に合わせる
             bumpTracks();
             setStatus(`${notes.length}個のノートを検出しました`);
-        });
-    }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus, bumpTracks]);
+        } catch (e) {
+            if (e instanceof JobCancelledError) setStatus('単音メロディの解析を中止しました');
+            else setStatus(describeError(e), 'error');
+        }
+    }, [sensitivity, bpm, pianoRollRef, analyzeJob, setStatus, bumpTracks]);
 
     const handleMicRecord = useCallback(async () => {
         try {
@@ -500,7 +514,9 @@ function FilePanel() {
             <label htmlFor="file-melody-sensitivity">感度（{sensitivity}）</label>
             <input id="file-melody-sensitivity" type="range" min="0.1" max="1" step="0.05" value={sensitivity}
                 onChange={e => setSensitivity(+e.target.value)} />
-            <button className="action-btn" onClick={handleAnalyze} disabled={showProgress}>解析してピアノロールに配置</button>
+            <button className="action-btn" onClick={handleAnalyze} disabled={showProgress || analyzeJob.heavyBusy}>解析してピアノロールに配置</button>
+            <JobCard slot="file-analyze" job={analyzeJob.job} busyJob={analyzeJob.busyJob} onCancel={() => void analyzeJob.cancel()}
+                onShowBusy={showJob} hint="解析は途中では止められません。中止すると、終わったあとに結果を捨てます。" />
             <hr />
             <h3>録音</h3>
             <p className="panel-desc">マイクから音声を録音してトラックに追加します。</p>
