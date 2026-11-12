@@ -213,6 +213,8 @@ body::before {
        トラックの下へ押し出されて見えなくなるのを防ぐ */
     position: sticky;
     bottom: 0;
+    /* 横にスクロールしても左端に留める */
+    left: 0;
     z-index: 4;
 }
 
@@ -491,19 +493,28 @@ body::before {
     min-height: 200px;
 }
 
-#timeline-header {
-    height: 24px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
+/* 見出しと小節番号の段。縦にも横にもスクロールしても、枠の上端・左端に留める */
+#timeline-top {
     position: sticky;
     top: 0;
-    z-index: 5;
+    left: 0;
+    z-index: 6;
+    background: var(--bg-secondary);
 }
 
+/* 小節番号の段は、見えている範囲だけを描く canvas (CenterArea.tsx の _drawHeader) */
+#timeline-header-canvas {
+    display: block;
+}
+
+/* 行は、クリップを置く領域 (曲全体の幅) まで含めた幅を持つ。画面の幅で止めると、
+   横にスクロールした先に行が無く、長い曲の後ろのクリップが切れて見えない */
 .track-row {
     display: flex;
     align-items: stretch;
     height: 64px;
+    width: max-content;
+    min-width: 100%;
     border-bottom: 1px solid var(--border);
     transition: background var(--transition);
 }
@@ -521,16 +532,20 @@ body::before {
     cursor: pointer;
     transition: all var(--transition);
     border-left: 3px solid transparent;
-    position: relative;
+    /* 横にスクロールしても左端に留める (どのトラックの行かが分かるように)。
+       下をクリップが通るので、背景は透けない色にして、色味は上に重ねる */
+    position: sticky;
+    left: 0;
+    z-index: 3;
 }
 
 .track-header:hover {
-    background: rgba(212, 164, 76, 0.04);
+    background-image: linear-gradient(rgba(212, 164, 76, 0.04), rgba(212, 164, 76, 0.04));
 }
 
 .track-header.active-track {
     border-left-color: var(--accent);
-    background: rgba(212, 164, 76, 0.06);
+    background-image: linear-gradient(rgba(212, 164, 76, 0.06), rgba(212, 164, 76, 0.06));
 }
 
 .track-header.active-track .track-name {
@@ -606,7 +621,8 @@ body::before {
 }
 
 .track-canvas-wrap {
-    flex: 1;
+    /* 幅は曲の長さから決まる (style で指定)。行のほうが広いときは、残りを埋める */
+    flex: 1 0 auto;
     position: relative;
     background: var(--bg-track);
     overflow: hidden;
@@ -864,6 +880,10 @@ body::before {
 
 /* ---- Add track button ---- */
 #btn-add-track {
+    /* 横にスクロールしても左端に留める */
+    display: block;
+    position: sticky;
+    left: 0;
     margin: 8px 12px !important;
     font-size: 11px !important;
     font-family: 'Outfit', sans-serif !important;

@@ -317,6 +317,11 @@ class TimelineEngine {
         this.container = null; this.headerCanvas = null; this.headerCtx = null;
         this.pixelsPerSecond = 80; this.draggingClip = null; this.dragOffsetX = 0;
         this.onStatus = null; this.onTrackSelect = null; this.onTracksChanged = null;
+        // スクロールする枠 (#timeline-area)。小節番号の段は、この枠の見えている範囲だけを描く
+        this.scroller = null;
+        // トラックの見出しの幅 (CSS の .track-header と同じ)。クリップを置く領域はこの右から始まるので、
+        // 小節番号の段も同じだけ右から始める
+        this.headerWidth = 130;
     }
     /**
      * タイムラインを DOM 要素群に紐付けて初期化する。
@@ -325,22 +330,49 @@ class TimelineEngine {
      * @param el - 初期化に必要な DOM 要素群
      * @param el.container - トラック行を配置するコンテナ `<div>` 要素
      * @param el.headerCanvas - 小節番号ルーラーを描画する `<canvas>` 要素
+     * @param el.scroller - タイムライン全体をスクロールさせる枠 (`#timeline-area`)
      */
     init(el) {
-        this.container = el.container; this.headerCanvas = el.headerCanvas;
+        this.container = el.container; this.headerCanvas = el.headerCanvas; this.scroller = el.scroller || null;
         this.headerCtx = this.headerCanvas.getContext('2d');
         this._drawHeader(); this._bindGlobalEvents();
+        // 小節番号の段は見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す
+        if (this.scroller) {
+            this.scroller.addEventListener('scroll', () => this._drawHeader());
+            if (typeof ResizeObserver !== 'undefined') {
+                this._resizeObserver = new ResizeObserver(() => {
+                    cancelAnimationFrame(this._resizeFrame);
+                    this._resizeFrame = requestAnimationFrame(() => this._drawHeader());
+                });
+                this._resizeObserver.observe(this.scroller);
+            }
+        }
     }
+    /** タイムラインの長さ (秒)。曲の終わりの後ろに 10 秒の余白を置く。最短は 30 秒。 */
+    _totalSeconds() { return Math.max(30, engine.getTotalDuration() + 10); }
+    /**
+     * 小節番号の段を描く。見えている範囲だけを描き、枠の上端・左端に留める (CSS の sticky)。
+     *
+     * 曲全体の幅の canvas にはしない。長い曲でブラウザの canvas の上限を超えるうえ、
+     * 縦にスクロールすると段ごと流れて見えなくなる。
+     * 左の `headerWidth` はトラックの見出しの列なので空ける。ここを空けないと、
+     * 小節番号が見出しの幅だけ左にずれて、クリップの位置と合わない。
+     */
     _drawHeader() {
         if (!this.headerCanvas) return;
-        const totalSec = Math.max(30, engine.getTotalDuration() + 10);
-        const w = totalSec * this.pixelsPerSecond;
-        this.headerCanvas.width = w; this.headerCanvas.height = 24; this.headerCanvas.style.width = w + 'px';
-        const ctx = this.headerCtx; ctx.fillStyle = '#17171e'; ctx.fillRect(0, 0, w, 24);
-        const beatSec = 60 / engine.bpm, barSec = beatSec * engine.beatsPerBar;
-        for (let t = 0; t < totalSec; t += beatSec) {
-            const x = t * this.pixelsPerSecond, barNum = Math.floor(t / barSec) + 1, beatInBar = Math.round((t % barSec) / beatSec);
-            if (beatInBar === 0) { ctx.fillStyle = '#e0e0e0'; ctx.font = '10px sans-serif'; ctx.fillText(barNum.toString(), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
+        const w = Math.max(1, this.scroller ? this.scroller.clientWidth : this.headerCanvas.clientWidth), h = 24;
+        // 大きさを設定し直すと canvas は消える (描き直しの前の消去を兼ねる)
+        this.headerCanvas.width = w; this.headerCanvas.height = h; this.headerCanvas.style.width = w + 'px';
+        const ctx = this.headerCtx; ctx.fillStyle = '#17171e'; ctx.fillRect(0, 0, w, h);
+        const scrollLeft = this.scroller ? this.scroller.scrollLeft : 0, left = this.headerWidth;
+        const beatPx = (60 / engine.bpm) * this.pixelsPerSecond, perBar = Math.max(1, engine.beatsPerBar || 4);
+        const lastBeat = Math.ceil(this._totalSeconds() * this.pixelsPerSecond / beatPx);
+        const first = Math.max(0, Math.floor(scrollLeft / beatPx));
+        const last = Math.min(lastBeat, Math.ceil((scrollLeft + w - left) / beatPx));
+        for (let beat = first; beat <= last; beat++) {
+            const x = left + beat * beatPx - scrollLeft;
+            if (x < left) continue;
+            if (beat % perBar === 0) { ctx.fillStyle = '#e0e0e0'; ctx.font = '10px sans-serif'; ctx.fillText(String(beat / perBar + 1), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
             else ctx.strokeStyle = 'rgba(255,255,255,0.1)';
             ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, 24); ctx.stroke();
         }
@@ -358,22 +390,30 @@ class TimelineEngine {
             const row = document.createElement('div'); row.className = 'track-row';
             const isActive = pianoRoll && pianoRoll.getActiveTrackId() === track.id;
             const noteCount = (track.pianoNotes || []).length;
-            const notesBadge = noteCount > 0 ? `<span class="notes-badge" title="${noteCount}ノート">${noteCount}</span>` : '';
             const header = document.createElement('div');
             header.className = 'track-header' + (isActive ? ' active-track' : '');
             header.dataset.trackId = track.id;
             const isTrackPlaying = engine.isPlaying && engine.soloTrackId === track.id;
-            header.innerHTML = `<span class="track-name">${track.name} ${notesBadge}</span>
+            header.innerHTML = `<span class="track-name"></span>
                 <div class="track-controls">
                     <button class="btn-track-play ${isTrackPlaying ? 'playing' : ''}" data-track="${track.id}" title="このトラックだけ再生">${isTrackPlaying ? '⏸' : '▶'}</button>
                     <button class="btn-mute ${track.mute ? 'muted' : ''}" data-track="${track.id}">M</button>
                     <button class="btn-solo ${track.solo ? 'soloed' : ''}" data-track="${track.id}">S</button>
                     <button class="btn-delete-track" data-track="${track.id}">✕</button>
                 </div>`;
+            // トラック名は文字として入れる。HTML に埋め込むと、名前に < や & が在るときに崩れ、
+            // 読み込んだプロジェクトの名前がタグとして解釈されてしまう
+            const nameEl = header.querySelector('.track-name');
+            nameEl.textContent = track.name + ' ';
+            if (noteCount > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'notes-badge'; badge.title = `${noteCount}ノート`; badge.textContent = String(noteCount);
+                nameEl.appendChild(badge);
+            }
             row.appendChild(header);
             const canvasWrap = document.createElement('div'); canvasWrap.className = 'track-canvas-wrap'; canvasWrap.dataset.trackId = track.id;
-            const totalSec = Math.max(30, engine.getTotalDuration() + 10);
-            canvasWrap.style.width = (totalSec * this.pixelsPerSecond) + 'px';
+            // クリップを置く領域は、曲全体の幅を持つ (行ごと横にスクロールする)
+            canvasWrap.style.width = (this._totalSeconds() * this.pixelsPerSecond) + 'px';
             track.clips.forEach((clip, ci) => {
                 const clipEl = document.createElement('div'); clipEl.className = 'clip';
                 clipEl.style.left = (clip.offset * this.pixelsPerSecond) + 'px';
@@ -385,20 +425,32 @@ class TimelineEngine {
                     this.draggingClip = { trackId: track.id, clipIndex: ci, element: clipEl };
                     this.dragOffsetX = e.clientX - clipEl.getBoundingClientRect().left;
                 });
-                clipEl.addEventListener('contextmenu', (e) => { e.preventDefault(); engine.removeClip(track.id, ci); this.render(pianoRoll); });
+                clipEl.addEventListener('contextmenu', (e) => {
+                    e.preventDefault(); engine.removeClip(track.id, ci); this.render(pianoRoll);
+                    // 右クリックはその場で消える (取り消せない) ので、何を消したかを知らせる
+                    if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を「${track.name}」から削除しました`);
+                    if (this.onTracksChanged) this.onTracksChanged();
+                });
                 canvasWrap.appendChild(clipEl);
             });
             canvasWrap.addEventListener('dragover', (e) => e.preventDefault());
             canvasWrap.addEventListener('drop', async (e) => {
                 e.preventDefault();
+                // 位置は、読み込みを待つ前に取っておく (待っているあいだに描き直されると、要素が入れ替わる)
+                const dropSec = Math.max(0, (e.clientX - canvasWrap.getBoundingClientRect().left) / this.pixelsPerSecond);
+                const added = [], rejected = [];
                 for (const file of e.dataTransfer.files) {
-                    if (!file.name.endsWith('.wav')) continue;
-                    const rect = canvasWrap.getBoundingClientRect();
-                    await engine.addClipFromFile(track.id, file, (e.clientX - rect.left) / this.pixelsPerSecond);
+                    // 拡張子は大文字でも受ける (.WAV)。WAV 以外は、黙って無視せずに知らせる
+                    if (!/\.wav$/i.test(file.name)) { rejected.push(file.name); continue; }
+                    await engine.addClipFromFile(track.id, file, dropSec);
+                    added.push(file.name);
                 }
                 this.render(pianoRoll);
-                if (this.onStatus) this.onStatus('クリップを追加しました');
-                if (this.onTracksChanged) this.onTracksChanged();
+                if (this.onStatus) {
+                    if (rejected.length > 0) this.onStatus(`WAV 以外のファイルは追加できません: ${rejected.join('、')}`);
+                    else if (added.length > 0) this.onStatus(`${added.join('、')} を「${track.name}」に追加しました`);
+                }
+                if (added.length > 0 && this.onTracksChanged) this.onTracksChanged();
             });
             row.appendChild(canvasWrap); this.container.appendChild(row);
         }
@@ -597,10 +649,13 @@ function SeekBar() {
     }, []);
 
     const handleInput = (e) => { isSeeking.current = true; setSeekVal(+e.target.value); const dur = engine.getTotalDuration(); if (dur > 0) setCurTime(fmt((+e.target.value / 100) * dur)); };
-    const finishSeek = () => {
+    // つまみを離したとき (マウス・タッチ・キー) に、その位置へ移動する。
+    // 位置は、状態 (seekVal) ではなく入力欄そのものから読む。状態は次の描画まで古いままなので、
+    // 押してすぐ離すと (WebKit のクリック)、1 つ前の位置へ移動してしまう
+    const finishSeek = (e) => {
         if (!isSeeking.current) return; isSeeking.current = false;
         const dur = engine.getTotalDuration(); if (dur <= 0) return;
-        const seekTo = (seekVal / 100) * dur, wasPlaying = engine.isPlaying, wasSolo = engine.soloTrackId;
+        const seekTo = (Number(e.currentTarget.value) / 100) * dur, wasPlaying = engine.isPlaying, wasSolo = engine.soloTrackId;
         if (wasPlaying) engine.stop();
         engine.playOffset = seekTo;
         if (wasPlaying) { if (wasSolo != null) engine.playSingleTrack(wasSolo); else engine.play(); }
@@ -611,7 +666,10 @@ function SeekBar() {
             <span id="seek-time-current">{curTime}</span>
             <input type="range" id="seek-bar" min="0" max="100" step="0.1" value={seekVal}
                 onMouseDown={() => { isSeeking.current = true; }} onTouchStart={() => { isSeeking.current = true; }}
-                onInput={handleInput} onMouseUp={finishSeek} onTouchEnd={finishSeek} />
+                onInput={handleInput} onMouseUp={finishSeek} onTouchEnd={finishSeek}
+                // 矢印キーでも動かせる。キーを離したときと、欄を離れたときにも確定する
+                // (確定しないと、移動されないうえに、以後つまみが再生位置を追わなくなる)
+                onKeyUp={finishSeek} onBlur={finishSeek} />
             <span id="seek-time-total">{totalTime}</span>
         </div>
     );
@@ -630,10 +688,11 @@ function SeekBar() {
  */
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
-    const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion } = useDaw();
+    const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion, bpm, beatsPerBar } = useDaw();
     const [activeTrackName, setActiveTrackName] = useState(null);
     const [activeTrackId, setActiveTrackId] = useState(null);
 
+    const timelineAreaRef = useRef(null);
     const tracksContainerRef = useRef(null);
     const headerCanvasRef = useRef(null);
     const pianoCanvasRef = useRef(null);
@@ -659,7 +718,7 @@ export default function CenterArea() {
 
         // Timeline 初期化
         const tl = new TimelineEngine();
-        tl.init({ container: tracksContainerRef.current, headerCanvas: headerCanvasRef.current });
+        tl.init({ container: tracksContainerRef.current, headerCanvas: headerCanvasRef.current, scroller: timelineAreaRef.current });
         tl.onStatus = setStatus;
         tl.onTracksChanged = bumpTracks;
         tl._pianoRoll = pr;
@@ -690,6 +749,15 @@ export default function CenterArea() {
         if (tl) tl.render(pr);
     }, [trackVersion, timelineRef, pianoRollRef]);
 
+    // テンポか拍子が変わったら、拍と小節の線を描き直す (小節番号の段、ピアノロール、オートメーション)。
+    // 描き直さないと、次にトラックを触るまで古いテンポの目盛りが残る
+    useEffect(() => {
+        timelineRef.current?._drawHeader();
+        const pr = pianoRollRef.current;
+        if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); }
+        automationRef.current?.draw();
+    }, [bpm, beatsPerBar, timelineRef, pianoRollRef, automationRef]);
+
     const handleAddTrack = useCallback(() => {
         const t = engine.addTrack();
         bumpTracks();
@@ -703,9 +771,12 @@ export default function CenterArea() {
     return (
         <div id="center">
             {/* タイムライン */}
-            <div id="timeline-area">
-                <div className="area-label">タイムライン <span className="area-hint">（WAVをD&D / クリップをドラッグで移動 / 右クリックで削除）</span></div>
-                <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
+            <div id="timeline-area" ref={timelineAreaRef}>
+                {/* 見出しと小節番号の段は、スクロールしても枠の上端・左端に留める */}
+                <div id="timeline-top">
+                    <div className="area-label">タイムライン <span className="area-hint">（WAVをD&D / クリップをドラッグで移動 / 右クリックで削除）</span></div>
+                    <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
+                </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
                 <button id="btn-add-track" onClick={handleAddTrack}>+ トラック追加</button>
                 <SeekBar />
