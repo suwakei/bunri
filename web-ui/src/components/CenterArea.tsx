@@ -419,11 +419,15 @@ class PianoRollEngine {
             if (this._drag) this._moveNoteDrag(e);
             else if (this._band) this._moveBand(e);
         });
-        document.addEventListener('mouseup', () => {
+        const endDrags = () => {
             this._releaseKey();
             if (this._drag) this._endNoteDrag();
             if (this._band) this._endBand();
-        });
+        };
+        document.addEventListener('mouseup', endDrags);
+        // 押したまま別の窓へ移ると mouseup が届かないことがある。ドラッグの記録を開いたままにしない
+        // (開いたままだと、その後の操作がすべてその記録にまとまってしまう)
+        window.addEventListener('blur', endDrags);
         document.addEventListener('keydown', (e) => this._onKeyDown(e));
         // Cmd (Ctrl) + ホイール、トラックパッドのピンチで横の大きさを変える (マウスの位置を中心に)
         this.wrap.addEventListener('wheel', (e) => {
