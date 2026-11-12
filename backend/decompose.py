@@ -617,7 +617,23 @@ def estimate_mix_params(file_path):
     }
 
 
-def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
+def decompose_stages(detect_bpm=True):
+    """``decompose`` をジョブとして動かすときのステージの並びを返す。
+
+    Args:
+        detect_bpm (bool, optional): BPM を自動検出するか（``bpm=None`` で呼ぶか）。
+            False なら、テンポを調べるステージを入れない。
+
+    Returns:
+        list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
+    """
+    from separate import DEEP_SEPARATE_STAGES
+
+    stages = [("tempo", "テンポを調べています")] if detect_bpm else []
+    return stages + list(DEEP_SEPARATE_STAGES) + [("transcribe", "各パートを音符にしています")]
+
+
+def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None):
     """音源分解のメインパイプライン。WAV → 分離 → 解析 → トラックデータを返す。
 
     以下の3段階で処理する:
@@ -635,6 +651,9 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
             デフォルト 7。
         jobs (int, optional): Demucs の並列ジョブ数。CPU 負荷を抑えるなら 1。
             デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            進み具合の報告とキャンセルに使う。ステージは ``decompose_stages`` のキーで進む。
+            None なら報告しない。
 
     Returns:
         dict: 以下の構造を持つ辞書。
@@ -661,23 +680,31 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
     Raises:
         FileNotFoundError: ``input_path`` が存在しない場合（``deep_separate`` が送出）。
         RuntimeError: Demucs の実行に失敗した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合。
 
     Note:
         分離済みステムは ``results/decompose/`` に WAV としてコピーされる。
         ``numpy`` および ``librosa`` を関数内で遅延インポートする。
+        キャンセルが効くのは、Demucs の実行中（子プロセスを kill する）と、パートとパートの間。
+        1 つのパートを音符にしている最中は止められない。
     """
     import numpy as np
     import librosa
+    import background_jobs
+
+    if job is None:
+        job = background_jobs.detached()
 
     # BPM自動検出
     if bpm is None:
+        job.enter_stage("tempo")
         y_full, sr_full = librosa.load(input_path, sr=22050, mono=True, duration=30)
         tempo, _ = librosa.beat.beat_track(y=y_full, sr=sr_full)
         bpm = int(round(float(np.atleast_1d(tempo)[0])))
         bpm = max(60, min(200, bpm))
 
     # 1. Demucs 分離
-    from separate import deep_separate
+    from separate import deep_separate, STEM_LABELS
     import shutil
     from pathlib import Path
 
@@ -690,14 +717,24 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
         segment=segment,
         jobs=jobs,
         recursive_depth=1,
+        job=job,
     )
 
     # 2. 各ステムを解析
+    job.enter_stage("transcribe")
     stems = {}
-    for stem_name, stem_path in stem_paths.items():
+    for index, (stem_name, stem_path) in enumerate(stem_paths.items()):
+        # パートの切れ目でだけキャンセルを見る。進み具合は「済んだパートの数」
+        job.check_cancelled()
+        job.set_label(
+            f"各パートを音符にしています（{index + 1}/{len(stem_paths)}: {STEM_LABELS.get(stem_name, stem_name)}）"
+        )
+        job.set_progress(index / len(stem_paths))
+
         stem_path = str(stem_path)
         # 保存用にコピー
         dst = results_dir / f"{stem_name}.wav"
+        job.remove_on_abort(dst)
         shutil.copy2(stem_path, str(dst))
 
         stem_data = {
@@ -722,6 +759,7 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
 
         stems[stem_name] = stem_data
 
+    job.set_progress(1.0)
     return {
         "bpm": bpm,
         "stems": stems,

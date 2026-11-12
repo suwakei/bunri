@@ -33,6 +33,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `run_web.py` | API サーバの起動スクリプト。デスクトップアプリが sidecar として起動する（`--sidecar`）。開発用に単体でも起動できる |
 | `web/api.py` | FastAPI バックエンド API（API だけ。画面は配らない） |
+| `web/job_routes.py` | ジョブの API（`/api/jobs…`）と、時間のかかる API を `?async=1` でジョブとして始めるための共通処理（`dispatch`） |
 | `separate.py` | Demucs 音源分離（htdemucs標準） |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
@@ -51,7 +52,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
 | `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
-| `_demucs_runner.py` | torchaudio 保存パッチ |
+| `_demucs_runner.py` | Demucs を子プロセスとして動かすスクリプト（torchaudio 保存パッチ。API から起動されたときは `demucs_progress` で進み具合を報告する） |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
 | `guide_cache.py` | 作った再現ガイドの保存（同じ条件なら Claude を呼ばない）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
@@ -61,6 +62,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `coach_explain.py` | 差分コーチ（第3層）の言語化。差分の事実を Claude に渡して「どんな傾向か・なぜと考えられるか・まず何を見直すか」にする。出力は Structured Outputs で形を固定し、事実と突き合わせて検証する。保存・使用量の記録・1 日の上限は第2層と共通 |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
+| `background_jobs.py` | 時間のかかる処理（ジョブ）を 1 つずつ裏で動かし、ステージ・進み具合・経過時間を持ち、キャンセルと書きかけの出力の削除を受け持つ（FastAPI に依存しない）。約束は [docs/jobs.md](../docs/jobs.md) |
+| `demucs_progress.py` | Demucs の子プロセスとのやり取り（子の側で進み具合をイベントとして出し、親の側でジョブに伝える。親が居なくなったら子は自分で終わる） |
 
 `backend/` の外:
 

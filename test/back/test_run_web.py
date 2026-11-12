@@ -153,3 +153,42 @@ class TestSidecar:
                 proc.kill()
                 proc.wait(timeout=10)
             proc.stdout.close()
+
+    def test_親が居なくなると_動いているジョブを止めて書きかけの出力を消す(self, tmp_path):
+        """ジョブが動かしている子プロセスを残さず、途中まで書いた出力も残さない（サーバは起動しない）"""
+        partial = tmp_path / "partial.wav"
+        code = (
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(BACKEND_DIR)!r})\n"
+            "import run_web, background_jobs\n"
+            "run_web.watch_parent()\n"
+            "def work(job):\n"
+            f"    job.remove_on_abort({str(partial)!r})\n"
+            f"    open({str(partial)!r}, 'wb').write(b'half')\n"
+            "    sleeper = [sys.executable, '-c', \"import time; print('up', flush=True); time.sleep(600)\"]\n"
+            "    job.run_process(sleeper, on_line=lambda line: print(job._process.pid, flush=True))\n"
+            "background_jobs.default_manager().submit('fake', work)\n"
+            "time.sleep(600)\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            child_pid = int(proc.stdout.readline())
+            assert _alive(child_pid) and partial.exists()
+
+            proc.stdin.close()
+            proc.wait(timeout=10)
+            deadline = time.time() + 5
+            while _alive(child_pid) and time.time() < deadline:
+                time.sleep(0.05)
+            assert not _alive(child_pid), "親が居なくなっても、ジョブの子プロセスが残っている"
+            assert not partial.exists(), "書きかけの出力が残っている"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            proc.stdout.close()
+
+    def test_ジョブの仕組みを読み込んでいなくても終了できる(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "background_jobs", raising=False)
+        run_web._stop_jobs()
+        assert "background_jobs" not in sys.modules
