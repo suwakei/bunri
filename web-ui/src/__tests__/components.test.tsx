@@ -121,14 +121,15 @@ describe('WelcomeGuide', () => {
         expect(localStorage.getItem('bunri-guide-seen')).toBe('1');
     });
 
-    it('5つのステップが表示される', () => {
+    it('学ぶ流れの 5 つの段階が、進み具合と同じ名前で表示される', () => {
         localStorage.removeItem('bunri-guide-seen');
         renderWithDaw(<WelcomeGuide />);
-        expect(screen.getByText('音声を追加する')).toBeInTheDocument();
-        expect(screen.getByText('音を作る')).toBeInTheDocument();
-        expect(screen.getByText('ドラムを追加する')).toBeInTheDocument();
-        expect(screen.getByText('タイムラインで配置する')).toBeInTheDocument();
-        expect(screen.getByText('再生・書き出し')).toBeInTheDocument();
+        for (const title of ['曲を取り込む', 'カルテを見る', 'パートに分ける', '打ち込む', '差分で直す']) {
+            expect(screen.getByText(title)).toBeInTheDocument();
+        }
+        expect(document.querySelectorAll('.guide-step')).toHaveLength(5);
+        // 使わないことば (答え・正解、「！」) が無い
+        expect(document.body.textContent).not.toMatch(/答え|正解|！/);
     });
 });
 
@@ -165,7 +166,11 @@ describe('HelpPage', () => {
         expect(screen.getByText('bunri DAW 使い方ガイド')).toBeInTheDocument();
         // 目次とセクション見出しで複数マッチするため getAllByText を使用
         expect(screen.getAllByText('画面の構成').length).toBeGreaterThanOrEqual(1);
-        expect(screen.getAllByText('クイックスタート').length).toBeGreaterThanOrEqual(1);
+        expect(screen.getAllByText('曲を教材にして学ぶ（5 つの段階）').length).toBeGreaterThanOrEqual(1);
+        expect(screen.getAllByText('自由に作る').length).toBeGreaterThanOrEqual(1);
+        // 左パネルは 3 つのタブ
+        expect(document.body.textContent).toContain('学ぶ:');
+        expect(document.body.textContent).toContain('音作り:');
         expect(screen.getAllByText('キーボードとマウスの操作').length).toBeGreaterThanOrEqual(1);
         // 外した機能 (AI のタブ、オートメーション) と、使わないことば (答え・正解) が残っていない
         expect(document.body.textContent).not.toMatch(/オートメーション|AI アシスタント|答え|正解|読込|書出/);

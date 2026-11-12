@@ -23,5 +23,5 @@ test('ファイル名に ../ を含むアップロードは、API が拒否す�
 
 test('使い方の画面が開く', async ({ page }) => {
     await page.goto('/help');
-    await expect(page.getByText('クイックスタート').first()).toBeVisible();
+    await expect(page.getByText('曲を教材にして学ぶ（5 つの段階）').first()).toBeVisible();
 });
