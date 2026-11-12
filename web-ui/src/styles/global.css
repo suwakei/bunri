@@ -2253,3 +2253,362 @@ button.link-btn:hover {
 .usage-table { width: 100%; font-size: 12px; border-collapse: collapse; margin: 6px 0 8px; }
 .usage-table th { text-align: left; font-weight: 400; color: var(--text-mid); padding: 2px 4px 2px 0; }
 .usage-table td { text-align: right; white-space: nowrap; padding: 2px 0; }
+
+
+/* ---- 練習画面 (components/PracticeView.tsx) ----
+   タイムライン・左パネル・進み具合の段は隠すだけで外さない (ピアノロールと再生エンジンを作り直さないため)。
+   中央エリアを格子に組み替える: 見出し / ピアノロール + 右の一覧 / 下の操作 */
+#daw-layout.practice-mode #left-panel,
+#daw-layout.practice-mode #resize-left,
+#daw-layout.practice-mode #learn-progress {
+    display: none;
+}
+
+#center.practice-mode {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(220px, 24vw, 300px);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "phead phead"
+        "piano side"
+        "pbar pbar";
+}
+
+#center.practice-mode #timeline-area,
+#center.practice-mode #resize-piano,
+#center.practice-mode #ghost-bar {
+    display: none;
+}
+
+#center.practice-mode #piano-roll-area {
+    grid-area: piano;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    border-top: none;
+}
+
+#practice-header {
+    grid-area: phead;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    min-width: 0;
+}
+
+.practice-back {
+    flex-shrink: 0;
+    background: var(--bg-deep);
+    color: var(--text);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.practice-back:hover { border-color: var(--accent); color: var(--accent); }
+
+.practice-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.practice-song { color: var(--text-mid); font-weight: 400; margin-left: 4px; }
+
+.practice-match {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-mid);
+}
+
+.practice-match strong { font-size: 18px; color: var(--accent); font-family: var(--font-mono); }
+.practice-match.stale strong { color: var(--text-dim); }
+.practice-match-delta { color: var(--ok); }
+
+/* 構成・コード・小節の段。左の列は鍵盤の列と同じ幅にして、ピアノロールと横の位置をそろえる */
+#practice-bands {
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+}
+
+.band-row {
+    display: flex;
+    height: 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.band-row:last-child { border-bottom: none; }
+
+.band-label {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-mid);
+    padding-left: 6px;
+    line-height: 20px;
+    border-right: 1px solid var(--border);
+    box-sizing: border-box;
+}
+
+.band-track {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.band-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    will-change: transform;
+}
+
+.band-cell {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 4px;
+    font-size: 11px;
+    line-height: 20px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-left: 1px solid var(--border-light);
+}
+
+.band-section {
+    background: var(--secondary-dim);
+    color: var(--text);
+    border: none;
+    border-left: 2px solid var(--secondary);
+    text-align: left;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.band-section:hover { background: rgba(78, 205, 196, 0.28); }
+.band-sub { color: var(--text-mid); margin-left: 2px; font-size: 10px; }
+.band-chord { color: var(--text); font-family: var(--font-mono); }
+.band-bar { color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; pointer-events: none; }
+.bar-track { cursor: ew-resize; }
+.band-empty { font-size: 11px; color: var(--text-dim); padding-left: 6px; line-height: 20px; }
+
+.loop-range {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--accent-dim);
+    border-left: 2px solid var(--accent);
+    border-right: 2px solid var(--accent);
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.loop-range.off { background: none; border-style: dashed; border-color: var(--text-dim); }
+
+/* 右の一覧 */
+#practice-side {
+    grid-area: side;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    padding: 10px 12px;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#practice-side h3 { font-size: 12px; color: var(--text); }
+#practice-side h3 .area-hint { margin-left: 4px; }
+.practice-hint, .practice-counts { color: var(--text-mid); }
+.practice-pressed { color: var(--text); background: var(--bg-deep); border-left: 2px solid var(--accent); padding: 4px 6px; }
+
+.practice-stale {
+    border: 1px solid var(--warn);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    color: var(--text);
+}
+
+.practice-stale .action-btn { margin-top: 6px; }
+
+.practice-issues { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.issue-btn {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-left: 3px solid var(--border-light);
+    padding: 3px 6px;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.issue-btn:hover, .issue-btn[aria-current="true"] { background: var(--bg-elevated); }
+.issue-btn.issue-missing, .issue-btn.issue-extra { border-left-color: var(--error); }
+.issue-btn.issue-pitch, .issue-btn.issue-octave { border-left-color: var(--warn); }
+.issue-btn.issue-timing, .issue-btn.issue-length { border-left-color: var(--warn); border-left-style: dotted; }
+
+.practice-legend { list-style: none; padding: 8px 0 0; margin: 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; color: var(--text-mid); font-size: 11px; }
+.practice-legend li { display: flex; align-items: center; gap: 6px; }
+
+.legend-swatch {
+    position: relative;
+    flex-shrink: 0;
+    width: 22px;
+    height: 11px;
+    border-radius: 2px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+}
+
+.legend-swatch.ghost-missing { background: var(--ghost-fill); }
+.practice-guide { margin-top: auto; }
+
+/* 下の操作 */
+#practice-controls {
+    grid-area: pbar;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 5px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12px;
+}
+
+.practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; }
+.practice-group { display: inline-flex; align-items: center; gap: 5px; color: var(--text-mid); }
+.practice-group-label { color: var(--text-mid); }
+.practice-radio, .practice-check { display: inline-flex; align-items: center; gap: 3px; color: var(--text); cursor: pointer; }
+
+.practice-transport, .practice-mini {
+    min-width: 28px;
+    height: 24px;
+    background: var(--bg-deep);
+    color: var(--text);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.practice-mini { min-width: 22px; height: 22px; padding: 0 6px; }
+.practice-transport:hover, .practice-mini:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+.bar-input {
+    width: 48px;
+    background: var(--bg-deep);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: var(--font-mono);
+}
+
+#practice-controls select { background: var(--bg-deep); color: var(--text); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; font: inherit; }
+.practice-speed-status { max-width: 320px; }
+.practice-compare, button.action-btn.practice-compare { width: auto; margin: 0 0 0 auto; min-width: 96px; padding: 4px 18px; }
+
+/* ---- 差分の印 (ノートの色)。色だけに頼らず、模様・縁・記号も変える ---- */
+.note-block.diff-ok {
+    border-color: var(--ok);
+    box-shadow: inset 0 0 0 1px var(--ok);
+}
+
+/* 高さが違う: 黄色の塗りに斜線 */
+.note-block.diff-pitch,
+.legend-swatch.diff-pitch {
+    background: repeating-linear-gradient(135deg, var(--warn) 0 4px, var(--accent-deep) 4px 7px);
+    border-color: var(--warn);
+}
+
+/* 位置か長さがずれている: 高さは合っているので塗りは変えず、点線の黄色の縁と向きの印 */
+.note-block.diff-rhythm,
+.legend-swatch.diff-rhythm {
+    outline: 2px dotted var(--warn);
+    outline-offset: 1px;
+}
+
+.note-block.diff-rhythm[data-shift="late"]::after,
+.note-block.diff-rhythm[data-shift="early"]::after {
+    position: absolute;
+    top: -1px;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--bg-deep);
+    font-weight: 700;
+}
+
+.note-block.diff-rhythm[data-shift="late"]::after { content: "›"; right: 2px; }
+.note-block.diff-rhythm[data-shift="early"]::after { content: "‹"; left: 2px; }
+
+/* お手本に無い: 赤の塗りと × */
+.note-block.diff-extra,
+.legend-swatch.diff-extra {
+    background: var(--error);
+    border-color: var(--error);
+}
+
+.note-block.diff-extra::after,
+.legend-swatch.diff-extra::after {
+    content: "×";
+    position: absolute;
+    left: 3px;
+    top: -2px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--bg-deep);
+}
+
+.legend-swatch.diff-ok { box-shadow: inset 0 0 0 1px var(--ok); border: 1px solid var(--ok); }
+
+/* お手本の抜け: 赤の破線の縁 */
+.note-ghost.ghost-missing,
+.legend-swatch.ghost-missing {
+    border: 2px dashed var(--error);
+}
+
+.note-ghost.ghost-ok { border-color: var(--ok); opacity: 0.6; }
+
+/* 一覧から押したノートを短く光らせる */
+.note-block.flash,
+.note-ghost.flash {
+    animation: note-flash 0.4s ease-in-out 4 alternate;
+    z-index: 2;
+}
+
+@keyframes note-flash {
+    from { box-shadow: 0 0 0 2px var(--selection); }
+    to { box-shadow: 0 0 10px 3px var(--accent-glow); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .note-block.flash, .note-ghost.flash { animation: none; box-shadow: 0 0 0 2px var(--selection); }
+}
+
+/* 選んでいるノートは、印が付いていても白い縁取りで示す */
+.note-block.selected[class*="diff-"] {
+    border-color: var(--selection);
+    box-shadow: 0 0 0 1px var(--selection), 0 1px 4px rgba(0, 0, 0, 0.3);
+}

@@ -34,7 +34,7 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 |---|---|
 | Song import (取り込む) | One file picker (mp3 / wav / flac / ogg / m4a / aac / aiff). The audio is decoded in the browser and placed on a track named 原曲; if the WebView cannot decode it, `/api/convert/wav` (ffmpeg) is tried, otherwise the status bar says so. The chart is built at the same time, and its tempo, meter and downbeat become the project grid (see "Bar numbering" below) |
 | Part separation | `/api/decompose` with the project grid. One track per part holding the part's audio and its お手本 (`referenceNotes`); the editable notes stay **empty**. Part tracks start muted (the 原曲 already plays everything). Drums keep the transcribed rhythm as notes and are excluded from the diff coach |
-| Practice a part (このパートを練習する) | From the part list or the part's track header: creates/selects the practice track (「ベースの練習」) next to the part, opens it in the piano roll with the part's お手本 as the ghost overlay, scrolls to the お手本's pitch and first bar, sets the diff pair (reference = part, attempt = practice track) and unmutes the part's audio. 「お手本をノートとして取り込む」 (after an inline confirmation) copies the お手本 into the part's own notes |
+| Practice a part (このパートを練習する) | From the part list or the part's track header: creates/selects the practice track (「ベースの練習」) next to the part, opens it in the piano roll with the part's お手本 as the ghost overlay, scrolls to the お手本's pitch and first bar, sets the diff pair (reference = part, attempt = practice track) and unmutes the part's audio, then opens the practice view (below). 「お手本をノートとして取り込む」 (after an inline confirmation) copies the お手本 into the part's own notes |
 | Playhead | A line in the timeline and the piano roll, moved with requestAnimationFrame while playing (idle: checked every 200 ms). Auto-scrolls to keep it visible; 「再生位置を追う」 next to the seek bar turns that off (remembered per viewer) |
 | Chart / guide / diff links | Clicking a chord cell or a section row in the chart, a bar chip in the guide, or an issue in the diff list seeks playback there and scrolls the timeline and piano roll (the diff also scrolls vertically to the pitch) |
 | Bar numbering | Piano roll, timeline ruler, playback, metronome and the diff coach count bars from the project grid: tempo (decimals allowed) and the offset of bar 1 (`gridOffset`, seconds). After importing a song this is the chart's grid, so chart bar N and piano-roll bar N are the same moment. Free use: offset 0 |
@@ -79,6 +79,25 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
   A new operation clears the redo list.
 - Code that changes the project wraps the change in the store's `record(label, fn)` / `recordAsync` / `beginEdit`
   (`lib/store.tsx`).
+
+#### Practice view (練習画面)
+
+Opened by 「このパートを練習する」, a practice track's 練習画面 button, or its menu (練習画面で開く); left with
+「← アレンジに戻る」 or Esc. The timeline, left panel and progress bar are hidden with CSS (not unmounted, so the piano roll
+and the audio engine keep their state); the piano roll fills the centre with the same `PianoRollEngine`. Leaving restores
+the piano roll's open track, zoom and scroll, the timeline scroll, the お手本 overlay choice and the MIDI record mode.
+
+| Part | Detail |
+|---|---|
+| Header | ← アレンジに戻る, 練習: part (song file), 一致 N% (from the last 比べる; greyed when stale). A slot for 「前回 +8%」 is left for the learning-history PR |
+| Bands | 構成 / コード / 小節, positioned from seconds via `lib/grid.ts` with the piano roll's step width and scroll (`PianoRollEngine.onView`). With the chart grid applied, chart bar N and piano-roll bar N coincide, so a chord cell's left edge is on the bar line. Dragging on 小節 sets the loop; clicking a section sets the loop to it |
+| Loop (区間ループ) | Bars (inclusive), bar inputs, ‹ › (or `[` `]`), L toggles. The engine schedules one pass at a time at exact AudioContext times with 1.5 s lookahead (`lib/loop.ts` + `AudioEngine._playLoop`): clips are started with `start(when, offset, duration)` and 4 ms edge fades, notes and metronome clicks per pass, so passes join without gaps and the playhead (`getCurrentTime`) wraps. Shown dimmed outside the range in the piano roll and as a gold strip in the timeline ruler (also after leaving) |
+| Speed (速度) | 50/60/75/90/100 %, pitch preserved. The part's audio for the loop region (plus 0.1 s margins) is time-stretched once per speed with WSOLA (`lib/stretch.ts`) in a Web Worker (`lib/stretch.worker.ts`, same-origin, no CSP change) and cached (last 3, `lib/practice-audio.ts`). Notes and metronome follow by tempo scaling. While preparing, playback stays at 100 % with a message; without a loop the speed does not apply (stretching a whole song would hold 2× its audio in memory at 50 %). Measured on the dev Mac (Node, stereo 44.1 kHz): 8 s region → 43 ms at 50 %, 16 s → 138 ms, 30 s → 175 ms. `playbackRate` is not used because it lowers the pitch |
+| Listen (聴く) | パート / 自分 / 両方 via `AudioEngine.listenOverride` (playback only; track mute/solo, the project and the undo history are untouched; WAV export still follows mute/solo). お手本 見せる / 隠す switches the overlay |
+| Input (入力) | マウス / MIDI ステップ / MIDI リアルタイム, driving the one `useMidiInput` instance the centre area owns (the normal piano-roll header uses the same). Step input starts at the loop start and stops at its end. Real-time recording in a loop **overdubs**: notes are added on every pass (an identical pitch at the same step is not added twice), each pass is its own undo entry, and a note held across the loop end is cut at the end. Overdub was chosen over replace so that a pass where you only listen, or play part of the phrase, does not erase earlier notes |
+| Compare (比べる) | Diffs the notes starting inside the loop (or the whole track), colours notes (see [coach-diff-design.md](coach-diff-design.md) 「練習画面」), lists 「この区間の指摘」 in time order; clicking an issue selects and flashes its notes and scrolls there, clicking a coloured note shows its issue. Editing notes or the loop clears the colours and shows 「もう一度比べてください」 |
+| Keys | Space play/pause (header), L, `[` `]`, Esc (not while typing, a dialog or a menu is open, or the piano roll used Esc to clear a selection) |
+| State | `practice` in the store (`PracticeState`: partId, trackId, loop {startBar, endBar, enabled}, speed, listen, showGhost, input) — small and JSON-serialisable; kept after leaving so re-entering resumes. Diff results are not kept |
 
 #### Not implemented
 

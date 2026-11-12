@@ -11,6 +11,7 @@ import { LEFT_WIDTH_DEFAULT, LEFT_WIDTH_MAX, LEFT_WIDTH_MIN, readStored, writeSt
 import { UndoHistory, type PushOptions } from './history';
 import { HISTORY_BUDGET, HISTORY_LIMIT, applyProject, captureProject, projectsEqual, snapshotCost, type ProjectSnapshot } from './project-snapshot';
 import type { LearnAttempt } from './learn-history';
+import { clampLoop, defaultPracticeState, type PracticeState } from './practice';
 
 /**
  * いま開いているプロジェクト（lib/project-actions.ts）。
@@ -175,6 +176,26 @@ export interface DawContextType {
     soundTab: SoundTab;
     /** @param tab - 開く段 */
     setSoundTab: (tab: SoundTab) => void;
+
+    // ---- 練習画面（components/PracticeView.tsx、lib/practice.ts） ----
+    /**
+     * 練習画面の状態（区間・速度・聴く・お手本・入力）。練習画面を閉じても残す（もう一度開いたとき、同じ区間から）。
+     * 小さく、JSON にできる形にしてある（保存は次の段階で足す）。まだ練習画面を開いていなければ null
+     */
+    practice: PracticeState | null;
+    /** 練習画面を開いているか */
+    practiceOpen: boolean;
+    /**
+     * 練習画面を開く。同じパートと練習のトラックの状態が残っていれば、それを使う（区間・速度など）。
+     * 無ければ、お手本の最初のノートが在る区間から始める。プロジェクトは変えない（元に戻す履歴に残らない）。
+     * @param partId - お手本を持つパートのトラック
+     * @param trackId - 打ち込む練習のトラック
+     */
+    openPractice: (partId: number, trackId: number) => void;
+    /** 練習画面の状態を一部だけ変える（区間は収まる形に直す）。 */
+    updatePractice: (patch: Partial<PracticeState>) => void;
+    /** 練習画面を閉じて、ふだんの画面（アレンジ）に戻る。状態は残す */
+    closePractice: () => void;
     /** 左パネルの幅（px）。利用者が境目を動かして変えられる。この画面を開いた人ごとに覚える */
     leftWidth: number;
     /** @param px - 新しい幅。範囲（LEFT_WIDTH_MIN〜MAX）に収める */
@@ -352,6 +373,8 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const [isPlaying, setIsPlaying] = useState(false);
     const [metronomeEnabled, setMetronomeEnabled] = useState(false);
     const [trackVersion, setTrackVersion] = useState(0);
+    const [practice, setPractice] = useState<PracticeState | null>(null);
+    const [practiceOpen, setPracticeOpen] = useState(false);
 
     // PianoRoll / Timeline の参照を保持
     const pianoRollRef = useRef<any>(null);
@@ -448,6 +471,26 @@ export function DawProvider({ children }: { children: ReactNode }) {
     }, [setBpm, setGridOffset]);
 
     const openSongPicker = useCallback(() => songPickerRef.current?.click(), []);
+
+    const openPractice = useCallback((partId: number, trackId: number) => {
+        const part = engine.getTrack(partId);
+        if (!part || !engine.getTrack(trackId)) return;
+        setPractice(prev => (prev && prev.partId === partId && prev.trackId === trackId
+            ? prev
+            : defaultPracticeState(partId, trackId, part.referenceNotes ?? [], engine.grid, chart)));
+        setPracticeOpen(true);
+    }, [chart]);
+
+    const updatePractice = useCallback((patch: Partial<PracticeState>) => {
+        setPractice(prev => {
+            if (!prev) return prev;
+            const next = { ...prev, ...patch };
+            if (patch.loop) next.loop = clampLoop(patch.loop);
+            return next;
+        });
+    }, []);
+
+    const closePractice = useCallback(() => setPracticeOpen(false), []);
 
     const setCoachPair = useCallback((pair: CoachPair) => {
         setCoachPairState(pair);
@@ -687,6 +730,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
         pianoRollRef, timelineRef,
         leftTab, setLeftTab, learnTab, setLearnTab, openLearn, soundTab, setSoundTab,
         leftWidth, setLeftWidth,
+        practice, practiceOpen, openPractice, updatePractice, closePractice,
         gridOffset, setGridOffset, applyChartGrid,
         songFile, setSongFile, autoBpm, setAutoBpm, songPickerRef, openSongPicker,
         ghostChoice, setGhostChoice,
