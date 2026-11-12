@@ -851,8 +851,15 @@ class PianoRollEngine {
         if (dir > 0) return levels.find(v => v > current) ?? levels[levels.length - 1];
         return [...levels].reverse().find(v => v < current) ?? levels[0];
     }
-    /** 横の大きさを 1 段階変える。@param anchorX - 中心にする位置 (見えている範囲の左からの px。省略時は真ん中) */
-    zoomX(dir, anchorX) { this.setZoom(this._nextLevel(ZOOM_X_LEVELS, this.stepWidth, dir), this.noteHeight, { x: anchorX }); }
+    /**
+     * 横の大きさを 1 段階変える。
+     * @param anchorX - 中心にする位置 (見えている範囲の左からの px)。省略時は真ん中。ただし曲の頭を見ているときは
+     *   左端にする (広げたときに 1 小節目が左へ逃げないように)
+     */
+    zoomX(dir, anchorX) {
+        const x = anchorX ?? (this.wrap && this.wrap.scrollLeft === 0 ? 0 : undefined);
+        this.setZoom(this._nextLevel(ZOOM_X_LEVELS, this.stepWidth, dir), this.noteHeight, { x });
+    }
     /** 縦の大きさを 1 段階変える。 */
     zoomY(dir) { this.setZoom(this.stepWidth, this._nextLevel(ZOOM_Y_LEVELS, this.noteHeight, dir)); }
     /**

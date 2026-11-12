@@ -435,6 +435,8 @@ test.describe('ピアノロールの表示の大きさ', () => {
 
         await check(20, 14);
         await page.getByRole('button', { name: '横に広げる' }).click();
+        // 曲の頭を見ているときは、広げても 1 小節目が左へ逃げない
+        expect(await page.locator('#piano-grid-wrap').evaluate((el) => el.scrollLeft)).toBe(0);
         await check(24, 14);
         await page.getByRole('button', { name: '縦に広げる' }).click();
         await check(24, 17);
