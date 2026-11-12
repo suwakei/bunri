@@ -56,7 +56,29 @@ export const statusText = (page: Page) => page.locator('#status-text');
 
 /** 左パネルのタブを開く。 */
 export async function openTab(page: Page, label: string): Promise<void> {
-    await page.locator('#panel-tabs').getByRole('button', { name: label, exact: true }).click();
+    await page.locator('#panel-tabs').getByRole('tab', { name: label, exact: true }).click();
+}
+
+/**
+ * 鳴らされた音 (オシレータ) の周波数を、鳴らした順に記録する仕掛けを入れる。画面を開く前に呼ぶ。
+ * 試し聴き (ノートを置いたとき、鍵盤を押したとき) で、どの高さが鳴ったかを確かめるのに使う。
+ * 記録は `soundedFrequencies` で読む。
+ */
+export async function recordOscillators(page: Page): Promise<void> {
+    await page.addInitScript(() => {
+        const log: number[] = [];
+        (window as unknown as { __oscillators: number[] }).__oscillators = log;
+        const start = OscillatorNode.prototype.start;
+        OscillatorNode.prototype.start = function (this: OscillatorNode, ...args: [number?]) {
+            log.push(Math.round(this.frequency.value * 100) / 100);
+            return start.apply(this, args);
+        };
+    });
+}
+
+/** `recordOscillators` を入れてから鳴らされた音の周波数 (Hz。小数 2 桁)。 */
+export function soundedFrequencies(page: Page): Promise<number[]> {
+    return page.evaluate(() => (window as unknown as { __oscillators: number[] }).__oscillators.slice());
 }
 
 /** タイムラインの各トラックの、名前とクリップ名の一覧。 */

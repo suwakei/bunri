@@ -1,5 +1,5 @@
 /**
- * ヘッダの保存・読込・書出・再生と、画面の下端のステータスバー。
+ * ヘッダの保存・読み込む・WAV 書き出し・再生 (ボタンと Space キー) と、画面の下端のステータスバー。
  */
 import { expect, test, type Download, type Page } from '@playwright/test';
 import { openDaw, openTab, readWav, statusText, trackSummary } from './helpers';
@@ -32,7 +32,7 @@ test('ステータスバーが画面の中に見えていて、画面全体が�
     expect(layout.top).toBeGreaterThan(layout.viewport - 60);
     expect(layout.page).toBeLessThanOrEqual(layout.viewport);
     // 操作の結果は、ここに出る
-    await page.getByRole('button', { name: 'MIDI', exact: true }).click();
+    await page.getByRole('button', { name: 'MIDI 書き出し', exact: true }).click();
     await expect(statusText(page)).toBeInViewport();
     await expect(statusText(page)).toContainText('書き出すノートがありません');
 });
@@ -40,7 +40,7 @@ test('ステータスバーが画面の中に見えていて、画面全体が�
 test('ボタンにマウスを載せると、ステータスバーの右に説明が出る', async ({ page }) => {
     await openDaw(page);
     await page.getByRole('button', { name: '保存', exact: true }).hover();
-    await expect(page.locator('#hint-text')).toHaveText('プロジェクト保存');
+    await expect(page.locator('#hint-text')).toHaveText('プロジェクト（テンポ・トラック・ノート）を保存します');
     await expect(page.locator('#hint-text')).toBeInViewport();
 });
 
@@ -62,7 +62,7 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
     await page.reload();
     await page.getByText('準備完了').waitFor();
     await expect(page.locator('#tracks-container .track-row')).toHaveCount(2);
-    await page.getByRole('button', { name: '読込', exact: true }).click();
+    await page.getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(statusText(page)).toContainText('を読み込みました');
 
     await expect(page.locator('#transport input[type="number"]')).toHaveValue('96');
@@ -94,17 +94,17 @@ test('トラックをピアノロールで開いたまま読み込んでも、�
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveCount(0);
 
     // トラックを開いたまま読み込む。以前は、開いていたトラックだけ、画面に出ていた内容 (空) に戻った
-    await page.getByRole('button', { name: '読込', exact: true }).click();
+    await page.getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(statusText(page)).toContainText('を読み込みました');
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('2');
     await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#note-layer .note-block')).toHaveCount(2);
 });
 
-test.describe('書出', () => {
+test.describe('WAV 書き出し', () => {
     test('何も無いときは、書き出さずに理由を出す', async ({ page }) => {
         await openDaw(page);
-        await page.getByRole('button', { name: '書出', exact: true }).click();
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
         await expect(statusText(page)).toContainText('書き出すものがありません');
     });
 
@@ -112,7 +112,7 @@ test.describe('書出', () => {
         await openDaw(page);
         await placeNotes(page);
         const download = page.waitForEvent('download');
-        await page.getByRole('button', { name: '書出', exact: true }).click();
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
         const file = await download;
         expect(file.suggestedFilename()).toBe('bunri_mix.wav');
         const wav = readWav(await downloadBytes(file));
@@ -120,7 +120,7 @@ test.describe('書出', () => {
         expect(wav.seconds).toBeCloseTo(1.5, 1);
         expect(wav.channels).toBe(2);
         expect(wav.peak).toBeGreaterThan(0.05);
-        await expect(statusText(page)).toHaveText('WAVファイルを書き出しました');
+        await expect(statusText(page)).toHaveText('WAV ファイルを書き出しました');
     });
 
     test('クリップの在るトラックをミックスした WAV が落ちてくる', async ({ page }) => {
@@ -130,7 +130,7 @@ test.describe('書出', () => {
         await page.getByRole('button', { name: /ドラム生成/ }).click();
         await expect(page.locator('#tracks-container .clip')).toHaveCount(1);
         const download = page.waitForEvent('download');
-        await page.getByRole('button', { name: '書出', exact: true }).click();
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
         const wav = readWav(await downloadBytes(await download));
         expect(wav.seconds).toBeGreaterThan(1.9);
         expect(wav.peak).toBeGreaterThan(0.05);
@@ -143,7 +143,7 @@ test.describe('再生', () => {
         await placeNotes(page);
         await expect(timeDisplay(page)).toHaveText('0:00.0');
         await page.locator('#btn-play').click();
-        await expect(statusText(page)).toHaveText('再生中...');
+        await expect(statusText(page)).toHaveText('再生中…');
         await expect(page.locator('#btn-play')).toHaveText('⏸');
         await expect(timeDisplay(page)).not.toHaveText('0:00.0');
         // 下のシークバーも、曲の長さ (1.5 秒) に対して進む
@@ -185,5 +185,148 @@ test.describe('再生', () => {
         await button.click();
         await expect(statusText(page)).toHaveText('メトロノーム OFF');
         await expect(button).not.toHaveClass(/active/);
+    });
+});
+
+test.describe('Space キー', () => {
+    test('Space で再生と一時停止が切り替わる', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        await page.keyboard.press('Space');
+        await expect(statusText(page)).toHaveText('再生中…');
+        await expect(page.locator('#btn-play')).toHaveText('⏸');
+        await expect(timeDisplay(page)).not.toHaveText('0:00.0');
+        await page.keyboard.press('Space');
+        await expect(statusText(page)).toHaveText('一時停止');
+        await expect(page.locator('#btn-play')).toHaveText('▶');
+    });
+
+    test('入力欄で文字を打っているときは、Space で再生が始まらない', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        await page.getByLabel('BPM', { exact: true }).click();
+        await page.keyboard.press('Space');
+        await page.getByLabel('拍子').focus();
+        await page.keyboard.press('Space');
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#btn-play')).toHaveText('▶');
+        await expect(timeDisplay(page)).toHaveText('0:00.0');
+    });
+
+    test('ボタンをマウスで押した直後に Space を押しても、二重に切り替わらない', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        // ▶ をマウスで押す → 再生。ボタンにフォーカスが残っていても、Space は 1 回ぶんだけ効く
+        await page.locator('#btn-play').click();
+        await expect(page.locator('#btn-play')).toHaveText('⏸');
+        await page.keyboard.press('Space');
+        await expect(statusText(page)).toHaveText('一時停止');
+        await expect(page.locator('#btn-play')).toHaveText('▶');
+        // 少し待っても、勝手に再生へ戻らない (キーを離したときに、ボタンがもう一度押されていない)
+        await page.waitForTimeout(300);
+        await expect(page.locator('#btn-play')).toHaveText('▶');
+
+        // メトロノームをマウスで押した後の Space も、メトロノームではなく再生に効く
+        const metronome = page.getByTitle('メトロノーム', { exact: true });
+        await metronome.click();
+        await expect(metronome).toHaveClass(/active/);
+        await page.keyboard.press('Space');
+        await expect(page.locator('#btn-play')).toHaveText('⏸');
+        await expect(metronome).toHaveClass(/active/);
+    });
+
+    test('キーボードで選んだボタンの上では、Space はそのボタンを押す (再生は切り替わらない)', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        // Tab キーで操作している状態にしてから、メトロノームのボタンへ移る
+        await page.keyboard.press('Tab');
+        const metronome = page.getByTitle('メトロノーム', { exact: true });
+        await metronome.focus();
+        await page.keyboard.press('Space');
+        await expect(metronome).toHaveClass(/active/);
+        await expect(statusText(page)).toHaveText('メトロノーム ON');
+        await expect(page.locator('#btn-play')).toHaveText('▶');
+    });
+});
+
+test.describe('ステータスバーの知らせ', () => {
+    test('失敗の知らせは色が変わり、読み上げの対象になる。次の知らせで元に戻る', async ({ page }) => {
+        await openDaw(page);
+        await expect(statusText(page)).toHaveAttribute('role', 'status');
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
+        await expect(statusText(page)).toContainText('書き出すものがありません');
+        await expect(statusText(page)).toHaveAttribute('role', 'alert');
+        await expect(statusText(page)).toHaveClass(/error/);
+        // --error の色 (#e87878)
+        await expect(statusText(page)).toHaveCSS('color', 'rgb(232, 120, 120)');
+        await expect(page.getByRole('alert')).toContainText('書き出すものがありません');
+
+        await page.getByRole('button', { name: '+ トラック追加' }).click();
+        await expect(statusText(page)).toHaveText('「Track 3」を追加しました');
+        await expect(statusText(page)).toHaveAttribute('role', 'status');
+        await expect(statusText(page)).not.toHaveClass(/error/);
+    });
+
+    test('長い知らせは 1 行に収まり、はみ出すぶんは … になる (全文は title で読める)', async ({ page }) => {
+        await page.setViewportSize({ width: 700, height: 720 });
+        await openDaw(page);
+        const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
+        await page.getByRole('button', { name: '保存', exact: true }).click();
+        expect((await saved).status()).toBe(200);
+        await page.getByRole('button', { name: '読み込む', exact: true }).click();
+        await expect(statusText(page)).toContainText('を読み込みました');
+        // マウスを載せたままだと右側に説明が出るので、ボタンから外す
+        await page.mouse.move(350, 400);
+        const layout = await statusText(page).evaluate((el) => {
+            const style = getComputedStyle(el);
+            const bar = document.querySelector('#status-bar')!.getBoundingClientRect();
+            const rect = el.getBoundingClientRect();
+            return {
+                cut: el.scrollWidth > el.clientWidth, overflow: style.textOverflow, wrap: style.whiteSpace,
+                barHeight: bar.height, inside: rect.right <= bar.right && rect.left >= bar.left,
+                title: el.getAttribute('title'), text: el.textContent,
+            };
+        });
+        expect(layout.cut).toBe(true);
+        expect(layout.overflow).toBe('ellipsis');
+        expect(layout.wrap).toBe('nowrap');
+        expect(layout.barHeight).toBe(28);
+        expect(layout.inside).toBe(true);
+        expect(layout.title).toBe(layout.text);
+    });
+});
+
+test.describe('ソロと WAV 書き出し', () => {
+    /** WAV を書き出して、いちばん大きい振幅を返す。 */
+    async function exportPeak(page: Page): Promise<number> {
+        const download = page.waitForEvent('download');
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
+        return readWav(await downloadBytes(await download)).peak;
+    }
+
+    test('ソロにしたトラックだけが書き出される (再生と同じ)', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        // 何もソロにしていなければ、Track 1 のノートが鳴る
+        expect(await exportPeak(page)).toBeGreaterThan(0.05);
+
+        // ノートの無い Track 2 をソロにする → Track 1 は鳴らないので、無音になる。
+        // 以前は、書き出しだけがソロを無視して、Track 1 の音が入っていた
+        await page.getByRole('button', { name: '「Track 2」をソロ' }).click();
+        expect(await exportPeak(page)).toBeLessThan(0.001);
+
+        // Track 1 もソロにすると、また鳴る
+        await page.getByRole('button', { name: '「Track 1」をソロ' }).click();
+        expect(await exportPeak(page)).toBeGreaterThan(0.05);
+    });
+
+    test('ミュートしたトラックしか無いときは、書き出さずに理由を出す', async ({ page }) => {
+        await openDaw(page);
+        await placeNotes(page);
+        await page.getByRole('button', { name: '「Track 1」をミュート' }).click();
+        await page.getByRole('button', { name: '「Track 2」をミュート' }).click();
+        await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
+        await expect(statusText(page)).toContainText('鳴らすトラックがありません');
+        await expect(statusText(page)).toHaveAttribute('role', 'alert');
     });
 });

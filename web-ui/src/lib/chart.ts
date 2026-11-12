@@ -160,9 +160,9 @@ export function confidenceTier(value: number | null | undefined): ConfidenceTier
 
 /** 確信度の段階ごとの表示ラベルと色 */
 export const TIER_DISPLAY: Record<ConfidenceTier, { label: string; color: string }> = {
-    certain: { label: '確実', color: 'var(--secondary)' },
+    certain: { label: '確実', color: 'var(--ok)' },
     likely: { label: 'たぶん', color: 'var(--accent)' },
-    unsure: { label: '自信なし', color: 'var(--danger)' },
+    unsure: { label: '自信なし', color: 'var(--error)' },
 };
 
 /** セクションの提案ラベルを日本語表示にする対応表 */

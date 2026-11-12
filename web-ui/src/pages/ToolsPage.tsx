@@ -1,9 +1,12 @@
 /**
- * bunri DAW — ツールページ（音源分離・編集・エフェクト・変換等）
+ * bunri DAW — ツールページ（パート分離・編集・エフェクト・変換等）
+ *
+ * 文は docs/ui-terms.md の決まりに合わせる。色は styles/global.css のトークンを使う。
+ * 時間のかかる処理を始めるボタンは、その処理が走っているあいだ押せなくする（二重に始めないため）。
  */
 import React, { useState, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { apiFetch, backendUrl, errorDetail } from '../lib/api';
+import { apiFetch, backendUrl, describeError, errorDetail } from '../lib/api';
 import { modelDownloadNotice } from '../lib/models';
 
 interface AudioResult {
@@ -50,53 +53,65 @@ function ResultItem({ result }: { result: AudioResult }) {
     );
 }
 
+/**
+ * 処理の状態の表示。失敗（`type` が `error`）は色を変えて、読み上げの対象にする。
+ *
+ * @param text - 表示する文。空なら何も出さない
+ * @param type - `''`（結果）/ `processing`（処理中）/ `error`（失敗）
+ */
+function StatusLine({ text, type }: { text: string; type: string }) {
+    if (!text) return null;
+    return <div className={`status ${type}`} role={type === 'error' ? 'alert' : 'status'}>{text}</div>;
+}
+
 // ---- スタイル（tools.html 内蔵CSSを移植）----
 const TOOLS_CSS = `
-.tools-page { font-family: 'Outfit','Noto Sans JP',sans-serif; background: #111116; color: #e8e4de; line-height: 1.6; min-height: 100vh; }
+html, body { overflow: auto; height: auto; }
+.tools-page { font-family: var(--font-ui); background: var(--bg-primary); color: var(--text); line-height: 1.6; min-height: 100vh; }
 .tools-page .container { max-width:900px; margin:0 auto; padding:24px; }
-.tools-page .page-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; padding-bottom:16px; border-bottom:2px solid #2a2a35; }
-.tools-page .page-header h1 { font-size:22px; color:#d4a44c; }
+.tools-page .page-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; padding-bottom:16px; border-bottom:2px solid var(--border); }
+.tools-page .page-header h1 { font-size:22px; color:var(--accent); }
 .tools-page .nav-links { display:flex; gap:8px; }
-.tools-page .nav-links a { background:#1c1c25; border:1px solid #2a2a35; color:#e8e4de; padding:6px 16px; border-radius:6px; font-size:13px; text-decoration:none; cursor:pointer; }
-.tools-page .nav-links a:hover { background:#d4a44c; color:#fff; }
+.tools-page .nav-links a { background:var(--bg-panel); border:1px solid var(--border); color:var(--text); padding:6px 16px; border-radius:6px; font-size:13px; text-decoration:none; cursor:pointer; }
+.tools-page .nav-links a:hover { background:var(--accent); color:var(--bg-deep); }
 .tools-page .tool-tabs { display:flex; gap:4px; margin-bottom:24px; flex-wrap:wrap; }
-.tools-page .tool-tabs button { background:#1c1c25; border:1px solid #2a2a35; color:#9e9a92; padding:10px 20px; border-radius:6px 6px 0 0; font-size:13px; cursor:pointer; font-weight:600; }
-.tools-page .tool-tabs button:hover { color:#e8e4de; }
-.tools-page .tool-tabs button.active { background:#17171e; color:#d4a44c; border-bottom-color:#17171e; }
-.tools-page .tool-panel { display:none; background:#17171e; border:1px solid #2a2a35; border-radius:0 8px 8px 8px; padding:24px; }
+.tools-page .tool-tabs button { background:var(--bg-panel); border:1px solid var(--border); color:var(--text-mid); padding:10px 20px; border-radius:6px 6px 0 0; font-size:13px; cursor:pointer; font-weight:600; }
+.tools-page .tool-tabs button:hover { color:var(--text); }
+.tools-page .tool-tabs button.active { background:var(--bg-secondary); color:var(--accent); border-bottom-color:var(--bg-secondary); }
+.tools-page .tool-panel { display:none; background:var(--bg-secondary); border:1px solid var(--border); border-radius:0 8px 8px 8px; padding:24px; }
 .tools-page .tool-panel.active { display:block; }
-.tools-page .tool-panel h2 { font-size:18px; color:#d4a44c; margin-bottom:8px; }
-.tools-page .desc { font-size:13px; color:#9e9a92; margin-bottom:20px; line-height:1.7; }
+.tools-page .tool-panel h2 { font-size:18px; color:var(--accent); margin-bottom:8px; }
+.tools-page .desc { font-size:13px; color:var(--text-mid); margin-bottom:20px; line-height:1.7; }
 .tools-page .form-group { margin-bottom:16px; }
-.tools-page .form-group label { display:block; font-size:12px; color:#9e9a92; margin-bottom:4px; font-weight:600; }
-.tools-page .form-group input, .tools-page .form-group select { width:100%; background:#1c1c25; border:1px solid #2a2a35; color:#e8e4de; padding:8px 10px; border-radius:4px; font-size:13px; }
+.tools-page .form-group label { display:block; font-size:12px; color:var(--text-mid); margin-bottom:4px; font-weight:600; }
+.tools-page .form-group input, .tools-page .form-group select { width:100%; background:var(--bg-panel); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:4px; font-size:13px; }
 .tools-page .form-row { display:flex; gap:12px; }
 .tools-page .form-row .form-group { flex:1; }
-.tools-page .btn { background:#d4a44c; color:#fff; border:none; padding:10px 24px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600; width:100%; }
-.tools-page .btn:hover { background:#e8bc6a; }
+.tools-page .btn { background:var(--accent); color:var(--bg-deep); border:none; padding:10px 24px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600; width:100%; }
+.tools-page .btn:hover { background:var(--accent-hover); color:var(--bg-deep); }
 .tools-page .btn:disabled { opacity:0.5; cursor:not-allowed; }
-.tools-page .result-area { margin-top:20px; padding:16px; border-radius:6px; background:#1c1c25; border:1px solid #2a2a35; }
-.tools-page .result-area h3 { font-size:14px; color:#d4a44c; margin-bottom:8px; }
+.tools-page .result-area { margin-top:20px; padding:16px; border-radius:6px; background:var(--bg-panel); border:1px solid var(--border); }
+.tools-page .result-area h3 { font-size:14px; color:var(--accent); margin-bottom:8px; }
 .tools-page .result-area audio { width:100%; margin:8px 0; }
-.tools-page .result-area a { color:#e8bc6a; text-decoration:none; font-size:13px; }
-.tools-page .result-item { margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #2a2a35; }
+.tools-page .result-area a { color:var(--accent-hover); text-decoration:none; font-size:13px; }
+.tools-page .result-item { margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--border); }
 .tools-page .result-item:last-child { border-bottom:none; }
-.tools-page .result-label { font-size:12px; color:#9e9a92; font-weight:600; margin-bottom:4px; }
-.tools-page .status { margin-top:12px; font-size:13px; color:#9e9a92; min-height:20px; }
-.tools-page .status.error { color:#e74c3c; }
-.tools-page .status.processing { color:#d4a44c; }
-.tools-page .progress-bar { height:4px; background:#1c1c25; border-radius:2px; margin-top:8px; overflow:hidden; }
-.tools-page .progress-bar .fill { height:100%; background:#d4a44c; border-radius:2px; animation: tools-indeterminate 1.5s infinite ease-in-out; width:30%; }
+.tools-page .result-label { font-size:12px; color:var(--text-mid); font-weight:600; margin-bottom:4px; }
+.tools-page .status { margin-top:12px; font-size:13px; color:var(--text-mid); min-height:20px; }
+.tools-page .status.error { color:var(--error); }
+.tools-page .status.processing { color:var(--accent); }
+.tools-page .progress-bar { height:4px; background:var(--bg-panel); border-radius:2px; margin-top:8px; overflow:hidden; }
+.tools-page .progress-bar .fill { height:100%; background:var(--accent); border-radius:2px; animation: tools-indeterminate 1.5s infinite ease-in-out; width:30%; }
 @keyframes tools-indeterminate { 0% { transform:translateX(-100%); } 100% { transform:translateX(400%); } }
-.tools-page .hint { font-size:12px; color:#9e9a92; background:rgba(15,150,228,0.08); border:1px solid rgba(15,150,228,0.15); border-radius:4px; padding:8px 12px; margin:12px 0; line-height:1.6; }
+.tools-page .hint { font-size:12px; color:var(--text-mid); background:var(--bg-panel); border:1px solid var(--border-light); border-radius:4px; padding:8px 12px; margin:12px 0; line-height:1.6; }
 `;
 
 // ---- FXパラメータ定義 ----
 const FX_TOOL_PARAMS: Record<string, FxToolParam[]> = {
-    eq: [{ id: 'low', label: 'Low (dB)', def: 0, min: -12, max: 12 }, { id: 'mid', label: 'Mid (dB)', def: 0, min: -12, max: 12 }, { id: 'high', label: 'High (dB)', def: 0, min: -12, max: 12 }],
-    compressor: [{ id: 'threshold', label: 'Threshold (dB)', def: -20, min: -40, max: 0 }, { id: 'ratio', label: 'Ratio', def: 4, min: 1, max: 20, step: 0.5 }],
-    reverb: [{ id: 'room_size', label: 'Room Size (0-1)', def: 0.5, min: 0, max: 1, step: 0.05 }, { id: 'wet', label: 'Wet (0-1)', def: 0.3, min: 0, max: 1, step: 0.05 }],
-    delay: [{ id: 'delay_ms', label: 'Time (ms)', def: 300, min: 50, max: 2000 }, { id: 'feedback', label: 'Feedback', def: 0.4, min: 0, max: 0.9, step: 0.05 }, { id: 'wet', label: 'Wet', def: 0.3, min: 0, max: 1, step: 0.05 }],
+    eq: [{ id: 'low', label: '低域 (dB)', def: 0, min: -12, max: 12 }, { id: 'mid', label: '中域 (dB)', def: 0, min: -12, max: 12 }, { id: 'high', label: '高域 (dB)', def: 0, min: -12, max: 12 }],
+    compressor: [{ id: 'threshold', label: 'しきい値 (dB)', def: -20, min: -40, max: 0 }, { id: 'ratio', label: '圧縮比', def: 4, min: 1, max: 20, step: 0.5 }],
+    reverb: [{ id: 'room_size', label: '部屋の広さ（0〜1）', def: 0.5, min: 0, max: 1, step: 0.05 }, { id: 'wet', label: 'エフェクト音の量（0〜1）', def: 0.3, min: 0, max: 1, step: 0.05 }],
+    delay: [{ id: 'delay_ms', label: '遅れの時間 (ms)', def: 300, min: 50, max: 2000 }, { id: 'feedback', label: '繰り返しの量', def: 0.4, min: 0, max: 0.9, step: 0.05 }, { id: 'wet', label: 'エフェクト音の量（0〜1）', def: 0.3, min: 0, max: 1, step: 0.05 }],
     normalize: [], volume: [{ id: 'db', label: '音量変更 (dB)', def: 0, min: -20, max: 20 }],
     fade_in: [{ id: 'duration', label: 'フェード時間（秒）', def: 3, min: 0.1, step: 0.1 }],
     fade_out: [{ id: 'duration', label: 'フェード時間（秒）', def: 3, min: 0.1, step: 0.1 }],
@@ -104,6 +119,14 @@ const FX_TOOL_PARAMS: Record<string, FxToolParam[]> = {
     reverse: [], pitch_shift: [{ id: 'semitones', label: '半音数', def: 0, min: -12, max: 12 }],
     time_stretch: [{ id: 'rate', label: '倍率', def: 1, min: 0.25, max: 3, step: 0.05 }],
     speed: [{ id: 'speed', label: '速度倍率', def: 1, min: 0.25, max: 4, step: 0.05 }],
+};
+
+/** エフェクトの日本語の名前（選択肢と、結果の見出しに使う。識別子を画面に出さない）。 */
+const FX_TOOL_LABELS: Record<string, string> = {
+    eq: 'EQ（3 バンド）', compressor: 'コンプレッサー', reverb: 'リバーブ', delay: 'ディレイ',
+    normalize: 'ノーマライズ', volume: '音量変更', fade_in: 'フェードイン', fade_out: 'フェードアウト',
+    pan: 'パン', reverse: 'リバース', pitch_shift: 'ピッチシフト', time_stretch: 'タイムストレッチ',
+    speed: '速度変更',
 };
 
 const EDIT_HINTS: Record<string, string> = {
@@ -118,14 +141,14 @@ const EDIT_HINTS: Record<string, string> = {
 const EDIT_EXTRA_DEFAULTS: Record<string, number> = { copy_range: 0, silence: 2, loop: 3 };
 
 const TABS = [
-    { key: 'decompose', label: '完全分解' },
-    { key: 'separate', label: '音源分離' }, { key: 'analyze', label: '解析' },
+    { key: 'decompose', label: 'パート分離と採譜' },
+    { key: 'separate', label: 'パート分離' }, { key: 'analyze', label: '解析' },
     { key: 'edit', label: '編集' }, { key: 'effects', label: 'エフェクト' },
     { key: 'batch', label: '一括編集' }, { key: 'overlay', label: '音源合成' },
-    { key: 'convert', label: '変換' }, { key: 'wav_optimize', label: 'WAV最適化' },
+    { key: 'convert', label: '変換' }, { key: 'wav_optimize', label: 'WAV 最適化' },
 ];
 
-// ---- 音源分離パネル ----
+// ---- パート分離パネル ----
 function SeparatePanel() {
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
@@ -142,8 +165,8 @@ function SeparatePanel() {
         let apiUrl; const fd = new FormData();
         if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
-        setStatus(`分離中...（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
-        modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分離中') ? prev + notice : prev); });
+        setStatus(`パートに分けています…（${file.name}）`); setStatusType('processing'); setProgress(true); setResults([]); setDisabled(true);
+        modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('パートに分けています') ? prev + notice : prev); });
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
@@ -152,30 +175,30 @@ function SeparatePanel() {
                 const v = info as { label?: string; url: string };
                 return makeAudioResult(v.label || key, v.url);
             });
-            setResults(items); setStatus(`分離完了！${items.length}個のレイヤーに分割されました`); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+            setResults(items); setStatus(`${items.length} 個のパートに分けました`); setStatusType('');
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
         finally { setProgress(false); setDisabled(false); }
     }, []);
 
     return (
         <div className={`tool-panel active`}>
-            <h2>音源分離（Demucs）</h2>
-            <p className="desc">AI（Meta Demucs）が音楽ファイルを楽器パートごとに自動分離します。<br /><strong>CPU処理のため、1曲あたり数分〜十数分かかります。</strong></p>
+            <h2>パート分離</h2>
+            <p className="desc">曲のファイルを、パート（ボーカル・ドラム・ベースなど）に分けます（Demucs による音源分離）。<br /><strong>CPU で処理するため、1 曲あたり数分〜十数分かかります。</strong></p>
             <div className="form-group"><label>音声ファイル</label><input type="file" id="sep-file" accept=".wav,.mp3,.flac,.ogg,.m4a" /></div>
             <div className="form-row">
                 <div className="form-group"><label>モデル</label>
-                    <select id="sep-model"><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6ステム</option></select>
+                    <select id="sep-model"><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6 パート</option></select>
                 </div>
-                <div className="form-group"><label>分離モード</label>
-                    <select id="sep-mode"><option value="true">2分割（ボーカル/伴奏）</option><option value="false">フル分割</option><option value="deep">深層分離</option></select>
+                <div className="form-group"><label>分け方</label>
+                    <select id="sep-mode"><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
                 </div>
             </div>
-            <button className="btn" onClick={handleSeparate} disabled={disabled}>音源分離を開始</button>
+            <button className="btn" onClick={handleSeparate} disabled={disabled}>パート分離を始める</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <StatusLine text={status} type={statusType} />
             {results.length > 0 && (
                 <div className="result-area">
-                    <h3>分離結果</h3>
+                    <h3>分けたパート</h3>
                     {results.map((r, i) => <ResultItem key={i} result={r} />)}
                 </div>
             )}
@@ -194,18 +217,18 @@ function AnalyzePanel() {
         const file = ((document.getElementById('da-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file);
-        setStatus(`解析中...（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
+        setStatus(`解析しています…（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
         try {
             const resp = await apiFetch('/api/deep-analyze', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const data = await resp.json();
-            const html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:#d4a44c;margin-top:16px">$1</h3>')
+            const html = data.report.replace(/^## (.+)$/gm, '<h3 style="color:var(--accent);margin-top:16px">$1</h3>')
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
                 .replace(/^- (.+)$/gm, '<div style="padding-left:12px">・ $1</div>')
                 // 見出しと箇条書きは、それ自体が 1 行を占める。後ろの改行を残すと 1 行ずつ空く
                 .replace(/(<\/h3>|<\/div>)\n/g, '$1');
             setReport(html); setStatus('解析完了'); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
         finally { setProgress(false); }
     }, []);
 
@@ -214,9 +237,9 @@ function AnalyzePanel() {
             <h2>音声解析</h2>
             <p className="desc">音声ファイルの周波数帯域分布・推定楽器構成・テンポなどを解析します。</p>
             <div className="form-group"><label>音声ファイル</label><input type="file" id="da-file" accept=".wav,.mp3,.flac,.ogg,.m4a" /></div>
-            <button className="btn" onClick={handleAnalyze}>解析開始</button>
+            <button className="btn" onClick={handleAnalyze} disabled={progress}>解析開始</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <StatusLine text={status} type={statusType} />
             {report && <div className="result-area"><h3>解析結果</h3><div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: report }} /></div>}
         </div>
     );
@@ -244,20 +267,20 @@ function EditPanel() {
         else if (action === 'silence') params = { position: start, length: extra };
         else if (action === 'loop') params = { start, end, count: Math.floor(extra) };
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
-        setStatus('処理中...'); setStatusType('processing');
+        setStatus('処理しています…'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/edit/${action}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('編集結果', url, `${stem(file.name)}_${action}.wav`)]); setStatus('完了'); setStatusType('');
-        } catch (e: unknown) { setResults([]); setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setResults([]); setStatus(describeError(e)); setStatusType('error'); }
     }, [action, start, end, extra]);
 
     return (
         <div className="tool-panel active">
             <h2>音声編集</h2>
-            <p className="desc">WAVファイルに対してトリム・カット・コピー・無音挿入・ループなどを行います。</p>
-            <div className="form-group"><label>WAVファイル</label><input type="file" id="edit-file" accept=".wav" /></div>
+            <p className="desc">WAV ファイルに、トリム・カット・コピー・無音挿入・ループなどの編集をします。</p>
+            <div className="form-group"><label>WAV ファイル</label><input type="file" id="edit-file" accept=".wav" /></div>
             <div className="form-group"><label>編集操作</label>
                 <select value={action} onChange={e => {
                     setAction(e.target.value);
@@ -280,8 +303,8 @@ function EditPanel() {
             )}
             {showExtra && <div className="form-group"><label>{extraLabel}</label><input type="number" value={extra} step="0.1" onChange={e => setExtra(+e.target.value)} /></div>}
             <div className="hint" dangerouslySetInnerHTML={{ __html: EDIT_HINTS[action] || '' }} />
-            <button className="btn" onClick={handleEdit}>編集を実行</button>
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <button className="btn" onClick={handleEdit} disabled={statusType === 'processing'}>編集を実行</button>
+            <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
@@ -305,29 +328,24 @@ function EffectsPanel() {
         const file = ((document.getElementById('fx-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
-        setStatus('処理中...'); setStatusType('processing');
+        setStatus('処理しています…'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
-            setResults([makeAudioResult(`${fxType} 適用結果`, url, `${stem(file.name)}_${fxType}.wav`)]); setStatus('完了'); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+            // 見出しは日本語の名前で出す (識別子の pitch_shift などを画面に出さない)
+            setResults([makeAudioResult(`「${FX_TOOL_LABELS[fxType] ?? fxType}」をかけた結果`, url, `${stem(file.name)}_${fxType}.wav`)]); setStatus('完了'); setStatusType('');
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
     }, [fxType, params]);
 
     return (
         <div className="tool-panel active">
             <h2>エフェクト</h2>
-            <p className="desc">WAVファイルにエフェクトをかけて新しいファイルとしてダウンロードします。</p>
-            <div className="form-group"><label>WAVファイル</label><input type="file" id="fx-file" accept=".wav" /></div>
+            <p className="desc">WAV ファイルにエフェクトをかけて、新しいファイルとしてダウンロードします。</p>
+            <div className="form-group"><label>WAV ファイル</label><input type="file" id="fx-file" accept=".wav" /></div>
             <div className="form-group"><label>エフェクト</label>
                 <select value={fxType} onChange={e => setFxType(e.target.value)}>
-                    <option value="eq">EQ（3バンド）</option><option value="compressor">コンプレッサー</option>
-                    <option value="reverb">リバーブ</option><option value="delay">ディレイ</option>
-                    <option value="normalize">ノーマライズ</option><option value="volume">音量変更</option>
-                    <option value="fade_in">フェードイン</option><option value="fade_out">フェードアウト</option>
-                    <option value="pan">パン</option><option value="reverse">リバース</option>
-                    <option value="pitch_shift">ピッチシフト</option><option value="time_stretch">タイムストレッチ</option>
-                    <option value="speed">速度変更</option>
+                    {Object.entries(FX_TOOL_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                 </select>
             </div>
             <div className="form-row" style={{ flexWrap: 'wrap' }}>
@@ -338,8 +356,8 @@ function EffectsPanel() {
                     </div>
                 ))}
             </div>
-            <button className="btn" onClick={handleApply}>エフェクト適用</button>
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <button className="btn" onClick={handleApply} disabled={statusType === 'processing'}>エフェクト適用</button>
+            <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
@@ -385,7 +403,7 @@ const BATCH_ACTIONS: Record<string, Record<string, BatchAction>> = {
     },
     effects: {
         normalize: { label: 'ノーマライズ', params: [] },
-        eq: { label: 'EQ（3バンド）', params: FX_TOOL_PARAMS.eq },
+        eq: { label: 'EQ（3 バンド）', params: FX_TOOL_PARAMS.eq },
         compressor: { label: 'コンプレッサー', params: FX_TOOL_PARAMS.compressor },
         reverb: { label: 'リバーブ', params: FX_TOOL_PARAMS.reverb },
         delay: { label: 'ディレイ', params: FX_TOOL_PARAMS.delay },
@@ -439,7 +457,7 @@ function BatchPanel() {
         if (category === 'edit') { fd.append('action', action); apiUrl = '/api/batch/edit'; }
         else { fd.append('effect_name', action); apiUrl = '/api/batch/effects'; }
         const label = BATCH_ACTIONS[category][action].label;
-        setStatus(`${files.length}個のファイルに「${label}」を適用中...`); setStatusType('processing'); setProgress(true); setResults([]); setFailures([]);
+        setStatus(`${files.length}個のファイルに「${label}」を適用しています…`); setStatusType('processing'); setProgress(true); setResults([]); setFailures([]);
         try {
             const resp = await apiFetch(apiUrl, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
@@ -451,7 +469,7 @@ function BatchPanel() {
             setResults(items); setFailures(failed);
             setStatus(`完了: ${items.length}個成功` + (failed.length > 0 ? ` / ${failed.length}個失敗` : ''));
             setStatusType(failed.length > 0 ? 'error' : '');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
         finally { setProgress(false); }
     }, [category, action, params]);
 
@@ -460,7 +478,7 @@ function BatchPanel() {
             <h2>一括編集</h2>
             <p className="desc">複数の音声ファイルに同じ操作を一括適用します。</p>
             <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files?.length ?? 0)} /></div>
-            {fileCount > 0 && <div style={{ fontSize: 12, color: '#9e9a92', marginBottom: 12 }}>{fileCount}個のファイルを選択</div>}
+            {fileCount > 0 && <div style={{ fontSize: 12, color: 'var(--text-mid)', marginBottom: 12 }}>{fileCount}個のファイルを選択</div>}
             <div className="form-row">
                 <div className="form-group"><label>カテゴリ</label>
                     <select value={category} onChange={e => choose(e.target.value, Object.keys(BATCH_ACTIONS[e.target.value])[0])}>
@@ -483,11 +501,11 @@ function BatchPanel() {
                     ))}
                 </div>
             )}
-            <button className="btn" onClick={handleBatch}>一括実行</button>
+            <button className="btn" onClick={handleBatch} disabled={progress}>一括実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <StatusLine text={status} type={statusType} />
             {failures.length > 0 && (
-                <div className="batch-failures" style={{ fontSize: 12, color: '#e74c3c', marginTop: 8, lineHeight: 1.7 }}>
+                <div className="batch-failures" style={{ fontSize: 12, color: 'var(--error)', marginTop: 8, lineHeight: 1.7 }}>
                     {failures.map((f, i) => <div key={i}>{f.filename}: {f.reason}</div>)}
                 </div>
             )}
@@ -512,19 +530,19 @@ function OverlayPanel() {
         const fd = new FormData();
         fd.append('base_file', baseFile); fd.append('overlay_file', overFile);
         fd.append('offset_sec', String(offset)); fd.append('base_vol_db', String(baseVol)); fd.append('overlay_vol_db', String(overVol));
-        setStatus('合成中...'); setStatusType('processing');
+        setStatus('合成しています…'); setStatusType('processing');
         try {
             const resp = await apiFetch('/api/overlay', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult('合成結果', url, `${stem(baseFile.name)}_overlay.wav`)]); setStatus('完了'); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
     }, [offset, baseVol, overVol]);
 
     return (
         <div className="tool-panel active">
             <h2>音源合成（オーバーレイ）</h2>
-            <p className="desc">2つのWAVファイルを重ねて1つのファイルにミックスします。</p>
+            <p className="desc">2 つの WAV ファイルを重ねて、1 つのファイルにします。</p>
             <div className="form-group"><label>ベース音源</label><input type="file" id="ovl-base" accept=".wav" /></div>
             <div className="form-group"><label>オーバーレイ音源</label><input type="file" id="ovl-over" accept=".wav" /></div>
             <div className="form-row">
@@ -534,8 +552,8 @@ function OverlayPanel() {
                 <div className="form-group"><label>ベース音量 (dB)</label><input type="number" value={baseVol} min="-20" max="20" onChange={e => setBaseVol(+e.target.value)} /></div>
                 <div className="form-group"><label>オーバーレイ音量 (dB)</label><input type="number" value={overVol} min="-20" max="20" onChange={e => setOverVol(+e.target.value)} /></div>
             </div>
-            <button className="btn" onClick={handleOverlay}>合成を実行</button>
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <button className="btn" onClick={handleOverlay} disabled={statusType === 'processing'}>合成を実行</button>
+            <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
@@ -553,19 +571,19 @@ function ConvertPanel() {
         const file = ((document.getElementById('conv-file') as HTMLInputElement | null))?.files?.[0];
         if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('bitrate', bitrate);
-        setStatus('変換中...'); setStatusType('processing');
+        setStatus('変換しています…'); setStatusType('processing');
         try {
             const resp = await apiFetch(`/api/convert/${target}`, { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob(); const url = URL.createObjectURL(blob);
             setResults([makeAudioResult(`${target.toUpperCase()} 変換結果`, url, `${stem(file.name)}.${target}`)]); setStatus('完了'); setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
     }, [target, bitrate]);
 
     return (
         <div className="tool-panel active">
             <h2>フォーマット変換</h2>
-            <p className="desc">動画ファイル（MP4等）や音声ファイルからWAVまたはMP3に変換します。</p>
+            <p className="desc">動画ファイル（MP4 など）や音声ファイルを、WAV か MP3 に変換します。</p>
             <div className="form-group"><label>変換元ファイル</label><input type="file" id="conv-file" accept=".mp4,.avi,.mkv,.webm,.mov,.flv,.m4a,.aac,.ogg,.flac,.wav,.mp3" /></div>
             <div className="form-row">
                 <div className="form-group"><label>出力フォーマット</label>
@@ -579,15 +597,14 @@ function ConvertPanel() {
                     </div>
                 )}
             </div>
-            <button className="btn" onClick={handleConvert}>変換を実行</button>
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <button className="btn" onClick={handleConvert} disabled={statusType === 'processing'}>変換を実行</button>
+            <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
     );
 }
 
-// ---- メインのツールページ ----
-// ---- 完全分解パネル ----
+// ---- パート分離と採譜パネル ----
 interface StemResult {
     audio_url?: string;
     notes?: Array<{ note: string; octave: number; step: number; length: number; velocity: number }>;
@@ -624,8 +641,8 @@ function DecomposePanel() {
         fd.append('bpm', String(bpm));
         fd.append('sensitivity', String(sensitivity));
 
-        setStatus(`分解中...（${file.name}）Demucs分離 → ピッチ解析 → 楽器推定。CPU処理のため数分かかります。`);
-        modelDownloadNotice('htdemucs_6s').then((notice) => { if (notice) setStatus((prev) => prev.startsWith('分解中') ? prev + notice : prev); });
+        setStatus(`パートに分けて採譜しています…（${file.name}）パート分離 → 採譜 → 楽器の推定。CPU で処理するため数分かかります。`);
+        modelDownloadNotice('htdemucs_6s').then((notice) => { if (notice) setStatus((prev) => prev.startsWith('パートに分けて採譜しています') ? prev + notice : prev); });
         setStatusType('processing'); setProgress(true); setResult(null); setDisabled(true);
 
         try {
@@ -636,22 +653,22 @@ function DecomposePanel() {
             const stemCount = Object.keys(data.stems).length;
             const totalNotes = Object.values(data.stems).reduce((sum, s) =>
                 sum + (s.notes?.length || 0) + (s.drum_events?.length || 0), 0);
-            setStatus(`分解完了！BPM: ${data.bpm} / ${stemCount}ステム / ${totalNotes}ノート検出`);
+            setStatus(`パートに分けて採譜しました（BPM ${data.bpm} / ${stemCount} パート / ${totalNotes} ノート）`);
             setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
         finally { setProgress(false); setDisabled(false); }
     }, [bpm, sensitivity]);
 
     return (
         <div className="tool-panel active">
-            <h2>完全分解（Decompose）</h2>
+            <h2>パート分離と採譜</h2>
             <p className="desc">
-                音源を楽器パートに分離し、各パートの音符を自動書き起こしします。<br />
-                <strong>Demucs分離 → ポリフォニックピッチ検出 → ドラムパターン解析 → 楽器推定</strong>を一括実行。<br />
-                結果はDAWのトラック+ピアノロールにそのまま読み込めるJSON形式です。
+                曲のファイルをパートに分け、パートごとにノートを採譜します。<br />
+                <strong>パート分離 → 採譜（和音にも対応）→ ドラムのパターンの解析 → 楽器の推定</strong>をまとめて行います。<br />
+                結果は、パートごとの音声と、ノートのデータ（JSON）で受け取れます。
             </p>
             <div className="form-group">
-                <label>音声ファイル（WAV / MP3 / FLAC）</label>
+                <label>曲のファイル（WAV / MP3 / FLAC）</label>
                 <input type="file" id="decompose-file" accept=".wav,.mp3,.flac,.ogg,.m4a" />
             </div>
             <div className="form-row">
@@ -661,73 +678,72 @@ function DecomposePanel() {
                         onChange={e => setBpm(+e.target.value)} />
                 </div>
                 <div className="form-group">
-                    <label>検出感度（{sensitivity}）</label>
+                    <label>採譜の感度（{sensitivity}）</label>
                     <input type="range" min="0.1" max="1" step="0.05" value={sensitivity}
                         onChange={e => setSensitivity(+e.target.value)}
-                        style={{ width: '100%', background: '#1c1c25' }} />
+                        style={{ width: '100%', background: 'var(--bg-panel)' }} />
                 </div>
             </div>
             <div className="hint">
-                <strong>完全再現のワークフロー:</strong><br />
-                1. ここでBGMを分解 → 各パートのノートデータを取得<br />
-                2. DAWで「読込」→ 各トラックにノートが配置される<br />
-                3. GM楽器を選び「シーケンスをレンダリング」で音声化<br />
-                4. 原曲と聴き比べながら手動で微調整
+                <strong>DAW の画面で使うには:</strong><br />
+                DAW の画面の左パネル「ファイル」タブにある「パートに分ける（パート分離）」が、同じ処理をします。
+                そちらを使うと、分けたパートがそのままトラックになり、採譜したノートがピアノロールに並びます
+                （お手本としても残ります）。
             </div>
             <button className="btn" onClick={handleDecompose} disabled={disabled}>
-                完全分解を開始
+                パート分離と採譜を始める
             </button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <StatusLine text={status} type={statusType} />
 
             {result && (
                 <div className="result-area" style={{ display: 'block' }}>
-                    <h3>分解結果（BPM: {result.bpm}）</h3>
+                    <h3>結果（BPM {result.bpm}）</h3>
                     {Object.entries(result.stems).map(([name, stem]) => (
                         <div key={name} className="result-item" style={{ paddingBottom: 16, marginBottom: 16 }}>
                             <div className="result-label" style={{ fontSize: 14, marginBottom: 8 }}>
                                 {STEM_LABELS[name] || name}
-                                {stem.gm_program != null && <span style={{ marginLeft: 8, color: '#9e9a92' }}>GM#{stem.gm_program}</span>}
+                                {stem.gm_program != null && <span style={{ marginLeft: 8, color: 'var(--text-mid)' }}>GM 音源 {stem.gm_program} 番</span>}
                             </div>
 
                             {stem.audio_url && <audio controls src={backendUrl(stem.audio_url)} style={{ width: '100%', marginBottom: 8 }} />}
 
-                            <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#9e9a92', marginBottom: 8 }}>
-                                <span>音量: {stem.mix.volume_db}dB</span>
+                            <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-mid)', marginBottom: 8 }}>
+                                <span>音量: {stem.mix.volume_db} dB</span>
                                 <span>パン: {stem.mix.pan}</span>
                                 <span>残響: {(stem.mix.reverb_wet * 100).toFixed(0)}%</span>
                             </div>
 
                             {stem.notes && stem.notes.length > 0 && (
-                                <div style={{ fontSize: 12, color: '#d4a44c' }}>
-                                    {stem.notes.length}ノート検出
-                                    <span style={{ color: '#9e9a92', marginLeft: 8 }}>
-                                        ({stem.notes.slice(0, 5).map(n => `${n.note}${n.octave}`).join(' ')}...)
+                                <div style={{ fontSize: 12, color: 'var(--accent)' }}>
+                                    {stem.notes.length} ノート
+                                    <span style={{ color: 'var(--text-mid)', marginLeft: 8 }}>
+                                        （{stem.notes.slice(0, 5).map(n => `${n.note}${n.octave}`).join(' ')}{stem.notes.length > 5 ? ' …' : ''}）
                                     </span>
                                 </div>
                             )}
 
                             {stem.drum_events && stem.drum_events.length > 0 && (
-                                <div style={{ fontSize: 12, color: '#4ecdc4' }}>
-                                    {stem.drum_events.length}ドラムヒット検出
-                                    <span style={{ color: '#9e9a92', marginLeft: 8 }}>
-                                        (kick: {stem.drum_events.filter(e => e.type === 'kick').length}
-                                        / snare: {stem.drum_events.filter(e => e.type === 'snare').length}
-                                        / hihat: {stem.drum_events.filter(e => e.type === 'hihat').length})
+                                <div style={{ fontSize: 12, color: 'var(--secondary)' }}>
+                                    ドラム {stem.drum_events.length} 打
+                                    <span style={{ color: 'var(--text-mid)', marginLeft: 8 }}>
+                                        （キック {stem.drum_events.filter(e => e.type === 'kick').length}
+                                        {' '}/ スネア {stem.drum_events.filter(e => e.type === 'snare').length}
+                                        {' '}/ ハイハット {stem.drum_events.filter(e => e.type === 'hihat').length}）
                                     </span>
                                 </div>
                             )}
 
-                            {stem.audio_url && <a href={backendUrl(stem.audio_url)} download style={{ fontSize: 12 }}>WAVダウンロード</a>}
+                            {stem.audio_url && <a href={backendUrl(stem.audio_url)} download style={{ fontSize: 12 }}>WAV をダウンロード</a>}
                         </div>
                     ))}
 
-                    <div style={{ marginTop: 16, padding: 12, background: '#1c1c25', borderRadius: 6 }}>
-                        <div style={{ fontSize: 13, color: '#d4a44c', marginBottom: 8 }}>DAW用JSONデータ</div>
+                    <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-panel)', borderRadius: 6 }}>
+                        <div style={{ fontSize: 13, color: 'var(--accent)', marginBottom: 8 }}>ノートのデータ（JSON）</div>
                         <textarea
                             readOnly
                             value={JSON.stringify(result, null, 2)}
-                            style={{ width: '100%', height: 120, background: '#111116', color: '#e8e4de', border: '1px solid #2a2a35', borderRadius: 4, fontSize: 11, fontFamily: 'monospace', resize: 'vertical', padding: 8 }}
+                            style={{ width: '100%', height: 120, background: 'var(--bg-primary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--font-mono)', resize: 'vertical', padding: 8 }}
                         />
                         <button className="btn" style={{ marginTop: 8 }}
                             onClick={() => {
@@ -737,7 +753,7 @@ function DecomposePanel() {
                                 a.href = url; a.download = 'decompose_result.json';
                                 a.click(); URL.revokeObjectURL(url);
                             }}>
-                            JSONをダウンロード
+                            JSON をダウンロード
                         </button>
                     </div>
                 </div>
@@ -746,7 +762,7 @@ function DecomposePanel() {
     );
 }
 
-// ---- WAV最適化パネル ----
+// ---- WAV 最適化パネル ----
 interface WavInfo {
     sample_rate: number;
     channels: number;
@@ -790,34 +806,34 @@ function WavOptimizePanel() {
         fd.append('target_sr', String(targetSr));
         fd.append('target_bit_depth', String(targetBit));
 
-        setStatus('最適化中...'); setStatusType('processing'); setProgress(true); setResult(null);
+        setStatus('最適化しています…'); setStatusType('processing'); setProgress(true); setResult(null);
         try {
             const resp = await apiFetch('/api/wav/optimize', { method: 'POST', body: fd });
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const data: OptimizeResult = await resp.json();
             setResult(data);
-            setStatus(`完了！容量 ${data.reduction_pct}% 削減（${data.original.file_size_mb}MB → ${data.optimized.file_size_mb}MB）`);
+            setStatus(`完了: 容量を ${data.reduction_pct}% 減らしました（${data.original.file_size_mb} MB → ${data.optimized.file_size_mb} MB）`);
             setStatusType('');
-        } catch (e: unknown) { setStatus('エラー: ' + (e as Error).message); setStatusType('error'); }
+        } catch (e: unknown) { setStatus(describeError(e)); setStatusType('error'); }
         finally { setProgress(false); }
     }, [targetSr, targetBit]);
 
     return (
         <div className="tool-panel active">
-            <h2>WAV最適化（容量削減）</h2>
+            <h2>WAV 最適化（容量削減）</h2>
             <p className="desc">
-                動画から生成した大容量WAVを、音質を維持したまま一般的なサイズに圧縮します。<br />
+                動画から作った大きな WAV ファイルを、音質を保ったまま一般的な大きさにします。<br />
                 <strong>サンプルレート変換</strong>（48kHz→44.1kHz）+ <strong>ビット深度変換</strong>（32bit→16bit）+
                 <strong>TPDFディザリング</strong>で量子化ノイズを最小化。
             </p>
             <div className="form-group">
-                <label>WAVファイル</label>
+                <label>WAV ファイル</label>
                 <input type="file" id="opt-file" accept=".wav" onChange={handleInfo} />
             </div>
 
             {info && (
-                <div style={{ fontSize: 12, color: '#9e9a92', padding: '8px 12px', background: '#1c1c25', borderRadius: 4, marginBottom: 12 }}>
-                    現在: <strong style={{ color: '#e8e4de' }}>{info.sample_rate}Hz / {info.bit_depth} / {info.channels}ch</strong>
+                <div style={{ fontSize: 12, color: 'var(--text-mid)', padding: '8px 12px', background: 'var(--bg-panel)', borderRadius: 4, marginBottom: 12 }}>
+                    現在: <strong style={{ color: 'var(--text)' }}>{info.sample_rate}Hz / {info.bit_depth} / {info.channels}ch</strong>
                     {' '}— {info.duration_sec}秒 / {info.file_size_mb}MB
                 </div>
             )}
@@ -846,33 +862,33 @@ function WavOptimizePanel() {
                 動画由来の 48kHz/32bit WAV → 44.1kHz/16bit で <strong>容量が約1/3〜1/4</strong> になります。
             </div>
 
-            <button className="btn" onClick={handleOptimize}>最適化を実行</button>
+            <button className="btn" onClick={handleOptimize} disabled={progress}>最適化を実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
-            {status && <div className={`status ${statusType}`}>{status}</div>}
+            <StatusLine text={status} type={statusType} />
 
             {result && (
                 <div className="result-area" style={{ display: 'block' }}>
                     <h3>最適化結果</h3>
                     <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-                        <thead><tr style={{ color: '#9e9a92', textAlign: 'left' }}>
+                        <thead><tr style={{ color: 'var(--text-mid)', textAlign: 'left' }}>
                             <th style={{ padding: '4px 8px' }}></th><th style={{ padding: '4px 8px' }}>元</th><th style={{ padding: '4px 8px' }}>最適化後</th>
                         </tr></thead>
                         <tbody>
-                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>サンプルレート</td>
+                            <tr><td style={{ padding: '4px 8px', color: 'var(--text-mid)' }}>サンプルレート</td>
                                 <td style={{ padding: '4px 8px' }}>{result.original.sample_rate} Hz</td>
-                                <td style={{ padding: '4px 8px', color: '#d4a44c' }}>{result.optimized.sample_rate} Hz</td></tr>
-                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>ビット深度</td>
+                                <td style={{ padding: '4px 8px', color: 'var(--accent)' }}>{result.optimized.sample_rate} Hz</td></tr>
+                            <tr><td style={{ padding: '4px 8px', color: 'var(--text-mid)' }}>ビット深度</td>
                                 <td style={{ padding: '4px 8px' }}>{result.original.bit_depth}</td>
-                                <td style={{ padding: '4px 8px', color: '#d4a44c' }}>{result.optimized.bit_depth}</td></tr>
-                            <tr><td style={{ padding: '4px 8px', color: '#9e9a92' }}>ファイルサイズ</td>
+                                <td style={{ padding: '4px 8px', color: 'var(--accent)' }}>{result.optimized.bit_depth}</td></tr>
+                            <tr><td style={{ padding: '4px 8px', color: 'var(--text-mid)' }}>ファイルサイズ</td>
                                 <td style={{ padding: '4px 8px' }}>{result.original.file_size_mb} MB</td>
-                                <td style={{ padding: '4px 8px', color: '#4ecdc4', fontWeight: 'bold' }}>{result.optimized.file_size_mb} MB（{result.reduction_pct}%削減）</td></tr>
+                                <td style={{ padding: '4px 8px', color: 'var(--ok)', fontWeight: 'bold' }}>{result.optimized.file_size_mb} MB（{result.reduction_pct}% 減）</td></tr>
                         </tbody>
                     </table>
                     {result.download_url && (
                         <div style={{ marginTop: 12 }}>
                             <audio controls src={backendUrl(result.download_url)} style={{ width: '100%', marginBottom: 8 }} />
-                            <a href={backendUrl(result.download_url)} download style={{ color: '#e8bc6a', fontSize: 13 }}>最適化済みWAVをダウンロード</a>
+                            <a href={backendUrl(result.download_url)} download style={{ color: 'var(--accent-hover)', fontSize: 13 }}>最適化した WAV をダウンロード</a>
                         </div>
                     )}
                 </div>
@@ -899,7 +915,7 @@ export default function ToolsPage() {
                 <div className="page-header">
                     <h1>bunri ツール</h1>
                     <div className="nav-links">
-                        <Link to="/">DAWに戻る</Link>
+                        <Link to="/">DAW に戻る</Link>
                         <Link to="/help">使い方</Link>
                     </div>
                 </div>

@@ -4,7 +4,7 @@
  * 楽曲カルテを Claude に渡し、「こう作れば再現できる」という手順の説明を受け取る。
  * 説明はカルテの読み上げで、音符は含まない（backend/reproduction_guide.py）。
  */
-import { apiFetch, invokeDesktop, isDesktop } from './api';
+import { apiFetch, invokeDesktop, isDesktop, statusMessage } from './api';
 import type { SongChart } from './chart';
 import { SECTION_LABEL_JA } from './chart';
 
@@ -135,7 +135,8 @@ async function toError(resp: Response): Promise<GuideRequestError> {
     } catch {
         // JSON でない応答。下の既定の文にする
     }
-    return new GuideRequestError(`再現ガイドを作れませんでした（${resp.status}）`, 'api');
+    // 理由が取れなかったときも、状態コードの番号ではなく、次にどうすればよいかを出す
+    return new GuideRequestError(`再現ガイドを作れませんでした。${statusMessage(resp.status)}`, 'api');
 }
 
 /**

@@ -5,7 +5,7 @@
  * 差分は信号処理側が機械的に出す事実で、LLM は使っていない（backend/coach_diff.py）。
  * ここでの文も決まった型どおりに組み立てる。
  */
-import { apiFetch } from './api';
+import { apiFetch, errorDetail } from './api';
 import type { PianoNote } from './engine';
 
 /** 差分の種類。 */
@@ -18,7 +18,7 @@ export interface DiffIssue {
     bar: number;
     /** 拍（1 始まり） */
     beat: number;
-    /** お手本のノート。余分な音のときは null。 */
+    /** お手本のノート。余分なノートのときは null。 */
     expected: PianoNote | null;
     /** 打ち込みのノート。抜けのときは null。 */
     actual: PianoNote | null;
@@ -46,9 +46,9 @@ export interface DiffResult {
 /** 種類ごとの短い呼び名。 */
 export const KIND_LABEL: Record<IssueKind, string> = {
     missing: '抜け',
-    pitch: '音の間違い',
+    pitch: '高さの違い',
     octave: 'オクターブ違い',
-    extra: '余分な音',
+    extra: '余分なノート',
     timing: '位置のずれ',
     length: '長さの違い',
 };
@@ -67,16 +67,8 @@ export async function requestDiff(reference: PianoNote[], attempt: PianoNote[], 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reference, attempt, steps_per_bar: stepsPerBar }),
     });
-    if (!resp.ok) {
-        let message = `比べられませんでした（${resp.status}）`;
-        try {
-            const detail = (await resp.json())?.detail;
-            if (typeof detail === 'string') message = detail;
-        } catch {
-            // JSON でない応答。既定の文のままにする
-        }
-        throw new Error(message);
-    }
+    // 理由の文は errorDetail が作る (状態コードや生の JSON を、そのまま画面に出さない)
+    if (!resp.ok) throw new Error('お手本と比べられませんでした。' + await errorDetail(resp));
     return (await resp.json()) as DiffResult;
 }
 

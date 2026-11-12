@@ -6,7 +6,7 @@ import { makeWav } from './helpers';
 
 test('ツールの画面で WAV を選ぶと、API が読み取った情報が出る', async ({ page }) => {
     await page.goto('/tools');
-    await page.getByText('WAV最適化', { exact: true }).click();
+    await page.getByText('WAV 最適化', { exact: true }).click();
     const info = page.waitForResponse((r) => r.url().endsWith('/api/wav/info'));
     await page.locator('#opt-file').setInputFiles({ name: 'e2e-info.wav', mimeType: 'audio/wav', buffer: makeWav(1) });
     expect((await info).status()).toBe(200);

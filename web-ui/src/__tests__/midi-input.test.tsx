@@ -373,6 +373,6 @@ describe('MidiInputBar', () => {
         (navigator as { requestMIDIAccess?: unknown }).requestMIDIAccess = vi.fn(async () => { throw new Error('許可されませんでした'); });
         renderBar([]);
         fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
-        await waitFor(() => expect(screen.getByText(/MIDI 入力を開けませんでした: 許可されませんでした/)).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(/MIDI 入力を開けませんでした。.*許可されませんでした/)).toBeInTheDocument());
     });
 });

@@ -16,7 +16,7 @@ import engine from '../lib/engine';
 type Choice = 'auto' | 'off' | number;
 
 const controlStyle = {
-    fontSize: 10, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
+    fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
     background: 'var(--bg-deep)', color: 'var(--text-mid)', border: '1px solid var(--border)',
     borderRadius: 3, fontFamily: 'inherit',
 } as const;

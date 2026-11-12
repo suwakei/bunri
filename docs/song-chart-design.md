@@ -209,13 +209,13 @@ API：
 - 新規モジュールは `audio_utils.results_dir()` 経由でパスを解決する。既存モジュールは触らない
 - 署名済みデスクトップアプリは実行ファイルの隣に書けないため、いずれ OS のアプリデータディレクトリへ移る
 
-第2層以降で対応が必要になるもの：APIキーの持ち方（配布アプリに同梱できないため、設定UIとセキュアストレージが要る。現状の `music_assistant.py` は import 時に `os.getenv` しており、起動後に設定したキーを拾えない）、torch/demucs のバンドル戦略（数GB規模）。
+第2層以降で対応が必要になるもの：APIキーの持ち方（配布アプリに同梱できないため、設定UIとセキュアストレージが要る。当時の `music_assistant.py` は import 時に `os.getenv` しており、起動後に設定したキーを拾えなかった）、torch/demucs のバンドル戦略（数GB規模）。
 
 ## 後送りしたもの
 
 取りこぼしではなく、意図的に第2層以降へ送った決定。
 
-**第2層** — APIキーの持ち方、モデル選定、Structured Outputs の形、LLMの応答言語、プロンプトキャッシュ設計、既存 `music_assistant.py` の作り直し（生 httpx → 公式 `anthropic` SDK、モデルID `claude-haiku-4-5-20251001` は書式ごと誤り、`SYSTEM_PROMPT` は生成器用のため全面差し替え）
+**第2層** — APIキーの持ち方、モデル選定、Structured Outputs の形、LLMの応答言語、プロンプトキャッシュ設計、既存 `music_assistant.py` の作り直し（生 httpx → 公式 `anthropic` SDK、モデルID `claude-haiku-4-5-20251001` は書式ごと誤り、`SYSTEM_PROMPT` は生成器用のため全面差し替え）。※ `music_assistant.py` は、作り直さずに削除した（[reproduction-guide-design.md](reproduction-guide-design.md)）
 
 **第3層** — 学習履歴をどの層に置くか（`.bunri` / ローカル別DB / RDB）、カルテ結果の直接編集
 

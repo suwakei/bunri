@@ -14,12 +14,55 @@ test('初めて開くと案内が出て、閉じると次からは出ない', as
     await expect(page.locator('#guide-overlay')).toHaveCount(0);
 });
 
+test('初回の案内は、画面を覆う窓として組んであり、Esc キーで閉じられる', async ({ page }) => {
+    await page.goto('/');
+    const dialog = page.getByRole('dialog', { name: 'bunri DAW へようこそ' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    // 開いたとき、フォーカスは窓の中 (「はじめる」) に入る
+    await expect(page.getByRole('button', { name: 'はじめる' })).toBeFocused();
+    // Tab を押しても、フォーカスは窓の外 (下に隠れている画面) へ出ない
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'はじめる' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.reload();
+    await page.getByText('準備完了').waitFor();
+    await expect(page.locator('#guide-overlay')).toHaveCount(0);
+});
+
+test('使い方の画面から、初回の案内をもう一度出せる', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('bunri-guide-seen', '1'));
+    await page.goto('/help');
+    await page.getByRole('link', { name: 'はじめの案内をもう一度見る' }).click();
+    await expect(page.getByRole('dialog', { name: 'bunri DAW へようこそ' })).toBeVisible();
+});
+
+test('外した機能 (AI のタブ、オートメーションの欄、重複していた案内のボタン) が画面に無い', async ({ page }) => {
+    await openDaw(page);
+    // 左パネルのタブは 5 つ。AI のタブ (ノートを生成する機能) は無い
+    await expect(page.locator('#panel-tabs').getByRole('tab')).toHaveText(['シンセ', 'ドラム', 'FX', 'ファイル', 'カルテ']);
+    await expect(page.locator('#assistant-panel')).toHaveCount(0);
+    // オートメーションの欄と、その上の境目は無い。境目は、タイムラインとピアノロールのあいだの 1 本だけ
+    await expect(page.locator('#automation-area')).toHaveCount(0);
+    await expect(page.locator('#resize-auto')).toHaveCount(0);
+    await expect(page.locator('.resize-handle')).toHaveCount(1);
+    await expect(page.locator('#center')).not.toContainText('オートメーション');
+    // 案内の入口は「使い方」の 1 つだけ
+    await expect(page.locator('#header').getByText('❓')).toHaveCount(0);
+    await expect(page.locator('#header').getByRole('link', { name: '使い方' })).toHaveCount(1);
+    // ピアノロールは、中央の下端まで使う
+    const center = (await page.locator('#center').boundingBox())!;
+    const piano = (await page.locator('#piano-roll-area').boundingBox())!;
+    expect(Math.round(piano.y + piano.height)).toBe(Math.round(center.y + center.height));
+});
+
 test('画面が出て、トラックが 2 本在り、API とつながっている', async ({ page }) => {
     const gm = page.waitForResponse((r) => r.url().endsWith('/api/gm-instruments') && r.ok());
     await openDaw(page);
     await gm;
     await expect(page.locator('#tracks-container .track-name')).toHaveCount(2);
-    for (const label of ['保存', '読込', '書出', 'MIDI']) {
+    for (const label of ['保存', '読み込む', 'WAV 書き出し', 'MIDI 書き出し']) {
         await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
     }
 });
@@ -48,7 +91,7 @@ test('ノートを置いて MIDI を書き出すと、標準 MIDI ファイル�
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
 
     const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'MIDI', exact: true }).click();
+    await page.getByRole('button', { name: 'MIDI 書き出し', exact: true }).click();
     const file = await download;
     expect(file.suggestedFilename()).toBe('bunri.mid');
     const stream = await file.createReadStream();
@@ -59,7 +102,7 @@ test('ノートを置いて MIDI を書き出すと、標準 MIDI ファイル�
 
 test('ノートが無いときに MIDI を押すと、書き出さずに理由を出す', async ({ page }) => {
     await openDaw(page);
-    await page.getByRole('button', { name: 'MIDI', exact: true }).click();
+    await page.getByRole('button', { name: 'MIDI 書き出し', exact: true }).click();
     await expect(page.getByText('書き出すノートがありません')).toBeVisible();
 });
 

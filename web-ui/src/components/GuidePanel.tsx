@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useDaw } from '../lib/store';
 import { SECTION_LABEL_JA } from '../lib/chart';
+import { isDesktop } from '../lib/api';
 import {
     GuideRequestError, deleteApiKey, fetchSavedGuide, formatUsd, refLabel, requestGuide, saveApiKey, saveGuideSettings,
     type GuideResponse, type GuideToday,
@@ -27,8 +28,6 @@ const TOPIC_LABEL: Record<string, string> = {
     mix: '音作り・ミックス',
     general: '全体',
 };
-
-const noteStyle = { fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.6 } as const;
 
 /** トークン数を、桁区切りつきの文字にする。 */
 const count = (value: number | null | undefined) => (value ?? 0).toLocaleString('ja-JP');
@@ -150,7 +149,7 @@ export default function GuidePanel() {
     const guide = result?.guide;
 
     return (
-        <div id="guide-panel" style={{ marginTop: 20, paddingTop: 12, borderTop: '1px solid var(--border, #2a2a35)' }}>
+        <div id="guide-panel" className="panel-section">
             <h3 style={{ marginBottom: 6 }}>再現ガイド</h3>
             <p className="panel-desc" style={{ marginBottom: 8 }}>
                 カルテの内容を「こう作れば再現できる」という手順に言い換えます。
@@ -171,25 +170,25 @@ export default function GuidePanel() {
                 {busy ? '作成中…（数十秒かかります）' : guide ? 'ガイドを作り直す（費用がかかります）' : 'ガイドを作る'}
             </button>
             {guide && !busy && (
-                <p style={{ ...noteStyle, marginTop: 6 }}>
+                <p className="note-text" style={{ marginTop: 6 }}>
                     このガイドは保存済みです。開き直しても Claude は呼びません。作り直すと、もう一度 Claude を呼びます
                     {typeof result?.cost_usd === 'number' ? `（前回は概算 ${formatUsd(result.cost_usd)}）` : ''}。
                 </p>
             )}
-            <p style={{ ...noteStyle, marginTop: 6 }}>
+            <p className="note-text" style={{ marginTop: 6 }}>
                 カルテ（解析結果）を Anthropic の Claude に送ります。音声は送りません。ファイル名も送りません。
                 {' '}
-                <button type="button" onClick={() => setShowKeyForm((v) => !v)}
-                    style={{ background: 'none', border: 'none', color: 'var(--accent, #e8bc6a)', cursor: 'pointer', fontSize: 10, padding: 0 }}>
+                <button type="button" onClick={() => setShowKeyForm((v) => !v)} aria-expanded={showKeyForm}
+                    style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit', padding: 0, textDecoration: 'underline' }}>
                     API キーと上限の設定
                 </button>
             </p>
-            {today && <p id="guide-today" style={{ ...noteStyle, marginTop: 4 }}>{todayLine(today)}</p>}
+            {today && <p id="guide-today" className="note-text" style={{ marginTop: 4 }}>{todayLine(today)}</p>}
 
-            {error && <p role="alert" style={{ fontSize: 11, color: '#e87878', marginTop: 8 }}>{error.message}</p>}
+            {error && <p role="alert" className="error-text" style={{ marginTop: 8 }}>{error.message}</p>}
 
             {showKeyForm && (
-                <div style={{ marginTop: 8, padding: 8, border: '1px solid var(--border, #2a2a35)', borderRadius: 4 }}>
+                <div style={{ marginTop: 8, padding: 8, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
                     <div>
                         <label htmlFor="guide-api-key">Claude の API キー</label>
                         <input id="guide-api-key" type="password" autoComplete="off" value={keyInput}
@@ -198,9 +197,11 @@ export default function GuidePanel() {
                     <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveKey}>設定する</button>
                     {' '}
                     <button className="action-btn" style={{ marginTop: 6 }} onClick={handleDeleteKey}>設定を消す</button>
-                    <p style={{ ...noteStyle, marginTop: 6 }}>
-                        この Mac のキーチェーンに保存します。開発用にブラウザで開いているときは、バックエンドを再起動すると消えます
-                        （続けて使うなら、環境変数 ANTHROPIC_API_KEY を設定して起動してください）。
+                    <p className="note-text" style={{ marginTop: 6 }}>
+                        {/* 開発者向けの説明 (API サーバの再起動、環境変数) は、デスクトップアプリでは出さない */}
+                        {isDesktop()
+                            ? 'この Mac のキーチェーンに保存します。'
+                            : '開発用のブラウザ起動では、API サーバを再起動すると消えます（続けて使うなら、環境変数 ANTHROPIC_API_KEY を設定して起動してください）。'}
                     </p>
                     <div style={{ marginTop: 8 }}>
                         <label htmlFor="guide-daily-limit">1 日に Claude を呼ぶ回数の上限</label>
@@ -209,29 +210,29 @@ export default function GuidePanel() {
                             onChange={(e) => setLimitInput(e.target.value)} />
                     </div>
                     <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveLimit}>上限を変える</button>
-                    <p style={{ ...noteStyle, marginTop: 6 }}>
+                    <p className="note-text" style={{ marginTop: 6 }}>
                         上限に達すると、その日は Claude を呼ばなくなります（保存済みのガイドは見られます）。空にして押すと上限なし。
                     </p>
                 </div>
             )}
-            {keyMessage && <p style={{ ...noteStyle, marginTop: 6 }}>{keyMessage}</p>}
+            {keyMessage && <p className="note-text" role="status" style={{ marginTop: 6 }}>{keyMessage}</p>}
 
             {guide && (
                 <div style={{ marginTop: 12 }}>
-                    <p style={{ fontSize: 12, lineHeight: 1.7, marginBottom: 10 }}>{guide.overview}</p>
+                    <p className="body-text" style={{ marginBottom: 10 }}>{guide.overview}</p>
                     <ol style={{ paddingLeft: 18, margin: 0 }}>
                         {guide.steps.map((step, i) => (
                             <li key={i} style={{ marginBottom: 12 }}>
-                                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600 }}>
                                     {step.title}
-                                    <span style={{ ...noteStyle, marginLeft: 6, fontWeight: 400 }}>{TOPIC_LABEL[step.topic] ?? step.topic}</span>
+                                    <span className="note-text" style={{ marginLeft: 6, fontWeight: 400 }}>{TOPIC_LABEL[step.topic] ?? step.topic}</span>
                                 </div>
-                                <p style={{ fontSize: 11, lineHeight: 1.7, margin: '4px 0', whiteSpace: 'pre-wrap' }}>{step.body}</p>
+                                <p className="body-text" style={{ margin: '4px 0', whiteSpace: 'pre-wrap' }}>{step.body}</p>
                                 {step.refs.length > 0 && (
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                         {step.refs.map((ref, j) => (
                                             <span key={j} className="guide-ref"
-                                                style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-raised, #22222b)', color: 'var(--text-mid)' }}>
+                                                style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-mid)' }}>
                                                 {refLabel(ref, chart)}
                                             </span>
                                         ))}
@@ -243,24 +244,24 @@ export default function GuidePanel() {
 
                     {guide.cautions.length > 0 && (
                         <div style={{ marginTop: 8 }}>
-                            <div style={{ fontSize: 11, fontWeight: 600 }}>注意</div>
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>注意</div>
                             <ul style={{ paddingLeft: 18, margin: '4px 0' }}>
-                                {guide.cautions.map((c, i) => <li key={i} style={{ fontSize: 11, lineHeight: 1.6 }}>{c}</li>)}
+                                {guide.cautions.map((c, i) => <li key={i} className="body-text">{c}</li>)}
                             </ul>
                         </div>
                     )}
 
                     {guide.unverified_terms.length > 0 && (
-                        <p role="note" style={{ fontSize: 11, color: '#e8bc6a', marginTop: 8, lineHeight: 1.6 }}>
+                        <p role="note" style={{ fontSize: 12, color: 'var(--warn)', marginTop: 8, lineHeight: 1.6 }}>
                             解析結果に無い音名・コード名が説明に含まれています: {guide.unverified_terms.join('、')}。
                             この部分は解析ではなく、モデルの推測かもしれません。
                         </p>
                     )}
-                    <p style={{ ...noteStyle, marginTop: 8 }}>
+                    <p className="note-text" style={{ marginTop: 8 }}>
                         作成: {result.model}
                         {result.created_at ? `（${new Date(result.created_at).toLocaleString('ja-JP')}）` : ''}
                     </p>
-                    <p id="guide-usage" style={noteStyle}>このガイドを作ったときの使用量: {usageLine(result)}</p>
+                    <p id="guide-usage" className="note-text">このガイドを作ったときの使用量: {usageLine(result)}</p>
                 </div>
             )}
         </div>

@@ -1055,64 +1055,6 @@ async def api_wav_optimize(
         raise HTTPException(500, str(e))
 
 
-# ---- 音楽アシスタント API ----
-
-@app.get("/api/assistant/status")
-async def api_assistant_status():
-    """ローカル/クラウド LLM バックエンドの利用可否を確認して返す。
-
-    Returns:
-        ``{"local": bool, "cloud": bool, "local_models": list[str]}`` 形式の
-        ``JSONResponse``。詳細は ``check_availability`` を参照。
-    """
-    from music_assistant import check_availability
-    return JSONResponse(check_availability())
-
-
-@app.post("/api/assistant/chat")
-async def api_assistant_chat(
-    prompt: str = Form(...),
-    bpm: int = Form(120),
-    bars: int = Form(4),
-    mode: str = Form("auto"),
-    context_notes: str = Form("[]"),
-):
-    """自然言語プロンプトからピアノロール用ノートを LLM で提案する。
-
-    Args:
-        prompt: ユーザーの作曲リクエスト文字列
-            （例: ``"4小節のポップスコード進行"``）。
-        bpm: プロジェクトの BPM（LLM への文脈として渡す）。
-        bars: 生成する小節数。
-        mode: バックエンド選択（``"auto"`` / ``"local"`` / ``"cloud"``）。
-            ``"auto"`` ではプロンプト内容に応じて自動ルーティングされる。
-        context_notes: 既存ノートの JSON 文字列（継続性のための文脈）。
-
-    Returns:
-        ``{"notes": list, "explanation": str, "backend": str}`` 形式の
-        ``JSONResponse``。
-
-    Raises:
-        HTTPException: プロンプトが空または ``mode`` が無効な場合（HTTP 400）。
-        HTTPException: LLM 接続・パース処理に失敗した場合（HTTP 500）。
-    """
-    from music_assistant import suggest_notes, AssistantError
-    try:
-        ctx = json.loads(context_notes) if context_notes else []
-        result = suggest_notes(
-            prompt=prompt,
-            bpm=bpm,
-            bars=bars,
-            mode=mode,
-            context_notes=ctx,
-        )
-        return JSONResponse(result)
-    except AssistantError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
 # ---- 楽曲カルテ API（第1層） ----
 
 def _chart_path(chart_id: str) -> Path:

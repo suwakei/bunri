@@ -3,7 +3,14 @@
  */
 import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 import engine from './engine';
+import { describeError } from './api';
 import type { ChartResponse, Glossary, SongChart, WaveformPeaks } from './chart';
+
+/** ステータスバーの文の種類。`error` は失敗の知らせで、色を変えて読み上げの対象にする。 */
+export type StatusKind = 'info' | 'error';
+
+/** 左パネルのタブの識別子。 */
+export type LeftTab = 'synth' | 'drum' | 'fx' | 'file' | 'chart';
 
 /**
  * DAW グローバル状態のコンテキスト型定義。
@@ -14,18 +21,25 @@ export interface DawContextType {
     engine: typeof engine;
     /** ステータスバーに表示するメッセージ */
     status: string;
-    /** @param msg - 表示するステータスメッセージ */
-    setStatus: (msg: string) => void;
+    /** ステータスバーの文の種類（失敗の知らせなら `error`） */
+    statusKind: StatusKind;
+    /**
+     * @param msg - 表示するステータスメッセージ
+     * @param kind - 失敗の知らせなら `'error'`（省略時は `'info'`）
+     */
+    setStatus: (msg: string, kind?: StatusKind) => void;
     /** ヒントテキスト */
     hint: string;
     /** @param msg - 表示するヒントメッセージ */
     setHint: (msg: string) => void;
-    /** プログレスバーの表示フラグ */
+    /**
+     * 時間のかかる処理が走っているか（プログレスバーの表示フラグ）。
+     * 処理を始めるボタンは、これが true のあいだ押せなくする（二重に始めないため）。
+     */
     showProgress: boolean;
-    /** @param v - true でプログレスバーを表示 */
-    setShowProgress: (v: boolean) => void;
     /**
      * 非同期処理をプログレス表示付きで実行するラッパー。
+     * 失敗したときは、理由をステータスバーに失敗の知らせとして出す。
      * @param msg - 処理中に表示するステータスメッセージ
      * @param fn - 実行する非同期関数
      */
@@ -66,8 +80,10 @@ export interface DawContextType {
     pianoRollRef: React.MutableRefObject<any>;
     /** Timeline コンポーネントへの ref */
     timelineRef: React.MutableRefObject<any>;
-    /** AutomationEditor コンポーネントへの ref */
-    automationRef: React.MutableRefObject<any>;
+    /** 左パネルで開いているタブ */
+    leftTab: LeftTab;
+    /** @param tab - 開くタブ。解析が終わったときにカルテを開く、といった画面の側からの切り替えにも使う */
+    setLeftTab: (tab: LeftTab) => void;
 
     /** 現在読み込まれている楽曲カルテ。未解析なら null */
     chart: SongChart | null;
@@ -98,20 +114,25 @@ const DawContext = createContext<DawContextType | null>(null);
  * @param children - プロバイダーで囲む子コンポーネント
  */
 export function DawProvider({ children }: { children: ReactNode }) {
-    const [status, setStatus] = useState('準備完了');
+    const [statusState, setStatusState] = useState<{ text: string; kind: StatusKind }>({ text: '準備完了', kind: 'info' });
     const [hint, setHint] = useState('');
-    const [showProgress, setShowProgress] = useState(false);
-    const [showGuide, setShowGuide] = useState(!localStorage.getItem('bunri-guide-seen'));
+    // 走っている処理の数。0 より大きいあいだ、プログレスバーを出す
+    // (フラグ 1 つだと、2 つの処理が重なったときに、先に終わったほうがバーを消してしまう)
+    const [progressCount, setProgressCount] = useState(0);
+    // 初めて開いたときに案内を出す。使い方の画面からは `/?guide=1` で、もう一度出せる
+    const [showGuide, setShowGuide] = useState(
+        () => !localStorage.getItem('bunri-guide-seen') || new URLSearchParams(window.location.search).has('guide'),
+    );
+    const [leftTab, setLeftTab] = useState<LeftTab>('synth');
     const [bpm, setBpmState] = useState(120);
     const [beatsPerBar, setBeatsPerBarState] = useState(4);
     const [isPlaying, setIsPlaying] = useState(false);
     const [metronomeEnabled, setMetronomeEnabled] = useState(false);
     const [trackVersion, setTrackVersion] = useState(0);
 
-    // PianoRoll / Timeline / Automation の参照を保持
+    // PianoRoll / Timeline の参照を保持
     const pianoRollRef = useRef<any>(null);
     const timelineRef = useRef<any>(null);
-    const automationRef = useRef<any>(null);
 
     const [chart, setChart] = useState<SongChart | null>(null);
     const [chartId, setChartId] = useState<string | null>(null);
@@ -120,6 +141,10 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const [showGridEditor, setShowGridEditor] = useState(false);
 
     const bumpTracks = useCallback(() => setTrackVersion(v => v + 1), []);
+
+    const setStatus = useCallback((msg: string, kind: StatusKind = 'info') => {
+        setStatusState({ text: msg, kind });
+    }, []);
 
     const setChartResult = useCallback((result: ChartResponse) => {
         setChart(result.chart);
@@ -148,16 +173,16 @@ export function DawProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const withProgress = useCallback(async (processingMsg: string, fn: () => Promise<void>) => {
-        setShowProgress(true);
+        setProgressCount(n => n + 1);
         setStatus(processingMsg);
         try {
             await fn();
         } catch (e) {
-            setStatus('エラー: ' + (e as Error).message);
+            setStatus(describeError(e), 'error');
         } finally {
-            setShowProgress(false);
+            setProgressCount(n => Math.max(0, n - 1));
         }
-    }, []);
+    }, [setStatus]);
 
     const closeGuide = useCallback(() => {
         setShowGuide(false);
@@ -166,16 +191,17 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const value: DawContextType = {
         engine,
-        status, setStatus,
+        status: statusState.text, statusKind: statusState.kind, setStatus,
         hint, setHint,
-        showProgress, setShowProgress, withProgress,
+        showProgress: progressCount > 0, withProgress,
         showGuide, setShowGuide, closeGuide,
         bpm, setBpm,
         beatsPerBar, setBeatsPerBar,
         isPlaying, setIsPlaying,
         metronomeEnabled, setMetronomeEnabled,
         trackVersion, bumpTracks,
-        pianoRollRef, timelineRef, automationRef,
+        pianoRollRef, timelineRef,
+        leftTab, setLeftTab,
         chart, chartId, chartPeaks, glossary,
         setChartResult, clearChart,
         showGridEditor, setShowGridEditor,

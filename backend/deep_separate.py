@@ -130,8 +130,8 @@ def analyze_audio(file_path: str) -> str:
 
     lines += [
         "",
-        "## 推奨レイヤー分離",
-        "**htdemucs_6s（6ステム分離）で以下のレイヤーに分割できます:**",
+        "## 分けられるパート",
+        "**パート分離（htdemucs_6s）で、次の 6 つのパートに分けられます:**",
     ]
     for stem, label in STEM_LABELS.items():
         lines.append(f"- **{stem}** → {label}")
