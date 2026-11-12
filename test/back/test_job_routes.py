@@ -98,6 +98,8 @@ def make_app(gate=None, prepared=None):
                 raise RuntimeError("Demucs の実行に失敗しました。")
             if mode == "not-found":
                 raise HTTPException(404, "カルテが見つかりません")
+            if mode == "nan":
+                return {"loudness": float("nan")}
             return {"name": value}
 
         return await job_routes.dispatch(
@@ -160,6 +162,17 @@ class TestAsyncStart:
                 assert failed["state"] == "error"
                 assert failed["error"] == {"status": status, "detail": detail}
                 assert failed["result"] is None
+
+    @pytest.mark.asyncio
+    async def test_JSONにできない結果は_失敗として残り_状態を聞くAPIは壊れない(self):
+        async with client_for(make_app()) as client:
+            sync = await client.post("/api/fake", data={"mode": "nan"})
+            assert sync.status_code == 500 and "JSON" in sync.json()["detail"]
+
+            started = (await client.post("/api/fake?async=1", data={"mode": "nan"})).json()
+            failed = await poll(client, started["id"])
+            assert failed["state"] == "error"
+            assert failed["error"] == {"status": 500, "detail": sync.json()["detail"]}
 
     @pytest.mark.asyncio
     async def test_入力の誤りは_ジョブを作らずにその場で返す(self, manager):

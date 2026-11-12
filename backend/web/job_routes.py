@@ -10,6 +10,7 @@
 待つ呼び方（従来どおり）は断らず、順番を待ってから動く。詳しくは ``docs/jobs.md``。
 """
 import asyncio
+import json
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -58,11 +59,17 @@ def _guard(task, job, prepare):
 
     Raises:
         background_jobs.JobError: ``HTTPException`` が送出された場合（状態コードと理由を引き継ぐ）。
+        ValueError: 結果が JSON にできない場合（ジョブは 500 の失敗になる）。
+        TypeError: 同上。
     """
     try:
-        return task(job, prepare())
+        result = task(job, prepare())
     except HTTPException as e:
         raise background_jobs.JobError(e.status_code, e.detail) from e
+    # JSON にできない結果（NaN など）は、ここで失敗にする。あとで状態を聞く API が壊れないように。
+    # 応答を作るときと同じ条件で確かめる（従来も、この失敗は 500 と同じ理由の文で返っていた）
+    json.dumps(result, allow_nan=False)
+    return result
 
 
 async def _wait(job):
