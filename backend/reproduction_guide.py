@@ -768,9 +768,14 @@ def generate(chart, focus=None, client=None, request=None):
     return {"guide": guide, "model": model, "usage": usage}
 
 
-def _public(entry, cached):
-    """保存したガイドの 1 件を、API の応答に載せる形にする。"""
+def _public(entry, cached, key=None):
+    """保存したガイドの 1 件を、API の応答に載せる形にする。
+
+    ``key`` は保存の鍵。プロジェクトの保存（``project_store``）が、この曲のガイドの写しを
+    `.bunri` に入れるときの識別子になる。
+    """
     return {
+        "key": key,
         "guide": entry["guide"],
         "model": entry.get("model"),
         "usage": entry.get("usage") or {},
@@ -779,6 +784,29 @@ def _public(entry, cached):
         "created_at": entry.get("created_at"),
         "cached": cached,
     }
+
+
+def cache_keys_for(chart):
+    """このカルテのガイドの保存の鍵を、曲全体と各セクションのぶん返す（いまのモデルと設定で）。
+
+    プロジェクトを保存するとき、保存済みのガイドの写しを `.bunri` に入れるのに使う
+    （開き直したときに Claude を呼ばずに出すため。``project_store``）。
+
+    Args:
+        chart: 楽曲カルテ。
+
+    Returns:
+        list[str]: 鍵のリスト（曲全体が先頭）。
+    """
+    keys = []
+    focuses = [None] + [s.get("id") for s in chart.get("sections") or [] if isinstance(s, dict) and s.get("id")]
+    for focus in focuses:
+        try:
+            request = build_request(chart, focus)
+        except GuideError:
+            continue
+        keys.append(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
+    return keys
 
 
 def saved_guide(chart, focus=None):
@@ -797,8 +825,9 @@ def saved_guide(chart, focus=None):
     import guide_cache
 
     request = build_request(chart, focus)
-    entry = guide_cache.load(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
-    return _public(entry, cached=True) if entry else None
+    key = guide_key(chart, focus, request["model"], request["output_config"]["effort"])
+    entry = guide_cache.load(key)
+    return _public(entry, cached=True, key=key) if entry else None
 
 
 def guide_for(chart, focus=None, regenerate=False, client=None):
@@ -834,14 +863,14 @@ def guide_for(chart, focus=None, regenerate=False, client=None):
     if not regenerate:
         entry = guide_cache.load(key)
         if entry:
-            return _public(entry, cached=True)
+            return _public(entry, cached=True, key=key)
 
     chart_id = guide_cache.chart_hash(chart)
     asked_at = time.time()
     with guide_cache.lock_for(chart_id):
         entry = guide_cache.load(key)
         if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
-            return _public(entry, cached=True)
+            return _public(entry, cached=True, key=key)
 
         shortage = material_shortage(chart)
         if shortage:
@@ -881,4 +910,4 @@ def guide_for(chart, focus=None, regenerate=False, client=None):
             "fingerprint": request_fingerprint(),
         }
         guide_cache.save(key, entry)
-        return _public(entry, cached=False)
+        return _public(entry, cached=False, key=key)

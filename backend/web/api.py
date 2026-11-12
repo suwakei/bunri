@@ -28,6 +28,10 @@ from fastapi import Query
 from web import job_routes
 app.include_router(job_routes.router)
 
+# プロジェクトの保存と読み込み（.bunri v2）と、データの整理
+from web import project_routes
+app.include_router(project_routes.router)
+
 # ブラウザを自動操作するテストのための、わざと遅いジョブ（docs/jobs.md「テスト用の遅いジョブ」）。
 # 環境変数 BUNRI_E2E_HOOKS=1 のときだけ足す。既定では足さない（配布物の sidecar には無い）
 import os as _os
@@ -901,11 +905,13 @@ async def api_convert(
         raise HTTPException(400, str(e))
 
 
-# ---- プロジェクト保存/読込 ----
+# ---- 以前の形式のプロジェクト（projects/*.json） ----
+# 画面の保存は .bunri（web/project_routes.py）に移った。ここは以前の形式を読み書きする口として残す
+# （以前の版が保存したものを「以前の形式」として開く。ブラウザのテストが以前の形式を用意するのにも使う）。
 
 @app.post("/api/project/save")
 async def save_project(data: str = Form(...)):
-    """プロジェクトデータを JSON ファイルとして保存する。
+    """以前の形式のプロジェクト（JSON。音声を持たない）を保存する。画面はもう使わない。
 
     タイムラインのクリップ配置・オートメーション等を含む JSON 文字列を
     ``projects/project_<timestamp>.json`` として保存する。
