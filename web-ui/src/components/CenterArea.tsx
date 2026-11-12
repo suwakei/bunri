@@ -35,7 +35,10 @@ class PianoRollEngine {
         this.maxSteps = 16 * 999;
         // 最後のノートの後ろに空けておく余白 (小節)。続きを打ち込めるように
         this.tailBars = 4;
-        this.octaveRange = [2, 7];
+        // 表示する音域: C0〜B8 の 9 オクターブ ([下端のオクターブ, 上端のオクターブ + 1])。
+        // 再生エンジンが鳴らせる範囲 (engine.ts の NOTE_FREQ) と同じで、88 鍵のピアノ (A0〜C8) と、
+        // ベースの低い音 (4 弦の E1、5 弦の B0) を覆う。以前は C2〜B6 で、採譜したベースの音が外に出た
+        this.octaveRange = [0, 9];
         this.noteNames = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
         this.blackKeys = new Set(['A#','G#','F#','D#','C#']);
         this.activeTrackId = null; this.notes = []; this.selectedNote = null;
@@ -46,6 +49,8 @@ class PianoRollEngine {
         this.snapToGrid = true; this.gridSize = 4;
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
+        // 縦の位置を自動で据えた行 (_centerOnRow)。利用者がスクロールしたら null に戻す
+        this._anchorRow = null; this._anchorTop = 0;
     }
     /**
      * ピアノロールを DOM 要素群に紐付けて初期化する。
@@ -65,6 +70,8 @@ class PianoRollEngine {
         // グリッドは見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す。
         // 鍵盤の列は別の要素なので、縦のスクロール位置を合わせる
         this.wrap.addEventListener('scroll', () => {
+            // 自分で据えた位置から動いていたら、利用者 (か別の処理) が動かしたということ。据え直しをやめる
+            if (this._anchorRow != null && Math.abs(this.wrap.scrollTop - this._anchorTop) > 1) this._anchorRow = null;
             this.keysDiv.scrollTop = this.wrap.scrollTop;
             this._drawGrid();
         });
@@ -73,10 +80,52 @@ class PianoRollEngine {
             // それがまた大きさの変化として通知されて、通知が循環する)
             this._resizeObserver = new ResizeObserver(() => {
                 cancelAnimationFrame(this._resizeFrame);
-                this._resizeFrame = requestAnimationFrame(() => { this._resize(); this._drawGrid(); });
+                this._resizeFrame = requestAnimationFrame(() => {
+                    this._resize(); this._drawGrid();
+                    if (this._anchorRow != null) this._centerOnRow(this._anchorRow);
+                });
             });
             this._resizeObserver.observe(this.wrap);
         }
+        // 最初は真ん中のド (C4) のあたりを見せる。一番上 (B8) から始めると、よく使う高さが見えない
+        this._centerOnRow(this._noteToRow('F#', 4));
+    }
+    /**
+     * 指定した行が、見えている範囲の縦の真ん中に来るようスクロールする。
+     * 鍵盤の列も同じ位置に合わせる。
+     *
+     * @param row - 見せたい行 (0 が一番上)
+     */
+    _centerOnRow(row) {
+        if (!this.wrap) return;
+        const visible = this.wrap.clientHeight;
+        const max = Math.max(0, this.totalRows * this.noteHeight - visible);
+        this.wrap.scrollTop = Math.round(Math.max(0, Math.min(max, (row + 0.5) * this.noteHeight - visible / 2)));
+        // どの行を真ん中に据えたかを覚えておく。利用者が自分でスクロールするまでは、ピアノロールの
+        // 大きさが変わったとき (ResizeObserver) に同じ行へ据え直す。初期化の時点では、スタイルの
+        // 適用が済んでおらず見える高さが定まっていないことがある (WebKit) ので、これが無いと
+        // 最初の位置がずれる
+        this._anchorRow = row;
+        this._anchorTop = this.wrap.scrollTop;
+        this.keysDiv.scrollTop = this.wrap.scrollTop;
+        this._drawGrid();
+    }
+    /**
+     * ノート (打ち込んだものと、お手本) が 1 つも見えていなければ、ノートの在る高さへ縦にスクロールする。
+     * 1 つでも見えていれば動かさない (見ている場所を勝手に変えない)。
+     * 音域が広いので、ベースのトラックを開いたときに、何も無いように見えるのを防ぐ。
+     */
+    _revealNotes() {
+        if (!this.wrap) return;
+        const rowsOf = (list) => list.map(n => this._noteToRow(n.note, n.octave)).filter(r => r >= 0 && r < this.totalRows);
+        const own = rowsOf(this.notes), ghost = rowsOf(this.ghostNotes);
+        if (own.length + ghost.length === 0) return;
+        const first = this.wrap.scrollTop / this.noteHeight;
+        const last = (this.wrap.scrollTop + this.wrap.clientHeight) / this.noteHeight;
+        if (own.concat(ghost).some(r => r + 1 > first && r < last)) return;
+        // 打ち込んだノートを優先し、その真ん中の高さ (中央値) へ寄せる
+        const target = (own.length ? own : ghost).slice().sort((a, b) => a - b);
+        this._centerOnRow(target[Math.floor(target.length / 2)]);
     }
     /** 1 小節のステップ数 (拍子に従う。4/4 なら 16)。 */
     _stepsPerBar() { return Math.max(1, engine.beatsPerBar || 4) * 4; }
@@ -113,7 +162,7 @@ class PianoRollEngine {
         this._saveToEngine();
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
         this.selectedNote = null;
-        this._loadFromEngine(); this._fitLength(); this._renderNotes();
+        this._loadFromEngine(); this._fitLength(); this._renderNotes(); this._revealNotes();
         if (this.onTrackSwitch) this.onTrackSwitch(this.activeTrackId);
     }
     _saveToEngine() {
@@ -144,6 +193,9 @@ class PianoRollEngine {
         // ノートを置く層が、スクロールできる範囲の大きさを決める
         const w = this.totalSteps * this.stepWidth, h = this.totalRows * this.noteHeight;
         this.noteLayer.style.width = w + 'px'; this.noteLayer.style.height = h + 'px';
+        // グリッドの下に横のスクロールバーが出ると、そのぶんグリッドの見える高さが鍵盤の列より低くなる。
+        // 鍵盤の列の下に同じ高さの余白を足して、一番下までスクロールしたときも行がそろうようにする
+        this.keysDiv.style.paddingBottom = Math.max(0, this.wrap.offsetHeight - this.wrap.clientHeight) + 'px';
         // グリッドの canvas は、見えている範囲の大きさにする。曲全体の大きさにすると、
         // 長い曲でブラウザの canvas の上限 (幅 32767px 前後) を超えて何も描けなくなる
         const vw = Math.max(1, this.wrap.clientWidth), vh = Math.max(1, this.wrap.clientHeight);
@@ -244,14 +296,24 @@ class PianoRollEngine {
             el.title = `お手本 ${n.note}${n.octave}`;
             this.noteLayer.appendChild(el);
         }
+        // 表示できる音域の外のノートは描かず (データは残す)、在ることだけ知らせる
+        let outOfRange = 0;
         this.notes.forEach((n, i) => {
-            const row = this._noteToRow(n.note, n.octave), el = document.createElement('div');
+            const row = this._noteToRow(n.note, n.octave);
+            if (row < 0 || row >= this.totalRows) { outOfRange += 1; return; }
+            const el = document.createElement('div');
             el.className = 'note-block' + (i === this.selectedNote ? ' selected' : '');
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.dataset.index = i; el.title = `${n.note}${n.octave} step:${n.step} len:${n.length}`;
             this.noteLayer.appendChild(el);
         });
+        if (outOfRange > 0) {
+            const notice = document.createElement('div');
+            notice.className = 'note-out-of-range';
+            notice.textContent = `表示できる音域 (C${this.octaveRange[0]}〜B${this.octaveRange[1] - 1}) の外に、ノートが ${outOfRange} 個あります`;
+            this.noteLayer.appendChild(notice);
+        }
     }
     /**
      * 現在のノート一覧をエンジンに保存したうえで返す。
@@ -266,14 +328,14 @@ class PianoRollEngine {
      *
      * @param notes - セットするノート情報の配列（`note`, `octave`, `step`, `length` を含む）
      */
-    setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); }
+    setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); this._revealNotes(); }
     /**
      * お手本として薄く重ねて見せるノートを入れ替える (空の配列か null で消す)。
      * お手本は見るだけで、編集も保存もされない。
      *
      * @param notes - お手本のノート (`note`, `octave`, `step`, `length`)
      */
-    setGhostNotes(notes) { this.ghostNotes = (notes || []).map(n => ({ ...n })); this._fitLength(); this._renderNotes(); }
+    setGhostNotes(notes) { this.ghostNotes = (notes || []).map(n => ({ ...n })); this._fitLength(); this._renderNotes(); this._revealNotes(); }
     /**
      * 指定したステップが見える位置まで、横にスクロールする (見えている幅の 4 分の 1 あたりに来る)。
      * 差分チェックの指摘から、その小節へ移動するのに使う。

@@ -60,8 +60,9 @@ test('お手本を持たないトラックでは、お手本にするトラッ�
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(REFERENCE.length);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
 
-    // お手本をなぞってダブルクリックすると、自分のノートとして入る (お手本の C4 は 1 小節目の頭、行は 32 行目)
-    await page.locator('#piano-grid-wrap').evaluate((el) => { el.scrollTop = 32 * 14 - 100; });
+    // お手本をなぞってダブルクリックすると、自分のノートとして入る
+    // (お手本の C4 は 1 小節目の頭。一番上の行が B8 なので、C4 は 59 行目)
+    await page.locator('#piano-grid-wrap').evaluate((el) => { el.scrollTop = 59 * 14 - 100; });
     const ghost = (await page.locator('#note-layer .note-ghost').first().boundingBox())!;
     await page.mouse.dblclick(ghost.x + 10, ghost.y + 6);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
