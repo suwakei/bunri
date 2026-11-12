@@ -166,7 +166,7 @@ export function useLearnActions() {
     const {
         setStatus, withProgress, bumpTracks, pianoRollRef, bpm, setBpm, beatsPerBar,
         setChartResult, openLearn, applyChartGrid, setGridOffset, songFile, setSongFile,
-        setGhostChoice, setCoachPair, setLeftTab, chart,
+        setGhostChoice, setCoachPair, setLeftTab, chart, record, recordAsync,
     } = useDaw();
 
     /**
@@ -200,21 +200,23 @@ export function useLearnActions() {
         setSongFile(file);
         engine.init();
 
-        // 1. 原曲のトラック。在れば中身を入れ替える (2 本目は作らない)
-        let song = engine.tracks.find(t => t.role === 'song');
-        if (!song) {
-            song = engine.addTrack(SONG_TRACK_NAME);
-            song.role = 'song';
-            // 原曲はいちばん上に置く
-            engine.tracks = [song, ...engine.tracks.filter(t => t !== song)];
-        }
-        song.clips = [];
+        // 1. 原曲のトラック。在れば中身を入れ替える (2 本目は作らない)。元に戻せる
         let placed = true;
-        try {
-            await placeAudio(song.id, file, 0);
-        } catch {
-            placed = false;
-        }
+        await recordAsync('原曲を取り込む', async () => {
+            let song = engine.tracks.find(t => t.role === 'song');
+            if (!song) {
+                song = engine.addTrack(SONG_TRACK_NAME);
+                song.role = 'song';
+                // 原曲はいちばん上に置く
+                engine.tracks = [song, ...engine.tracks.filter(t => t !== song)];
+            }
+            song.clips = [];
+            try {
+                await placeAudio(song.id, file, 0);
+            } catch {
+                placed = false;
+            }
+        });
         bumpTracks();
 
         // 2. カルテ
@@ -240,7 +242,7 @@ export function useLearnActions() {
             setStatus(`カルテを作りました（${key} / ${result.chart.chords.length} コード）${notes.length ? '。' + notes.join('。') : ''}`,
                 placed ? 'info' : 'error');
         });
-    }, [placeAudio, setSongFile, bumpTracks, bpm, beatsPerBar, withProgress, setChartResult, applyChartGrid, openLearn, setStatus]);
+    }, [placeAudio, setSongFile, bumpTracks, bpm, beatsPerBar, withProgress, setChartResult, applyChartGrid, openLearn, setStatus, recordAsync]);
 
     /**
      * 原曲をパートに分けて採譜する。パートごとに、パートの音声とお手本を持つトラックを作る。
@@ -273,60 +275,63 @@ export function useLearnActions() {
                 const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
                 if (!resp.ok) throw new Error(await errorDetail(resp));
                 const result: DecomposeResult = await resp.json();
-                if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
-                if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
-
-                // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
-                for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
-                    if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
-                    engine.removeTrack(old.id);
-                }
-
+                // ここから先 (パートのトラックの入れ替え) は、まとめて元に戻せる
                 let created = 0, withReference = 0;
-                for (const [stemName, stem] of Object.entries(result.stems)) {
-                    const label = PART_LABELS[stemName] || stemName;
-                    const track = engine.addTrack(label);
-                    track.role = 'part';
-                    track.part = stemName;
-                    created++;
-                    if (stem.mix) {
-                        engine.updateTrackGain(track.id, stem.mix.volume_db);
-                        engine.updateTrackPan(track.id, stem.mix.pan);
+                await recordAsync('パートに分ける', async () => {
+                    if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
+                    if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
+
+                    // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
+                    for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
+                        if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
+                        engine.removeTrack(old.id);
                     }
-                    if (stem.audio_url) {
-                        try {
-                            await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
-                        } catch (e) {
-                            console.warn(`${stemName} の音声を読み込めませんでした:`, e);
+
+                    for (const [stemName, stem] of Object.entries(result.stems)) {
+                        const label = PART_LABELS[stemName] || stemName;
+                        const track = engine.addTrack(label);
+                        track.role = 'part';
+                        track.part = stemName;
+                        created++;
+                        if (stem.mix) {
+                            engine.updateTrackGain(track.id, stem.mix.volume_db);
+                            engine.updateTrackPan(track.id, stem.mix.pan);
+                        }
+                        if (stem.audio_url) {
+                            try {
+                                await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
+                            } catch (e) {
+                                console.warn(`${stemName} の音声を読み込めませんでした:`, e);
+                            }
+                        }
+                        if (stem.notes && stem.notes.length > 0) {
+                            // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
+                            track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+                            track.pianoNotes = [];
+                            withReference++;
+                        }
+                        if (stem.drum_events && stem.drum_events.length > 0) {
+                            // ドラムは以前どおり、種類ごとに決まった高さのノートとして置く (お手本にはしない)
+                            const drumMap: Record<string, { note: string; octave: number }> = {
+                                kick: { note: 'C', octave: 2 },
+                                snare: { note: 'D', octave: 2 },
+                                hihat: { note: 'F#', octave: 2 },
+                            };
+                            track.pianoNotes = stem.drum_events.map(e => ({ ...(drumMap[e.type] || drumMap.kick), step: e.step, length: 1 }));
+                        }
+                        // 原曲と重なると音が大きくなるので、パートは最初はミュートしておく
+                        if (engine.tracks.some(t => t.role === 'song')) {
+                            if (!track.mute) engine.toggleMute(track.id);
                         }
                     }
-                    if (stem.notes && stem.notes.length > 0) {
-                        // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
-                        track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
-                        track.pianoNotes = [];
-                        withReference++;
-                    }
-                    if (stem.drum_events && stem.drum_events.length > 0) {
-                        // ドラムは以前どおり、種類ごとに決まった高さのノートとして置く (お手本にはしない)
-                        const drumMap: Record<string, { note: string; octave: number }> = {
-                            kick: { note: 'C', octave: 2 },
-                            snare: { note: 'D', octave: 2 },
-                            hihat: { note: 'F#', octave: 2 },
-                        };
-                        track.pianoNotes = stem.drum_events.map(e => ({ ...(drumMap[e.type] || drumMap.kick), step: e.step, length: 1 }));
-                    }
-                    // 原曲と重なると音が大きくなるので、パートは最初はミュートしておく
-                    if (engine.tracks.some(t => t.role === 'song')) {
-                        if (!track.mute) engine.toggleMute(track.id);
-                    }
-                }
+                });
                 setCoachPair({ referenceId: null, attemptId: null });
                 bumpTracks();
                 openLearn('song');
                 setStatus(`パートに分けました（${created} パート、お手本 ${withReference} パート）。練習するパートの「このパートを練習する」を押してください`);
             },
         );
-    }, [songFile, chart, applyChartGrid, setStatus, withProgress, setBpm, setGridOffset, pianoRollRef, setCoachPair, bumpTracks, openLearn]);
+    }, [songFile, chart, applyChartGrid, setStatus, withProgress, setBpm, setGridOffset, pianoRollRef, setCoachPair, bumpTracks, openLearn, recordAsync]);
 
     /**
      * そのパートを練習する。1 回の操作で、次をまとめて行う。
@@ -341,18 +346,22 @@ export function useLearnActions() {
     const practicePart = useCallback((partId: number) => {
         const part = engine.getTrack(partId);
         if (!part || !part.referenceNotes?.length) return;
-        let practice = practiceTrackOf(partId);
-        if (!practice) {
-            practice = engine.addTrack(`${part.name}の練習`);
-            practice.role = 'practice';
-            practice.part = part.part;
-            practice.practiceOf = part.id;
-            engine.moveTrackAfter(practice.id, part.id);
-        }
-        // パートの音声と、練習のトラックを鳴らす。ソロが在るなら、この 2 本もソロにする
-        if (part.mute) engine.toggleMute(part.id);
-        if (practice.mute) engine.toggleMute(practice.id);
-        if (engine.tracks.some(t => t.solo)) { part.solo = true; practice.solo = true; }
+        // 練習のトラックを作ること、ミュート・ソロを変えることは、まとめて元に戻せる
+        const practice = record(`「${part.name}」を練習する`, () => {
+            let target = practiceTrackOf(partId);
+            if (!target) {
+                target = engine.addTrack(`${part.name}の練習`);
+                target.role = 'practice';
+                target.part = part.part;
+                target.practiceOf = part.id;
+                engine.moveTrackAfter(target.id, part.id);
+            }
+            // パートの音声と、練習のトラックを鳴らす。ソロが在るなら、この 2 本もソロにする
+            if (part.mute) engine.toggleMute(part.id);
+            if (target.mute) engine.toggleMute(target.id);
+            if (engine.tracks.some(t => t.solo)) { part.solo = true; target.solo = true; }
+            return target;
+        });
 
         setGhostChoice('auto');
         setCoachPair({ referenceId: part.id, attemptId: practice.id });
@@ -368,11 +377,11 @@ export function useLearnActions() {
         }
         bumpTracks();
         setStatus(`「${part.name}」を練習します。水色のお手本を見ながら「${practice.name}」にノートを置き、終わったら「差分チェック」で比べてください`);
-    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus]);
+    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus, record]);
 
     /**
      * お手本を、そのパートのトラックの打ち込みとして写す（採譜を自由に直したい人向け）。
-     * 写すと差分チェックは 100% から始まる。呼ぶ前に、画面で確かめてもらう。
+     * 写すと差分チェックは 100% から始まる。呼ぶ前に、画面で確かめてもらう。元に戻せる（それまでの打ち込みに戻る）。
      *
      * @param partId - パートのトラックの ID
      */
@@ -382,25 +391,27 @@ export function useLearnActions() {
         const pr = pianoRollRef.current;
         // 開いているトラックのノートを書き戻してから写す (写した後に古い表示で上書きしない)
         pr?._saveToEngine?.();
-        part.pianoNotes = part.referenceNotes.map(n => ({ ...n }));
-        if (part.mute) engine.toggleMute(part.id);
+        record(`「${part.name}」のお手本をノートとして取り込む`, () => {
+            part.pianoNotes = part.referenceNotes!.map(n => ({ ...n }));
+            if (part.mute) engine.toggleMute(part.id);
+        });
         setCoachPair({ referenceId: part.id, attemptId: part.id });
         if (pr) {
             pr.switchToTrack(null);
             pr.switchToTrack(part.id);
         }
         bumpTracks();
-        setStatus(`「${part.name}」のお手本を、ノートとして取り込みました（${part.pianoNotes.length} ノート）`);
-    }, [pianoRollRef, setCoachPair, bumpTracks, setStatus]);
+        setStatus(`「${part.name}」のお手本を、ノートとして取り込みました（${part.pianoNotes.length} ノート）。元に戻すと、それまでの打ち込みに戻ります`);
+    }, [pianoRollRef, setCoachPair, bumpTracks, setStatus, record]);
 
     /** 自由に作る: 空のトラックを 1 本作って、ピアノロールで開く。 */
     const startFree = useCallback(() => {
-        const track = engine.addTrack();
+        const track = record('トラックを追加', () => engine.addTrack());
         pianoRollRef.current?.switchToTrack(track.id);
         setLeftTab('sound');
         bumpTracks();
         setStatus(`「${track.name}」を作りました。下のピアノロールをダブルクリックするとノートを置けます`);
-    }, [pianoRollRef, setLeftTab, bumpTracks, setStatus]);
+    }, [pianoRollRef, setLeftTab, bumpTracks, setStatus, record]);
 
     return { importSong, separateParts, practicePart, adoptReference, startFree, placeAudio };
 }

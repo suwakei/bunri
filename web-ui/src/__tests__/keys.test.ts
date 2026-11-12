@@ -3,7 +3,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
+import { historyShortcut, isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 
 afterEach(() => { document.body.innerHTML = ''; });
 
@@ -50,5 +50,33 @@ describe('isDialogOpen', () => {
         expect(isDialogOpen()).toBe(false);
         make('<div role="dialog" aria-modal="true"></div>');
         expect(isDialogOpen()).toBe(true);
+    });
+});
+
+describe('historyShortcut', () => {
+    const key = (k: string, mods: Partial<Record<'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey', boolean>> = {}, code = '') =>
+        historyShortcut({ key: k, code, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods });
+
+    it('Cmd+Z / Ctrl+Z で元に戻す、Shift を足すとやり直す', () => {
+        expect(key('z', { metaKey: true })).toBe('undo');
+        expect(key('z', { ctrlKey: true })).toBe('undo');
+        expect(key('Z', { metaKey: true, shiftKey: true })).toBe('redo');
+        expect(key('Z', { ctrlKey: true, shiftKey: true })).toBe('redo');
+    });
+
+    it('Ctrl+Y でもやり直す', () => {
+        expect(key('y', { ctrlKey: true })).toBe('redo');
+    });
+
+    it('修飾キーが無い、Alt を押している、別のキーなら受けない', () => {
+        expect(key('z')).toBeNull();
+        expect(key('z', { metaKey: true, altKey: true })).toBeNull();
+        expect(key('x', { metaKey: true })).toBeNull();
+    });
+
+    it('英字が出ない配列では、キーの位置で見る', () => {
+        expect(key('я', { metaKey: true }, 'KeyZ')).toBe('undo');
+        // 英字が出る配列なら、出た文字で見る (Dvorak などで KeyZ の位置に別の文字があっても、z でなければ受けない)
+        expect(key('q', { metaKey: true }, 'KeyZ')).toBeNull();
     });
 });

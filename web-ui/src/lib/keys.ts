@@ -70,3 +70,42 @@ export function isKeyboardFocusedControl(target: EventTarget | null): boolean {
 export function isDialogOpen(): boolean {
     return typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') !== null;
 }
+
+/** Mac か (ショートカットの表示を ⌘ にするか、Ctrl にするか)。 */
+export function isMac(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+}
+
+/** ショートカットの修飾キーの表示 (Mac は ⌘、それ以外は Ctrl+)。 */
+export function modKeyLabel(): string {
+    return isMac() ? '⌘' : 'Ctrl+';
+}
+
+/**
+ * Cmd (Mac) か Ctrl (それ以外) を押しているか。どちらの OS でも、両方を受ける
+ * (Mac で Ctrl+Z を押す人、Windows のキーボードを Mac につないだ人のため)。
+ */
+export function hasPrimaryModifier(e: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey'>): boolean {
+    return e.metaKey || e.ctrlKey;
+}
+
+/**
+ * 元に戻す・やり直すのショートカットか。
+ * Cmd/Ctrl+Z で元に戻す、Cmd/Ctrl+Shift+Z と Ctrl+Y でやり直す。
+ * 文字のキーで見て、だめなら物理的なキーの位置 (`code`) で見る (英字以外の配列のため)。
+ *
+ * 文字を打ち込む欄 (`isTypingTarget`) の中では、呼ぶ側で受けないこと。欄の中の Cmd+Z は、
+ * 打った文字を元に戻す (ブラウザと、デスクトップアプリの「編集」メニューが受け持つ)。
+ *
+ * @returns 'undo' / 'redo'。どちらでもなければ null
+ */
+export function historyShortcut(e: Pick<KeyboardEvent, 'key' | 'code' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>): 'undo' | 'redo' | null {
+    if (!hasPrimaryModifier(e) || e.altKey) return null;
+    const key = (e.key || '').toLowerCase();
+    // 英字が出ないキー配列 (キリル文字など) では、物理的なキーの位置で見る
+    const latin = /^[a-z]$/.test(key);
+    if (key === 'z' || (!latin && e.code === 'KeyZ')) return e.shiftKey ? 'redo' : 'undo';
+    if (!e.shiftKey && (key === 'y' || (!latin && e.code === 'KeyY'))) return 'redo';
+    return null;
+}
