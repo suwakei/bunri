@@ -4,11 +4,11 @@
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { makeWav, openDaw, startFree, openTab, statusText, SONG_MP3 } from './helpers';
+import { deleteTrack, makeWav, openDaw, startFree, openTab, statusText, SONG_MP3 } from './helpers';
 
 /** タイムラインの縮尺 (1 秒 = 80px) と、トラックの見出しの幅。 */
 const PX_PER_SEC = 80;
-const HEADER_WIDTH = 130;
+const HEADER_WIDTH = 200;
 
 const area = (page: Page) => page.locator('#timeline-area');
 const clips = (page: Page) => page.locator('#tracks-container .clip');
@@ -190,13 +190,11 @@ test.describe('トラックとクリップ', () => {
         await startFree(page);
         await page.getByRole('button', { name: '+ トラック追加' }).click();
         expect(await trackNames(page)).toEqual(['Track 1', 'Track 2', 'Track 3']);
-        await page.locator('#tracks-container .btn-delete-track').nth(1).click();
+        await deleteTrack(page, 'Track 2');
         await page.getByRole('button', { name: '+ トラック追加' }).click();
         expect(await trackNames(page)).toEqual(['Track 1', 'Track 3', 'Track 4']);
         // 全部消してから足すと、Track 1 から
-        while (await page.locator('#tracks-container .btn-delete-track').count() > 0) {
-            await page.locator('#tracks-container .btn-delete-track').first().click();
-        }
+        for (const name of await trackNames(page)) await deleteTrack(page, name);
         await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
         // 全部消すと、起動したときと同じ空の状態の案内に戻る。「自由に作る」で足す
         await expect(page.locator('#empty-state')).toBeVisible();
@@ -209,7 +207,7 @@ test.describe('トラックとクリップ', () => {
         await startFree(page);
         await page.locator('#tracks-container .track-name').nth(1).click();
         await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 2');
-        await page.locator('#tracks-container .btn-delete-track').nth(1).click();
+        await deleteTrack(page, 'Track 2');
         expect(await trackNames(page)).toEqual(['Track 1']);
         await expect(page.locator('#piano-roll-area .area-label')).toContainText('トラック名をクリックすると開きます');
     });
@@ -227,14 +225,80 @@ test.describe('トラックとクリップ', () => {
         expect(await nameEl.locator('b, i').count()).toBe(0);
     });
 
-    test('クリップを右クリックで消すと、何を消したかが出る', async ({ page }) => {
+    test('クリップを右クリックすると、すぐには消えずにメニューが出る。削除すると何を消したかが出て、元に戻せる', async ({ page }) => {
         await openDaw(page);
         await startFree(page);
         await addClip(page, 'two-sec.wav', 2);
         const clip = await box(page, '#tracks-container .clip');
         await page.mouse.click(clip.x + 10, clip.y + 10, { button: 'right' });
+        // 右クリックだけでは消えない (以前はその場で消えて、取り消せなかった)
+        const menu = page.getByRole('menu', { name: 'クリップ「two-sec.wav」のメニュー' });
+        await expect(menu).toBeVisible();
+        await expect(clips(page)).toHaveCount(1);
+        // 最初の項目にフォーカスが在り、Esc で閉じるとクリップにフォーカスが戻る
+        await expect(menu.getByRole('menuitem', { name: '複製' })).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(menu).toHaveCount(0);
+        await expect(clips(page)).toHaveCount(1);
+        await expect(clips(page).first()).toBeFocused();
+
+        await page.mouse.click(clip.x + 10, clip.y + 10, { button: 'right' });
+        await page.getByRole('menuitem', { name: '削除' }).click();
         await expect(clips(page)).toHaveCount(0);
         await expect(statusText(page)).toHaveText('クリップ「two-sec.wav」を「Track 1」から削除しました');
+        // 「元に戻す」付きの知らせが出る (読み上げは role="status")
+        const toast = page.locator('#undo-toast-region');
+        await expect(toast).toHaveAttribute('role', 'status');
+        await expect(toast).toContainText('クリップ「two-sec.wav」を「Track 1」から削除しました');
+        await toast.getByRole('button', { name: '元に戻す' }).click();
+        await expect(clips(page)).toHaveCount(1);
+        await expect(clips(page).first()).toHaveAttribute('title', /開始: 0\.0s/);
+        await expect(toast).not.toContainText('削除しました');
+    });
+
+    test('クリップのメニューの「複製」で、すぐ後ろに同じクリップが入る。元に戻すと外れる', async ({ page }) => {
+        await openDaw(page);
+        await startFree(page);
+        await addClip(page, 'two-sec.wav', 2);
+        const clip = await box(page, '#tracks-container .clip');
+        await page.mouse.click(clip.x + 10, clip.y + 10, { button: 'right' });
+        await page.getByRole('menuitem', { name: '複製' }).click();
+        await expect(clips(page)).toHaveCount(2);
+        await expect(clips(page).nth(1)).toHaveAttribute('title', /開始: 2\.0s/);
+        await page.getByRole('button', { name: '元に戻す', exact: true }).click();
+        await expect(clips(page)).toHaveCount(1);
+    });
+
+    test('クリップはキーボードでも選べて、Delete で消せる (元に戻せる)', async ({ page }) => {
+        await openDaw(page);
+        await startFree(page);
+        await addClip(page, 'two-sec.wav', 2);
+        await clips(page).first().focus();
+        await page.keyboard.press('Shift+F10');
+        await expect(page.getByRole('menu', { name: /クリップ「two-sec.wav」/ })).toBeVisible();
+        await page.keyboard.press('Escape');
+        await clips(page).first().focus();
+        await page.keyboard.press('Delete');
+        await expect(clips(page)).toHaveCount(0);
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect(clips(page)).toHaveCount(1);
+    });
+
+    test('クリップを動かしても、元に戻すと元の位置に戻る', async ({ page }) => {
+        await openDaw(page);
+        await startFree(page);
+        await addClip(page, 'two-sec.wav', 2);
+        const clip = await box(page, '#tracks-container .clip');
+        await page.mouse.move(clip.x + 20, clip.y + 20);
+        await page.mouse.down();
+        await page.mouse.move(clip.x + 20 + 160, clip.y + 20, { steps: 5 });
+        await page.mouse.up();
+        await expect(clips(page).first()).toHaveAttribute('title', /開始: 2\.0s/);
+        await expect(page.locator('#btn-undo')).toHaveAttribute('title', /クリップを移動/);
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect(clips(page).first()).toHaveAttribute('title', /開始: 0\.0s/);
+        await page.keyboard.press('ControlOrMeta+Shift+z');
+        await expect(clips(page).first()).toHaveAttribute('title', /開始: 2\.0s/);
     });
 
     test('音声ファイルをドロップすると、落とした位置にクリップが入る。音声でないファイルは断る', async ({ page }) => {
@@ -340,7 +404,7 @@ test.describe('タイムラインとピアノロールの境目', () => {
 });
 
 test.describe('トラックのボタン', () => {
-    test('M・S・✕ が何のボタンかが伝わり、押せる範囲が 24px 四方以上ある', async ({ page }) => {
+    test('M・S・メニュー (…) が何のボタンかが伝わり、押せる範囲が 24px 四方以上ある', async ({ page }) => {
         await openDaw(page);
         await startFree(page);
         const row = page.locator('#tracks-container .track-row').first();
@@ -348,7 +412,7 @@ test.describe('トラックのボタン', () => {
             ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけ再生'],
             ['.btn-mute', '「Track 1」をミュート', 'ミュート（このトラックを鳴らさない）'],
             ['.btn-solo', '「Track 1」をソロ', 'ソロ（このトラックだけ鳴らす）'],
-            ['.btn-delete-track', '「Track 1」を削除', 'トラックを削除'],
+            ['.btn-track-menu', '「Track 1」のメニュー', 'メニュー（名前の変更・並びの変更・削除）'],
         ];
         for (const [selector, label, title] of expected) {
             const button = row.locator(selector);
@@ -360,13 +424,24 @@ test.describe('トラックのボタン', () => {
         }
         // ボタンの名前で引ける
         await expect(page.getByRole('button', { name: '「Track 2」をミュート' })).toBeVisible();
-        // 4 つのボタンが、トラックの見出しの中に 1 行で収まっている
+        // ▶ M S は、トラックの見出しの中に 1 行で収まっている
         const header = (await row.locator('.track-header').boundingBox())!;
-        const last = (await row.locator('.btn-delete-track').boundingBox())!;
+        const solo = (await row.locator('.btn-solo').boundingBox())!;
         const first = (await row.locator('.btn-track-play').boundingBox())!;
-        expect(last.x + last.width).toBeLessThanOrEqual(header.x + header.width);
-        expect(last.y).toBe(first.y);
-        expect(last.y + last.height).toBeLessThanOrEqual(header.y + header.height);
+        expect(solo.x + solo.width).toBeLessThanOrEqual(header.x + header.width);
+        expect(solo.y).toBe(first.y);
+        // 消す操作はメニューの中。メニューのボタンは S の隣には無い (別の段に在り、見出しの中に収まっている)
+        await expect(row.locator('.btn-delete-track')).toHaveCount(0);
+        const menu = (await row.locator('.btn-track-menu').boundingBox())!;
+        expect(menu.y + menu.height).toBeLessThanOrEqual(solo.y);
+        expect(menu.x + menu.width).toBeLessThanOrEqual(header.x + header.width);
+        expect(menu.y + menu.height).toBeLessThanOrEqual(header.y + header.height);
+        // 音量とパンのつまみも、見出しの中に収まっている
+        for (const selector of ['.gain-slider', '.pan-slider', '.gain-readout', '.pan-readout']) {
+            const b = (await row.locator(selector).boundingBox())!;
+            expect(b.x + b.width, selector).toBeLessThanOrEqual(header.x + header.width);
+            expect(b.y + b.height, selector).toBeLessThanOrEqual(header.y + header.height);
+        }
     });
 
     test('ミュートとソロは、押した状態が読み上げにも伝わり、キーボードで押してもフォーカスが残る', async ({ page }) => {
