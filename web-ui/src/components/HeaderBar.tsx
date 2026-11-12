@@ -5,7 +5,7 @@ import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import { apiFetch, describeError, errorDetail } from '../lib/api';
-import { isDialogOpen, isKeyboardFocusedControl, isTypingTarget } from '../lib/keys';
+import { historyShortcut, isDialogOpen, isKeyboardFocusedControl, isTypingTarget, modKeyLabel } from '../lib/keys';
 import { notesToMidi } from '../lib/midi';
 
 /**
@@ -72,8 +72,8 @@ function TimeDisplay() {
 /**
  * ヘッダーバーコンポーネント。
  * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
- * プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）を提供する。
- * Space キーで、再生と一時停止を切り替えられる。
+ * 元に戻す・やり直す、プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）を提供する。
+ * Space キーで、再生と一時停止を切り替えられる。Cmd+Z / Cmd+Shift+Z（Ctrl でも）で元に戻す・やり直す。
  *
  * @returns ヘッダー全体の `<div id="header">` 要素
  */
@@ -84,7 +84,22 @@ export default function HeaderBar() {
         metronomeEnabled, setMetronomeEnabled,
         withProgress, showProgress, bumpTracks, pianoRollRef,
         setHint, setGridOffset, setCoachPair,
+        canUndo, canRedo, undoLabel, redoLabel, undo, redo, record, recordAsync,
     } = useDaw();
+
+    // Cmd+Z (Ctrl+Z) で元に戻す、Cmd+Shift+Z (Ctrl+Shift+Z, Ctrl+Y) でやり直す。
+    // 文字を打ち込む欄の中では受けない (欄の中の Cmd+Z は、打った文字を元に戻す。ブラウザと、
+    // デスクトップアプリの「編集」メニューに任せる)。案内などの窓が開いているあいだも受けない
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            const action = historyShortcut(e);
+            if (!action || isTypingTarget(e.target) || isDialogOpen()) return;
+            e.preventDefault();
+            if (action === 'undo') undo(); else redo();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+    }, [undo, redo]);
 
     const handlePlay = useCallback(() => {
         engine.init();
@@ -154,13 +169,15 @@ export default function HeaderBar() {
             const buffer = await engine.stopRecording();
             engine.pause();
             setIsPlaying(false);
-            let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-            if (!recTrack) recTrack = engine.addTrack('Rec');
-            await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            await recordAsync('録音を追加', async () => {
+                let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+                if (!recTrack) recTrack = engine.addTrack('Rec');
+                await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            });
             bumpTracks();
             setStatus('録音完了');
         }
-    }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks]);
+    }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks, recordAsync]);
 
     const handleMetronome = useCallback(() => {
         engine.init();
@@ -261,42 +278,45 @@ export default function HeaderBar() {
             setStatus('プロジェクトを読み込めませんでした。' + describeError(e), 'error');
             return;
         }
-        engine.bpm = project.bpm || 120;
-        engine.beatsPerBar = project.beatsPerBar || 4;
-        setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
-        // 1 小節目の位置。以前の版が保存したプロジェクトには無いので、0 秒 (以前の数え方) にする
-        setGridOffset(typeof project.gridOffset === 'number' ? project.gridOffset : 0);
-        // ピアノロールは、トラックを読み込む「前」に閉じる。ピアノロールは別のトラックへ移るとき、
-        // 画面に出しているノートを、開いていたトラックへ書き戻す。読み込んだ後に閉じると、
-        // 開いていたトラックのノートが、読み込んだ内容ではなく、画面に出ていた古い内容に戻ってしまう
-        const pr = pianoRollRef.current;
-        if (pr) pr.switchToTrack(null);
-        if (project.tracks) {
-            project.tracks.forEach((pt, i) => {
-                // 保存したときのほうがトラックが多ければ、足りないぶんを作る
-                // (作らないと、3 本目以降のノートが読み込まれずに消える)
-                const track = engine.tracks[i] ?? engine.addTrack(pt.name);
-                if (pt.name) track.name = pt.name;
-                if (typeof pt.gain === 'number') engine.updateTrackGain(track.id, pt.gain);
-                if (typeof pt.pan === 'number') engine.updateTrackPan(track.id, pt.pan);
-                if (typeof pt.mute === 'boolean' && pt.mute !== track.mute) engine.toggleMute(track.id);
-                if (pt.pianoNotes) track.pianoNotes = pt.pianoNotes;
-                if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
-                track.role = pt.role;
-                track.part = pt.part;
-                track.practiceOf = undefined;
-            });
-            // 練習のトラックが見るパートは、全部のトラックを作ってから結び直す
-            project.tracks.forEach((pt, i) => {
-                const target = typeof pt.practiceOfIndex === 'number' ? engine.tracks[pt.practiceOfIndex] : undefined;
-                if (target && engine.tracks[i]) engine.tracks[i].practiceOf = target.id;
-            });
-        }
+        // 読み込みも元に戻せる (読み込む前のトラック・ノート・テンポに戻る)
+        record(`プロジェクト「${name}」の読み込み`, () => {
+            engine.bpm = project.bpm || 120;
+            engine.beatsPerBar = project.beatsPerBar || 4;
+            setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
+            // 1 小節目の位置。以前の版が保存したプロジェクトには無いので、0 秒 (以前の数え方) にする
+            setGridOffset(typeof project.gridOffset === 'number' ? project.gridOffset : 0);
+            // ピアノロールは、トラックを読み込む「前」に閉じる。ピアノロールは別のトラックへ移るとき、
+            // 画面に出しているノートを、開いていたトラックへ書き戻す。読み込んだ後に閉じると、
+            // 開いていたトラックのノートが、読み込んだ内容ではなく、画面に出ていた古い内容に戻ってしまう
+            const pr = pianoRollRef.current;
+            if (pr) pr.switchToTrack(null);
+            if (project.tracks) {
+                project.tracks.forEach((pt, i) => {
+                    // 保存したときのほうがトラックが多ければ、足りないぶんを作る
+                    // (作らないと、3 本目以降のノートが読み込まれずに消える)
+                    const track = engine.tracks[i] ?? engine.addTrack(pt.name);
+                    if (pt.name) track.name = pt.name;
+                    if (typeof pt.gain === 'number') engine.updateTrackGain(track.id, pt.gain);
+                    if (typeof pt.pan === 'number') engine.updateTrackPan(track.id, pt.pan);
+                    if (typeof pt.mute === 'boolean' && pt.mute !== track.mute) engine.toggleMute(track.id);
+                    if (pt.pianoNotes) track.pianoNotes = pt.pianoNotes;
+                    if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
+                    track.role = pt.role;
+                    track.part = pt.part;
+                    track.practiceOf = undefined;
+                });
+                // 練習のトラックが見るパートは、全部のトラックを作ってから結び直す
+                project.tracks.forEach((pt, i) => {
+                    const target = typeof pt.practiceOfIndex === 'number' ? engine.tracks[pt.practiceOfIndex] : undefined;
+                    if (target && engine.tracks[i]) engine.tracks[i].practiceOf = target.id;
+                });
+            }
+        });
         setCoachPair({ referenceId: null, attemptId: null });
         // 以前の版が保存したオートメーションのデータ (project.automation) は、在っても使わない
         bumpTracks();
         setStatus(`プロジェクト「${name}」を読み込みました（音声は保存されていません。音声ファイルは、もう一度追加してください）`);
-    }, [setBpm, setBeatsPerBar, setGridOffset, setCoachPair, pianoRollRef, bumpTracks, setStatus]);
+    }, [setBpm, setBeatsPerBar, setGridOffset, setCoachPair, pianoRollRef, bumpTracks, setStatus, record]);
 
     const h = (text: string) => ({
         onMouseEnter: () => setHint(text),
@@ -333,6 +353,20 @@ export default function HeaderBar() {
                 <TimeDisplay />
             </div>
             <div>
+                {/* 元に戻す・やり直す。何を戻すかを、マウスを載せたときの説明 (title) に出す */}
+                <div id="history-buttons" role="group" aria-label="元に戻す・やり直す">
+                    {/* ヘッダの幅が足りないので記号だけを出し、名前は aria-label で伝える */}
+                    <button type="button" id="btn-undo" onClick={undo} disabled={!canUndo} aria-label="元に戻す"
+                        aria-keyshortcuts="Meta+Z Control+Z"
+                        title={canUndo ? `元に戻す: ${undoLabel}（${modKeyLabel()}Z）` : '元に戻せる操作はありません'}>
+                        <span aria-hidden="true">↶</span>
+                    </button>
+                    <button type="button" id="btn-redo" onClick={redo} disabled={!canRedo} aria-label="やり直す"
+                        aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z Control+Y"
+                        title={canRedo ? `やり直す: ${redoLabel}（${modKeyLabel()}Shift+Z）` : 'やり直せる操作はありません'}>
+                        <span aria-hidden="true">↷</span>
+                    </button>
+                </div>
                 <button onClick={handleSave} {...h('プロジェクト（テンポ・トラック・ノート）を保存します')}>保存</button>
                 <button onClick={handleLoad} {...h('最後に保存したプロジェクトを読み込みます')}>読み込む</button>
                 <button onClick={handleExport} disabled={showProgress}

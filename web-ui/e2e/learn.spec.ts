@@ -11,7 +11,7 @@ import { fakeJob, importSong, makeWav, openDaw, openTab, SONG_MP3, startFree, st
 
 const DOWNBEAT = 0.75;
 const PX_PER_SEC = 80;
-const HEADER_WIDTH = 130;
+const HEADER_WIDTH = 200;
 const STEP_WIDTH = 20;
 
 const mp3 = () => ({ name: 'song.mp3', mimeType: 'audio/mpeg', buffer: readFileSync(SONG_MP3) });
@@ -294,4 +294,51 @@ test('進み具合は畳めて、畳んだことを覚えている', async ({ pa
     await expect(steps).toHaveCount(0);
     await page.getByRole('button', { name: /進み具合/ }).click();
     await expect(steps).toBeVisible();
+});
+
+test('お手本をノートとして取り込む・練習する・パートに分けるは、どれも元に戻せる。お手本のノートは選べない', async ({ page }) => {
+    await fakeBackend(page);
+    await openDaw(page);
+    await importSong(page, mp3());
+    await expect(statusText(page)).toContainText('カルテを作りました');
+    await openTab(page, '曲とパート');
+    await page.getByRole('button', { name: /パートに分けて採譜する/ }).click();
+    await expect(statusText(page)).toContainText('パートに分けました');
+    const names = async () => (await trackSummary(page)).map((t) => t.name);
+    const badge = (name: string) => page.locator('#tracks-container .track-row')
+        .filter({ has: page.locator('.track-name', { hasText: new RegExp(`^${name}\\s*\\d*$`) }) }).locator('.notes-badge');
+
+    await page.locator('#part-list').getByRole('button', { name: '「ベース」を練習する' }).click();
+    await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
+    // お手本 (水色) は、全部選んでも選ばれず、Delete でも消えない
+    await page.locator('#piano-grid-wrap').focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await expect(page.locator('#note-layer .note-block.selected')).toHaveCount(0);
+    await expect(statusText(page)).toHaveText('0 ノートを選びました');
+    await page.keyboard.press('Delete');
+    await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
+
+    // お手本をノートとして取り込む (確かめてから写す) → 元に戻すと、それまでの打ち込み (空) に戻る
+    await page.getByRole('button', { name: '「ベース」のお手本をノートとして取り込む' }).click();
+    await page.getByRole('button', { name: '写す' }).click();
+    await expect(badge('ベース')).toHaveText(String(BASS.length));
+    await expect(page.getByRole('button', { name: '元に戻す', exact: true })).toHaveAttribute('title', /「ベース」のお手本をノートとして取り込む/);
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect(badge('ベース')).toHaveCount(0);
+    await page.keyboard.press('ControlOrMeta+Shift+z');
+    await expect(badge('ベース')).toHaveText(String(BASS.length));
+
+    // 取り込み → 練習 → パート分離の順に戻すと、原曲だけに戻る
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press('ControlOrMeta+z');
+    expect(await names()).toEqual(['原曲', 'ボーカル', 'ドラム', 'ベース']);
+    await page.keyboard.press('ControlOrMeta+z');
+    expect(await names()).toEqual(['原曲']);
+    // やり直すと、パートのトラックが (音声とお手本ごと) 戻る
+    await page.keyboard.press('ControlOrMeta+Shift+z');
+    expect(await trackSummary(page)).toEqual([
+        { name: '原曲', clips: ['song.mp3'] }, { name: 'ボーカル', clips: ['ボーカル'] },
+        { name: 'ドラム', clips: ['ドラム'] }, { name: 'ベース', clips: ['ベース'] },
+    ]);
+    await expect(page.getByRole('button', { name: '「ベース」を練習する' })).toHaveCount(2);
 });

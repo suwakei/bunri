@@ -198,6 +198,20 @@ body {
     align-items: center;
 }
 
+/* 元に戻す・やり直す。ほかのボタンと少し離す */
+#history-buttons {
+    display: flex;
+    gap: 4px;
+    margin-right: 8px;
+}
+
+#header #history-buttons button {
+    padding: 4px 8px !important;
+    font-size: 15px !important;
+    line-height: 1;
+    min-width: 30px;
+}
+
 #header > div:last-child button,
 #header > div:last-child a {
     background: var(--bg-panel) !important;
@@ -230,9 +244,18 @@ button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
 [role="tab"]:focus-visible,
-[role="separator"]:focus-visible {
+[role="separator"]:focus-visible,
+[role="menuitem"]:focus-visible,
+.clip:focus-visible,
+.track-header input[type="range"]:focus-visible {
     outline: 2px solid var(--accent-hover);
     outline-offset: 2px;
+}
+
+/* ピアノロールのグリッド。フォーカスを受けてキーの操作を受ける。縁取りは内側に描く (外側はスクロールの枠で切れる) */
+#piano-grid-wrap:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: -2px;
 }
 
 /* ---- Seek bar ---- */
@@ -895,7 +918,8 @@ button.link-btn:hover {
 .track-row {
     display: flex;
     align-items: stretch;
-    height: 64px;
+    /* 見出しは 3 段 (名前とメニュー / ▶ M S とパン / 音量) */
+    height: 78px;
     width: max-content;
     min-width: 100%;
     border-bottom: 1px solid var(--border);
@@ -903,13 +927,15 @@ button.link-btn:hover {
 }
 
 .track-header {
-    width: 130px;
-    min-width: 130px;
+    /* 幅は CenterArea.tsx の TRACK_HEADER_WIDTH と合わせる (クリップを置く領域はこの右から始まる) */
+    width: 200px;
+    min-width: 200px;
     background: var(--bg-secondary);
-    padding: 6px 10px;
+    padding: 4px 8px 4px 10px;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    gap: 3px;
     border-right: 1px solid var(--border);
     font-size: 12px;
     cursor: pointer;
@@ -940,12 +966,143 @@ button.link-btn:hover {
     font-size: 12px;
     color: var(--text);
     transition: color var(--transition);
+    /* 長い名前は 1 行に収めて … にする (全文は title で読める) */
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 1 段目: 名前・「練習する」・メニュー (…) */
+.track-head-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 24px;
+}
+
+/* 名前の変更中の入力欄 */
+.track-name-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-ui);
+    color: var(--text);
+    background: var(--bg-deep);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 2px 4px;
+}
+
+/* トラックのメニュー (名前の変更・並びの変更・削除)。押せる範囲は 24px 四方以上 */
+.track-header .btn-track-menu {
+    flex: 0 0 auto;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0 4px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-mid);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.track-header .btn-track-menu:hover {
+    border-color: var(--border-light);
+    color: var(--text);
 }
 
 .track-header .track-controls {
     display: flex;
+    align-items: center;
     gap: 3px;
-    margin-top: 3px;
+}
+
+/* 音量とパンのつまみ */
+.track-pan,
+.track-mix {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.track-pan {
+    flex: 1 1 auto;
+    margin-left: 4px;
+}
+
+.track-header input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 16px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.track-header input[type="range"]::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border-light);
+}
+
+.track-header input[type="range"]::-moz-range-track {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border-light);
+}
+
+.track-header input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
+    margin-top: -3.5px;
+    border-radius: 50%;
+    background: var(--text-mid);
+    border: 1px solid var(--bg-deep);
+}
+
+.track-header input[type="range"]::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-mid);
+    border: 1px solid var(--bg-deep);
+}
+
+.track-header input[type="range"]:hover::-webkit-slider-thumb,
+.track-header input[type="range"]:focus-visible::-webkit-slider-thumb {
+    background: var(--accent);
+}
+
+.track-header input[type="range"]:hover::-moz-range-thumb,
+.track-header input[type="range"]:focus-visible::-moz-range-thumb {
+    background: var(--accent);
+}
+
+/* つまみの横の数字 ("−6.0 dB" / "左 30")。幅をそろえて、値が変わってもつまみが動かないようにする */
+.mix-readout {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-mid);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.gain-readout {
+    width: 52px;
+}
+
+.pan-readout {
+    width: 34px;
 }
 
 .track-header .track-controls button {
@@ -994,8 +1151,7 @@ button.link-btn:hover {
 
 /* パートのトラックの「練習する」 */
 .track-header .btn-practice {
-    margin-top: 3px;
-    align-self: flex-start;
+    flex: 0 0 auto;
     background: none;
     border: 1px solid var(--border-light);
     border-radius: 3px;
@@ -1082,6 +1238,109 @@ button.link-btn:hover {
 .clip.selected {
     border-color: var(--selection);
     box-shadow: 0 0 0 1px var(--selection);
+}
+
+/* ---- 小さなメニュー (クリップの右クリック、トラックの「…」) ---- */
+.popup-menu {
+    position: fixed;
+    z-index: 50;
+    min-width: 150px;
+    padding: 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+}
+
+.popup-menu-item {
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    padding: 6px 10px;
+    min-height: 28px;
+    cursor: pointer;
+}
+
+.popup-menu-item:hover,
+.popup-menu-item:focus {
+    background: var(--accent-dim);
+}
+
+.popup-menu-item.danger {
+    color: var(--error);
+}
+
+.popup-menu-item[aria-disabled="true"] {
+    color: var(--text-dim);
+    cursor: not-allowed;
+    background: none;
+}
+
+/* ---- 「〜を削除しました — 元に戻す」の知らせ (ステータスバーの上に出す) ---- */
+#undo-toast-region {
+    position: fixed;
+    left: 50%;
+    bottom: 40px;
+    transform: translateX(-50%);
+    z-index: 40;
+    pointer-events: none;
+}
+
+.undo-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 8px 14px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    font-size: 12px;
+    color: var(--text);
+    max-width: min(560px, calc(100vw - 32px));
+}
+
+.undo-toast-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.undo-toast-action {
+    flex: 0 0 auto;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    color: var(--accent);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
+.undo-toast-action:hover {
+    background: var(--accent);
+    color: var(--bg-deep);
+}
+
+.undo-toast-close {
+    flex: 0 0 auto;
+    min-width: 24px;
+    min-height: 24px;
+    background: none;
+    border: none;
+    color: var(--text-mid);
+    cursor: pointer;
 }
 
 /* ---- Piano Roll ---- */
@@ -1232,6 +1491,45 @@ button.link-btn:hover {
     border-color: var(--selection);
     box-shadow: 0 0 0 1px var(--selection), 0 1px 4px rgba(0, 0, 0, 0.3);
     z-index: 1;
+}
+
+/* ドラッグで囲んで選ぶときの枠 */
+.rubber-band {
+    position: absolute;
+    border: 1px solid var(--selection);
+    background: rgba(244, 241, 234, 0.08);
+    pointer-events: none;
+    z-index: 3;
+}
+
+/* ピアノロールの表示の大きさ (横・縦の −/＋) */
+.piano-zoom {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 12px;
+}
+
+.piano-zoom button {
+    min-width: 22px;
+    min-height: 20px;
+    padding: 0 4px;
+    font-size: 12px;
+    line-height: 1;
+    background: var(--bg-deep);
+    color: var(--text-mid);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.piano-zoom button:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--border-light);
+}
+
+.piano-zoom .area-hint {
+    margin-left: 4px;
 }
 
 /* ---- Area labels ---- */

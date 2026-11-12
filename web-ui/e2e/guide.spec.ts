@@ -9,7 +9,7 @@
  * API キーは、API サーバが環境変数 (ANTHROPIC_API_KEY / CLAUDE_API_KEY) かリポジトリ直下の .env から読む。
  */
 import { expect, test } from '@playwright/test';
-import { importSong, makeWav, openDaw, openTab } from './helpers';
+import { importSong, makeWav, openDaw, openTab, runJob } from './helpers';
 
 test.skip(!process.env.BUNRI_E2E_LLM, 'Claude の API を実際に呼ぶテスト。BUNRI_E2E_LLM=1 で有効にする');
 
@@ -17,9 +17,8 @@ test('カルテから再現ガイドを作ると、手順とカルテ上の場�
     test.setTimeout(240_000);
     await openDaw(page);
     const wav = makeWav(16, [261.63, 196.0, 220.0, 174.61, 261.63, 196.0, 220.0, 174.61]);
-    const analyzed = page.waitForResponse((r) => r.url().endsWith('/api/chart'), { timeout: 60_000 });
-    await importSong(page, { name: 'e2e-guide.wav', mimeType: 'audio/wav', buffer: wav });
-    expect((await analyzed).status()).toBe(200);
+    const analyzed = await runJob(page, '/api/chart', () => importSong(page, { name: 'e2e-guide.wav', mimeType: 'audio/wav', buffer: wav }));
+    expect(analyzed.state).toBe('done');
 
     await openTab(page, 'ガイド');
     const panel = page.locator('#guide-panel');

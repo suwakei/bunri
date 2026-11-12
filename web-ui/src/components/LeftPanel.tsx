@@ -137,7 +137,7 @@ const MIC_DENIED = 'マイクを使えませんでした。OS の設定で、こ
  */
 // ---- シンセパネル ----
 function SynthPanel() {
-    const { bpm, setStatus, withProgress, showProgress, bumpTracks, pianoRollRef, setHint } = useDaw();
+    const { bpm, setStatus, withProgress, showProgress, bumpTracks, pianoRollRef, setHint, recordAsync } = useDaw();
     const [gmProgram, setGmProgram] = useState('none');
     const [instrument, setInstrument] = useState('');
     const [wave, setWave] = useState('sine');
@@ -181,17 +181,20 @@ function SynthPanel() {
 
             // 追加先は、セレクタで選んだトラック。選んでいなければ、ピアノロールで開いているトラック
             let trackId: number | string | null = synthTrack && engine.getTrack(synthTrack) ? synthTrack : pr.getActiveTrackId();
-            if (!trackId || !engine.getTrack(trackId)) {
-                if (engine.tracks.length === 0) engine.addTrack('Synth');
-                trackId = engine.tracks[0].id;
-            }
+            // トラックを作ること・クリップを置くことは、まとめて元に戻せる
+            await recordAsync('シーケンスを追加', async () => {
+                if (!trackId || !engine.getTrack(trackId)) {
+                    if (engine.tracks.length === 0) engine.addTrack('Synth');
+                    trackId = engine.tracks[0].id;
+                }
+                // 音声のクリップは、1 小節目の位置 (ノートのステップ 0) に置く
+                await engine.addClipFromBuffer(trackId, buffer, 'synth-seq', engine.gridOffset);
+            });
             const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
-            // 音声のクリップは、1 小節目の位置 (ノートのステップ 0) に置く
-            await engine.addClipFromBuffer(trackId, buffer, 'synth-seq', engine.gridOffset);
             bumpTracks();
             setStatus(`シーケンスを「${trackName}」に追加しました`);
         });
-    }, [bpm, wave, vol, a, d, s, r, instrument, gmProgram, synthTrack, pianoRollRef, withProgress, bumpTracks, setStatus]);
+    }, [bpm, wave, vol, a, d, s, r, instrument, gmProgram, synthTrack, pianoRollRef, withProgress, bumpTracks, setStatus, recordAsync]);
 
     // GM楽器をカテゴリ別にグループ化
     const instMap: Record<number, string> = {};
@@ -275,7 +278,7 @@ function SynthPanel() {
  */
 // ---- ドラムパネル ----
 function DrumPanel() {
-    const { bpm, setStatus, withProgress, showProgress, bumpTracks } = useDaw();
+    const { bpm, setStatus, withProgress, showProgress, bumpTracks, recordAsync } = useDaw();
     const [pattern, setPattern] = useState('8ビート');
     const [bars, setBars] = useState(4);
     const [vol, setVol] = useState(0.7);
@@ -295,19 +298,23 @@ function DrumPanel() {
             const buf = await blob.arrayBuffer();
             const buffer = await engine.ctx!.decodeAudioData(buf);
 
-            let track;
-            if (drumTrack === '__new__') {
-                track = engine.addTrack('Drum');
-            } else {
-                track = engine.tracks.find(t => String(t.id) === drumTrack);
-                if (!track) track = engine.addTrack('Drum');
-            }
-            // 1 小節目の位置から置く (ピアノロールの小節とそろえる)
-            await engine.addClipFromBuffer(track.id, buffer, `drum-${pattern}`, engine.gridOffset);
+            // トラックを作ること・クリップを置くことは、まとめて元に戻せる
+            const track = await recordAsync('ドラムを追加', async () => {
+                let target;
+                if (drumTrack === '__new__') {
+                    target = engine.addTrack('Drum');
+                } else {
+                    target = engine.tracks.find(t => String(t.id) === drumTrack);
+                    if (!target) target = engine.addTrack('Drum');
+                }
+                // 1 小節目の位置から置く (ピアノロールの小節とそろえる)
+                await engine.addClipFromBuffer(target.id, buffer, `drum-${pattern}`, engine.gridOffset);
+                return target;
+            });
             bumpTracks();
             setStatus(`ドラムを「${track.name}」に追加しました`);
         });
-    }, [pattern, bpm, bars, vol, drumTrack, withProgress, bumpTracks, setStatus]);
+    }, [pattern, bpm, bars, vol, drumTrack, withProgress, bumpTracks, setStatus, recordAsync]);
 
     return (
         <div id="drum-panel" className="panel-content">
@@ -340,7 +347,7 @@ function DrumPanel() {
  */
 // ---- FXパネル ----
 function FxPanel() {
-    const { setStatus, withProgress, showProgress, bumpTracks, setHint } = useDaw();
+    const { setStatus, withProgress, showProgress, bumpTracks, setHint, record } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
     const defaultParams = useCallback(() => {
@@ -373,12 +380,15 @@ function FxPanel() {
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
             const buffer = await engine.ctx!.decodeAudioData(buf);
-            track.clips[0] = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
+            // エフェクトをかけたクリップに差し替える (元に戻すと、かける前のクリップに戻る)
+            record(`「${label}」を適用`, () => {
+                track.clips[0] = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
+            });
             bumpTracks();
             // 識別子 (pitch_shift など) ではなく、日本語の名前で知らせる
             setStatus(`「${label}」を適用しました`);
         });
-    }, [fxTrack, fxType, params, withProgress, bumpTracks, setStatus]);
+    }, [fxTrack, fxType, params, withProgress, bumpTracks, setStatus, record]);
 
     return (
         <div id="fx-panel" className="panel-content">
@@ -417,7 +427,7 @@ function FxPanel() {
  */
 // ---- ファイルパネル ----
 function FilePanel() {
-    const { setStatus, bumpTracks, showProgress, pianoRollRef, bpm } = useDaw();
+    const { setStatus, bumpTracks, showProgress, pianoRollRef, bpm, recordAsync } = useDaw();
     const { placeAudio } = useLearnActions();
     const showJob = useShowJob();
     const [fileTrack, setFileTrack] = useState('');
@@ -429,22 +439,24 @@ function FilePanel() {
     const handleImport = useCallback(async () => {
         const files = fileInputRef.current?.files;
         if (!files?.length) { setStatus('読み込む音声ファイルを選んでください', 'error'); return; }
-        if (engine.tracks.length === 0) engine.addTrack();
-        const trackId = resolveTrackId(fileTrack);
-        const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
-        for (const file of files) {
-            try {
-                // ブラウザで読めない形式は、API で WAV に変換してから置く
-                await placeAudio(Number(trackId), file);
-            } catch {
-                setStatus(`${file.name} を読み込めませんでした。WAV・MP3・FLAC などの音声ファイルかどうかを確かめてください`, 'error');
-                bumpTracks();
-                return;
+        // 選んだファイルをまとめて 1 つの記録にする (元に戻すと、まとめて外れる)
+        await recordAsync('音声ファイルを追加', async () => {
+            if (engine.tracks.length === 0) engine.addTrack();
+            const trackId = resolveTrackId(fileTrack);
+            const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
+            for (const file of files) {
+                try {
+                    // ブラウザで読めない形式は、API で WAV に変換してから置く
+                    await placeAudio(Number(trackId), file);
+                } catch {
+                    setStatus(`${file.name} を読み込めませんでした。WAV・MP3・FLAC などの音声ファイルかどうかを確かめてください`, 'error');
+                    return;
+                }
+                setStatus(`${file.name} を「${trackName}」に追加しました`);
             }
-            setStatus(`${file.name} を「${trackName}」に追加しました`);
-        }
+        });
         bumpTracks();
-    }, [fileTrack, setStatus, bumpTracks, placeAudio]);
+    }, [fileTrack, setStatus, bumpTracks, placeAudio, recordAsync]);
 
     // 単音メロディの解析は時間のかかる処理 (ジョブ)。進み具合は解析のボタンの下に出す
     const analyzeJob = useJob('file-analyze', (job) => {
@@ -466,7 +478,7 @@ function FilePanel() {
         try {
             const notes = await analyzeJob.run<PianoNote[]>('/api/analyze', fd);
             if (notes.length === 0) { setStatus('ノートが見つかりませんでした。感度を上げて、もう一度試してください', 'error'); return; }
-            pr.setNotes(notes);
+            pr.setNotes(notes, '解析したノートを置く');
             // タイムラインのトラックの見出しに出るノートの数を、置いた数に合わせる
             bumpTracks();
             setStatus(`${notes.length}個のノートを検出しました`);
@@ -487,12 +499,14 @@ function FilePanel() {
     const handleMicStop = useCallback(async () => {
         const buffer = await engine.stopRecording();
         setIsRecording(false);
-        let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-        if (!recTrack) recTrack = engine.addTrack('Rec');
-        await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+        await recordAsync('録音を追加', async () => {
+            let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+            if (!recTrack) recTrack = engine.addTrack('Rec');
+            await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+        });
         bumpTracks();
         setStatus('録音をトラックに追加しました');
-    }, [bumpTracks, setStatus]);
+    }, [bumpTracks, setStatus, recordAsync]);
 
     return (
         <div id="file-panel" className="panel-content">

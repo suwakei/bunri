@@ -103,6 +103,15 @@ export async function startFree(page: Page, tracks = 2): Promise<void> {
     await page.locator('#tracks-container .track-row').nth(tracks - 1).waitFor();
 }
 
+/**
+ * トラックを消す (トラックの見出しの「…」のメニューから)。
+ * @param name - トラックの名前
+ */
+export async function deleteTrack(page: Page, name: string): Promise<void> {
+    await page.getByRole('button', { name: `「${name}」のメニュー` }).click();
+    await page.getByRole('menuitem', { name: 'トラックを削除' }).click();
+}
+
 /** 指定したテスト用の音声を、取り込む曲として選ぶ (原曲のファイルの欄。画面には出ていない)。 */
 export async function importSong(page: Page, file: { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
     await page.locator('#song-file').setInputFiles(file);

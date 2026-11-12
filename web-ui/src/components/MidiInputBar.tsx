@@ -49,7 +49,10 @@ export default function MidiInputBar() {
                 // ステップ 0 は 1 小節目の位置 (engine.gridOffset)。それより前 (弱起) は 1 小節目の頭にする
                 return sec === null ? null : Math.max(0, secToStep(sec, engine.grid));
             },
-            addNote: (n) => pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length),
+            // 元に戻せる。リアルタイム録音は、弾き続けているあいだのノートを 1 つの記録にまとめる
+            addNote: (n) => pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length, recorderRef.current?.mode === 'realtime'
+                ? { label: 'MIDI 入力の録音', coalesceKey: 'midi-realtime', coalesceMs: 4000 }
+                : { label: 'MIDI 入力でノートを追加' }),
             // ピアノロールは打ち込むと伸びるので、末尾の制限は「伸ばせる上限」にする
             get totalSteps() { return pianoRollRef.current?.maxSteps ?? pianoRollRef.current?.totalSteps ?? 128; },
             get minOctave() { return pianoRollRef.current?.octaveRange?.[0] ?? 0; },

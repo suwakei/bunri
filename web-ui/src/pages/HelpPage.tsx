@@ -71,7 +71,7 @@ export default function HelpPage() {
                 <section id="overview">
                     <h2>画面の構成</h2>
                     <div className="layout-box">
-                        <p><strong>ヘッダー（上部）:</strong> BPM、拍子、再生 / 停止 / 録音、メトロノーム、「保存」「読み込む」「WAV 書き出し」「MIDI 書き出し」のボタン</p>
+                        <p><strong>ヘッダー（上部）:</strong> BPM、拍子、再生 / 停止 / 録音、メトロノーム、元に戻す（↶）/ やり直す（↷）、「保存」「読み込む」「WAV 書き出し」「MIDI 書き出し」のボタン。↶ にマウスを載せると、何が戻るかが出ます</p>
                         <p><strong>進み具合（ヘッダーの下）:</strong> ① 曲を取り込む ② カルテを見る ③ パートに分ける ④ 打ち込む ⑤ 差分で直す の、どこまで済んだかが出ます。段階を押すと、その作業をする場所が開きます。「進み具合」を押すと畳めます</p>
                         <p><strong>左パネル:</strong> 3 つのタブ</p>
                         <ul>
@@ -130,14 +130,17 @@ export default function HelpPage() {
                     <ul>
                         <li><strong>クリップの追加:</strong> 音声ファイル（WAV・MP3・FLAC など）をドラッグ&ドロップするか、「ファイル」タブから読み込みます</li>
                         <li><strong>クリップの移動:</strong> クリップをドラッグします（拍の位置にそろいます）</li>
-                        <li><strong>クリップの削除:</strong> クリップを右クリックします</li>
+                        <li><strong>クリップのメニュー:</strong> クリップを右クリックすると「複製」「削除」が出ます（クリップを選んで <span className="kbd">Delete</span> でも削除できます）</li>
                         <li><strong>トラックの追加:</strong> 「+ トラック追加」ボタン</li>
                         <li><strong>▶（再生）:</strong> そのトラックだけを再生します</li>
                         <li><strong>M（ミュート）:</strong> そのトラックを鳴らしません</li>
                         <li><strong>S（ソロ）:</strong> そのトラックだけを鳴らします</li>
-                        <li><strong>✕:</strong> トラックを削除します</li>
+                        <li><strong>音量:</strong> トラックの見出しの下の段のつまみ（−60〜+6 dB）。ダブルクリックで 0 dB に戻ります</li>
+                        <li><strong>パン:</strong> M・S の右のつまみ（左右の位置）。ダブルクリックで中央に戻ります</li>
+                        <li><strong>…（メニュー）:</strong> 名前の変更、上へ移動・下へ移動、トラックの削除</li>
                     </ul>
-                    <p>ミュートとソロは、再生にも「WAV 書き出し」にも同じように効きます。</p>
+                    <p>ミュート・ソロ・音量・パンは、再生にも「WAV 書き出し」にも同じように効きます。音量とパンはプロジェクトに保存されます。</p>
+                    <p>トラックやクリップを削除すると、画面の下に「元に戻す」付きの知らせが出ます。間違えて消したときは、そこか <span className="kbd">⌘Z</span>（<span className="kbd">Ctrl+Z</span>）で戻せます。</p>
                 </section>
 
                 <section id="pianoroll">
@@ -147,10 +150,14 @@ export default function HelpPage() {
                         <li><strong>ノートの移動:</strong> ドラッグ。横に動かすと位置が、縦に動かすと音の高さが変わります</li>
                         <li><strong>ノートの長さの変更:</strong> 右端をドラッグ</li>
                         <li><strong>ノートの削除:</strong> ノートをクリックして選び、<span className="kbd">Delete</span> か <span className="kbd">Backspace</span> キー</li>
+                        <li><strong>まとめて選ぶ:</strong> 何も無いところからドラッグして囲む、<span className="kbd">Shift</span> を押しながらクリックで足す・外す、<span className="kbd">⌘A</span> で全部。選んだノートは、まとめて動かす・消すことができます</li>
+                        <li><strong>矢印キー:</strong> 選んだノートを、<span className="kbd">←</span> <span className="kbd">→</span> でグリッドの刻み（1 拍）、<span className="kbd">↑</span> <span className="kbd">↓</span> で半音、<span className="kbd">Shift</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> で 1 オクターブ動かします</li>
+                        <li><strong>コピーと貼り付け:</strong> <span className="kbd">⌘C</span> でコピー、<span className="kbd">⌘X</span> で切り取り、<span className="kbd">⌘V</span> で再生位置に貼り付け、<span className="kbd">⌘D</span> で選んだノートのすぐ後ろに複製します。別のトラックにも貼り付けられます</li>
+                        <li><strong>表示の大きさ:</strong> 見出しの「横」「縦」の − / ＋。<span className="kbd">⌘</span> を押しながらホイール（トラックパッドならピンチ）でも横の大きさが変わります</li>
                         <li><strong>音を確かめる:</strong> 左の鍵盤を押すと、その高さの音が鳴ります</li>
                         <li><strong>トラックの切り替え:</strong> タイムラインのトラック名をクリック</li>
                     </ul>
-                    <p>選んでいるノートは、白い縁取りで示されます。</p>
+                    <p>選んでいるノートは、白い縁取りで示されます。お手本（水色のノート）は選べません。⌘ のショートカットは、ピアノロールを一度クリックしてから使います（Windows では Ctrl）。</p>
                 </section>
 
                 <section id="synth">
@@ -218,13 +225,21 @@ export default function HelpPage() {
                     <h2>キーボードとマウスの操作</h2>
                     <ul>
                         <li><span className="kbd">Space</span> — 再生 / 一時停止（文字を入力する欄に居るときは効きません）</li>
-                        <li><span className="kbd">Delete</span> / <span className="kbd">Backspace</span> — 選んでいるノートを削除</li>
+                        <li><span className="kbd">⌘Z</span>（<span className="kbd">Ctrl+Z</span>） — 元に戻す。ノート・トラック・クリップ・音量とパンの変更を、1 つずつ戻します（文字を入力する欄の中では、その欄の文字を戻します）</li>
+                        <li><span className="kbd">⌘⇧Z</span>（<span className="kbd">Ctrl+Shift+Z</span> / <span className="kbd">Ctrl+Y</span>） — やり直す</li>
+                        <li><span className="kbd">Delete</span> / <span className="kbd">Backspace</span> — 選んでいるノートを削除（クリップを選んでいるときは、そのクリップを削除）</li>
+                        <li><span className="kbd">⌘A</span> / <span className="kbd">⌘C</span> / <span className="kbd">⌘X</span> / <span className="kbd">⌘V</span> / <span className="kbd">⌘D</span> — ピアノロールで、全部選ぶ / コピー / 切り取り / 再生位置に貼り付け / すぐ後ろに複製</li>
+                        <li><span className="kbd">←</span> <span className="kbd">→</span> <span className="kbd">↑</span> <span className="kbd">↓</span>（ピアノロール） — 選んだノートを動かす（<span className="kbd">Shift</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> で 1 オクターブ）</li>
+                        <li><span className="kbd">Esc</span>（ピアノロール） — ノートの選択を外す</li>
                         <li><span className="kbd">Esc</span> — 案内やグリッドの補正の窓を閉じる</li>
                         <li><span className="kbd">←</span> <span className="kbd">→</span> — 左パネルのタブを移る（タブを選んでいるとき）。左パネルの幅を変える（右端の境目を選んでいるとき）</li>
                         <li><span className="kbd">↑</span> <span className="kbd">↓</span> — ピアノロールの高さを変える（タイムラインとの境目を選んでいるとき）</li>
                         <li><strong>ダブルクリック</strong>（ピアノロール） — ノートを追加</li>
-                        <li><strong>ドラッグ</strong>（ノート） — 横で位置、縦で音の高さを変える</li>
-                        <li><strong>右クリック</strong>（クリップ） — クリップを削除</li>
+                        <li><strong>ドラッグ</strong>（ノート） — 横で位置、縦で音の高さを変える（選んだノートはまとめて動く）</li>
+                        <li><strong>ドラッグ</strong>（ピアノロールの何も無いところ） — 囲んだノートを選ぶ</li>
+                        <li><strong>⌘ + ホイール</strong>（ピアノロール） — 横の表示の大きさを変える</li>
+                        <li><strong>右クリック</strong>（クリップ） — メニュー（複製・削除）。<span className="kbd">Shift+F10</span> でも開きます</li>
+                        <li><strong>ダブルクリック</strong>（音量・パンのつまみ） — 0 dB・中央に戻す</li>
                         <li><strong>ドラッグ&ドロップ</strong>（音声ファイル → タイムライン） — クリップを追加</li>
                     </ul>
                 </section>
