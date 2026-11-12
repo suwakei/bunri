@@ -172,25 +172,30 @@ test('区間ループ: 小節の段のドラッグ・キーで区間を決め、
     await page.keyboard.press('l');
     await expect(loopBox).toBeChecked();
 
-    // 1 小節目 (0.75〜2.75 秒) を繰り返す。再生位置が頭に戻ることを、時刻の表示で確かめる
+    // 1 小節目を繰り返す。テンポを 240 にして 1 小節を 1 秒にする (0.75〜1.75 秒)。
+    // 再生位置が頭に戻ることを、時刻の表示で確かめる
+    await page.locator('#transport-bpm').fill('240');
     await page.locator('#practice-controls').getByRole('button', { name: '再生', exact: true }).click();
     const seen: number[] = [];
-    for (let i = 0; i < 32; i++) {
+    for (let i = 0; i < 25; i++) {
         const text = await page.locator('#time-display').textContent();
         const m = /(\d+):(\d+\.\d)/.exec(text ?? '');
         if (m) seen.push(Number(m[1]) * 60 + Number(m[2]));
         await page.waitForTimeout(100);
     }
     await page.locator('#practice-controls').getByRole('button', { name: '停止', exact: true }).click();
-    expect(Math.max(...seen)).toBeLessThan(2.85);
-    expect(seen.some((t, i) => i > 0 && t < seen[i - 1] - 1)).toBe(true);
+    expect(Math.max(...seen)).toBeLessThan(1.85);
+    expect(seen.some((t, i) => i > 0 && t < seen[i - 1] - 0.5), `再生位置: ${seen.join(", ")}`).toBe(true);
     // ピアノロールの再生位置の線も区間の中 (ステップ 0〜16)
     const x = await page.locator('#piano-playhead').evaluate((el) => Number(/translateX\((-?[\d.]+)px\)/.exec((el as HTMLElement).style.transform)?.[1]));
     expect(x).toBeGreaterThanOrEqual(0);
     expect(x).toBeLessThanOrEqual(16 * 20);
-    // 構成の区間を押すと、その区間になる
-    await page.getByRole('button', { name: '「Aメロ？」（1〜2 小節）を区間にする' }).click();
-    await expect(endBar(page)).toHaveValue('2');
+    // 構成の区間を押すと、その区間になる (テンポを変えたので、4 秒の Aメロは 1〜4 小節)
+    await page.keyboard.press(']');
+    await expect(startBar(page)).toHaveValue('2');
+    await page.getByRole('button', { name: /^「Aメロ？」（1〜\d+ 小節）を区間にする$/ }).click();
+    await expect(startBar(page)).toHaveValue('1');
+    await expect(endBar(page)).toHaveValue('4');
 });
 
 test('速度を変えると、音の高さを変えずに伸ばした区間の音声を使う。聴く・お手本・速度は元に戻す履歴に残らず、戻ると元に戻る', async ({ page }) => {
