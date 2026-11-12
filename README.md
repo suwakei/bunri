@@ -84,14 +84,12 @@ graph LR
 | Polyphonic transcription | Yes | No | Yes | No | Yes |
 | Editable piano roll | Yes | No | Yes | No | No |
 | Built-in DAW | Yes | Limited | Yes | No | No |
-| AI composition assistant | Yes | No | No | No | No |
 | Price | Free | $4-25/mo | $200+ | Free | Free |
 
 ## Features
 
 - **Song to Piano Roll** — Upload any audio file, get editable notes on a timeline in one click
 - **Source Separation** — Demucs 6-stem (vocals / drums / bass / guitar / piano / other)
-- **AI Music Assistant** — Describe what you want in natural language, get note suggestions (Ollama local or Claude cloud)
 - **Synth & Drum Machine** — 4 waveforms, 6 instrument presets, GM soundfont, 4 drum patterns
 - **Effects** — EQ, compressor, reverb, delay, pitch shift, time stretch
 - **WAV Optimizer** — Reduce file size with high-quality resampling + TPDF dithering
@@ -101,7 +99,6 @@ graph LR
 
 - [x] Basic Pitch integration (polyphonic transcription)
 - [x] Desktop app (macOS, Apple Silicon)
-- [x] AI composition assistant (Ollama + Claude)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
 - [x] MIDI keyboard input (step input and real-time recording)
 - [ ] MIDI import
