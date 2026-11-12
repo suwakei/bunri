@@ -126,10 +126,19 @@ class AudioEngine {
 
     /**
      * AudioContext とマスターゲインを初期化する。
-     * 既に初期化済みの場合は何もしない。
+     * 既に初期化済みの場合は作り直さない。
+     *
+     * 画面を開いた時点 (利用者がまだ何も操作していない時点) で作った AudioContext は、
+     * ブラウザが止めた状態 (suspended) にしていることがある。そのままだと、鍵盤を押しても
+     * 音が出ないので、呼ばれるたびに起こす (再生や試し聴きは、利用者の操作から呼ばれる)。
      */
     init(): void {
-        if (this.ctx) return;
+        if (this.ctx) {
+            if (this.ctx.state === 'suspended' && typeof this.ctx.resume === 'function') {
+                void this.ctx.resume().catch(() => { /* 起こせなくても、次の操作でもう一度試す */ });
+            }
+            return;
+        }
         this.ctx = new AudioContext();
         this.masterGain = this.ctx.createGain();
         this.masterGain.connect(this.ctx.destination);
@@ -308,6 +317,19 @@ class AudioEngine {
     }
 
     /**
+     * いま鳴らすトラックを返す。ミュートしたトラックは鳴らさず、ソロにしたトラックが
+     * 1 本でも在れば、ソロのトラックだけを鳴らす。
+     *
+     * 再生と書き出しの両方がこれを使う。別々に判定すると、聴いている音と書き出した音が食い違う
+     * (以前は、書き出しだけがソロを無視していた)。
+     * @returns 鳴らすトラックの一覧
+     */
+    audibleTracks(): Track[] {
+        const hasSolo = this.tracks.some(t => t.solo);
+        return this.tracks.filter(t => !t.mute && (!hasSolo || t.solo));
+    }
+
+    /**
      * 全トラックを再生する。ソロ/ミュート状態を考慮してスケジューリングする。
      * @param fromSec - 再生開始位置（秒）。null の場合は現在の playOffset を使用
      */
@@ -320,10 +342,7 @@ class AudioEngine {
         this.soloTrackId = null;
         this.activeSources = [];
 
-        const hasSolo = this.tracks.some(t => t.solo);
-        for (const track of this.tracks) {
-            if (track.mute) continue;
-            if (hasSolo && !track.solo) continue;
+        for (const track of this.audibleTracks()) {
             this._scheduleTrack(track);
         }
         if (this.metronomeEnabled) this._startMetronome();
@@ -638,6 +657,7 @@ class AudioEngine {
 
     /**
      * OfflineAudioContext を使って全トラックをミックスダウンする。
+     * 鳴らすトラックは再生と同じ（ミュートとソロに従う。`audibleTracks`）。
      * @returns ミックス済み AudioBuffer。コンテンツが空の場合は null
      */
     async mixdown(): Promise<AudioBuffer | null> {
@@ -650,8 +670,7 @@ class AudioEngine {
         master.connect(offCtx.destination);
         const stepSec = 60 / this.bpm / 4;
 
-        for (const track of this.tracks) {
-            if (track.mute) continue;
+        for (const track of this.audibleTracks()) {
             const gainNode = offCtx.createGain();
             gainNode.gain.value = Math.pow(10, track.gain / 20);
             const panNode = offCtx.createStereoPanner();
