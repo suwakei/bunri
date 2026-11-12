@@ -38,8 +38,14 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 | Playhead | A line in the timeline and the piano roll, moved with requestAnimationFrame while playing (idle: checked every 200 ms). Auto-scrolls to keep it visible; 「再生位置を追う」 next to the seek bar turns that off (remembered per viewer) |
 | Chart / guide / diff links | Clicking a chord cell or a section row in the chart, a bar chip in the guide, or an issue in the diff list seeks playback there and scrolls the timeline and piano roll (the diff also scrolls vertically to the pitch) |
 | Bar numbering | Piano roll, timeline ruler, playback, metronome and the diff coach count bars from the project grid: tempo (decimals allowed) and the offset of bar 1 (`gridOffset`, seconds). After importing a song this is the chart's grid, so chart bar N and piano-roll bar N are the same moment. Free use: offset 0 |
-| Timeline | Place clips on tracks. Drag to move, beat-snapping, drag-and-drop audio files (anything the WebView can decode) |
+| Timeline | Place clips on tracks. Drag to move, beat-snapping, drag-and-drop audio files (anything the WebView can decode). Right-click a clip (or Shift+F10 / the menu key on a focused clip) for a small menu: 複製 (duplicate right after it, same audio buffer) / 削除. A focused clip is deleted with Delete |
+| Track header | Name (+ note count), 練習する (part tracks), a "…" menu (名前を変更 / 上へ移動 / 下へ移動 / トラックを削除), ▶ M S, pan and volume sliders. Deleting is in the menu, not next to S |
+| Track volume / pan | Volume −60…+6 dB (0.5 dB steps), pan left 100…right 100. Numeric readouts ("−6.0 dB", "左 30") that are also the sliders' `aria-valuetext`; keyboard accessible; double-click resets to 0 dB / centre. Applied live to the track's Web Audio nodes, used by playback and WAV export, saved in projects (`gain`, `pan`) |
 | Piano roll | Per-track, independent. C0–B8 range. Double-click to add a note, drag to move (horizontal = position, vertical = pitch), drag the right edge to resize, Delete / Backspace to remove. Placing a note, changing its pitch, or pressing a key on the keyboard column plays that pitch |
+| Piano roll selection | Rubber-band (drag from an empty spot), Shift+click to add/remove, Cmd/Ctrl+A (only while the piano roll has focus). Selected notes move/resize together. Arrow keys: ←→ by the grid step (1 beat), ↑↓ by a semitone, Shift+↑↓ by an octave. Esc clears. お手本 (ghost) notes are never selectable |
+| Piano roll clipboard | Cmd/Ctrl+C / X / V / D. Paste goes to the playhead (rounded down to the grid; bar 1 if before it), duplicate goes right after the selection. The clipboard is in-app and works across tracks |
+| Piano roll zoom | Horizontal 5–60 px per step (default 20) via the 横 −/＋ buttons or Cmd/Ctrl+wheel / trackpad pinch (anchored at the pointer); vertical 10–24 px per row via 縦 −/＋. Notes, ghost notes, grid and playhead all derive from the same step width, so bar alignment with the timeline (`lib/grid.ts`) is unchanged |
+| Undo / redo | One project-wide history (see "Undo history" below). Header buttons ↶ / ↷ (title says what will be undone), Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y. Inside text fields the shortcuts are left to the field (native text undo; in the desktop app the default macOS Edit menu provides it). Deleting a track or clip shows a toast 「〜を削除しました — 元に戻す」 (`role="status"`, 10 s) instead of a confirmation |
 | Synthesizer | 4 basic waveforms (sine / square / sawtooth / triangle), 6 instrument presets (guitar / violin / chorus / flute / bass / organ), 84 GM voices via FluidSynth (MuseScore_General.sf3) |
 | Drum machine | 4 patterns (8-beat / 4-on-the-floor / bossa nova / reggae), configurable bars and volume |
 | Effects | 3-band EQ / compressor / reverb / delay / normalize / pitch shift / time stretch |
@@ -50,6 +56,24 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 | MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
 | WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
+
+#### Undo history
+
+- **What is recorded:** note add / delete / move / resize / pitch change / paste / duplicate / cut, bulk note replacement
+  (お手本をノートとして取り込む, monophonic analysis, MIDI-input recording), track add / delete / rename / reorder /
+  mute / solo / volume / pan, clip add / move / duplicate / delete / effect, song import, part separation, 練習する,
+  project load.
+- **Entry = two project snapshots** (`lib/project-snapshot.ts`): before and after the operation. Undo applies only the
+  fields that differ between the two, so unrecorded changes (e.g. typing a new BPM) are not rolled back by an unrelated
+  undo; tempo/meter/offset are restored only when that operation changed them. Snapshots reference audio buffers and
+  the `Track` objects themselves (a deleted track comes back with the same id and audio nodes); note arrays are shared
+  between consecutive snapshots when their content is unchanged.
+- **Coalescing:** a drag (note or clip) is one entry from press to release; slider movements of the same track, repeated
+  arrow-key nudges and MIDI real-time recording are merged while they continue (1–4 s window). Undo/redo stops merging.
+- **Limits:** 100 entries and a budget of 200 000 unshared notes/clips across entries; the oldest are dropped first.
+  A new operation clears the redo list.
+- Code that changes the project wraps the change in the store's `record(label, fn)` / `recordAsync` / `beginEdit`
+  (`lib/store.tsx`).
 
 #### Not implemented
 
