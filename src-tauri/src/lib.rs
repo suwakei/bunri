@@ -5,7 +5,7 @@
 //! - 画面 (web-ui の React) を表示する窓を開く
 //! - Python sidecar (今までの FastAPI) を起動し、見張り、アプリと一緒に終わらせる。
 //!   配布物では、その前に Python 環境を用意する (初回セットアップ)
-//! - sidecar のポートとトークンを画面に渡す
+//! - sidecar のポートとトークンを画面に渡す (sidecar が止まったら、画面の求めで起動し直して渡し直す)
 //! - MIDI キーボードの入力を受けて画面に渡す (WebView が Web MIDI を持たないため)
 //!
 //! AI・音声処理は Python、画面は Web のまま。ここには書き直さない。
@@ -42,6 +42,17 @@ async fn backend_info(sidecar: State<'_, Sidecar>) -> Result<BackendInfo, String
 #[tauri::command]
 fn boot_status(sidecar: State<'_, Sidecar>) -> BootStatus {
     sidecar.status()
+}
+
+/// sidecar を起動し直し、新しい接続先 (ポート) とトークンを返す。
+///
+/// 画面が、sidecar が止まった (応答しない) ことに気づいて「再起動」を押したときと、
+/// 起動に失敗した画面で「再試行」を押したときに呼ぶ。待ち受けを始めるまで待つ。
+/// 起動し直せなかったら、理由を文字列で返す。
+#[tauri::command]
+async fn restart_backend(sidecar: State<'_, Sidecar>) -> Result<BackendInfo, String> {
+    sidecar.restart()?;
+    sidecar.wait_ready().await
 }
 
 /// Claude の API キーを、OS のキーチェーンに保存する。
@@ -109,6 +120,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             backend_info,
             boot_status,
+            restart_backend,
             save_api_key,
             delete_api_key,
             midi_start,
