@@ -71,6 +71,8 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
     await expect(statusText(page)).toContainText('パートに分けました');
     await page.locator('#part-list').getByRole('button', { name: '「ベース」を練習する' }).click();
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
+    // 練習画面が開く。このテストは差分チェックの段で比べるので、アレンジに戻る
+    await page.getByRole('button', { name: '← アレンジに戻る' }).click();
 
     // 1 つ置いて比べ、もう 1 つ置いて比べる。学習の記録に 2 回ぶん残り、前回との差が出る
     await traceGhost(page, 0);

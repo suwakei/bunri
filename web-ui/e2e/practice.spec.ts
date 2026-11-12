@@ -1,11 +1,12 @@
 /**
  * 練習画面: 入る・戻る (状態を戻す)、構成・コード・小節の段とピアノロールの位置、比べると色が付く、
  * 区間ループ (再生位置が頭に戻る)、速度 (高さを変えずに伸ばした音声を使う)、聴く・お手本は元に戻す履歴に残らない。
+ * 比べるたびに学習の記録に残り、見出しに前回との差が出る。設定はプロジェクトに保存され、開き直すと戻る。
  *
  * カルテとパート分離の応答は差し替える (e2e/practice-fixtures.ts)。1 小節 = 2 秒 = 16 ステップ。
  */
 import { expect, test, type Page } from '@playwright/test';
-import { openDaw, statusText } from './helpers';
+import { openDaw, openProject, openTab, saveProject, statusText } from './helpers';
 import { BASS, fakePracticeBackend, openBassPractice } from './practice-fixtures';
 
 const region = (page: Page) => page.getByRole('region', { name: '練習画面' });
@@ -230,4 +231,94 @@ test('速度を変えると、音の高さを変えずに伸ばした区間の�
     await expect(page.locator('#ghost-source')).toHaveValue('auto');
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
     expect(await undoTitle(page)).toBe(undoBefore);
+});
+
+test('比べるたびに学習の記録に残り、見出しに「前回より」が出る。前回は同じ区間の記録と比べる', async ({ page }) => {
+    const rate = page.getByTestId('match-rate');
+    const delta = page.getByTestId('match-delta');
+    // 区間 (1〜2 小節) のお手本 8 ノートのうち、1 つ目だけ置いて比べる
+    await placeAt(page, 0);
+    await page.getByRole('button', { name: '比べる', exact: true }).click();
+    await expect(rate).toHaveText('13%');
+    await expect(delta).toHaveText('はじめての記録');
+
+    // 2 つ目を置いて比べる: 一致 25%、前回 (13%) より +12 ポイント
+    await page.getByRole('button', { name: '横に広げる' }).click();
+    await placeAt(page, 1);
+    await page.getByRole('button', { name: '比べる', exact: true }).click();
+    await expect(rate).toHaveText('25%');
+    await expect(delta).toHaveText('▲前回より +12%');
+    await expect(delta).toHaveClass(/up/);
+    await expect(region(page)).toContainText('一致25%▲前回より +12%');
+
+    // 区間を変えて比べると、その区間でははじめての記録 (曲の別の場所の記録とは比べない)
+    await page.keyboard.press(']');
+    await expect(startBar(page)).toHaveValue('2');
+    await page.getByRole('button', { name: '比べる', exact: true }).click();
+    await expect(rate).toHaveText('0%');
+    await expect(delta).toHaveText('はじめての記録');
+
+    // アレンジに戻ると、差分チェックの段の学習の記録にも 3 回ぶん残っている
+    await page.keyboard.press('Escape');
+    await openTab(page, '差分');
+    const history = page.locator('#learn-history');
+    await expect(history.getByRole('list', { name: '最近の比較' }).locator('li')).toHaveCount(3);
+    await expect(history.getByRole('list', { name: '最近の比較' }).locator('li').nth(1)).toContainText('1〜2 小節 25%');
+});
+
+test('練習画面の設定はプロジェクトに保存され、開き直すと戻る (練習画面は開かない)。前回の記録も続く', async ({ page }, testInfo) => {
+    const mark = page.locator('#project-title .unsaved-mark');
+    const name = await saveProject(page, `練習画面-${testInfo.project.name}-${Date.now()}`);
+    await expect(mark).toHaveCount(0);
+
+    // 開く・閉じるだけでは、保存していない変更にならない
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '「ベースの練習」を練習画面で開く' }).click();
+    await expect(region(page)).toBeVisible();
+    await expect(mark).toHaveCount(0);
+
+    // 区間・速度・聴く・お手本を変えると、保存していない変更になる
+    await endBar(page).fill('3');
+    await endBar(page).press('Enter');
+    await expect(mark).toHaveCount(1);
+    await page.getByLabel('速度').selectOption('0.75');
+    await page.getByRole('radio', { name: '自分' }).check();
+    await page.getByRole('radio', { name: '隠す' }).check();
+    // 1 つ置いて比べる (区間 1〜3 小節のお手本 8 ノートのうち 1 つ)
+    await page.getByRole('radio', { name: '見せる' }).check();
+    await placeAt(page, 0);
+    await page.getByRole('radio', { name: '隠す' }).check();
+    await page.getByRole('button', { name: '比べる', exact: true }).click();
+    await expect(page.getByTestId('match-rate')).toHaveText('13%');
+    await saveProject(page);
+    await expect(mark).toHaveCount(0);
+
+    // 画面を開き直して開く。練習画面は開かず、アレンジで開く
+    await page.reload();
+    await page.getByText('準備完了').waitFor();
+    await openProject(page, name);
+    await expect(region(page)).toHaveCount(0);
+    await expect(page.locator('#timeline-area')).toBeVisible();
+    await expect(mark).toHaveCount(0);
+
+    // 練習画面を開くと、同じ区間・速度・聴く・お手本から続けられる
+    await page.getByRole('button', { name: '「ベースの練習」を練習画面で開く' }).click();
+    await expect(region(page)).toBeVisible();
+    await expect(startBar(page)).toHaveValue('1');
+    await expect(endBar(page)).toHaveValue('3');
+    await expect(page.getByLabel('速度')).toHaveValue('0.75');
+    await expect(page.getByRole('radio', { name: '自分' })).toBeChecked();
+    await expect(page.getByRole('radio', { name: '隠す' })).toBeChecked();
+    await expect(page.locator('#note-layer .note-ghost')).toHaveCount(0);
+    await expect(mark).toHaveCount(0);
+    // 学習の記録も戻っているので、この区間の前回の値が分かり、比べると前回との差が出る
+    await expect(region(page)).toContainText('この区間の前回の記録は 13%');
+    await page.getByRole('radio', { name: '見せる' }).check();
+    await page.getByRole('button', { name: '横に広げる' }).click();
+    // 開き直した後は、ピアノロールがお手本の高さに居るとは限らない
+    await page.locator('#note-layer .note-ghost').nth(1).scrollIntoViewIfNeeded();
+    await placeAt(page, 1);
+    await page.getByRole('button', { name: '比べる', exact: true }).click();
+    await expect(page.getByTestId('match-rate')).toHaveText('25%');
+    await expect(page.getByTestId('match-delta')).toHaveText('▲前回より +12%');
 });

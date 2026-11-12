@@ -1,6 +1,7 @@
 /**
  * bunri DAW — 学習の記録（差分の段に出す、比べた結果の履歴）。
- * 直近の数回の一致率・範囲・時刻と、前回との差（「前回より +8%」）。決まりは lib/learn-history.ts。
+ * 直近の数回の一致率・範囲・時刻と、前回との差（「前回より +8%」。最後に比べた範囲と同じ範囲の、1 つ前の記録との差）。
+ * 決まりは lib/learn-history.ts。
  */
 import { useDaw } from '../lib/store';
 import { attemptsFor, deltaText, matchSummary, percentOf } from '../lib/learn-history';
@@ -22,7 +23,9 @@ function Trend({ percents }: { percents: number[] }) {
 export default function LearnHistory({ referenceId, attemptId }: { referenceId: number; attemptId: number }) {
     const { learnHistory } = useDaw();
     const list = attemptsFor(learnHistory, attemptId, referenceId);
-    const summary = matchSummary(learnHistory, attemptId, referenceId);
+    // 前回との差は、最後の記録と同じ範囲の記録どうしで比べる (練習画面の区間で比べた記録と、曲全体の記録を混ぜない)
+    const last = list[list.length - 1];
+    const summary = last ? matchSummary(learnHistory, attemptId, referenceId, { startBar: last.startBar, endBar: last.endBar }) : null;
     if (!summary) return null;
     const recent = list.slice(-SHOWN).reverse();
     return (
@@ -33,7 +36,7 @@ export default function LearnHistory({ referenceId, attemptId }: { referenceId: 
                 <span className={'learn-delta' + (summary.deltaPercent === null ? '' : summary.deltaPercent > 0 ? ' up' : summary.deltaPercent < 0 ? ' down' : '')}>
                     {' '}{deltaText(summary)}
                 </span>
-                <span className="note-text">（{summary.attempts} 回目・いちばん良かったのは {summary.bestPercent}%）</span>
+                <span className="note-text">（{last.startBar}〜{last.endBar} 小節で {summary.attempts} 回目・いちばん良かったのは {summary.bestPercent}%）</span>
             </p>
             <Trend percents={list.slice(-10).map(a => percentOf(a.matchRate))} />
             <ol className="learn-attempts" aria-label="最近の比較">

@@ -11,7 +11,7 @@ import { LEFT_WIDTH_DEFAULT, LEFT_WIDTH_MAX, LEFT_WIDTH_MIN, readStored, writeSt
 import { UndoHistory, type PushOptions } from './history';
 import { HISTORY_BUDGET, HISTORY_LIMIT, applyProject, captureProject, projectsEqual, snapshotCost, type ProjectSnapshot } from './project-snapshot';
 import type { LearnAttempt } from './learn-history';
-import { clampLoop, defaultPracticeState, type PracticeState } from './practice';
+import { clampLoop, defaultPracticeState, samePracticeSettings, type PracticeState } from './practice';
 
 /**
  * いま開いているプロジェクト（lib/project-actions.ts）。
@@ -180,7 +180,7 @@ export interface DawContextType {
     // ---- 練習画面（components/PracticeView.tsx、lib/practice.ts） ----
     /**
      * 練習画面の状態（区間・速度・聴く・お手本・入力）。練習画面を閉じても残す（もう一度開いたとき、同じ区間から）。
-     * 小さく、JSON にできる形にしてある（保存は次の段階で足す）。まだ練習画面を開いていなければ null
+     * プロジェクトに保存する（状態の節 `practice`。lib/practice-project.ts）。まだ練習画面を開いていなければ null
      */
     practice: PracticeState | null;
     /** 練習画面を開いているか */
@@ -192,8 +192,17 @@ export interface DawContextType {
      * @param trackId - 打ち込む練習のトラック
      */
     openPractice: (partId: number, trackId: number) => void;
-    /** 練習画面の状態を一部だけ変える（区間は収まる形に直す）。 */
-    updatePractice: (patch: Partial<PracticeState>) => void;
+    /**
+     * 練習画面の状態を一部だけ変える（区間は収まる形に直す）。値が変わったら、保存していない変更の印を付ける
+     * （利用者が変えた設定はプロジェクトに入るため）。
+     * @param options.touch - false なら印を付けない（MIDI がつながらずにマウスへ戻したときなど、画面が自分で直したとき）
+     */
+    updatePractice: (patch: Partial<PracticeState>, options?: { touch?: boolean }) => void;
+    /**
+     * 練習画面の状態を置き換え、練習画面を閉じる（プロジェクトを開いたとき・新しくしたとき。lib/practice-project.ts）。
+     * 保存していない変更の印は付けない。
+     */
+    restorePractice: (state: PracticeState | null) => void;
     /** 練習画面を閉じて、ふだんの画面（アレンジ）に戻る。状態は残す */
     closePractice: () => void;
     /** 左パネルの幅（px）。利用者が境目を動かして変えられる。この画面を開いた人ごとに覚える */
@@ -472,22 +481,39 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const openSongPicker = useCallback(() => songPickerRef.current?.click(), []);
 
+    // いまの練習画面の状態 (続けて変えたときも、前の変更の上に重ねるため。描画を待たずに読む)
+    const practiceRef = useRef<PracticeState | null>(practice);
+    practiceRef.current = practice;
+
     const openPractice = useCallback((partId: number, trackId: number) => {
         const part = engine.getTrack(partId);
         if (!part || !engine.getTrack(trackId)) return;
-        setPractice(prev => (prev && prev.partId === partId && prev.trackId === trackId
-            ? prev
-            : defaultPracticeState(partId, trackId, part.referenceNotes ?? [], engine.grid, chart)));
+        const prev = practiceRef.current;
+        // 開くのは画面の切り替えなので、保存していない変更の印は付けない
+        if (!prev || prev.partId !== partId || prev.trackId !== trackId) {
+            const next = defaultPracticeState(partId, trackId, part.referenceNotes ?? [], engine.grid, chart);
+            practiceRef.current = next;
+            setPractice(next);
+        }
         setPracticeOpen(true);
     }, [chart]);
 
-    const updatePractice = useCallback((patch: Partial<PracticeState>) => {
-        setPractice(prev => {
-            if (!prev) return prev;
-            const next = { ...prev, ...patch };
-            if (patch.loop) next.loop = clampLoop(patch.loop);
-            return next;
-        });
+    const updatePractice = useCallback((patch: Partial<PracticeState>, options: { touch?: boolean } = {}) => {
+        const prev = practiceRef.current;
+        if (!prev) return;
+        const next = { ...prev, ...patch };
+        if (patch.loop) next.loop = clampLoop(patch.loop);
+        if (samePracticeSettings(prev, next)) return;
+        practiceRef.current = next;
+        setPractice(next);
+        // 区間・速度などはプロジェクトに入る。変えたら「保存していない変更」(再生のたびに変わるものは、ここを通らない)
+        if (options.touch !== false) setTouchVersion(v => v + 1);
+    }, []);
+
+    const restorePractice = useCallback((state: PracticeState | null) => {
+        practiceRef.current = state;
+        setPractice(state);
+        setPracticeOpen(false);
     }, []);
 
     const closePractice = useCallback(() => setPracticeOpen(false), []);
@@ -730,7 +756,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
         pianoRollRef, timelineRef,
         leftTab, setLeftTab, learnTab, setLearnTab, openLearn, soundTab, setSoundTab,
         leftWidth, setLeftWidth,
-        practice, practiceOpen, openPractice, updatePractice, closePractice,
+        practice, practiceOpen, openPractice, updatePractice, restorePractice, closePractice,
         gridOffset, setGridOffset, applyChartGrid,
         songFile, setSongFile, autoBpm, setAutoBpm, songPickerRef, openSongPicker,
         ghostChoice, setGhostChoice,

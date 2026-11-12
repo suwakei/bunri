@@ -2336,7 +2336,10 @@ button.link-btn:hover {
 
 .practice-match strong { font-size: 18px; color: var(--accent); font-family: var(--font-mono); }
 .practice-match.stale strong { color: var(--text-dim); }
-.practice-match-delta { color: var(--ok); }
+/* 前回との差。上がった: 緑の ▲ / 下がった: 黄色の ▼ / 同じ・はじめて: 地の色 (色だけでなく ▲▼ と文でも分かる) */
+.practice-match-delta { color: var(--text-mid); }
+.practice-match-delta.up { color: var(--ok); }
+.practice-match-delta.down { color: var(--warn); }
 
 /* 構成・コード・小節の段。左の列は鍵盤の列と同じ幅にして、ピアノロールと横の位置をそろえる */
 #practice-bands {

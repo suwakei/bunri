@@ -37,6 +37,7 @@ const pf = await import('../lib/project-file');
 const lh = await import('../lib/learn-history');
 const { rememberCompared, comparedOf } = await import('../lib/coach');
 const { DawProvider, useDaw } = await import('../lib/store');
+const { usePracticeProjectSection } = await import('../lib/practice-project');
 type DawContextType = ReturnType<typeof useDaw>;
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
@@ -268,6 +269,75 @@ describe('保存していない変更 (isDirty)', () => {
         act(() => daw!.markSaved());
         expect(daw!.isDirty).toBe(false);
         act(() => daw!.touchProject());
+        expect(daw!.isDirty).toBe(true);
+    });
+});
+
+describe('練習画面の状態 (状態の節 practice)', () => {
+    let daw: DawContextType | null = null;
+    function Probe() {
+        const ctx = useDaw();
+        usePracticeProjectSection();
+        useEffect(() => { daw = ctx; });
+        return null;
+    }
+    /** パートと練習のトラックを作る。 */
+    function addPartAndPractice() {
+        const part = engine.addTrack('ベース'); part.role = 'part'; part.part = 'bass'; part.referenceNotes = [note('C', 2, 0), note('E', 2, 20)];
+        const practice = engine.addTrack('ベースの練習'); practice.role = 'practice'; practice.practiceOf = part.id;
+        return { part, practice };
+    }
+    afterEach(() => pf.resetSections());
+
+    it('保存すると並びの番号で入り、開くと設定だけ戻す (練習画面は開かない)。トラックが無ければ持たない', async () => {
+        engine.addTrack('原曲');
+        const { part, practice } = addPartAndPractice();
+        render(<DawProvider><Probe /></DawProvider>);
+        act(() => daw!.openPractice(part.id, practice.id));
+        act(() => daw!.updatePractice({ loop: { startBar: 2, endBar: 3, enabled: true }, speed: 0.75, listen: 'self' }));
+        const { doc } = await pf.buildDocument(baseInput());
+        expect(doc.state.practice).toEqual({
+            version: 1, part: 1, track: 2, loop: { startBar: 2, endBar: 3, enabled: true }, speed: 0.75, listen: 'self', showGhost: true, input: 'mouse',
+        });
+
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+        await act(async () => { await pf.applyDocument(JSON.parse(JSON.stringify(doc)), applyTarget()); });
+        const [, newPart, newPractice] = engine.tracks;
+        expect(newPart.id).not.toBe(part.id);
+        expect(daw!.practice).toMatchObject({ partId: newPart.id, trackId: newPractice.id, loop: { startBar: 2, endBar: 3, enabled: true }, speed: 0.75, listen: 'self' });
+        expect(daw!.practiceOpen).toBe(false);
+
+        // 練習のトラックの番号が範囲の外 (トラックを消して保存したファイルなど)
+        const broken = JSON.parse(JSON.stringify(doc));
+        broken.state.practice.track = 7;
+        await act(async () => { await pf.applyDocument(broken, applyTarget()); });
+        expect(daw!.practice).toBeNull();
+    });
+
+    it('新しいプロジェクトにすると、状態を消して練習画面を閉じる', () => {
+        const { part, practice } = addPartAndPractice();
+        render(<DawProvider><Probe /></DawProvider>);
+        act(() => daw!.openPractice(part.id, practice.id));
+        expect(daw!.practiceOpen).toBe(true);
+        act(() => pf.resetSections());
+        expect(daw!.practice).toBeNull();
+        expect(daw!.practiceOpen).toBe(false);
+    });
+
+    it('設定を変えると保存していない変更の印が付く。開く・閉じる・同じ値・画面が自分で直したときは付けない', () => {
+        const { part, practice } = addPartAndPractice();
+        render(<DawProvider><Probe /></DawProvider>);
+        act(() => daw!.markSaved());
+        expect(daw!.isDirty).toBe(false);
+        act(() => daw!.openPractice(part.id, practice.id));
+        act(() => daw!.closePractice());
+        expect(daw!.isDirty).toBe(false);
+        act(() => daw!.updatePractice({ speed: daw!.practice!.speed }));
+        expect(daw!.isDirty).toBe(false);
+        act(() => daw!.updatePractice({ input: 'mouse' }, { touch: false }));
+        act(() => daw!.updatePractice({ input: 'midi-step' }, { touch: false }));
+        expect(daw!.isDirty).toBe(false);
+        act(() => daw!.updatePractice({ loop: { startBar: 3, endBar: 4, enabled: true } }));
         expect(daw!.isDirty).toBe(true);
     });
 });

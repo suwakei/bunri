@@ -5,9 +5,10 @@
  *
  * ## 状態（`PracticeState`）
  *
- * 小さく、そのまま JSON にできる形にしてある（次の「保存と読み込み・学習履歴」で保存するため）。
+ * 小さく、そのまま JSON にできる形にしてある。プロジェクト（`.bunri`）の状態の節 `practice` に入る
+ * （`practiceToSection` / `practiceFromSection`。登録は lib/practice-project.ts）。
  * トラックは ID で持つ。保存するときは、プロジェクトの保存と同じく並びの番号に直す（ID は読み込むたびに変わる）。
- * 一致の結果（差分）は保存しない（ノートから作り直せる）。
+ * 一致の結果（差分）は保存しない（ノートから作り直せる。比べた記録は学習の記録 — lib/learn-history.ts — に残る）。
  *
  * ## 指摘とノートの色（`markNotes`）
  *
@@ -30,7 +31,7 @@
  * 比べた範囲のお手本のうち、高さが同じで、位置が 16 分音符 2 個以内のノートの割合（差分の `accuracy`）。
  * 長さの違いと小さな位置のずれは、合っている側に数える（差分チェックの「〜% が合っています」と同じ数）。
  */
-import type { PianoNote } from './engine';
+import type { PianoNote, Track } from './engine';
 import type { SongChart } from './chart';
 import type { DiffIssue, DiffResult, IssueKind } from './coach';
 import { issueText, noteName } from './coach';
@@ -136,6 +137,69 @@ export function defaultPracticeState(partId: number, trackId: number, reference:
         partId, trackId,
         loop: defaultLoop(reference, grid, chart),
         speed: 1, listen: 'both', showGhost: true, input: 'mouse',
+    };
+}
+
+// ---- プロジェクトへの保存（状態の節 `practice`） ----
+
+/** 状態の節 `practice` の版。形を変えたら上げ、`practiceFromSection` で古い版を読めるようにする。 */
+export const PRACTICE_SECTION_VERSION = 1;
+
+const LISTEN_MODES: readonly ListenMode[] = ['part', 'self', 'both'];
+const INPUT_MODES: readonly InputMode[] = ['mouse', 'midi-step', 'midi-realtime'];
+
+/** 保存に使う設定が同じか（区間・速度・聴く・お手本・入力と、どのトラックか）。 */
+export function samePracticeSettings(a: PracticeState, b: PracticeState): boolean {
+    return a.partId === b.partId && a.trackId === b.trackId
+        && a.loop.startBar === b.loop.startBar && a.loop.endBar === b.loop.endBar && a.loop.enabled === b.loop.enabled
+        && a.speed === b.speed && a.listen === b.listen && a.showGhost === b.showGhost && a.input === b.input;
+}
+
+/**
+ * 練習画面の状態を、プロジェクトに入れる形にする。トラックは並びの番号で持つ（ID は開き直すたびに変わる）。
+ * パートか練習のトラックがもう無ければ null（入れない）。
+ *
+ * @param state - 練習画面の状態
+ * @param tracks - いまのトラック（並び順。保存する文書のトラックと同じ順）
+ */
+export function practiceToSection(state: PracticeState, tracks: readonly Pick<Track, 'id'>[]): Record<string, unknown> | null {
+    const part = tracks.findIndex((t) => t.id === state.partId);
+    const track = tracks.findIndex((t) => t.id === state.trackId);
+    if (part < 0 || track < 0) return null;
+    return {
+        part, track,
+        loop: { startBar: state.loop.startBar, endBar: state.loop.endBar, enabled: state.loop.enabled },
+        speed: state.speed, listen: state.listen, showGhost: state.showGhost, input: state.input,
+    };
+}
+
+/**
+ * プロジェクトの節から、練習画面の状態に戻す。おかしな値は既定に直し、トラックが見つからなければ null。
+ *
+ * - パート（お手本を持つトラック）か練習のトラックの番号が無い・範囲の外・お手本が無い → null（状態を持たない）
+ * - 区間は `clampLoop` で収める。速度・聴く・入力は、知らない値なら既定（100% / 両方 / マウス）
+ *
+ * @param value - 節の値（`load` に渡されたもの。節が無ければ null）
+ * @param tracks - 開いたプロジェクトのトラック（並び順。文書のトラックと同じ順）
+ */
+export function practiceFromSection(value: unknown, tracks: readonly Pick<Track, 'id' | 'referenceNotes'>[]): PracticeState | null {
+    if (!value || typeof value !== 'object') return null;
+    const v = value as Record<string, unknown>;
+    const at = (index: unknown) => (typeof index === 'number' && Number.isInteger(index) && index >= 0 && index < tracks.length ? tracks[index] : undefined);
+    const part = at(v.part);
+    const track = at(v.track);
+    if (!part || !track || !part.referenceNotes?.length) return null;
+    const loop = (v.loop && typeof v.loop === 'object' ? v.loop : {}) as Record<string, unknown>;
+    const num = (x: unknown, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? x : fallback);
+    const startBar = num(loop.startBar, 1);
+    return {
+        partId: part.id,
+        trackId: track.id,
+        loop: clampLoop({ startBar, endBar: num(loop.endBar, startBar + 3), enabled: typeof loop.enabled === 'boolean' ? loop.enabled : true }),
+        speed: (SPEEDS as readonly number[]).includes(v.speed as number) ? (v.speed as number) : 1,
+        listen: LISTEN_MODES.includes(v.listen as ListenMode) ? (v.listen as ListenMode) : 'both',
+        showGhost: typeof v.showGhost === 'boolean' ? v.showGhost : true,
+        input: INPUT_MODES.includes(v.input as InputMode) ? (v.input as InputMode) : 'mouse',
     };
 }
 

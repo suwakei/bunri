@@ -13,6 +13,7 @@ import { SongPicker } from '../components/LearnPanel';
 import UndoToast from '../components/UndoToast';
 import MissingAudioBar from '../components/MissingAudioBar';
 import ProjectDialogs from '../components/ProjectDialogs';
+import { usePracticeProjectSection } from '../lib/practice-project';
 
 /**
  * メイン DAW ページコンポーネント。
@@ -22,10 +23,12 @@ import ProjectDialogs from '../components/ProjectDialogs';
  * 原曲のファイルを選ぶ欄（SongPicker）は、画面に 1 つだけここに置く。
  * 「〜を削除しました — 元に戻す」の知らせ（UndoToast）と、プロジェクトの操作が尋ねる窓（ProjectDialogs）も、ここに 1 つだけ置く。
  * 音声の無いクリップ（以前の形式から開いた）が在れば、進み具合の下に知らせる（MissingAudioBar）。
+ * 練習画面の状態をプロジェクトに入れる節（lib/practice-project.ts）も、ここで 1 つだけ登録する。
  * @returns DAW ページ全体の JSX
  */
 export default function DawPage() {
     const { showProgress, practiceOpen } = useDaw();
+    usePracticeProjectSection();
 
     return (
         // 練習画面のあいだは、左パネルと進み具合の段を隠す (外さない。CSS の .practice-mode)
