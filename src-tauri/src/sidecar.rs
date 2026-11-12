@@ -169,12 +169,37 @@ impl LaunchConfig {
     ///
     /// - `tauri dev`: 開発機の `uv run` で、リポジトリのコードをそのまま起動する
     /// - 配布物: 同梱した `uv` でアプリのデータ置き場に環境を作り、同梱したコードを起動する
+    #[cfg(not(feature = "e2e"))]
     pub fn for_app(app: &AppHandle) -> Result<Self, String> {
         if tauri::is_dev() {
             Ok(Self::for_dev(app))
         } else {
             Self::for_bundle(app)
         }
+    }
+
+    /// 窓を自動操作するテストのビルドでは、いつも [`LaunchConfig::for_e2e`] で起動する。
+    #[cfg(feature = "e2e")]
+    pub fn for_app(app: &AppHandle) -> Result<Self, String> {
+        Ok(Self::for_e2e(app))
+    }
+
+    /// 窓を自動操作するテスト (`make e2e-desktop`) での起動方法。
+    ///
+    /// 画面は配布物と同じく同梱したもの (`tauri://localhost`、CSP も同じ) を出すが、sidecar は
+    /// 開発時と同じく、リポジトリのコードを開発機の `uv run` で起動する。配布物の起動方法
+    /// (アプリのデータ置き場に `uv sync` で環境を作る) だと、利用者のデータ置き場に触れ、
+    /// 毎回 torch を含む依存を入れ直すことになるため。データの置き場は、テストが環境変数
+    /// `BUNRI_DATA_DIR` で一時ディレクトリを渡す (sidecar はそれを受け継ぐ)。
+    ///
+    /// - CORS の許可先は、配布物と同じ `tauri://localhost` だけ
+    /// - キーチェーンは読まない (テストは偽の API キーを環境変数で渡す)
+    #[cfg(feature = "e2e")]
+    fn for_e2e(app: &AppHandle) -> Self {
+        let mut config = Self::for_dev(app);
+        config.allowed_origins = vec!["tauri://localhost".to_string()];
+        config.keychain_service = None;
+        config
     }
 
     /// 開発時の起動方法。
@@ -230,6 +255,7 @@ impl LaunchConfig {
     ///   `runtime/` に Python 本体・venv・uv のキャッシュ、`data/` に利用者のデータ
     ///
     /// アプリの中には何も書き込まない (署名が壊れるため)。
+    #[cfg_attr(feature = "e2e", allow(dead_code))]
     fn for_bundle(app: &AppHandle) -> Result<Self, String> {
         let resource_dir = app
             .path()

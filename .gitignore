@@ -63,3 +63,5 @@ src-tauri/runtime/
 # ブラウザを自動操作するテスト (Playwright) の出力
 web-ui/e2e-results/
 web-ui/playwright-report/
+# 本物の窓を操作するテスト (make e2e-desktop) の出力 (アプリのログ、最後の窓の画像)
+web-ui/e2e-desktop-results/
