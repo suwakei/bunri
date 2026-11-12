@@ -2,6 +2,10 @@
  * ブラウザのテストで使う共通の部品。
  */
 import type { Page } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
+
+/** テスト用の小さな MP3 (C4 E4 G4 C5 を 2 秒ずつ、8 秒)。WAV 以外の曲の取り込みを確かめるのに使う。 */
+export const SONG_MP3 = fileURLToPath(new URL('./fixtures/song.mp3', import.meta.url));
 
 /**
  * 画面 (Vite の開発サーバ) のポートと URL。ほかの開発サーバとぶつからないよう、よく使われる番号を避けている。
@@ -71,9 +75,37 @@ export function makeWav(seconds: number, notes: number[] = [440], sampleRate = 2
 /** ステータスバーの文 (左側)。 */
 export const statusText = (page: Page) => page.locator('#status-text');
 
-/** 左パネルのタブを開く。 */
+/** 左パネルの中の段と、それを持つ上の段のタブ。 */
+const SUB_TAB_PARENT: Record<string, string> = {
+    '曲とパート': '学ぶ', 'カルテ': '学ぶ', 'ガイド': '学ぶ', '差分': '学ぶ',
+    'シンセ': '音作り', 'ドラム': '音作り', 'FX': '音作り',
+};
+
+/**
+ * 左パネルのタブを開く。上の段のタブ (学ぶ・音作り・ファイル) か、中の段 (カルテ・シンセなど) の名前で指す。
+ * 中の段なら、それを持つ上の段のタブを先に開く。
+ */
 export async function openTab(page: Page, label: string): Promise<void> {
-    await page.locator('#panel-tabs').getByRole('tab', { name: label, exact: true }).click();
+    const parent = SUB_TAB_PARENT[label];
+    await page.locator('#panel-tabs').getByRole('tab', { name: parent ?? label, exact: true }).click();
+    if (parent) await page.locator('#left-panel [role="tabpanel"]:not([hidden])').getByRole('tab', { name: label, exact: true }).first().click();
+}
+
+/**
+ * 「自由に作る」で始める (曲を取り込まずに、空のトラックを作る)。
+ * 起動したときはトラックが無いので、トラックを使うテストはこれで用意する。
+ *
+ * @param tracks - 作るトラックの数 (Track 1, Track 2, …)
+ */
+export async function startFree(page: Page, tracks = 2): Promise<void> {
+    await page.getByRole('button', { name: '自由に作る' }).click();
+    for (let i = 1; i < tracks; i++) await page.getByRole('button', { name: '+ トラック追加' }).click();
+    await page.locator('#tracks-container .track-row').nth(tracks - 1).waitFor();
+}
+
+/** 指定したテスト用の音声を、取り込む曲として選ぶ (原曲のファイルの欄。画面には出ていない)。 */
+export async function importSong(page: Page, file: { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
+    await page.locator('#song-file').setInputFiles(file);
 }
 
 /**

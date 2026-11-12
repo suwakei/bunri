@@ -2,7 +2,7 @@
  * ヘッダの保存・読み込む・WAV 書き出し・再生 (ボタンと Space キー) と、画面の下端のステータスバー。
  */
 import { expect, test, type Download, type Page } from '@playwright/test';
-import { openDaw, openTab, readWav, statusText, trackSummary } from './helpers';
+import { openDaw, startFree, openTab, readWav, statusText, trackSummary } from './helpers';
 
 /** ダウンロードされたファイルの中身を読む。 */
 async function downloadBytes(file: Download): Promise<Buffer> {
@@ -24,6 +24,7 @@ const timeDisplay = (page: Page) => page.locator('#time-display');
 
 test('ステータスバーが画面の中に見えていて、画面全体が窓からはみ出していない', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     const layout = await page.evaluate(() => {
         const bar = document.querySelector('#status-bar')!.getBoundingClientRect();
         return { top: bar.top, bottom: bar.bottom, viewport: window.innerHeight, page: document.documentElement.scrollHeight };
@@ -39,6 +40,7 @@ test('ステータスバーが画面の中に見えていて、画面全体が�
 
 test('ボタンにマウスを載せると、ステータスバーの右に説明が出る', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await page.getByRole('button', { name: '保存', exact: true }).hover();
     await expect(page.locator('#hint-text')).toHaveText('プロジェクト（テンポ・トラック・ノート）を保存します');
     await expect(page.locator('#hint-text')).toBeInViewport();
@@ -46,6 +48,7 @@ test('ボタンにマウスを載せると、ステータスバーの右に説�
 
 test('保存して開き直し、読み込むと、テンポ・トラック・ノートが戻る', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await page.locator('#transport input[type="number"]').fill('96');
     await placeNotes(page);
     // 3 本目のトラックを足して、そこにもノートを置く
@@ -61,7 +64,9 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
 
     await page.reload();
     await page.getByText('準備完了').waitFor();
-    await expect(page.locator('#tracks-container .track-row')).toHaveCount(2);
+    // 開き直したときはトラックが無く、空の状態の案内が出る
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
+    await expect(page.locator('#empty-state')).toBeVisible();
     await page.getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(statusText(page)).toContainText('を読み込みました');
 
@@ -80,6 +85,7 @@ test('保存して開き直し、読み込むと、テンポ・トラック・�
 
 test('トラックをピアノロールで開いたまま読み込んでも、そのトラックのノートが読み込んだ内容になる', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await placeNotes(page);
     const saved = page.waitForResponse((r) => r.url().endsWith('/api/project/save'));
     await page.getByRole('button', { name: '保存', exact: true }).click();
@@ -104,12 +110,14 @@ test('トラックをピアノロールで開いたまま読み込んでも、�
 test.describe('WAV 書き出し', () => {
     test('何も無いときは、書き出さずに理由を出す', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
         await expect(statusText(page)).toContainText('書き出すものがありません');
     });
 
     test('ノートだけでも、再生で鳴るとおりの WAV が落ちてくる', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         const download = page.waitForEvent('download');
         await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
@@ -125,6 +133,7 @@ test.describe('WAV 書き出し', () => {
 
     test('クリップの在るトラックをミックスした WAV が落ちてくる', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await openTab(page, 'ドラム');
         await page.locator('#drum-panel input[type="number"]').fill('1');
         await page.getByRole('button', { name: /ドラム生成/ }).click();
@@ -140,6 +149,7 @@ test.describe('WAV 書き出し', () => {
 test.describe('再生', () => {
     test('再生すると時間が進み、一時停止で止まり、もう一度押すと続きから進む', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         await expect(timeDisplay(page)).toHaveText('0:00.0');
         await page.locator('#btn-play').click();
@@ -166,6 +176,7 @@ test.describe('再生', () => {
 
     test('停止すると先頭に戻る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         await page.locator('#btn-play').click();
         await expect(timeDisplay(page)).not.toHaveText('0:00.0');
@@ -178,6 +189,7 @@ test.describe('再生', () => {
 
     test('メトロノームを入れると、ボタンが点いた状態になる', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         const button = page.getByTitle('メトロノーム', { exact: true });
         await button.click();
         await expect(statusText(page)).toHaveText('メトロノーム ON');
@@ -191,6 +203,7 @@ test.describe('再生', () => {
 test.describe('Space キー', () => {
     test('Space で再生と一時停止が切り替わる', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         await page.keyboard.press('Space');
         await expect(statusText(page)).toHaveText('再生中…');
@@ -203,6 +216,7 @@ test.describe('Space キー', () => {
 
     test('入力欄で文字を打っているときは、Space で再生が始まらない', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         await page.getByLabel('BPM', { exact: true }).click();
         await page.keyboard.press('Space');
@@ -215,6 +229,7 @@ test.describe('Space キー', () => {
 
     test('ボタンをマウスで押した直後に Space を押しても、二重に切り替わらない', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         // ▶ をマウスで押す → 再生。ボタンにフォーカスが残っていても、Space は 1 回ぶんだけ効く
         await page.locator('#btn-play').click();
@@ -237,6 +252,7 @@ test.describe('Space キー', () => {
 
     test('キーボードで選んだボタンの上では、Space はそのボタンを押す (再生は切り替わらない)', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         // Tab キーで操作している状態にしてから、メトロノームのボタンへ移る
         await page.keyboard.press('Tab');
@@ -252,6 +268,7 @@ test.describe('Space キー', () => {
 test.describe('ステータスバーの知らせ', () => {
     test('失敗の知らせは色が変わり、読み上げの対象になる。次の知らせで元に戻る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await expect(statusText(page)).toHaveAttribute('role', 'status');
         await page.getByRole('button', { name: 'WAV 書き出し', exact: true }).click();
         await expect(statusText(page)).toContainText('書き出すものがありません');
@@ -306,6 +323,7 @@ test.describe('ソロと WAV 書き出し', () => {
 
     test('ソロにしたトラックだけが書き出される (再生と同じ)', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         // 何もソロにしていなければ、Track 1 のノートが鳴る
         expect(await exportPeak(page)).toBeGreaterThan(0.05);
@@ -322,6 +340,7 @@ test.describe('ソロと WAV 書き出し', () => {
 
     test('ミュートしたトラックしか無いときは、書き出さずに理由を出す', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await placeNotes(page);
         await page.getByRole('button', { name: '「Track 1」をミュート' }).click();
         await page.getByRole('button', { name: '「Track 2」をミュート' }).click();

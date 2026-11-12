@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { secToStep } from '../lib/grid';
 import { describeError, isDesktop } from '../lib/api';
 import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, type MidiSource, type RecordMode } from '../lib/midi-input';
 
@@ -45,7 +46,8 @@ export default function MidiInputBar() {
         recorderRef.current = new MidiNoteRecorder({
             position: () => {
                 const sec = engine.getPlayPosition();
-                return sec === null ? null : sec / (60 / engine.bpm / 4);
+                // ステップ 0 は 1 小節目の位置 (engine.gridOffset)。それより前 (弱起) は 1 小節目の頭にする
+                return sec === null ? null : Math.max(0, secToStep(sec, engine.grid));
             },
             addNote: (n) => pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length),
             // ピアノロールは打ち込むと伸びるので、末尾の制限は「伸ばせる上限」にする

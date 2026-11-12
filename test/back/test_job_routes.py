@@ -468,7 +468,7 @@ class TestRealEndpoints:
     async def test_音源の分解(self, real_app, wav_bytes, tmp_path, monkeypatch):
         import decompose
 
-        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job):
+        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0):
             assert (segment, jobs) == (7, 1)
             job.enter_stage("transcribe")
             stems = write_stems(tmp_path / "work", ["vocals", "bass"])
@@ -613,7 +613,7 @@ class TestRealEndpoints:
 
         gate = Gate()
 
-        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job):
+        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0):
             job.enter_stage("separate")
             gate.pause()
             return {"bpm": 120, "stems": {}}

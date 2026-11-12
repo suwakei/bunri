@@ -156,9 +156,24 @@ describe('secondsToBarBeat', () => {
 describe('ChartPanel', () => {
     beforeEach(() => cleanup());
 
-    it('カルテ未取得ならファイルタブへ誘導する', () => {
+    it('カルテ未取得なら、曲を取り込むよう案内する', () => {
         render(<DawProvider><ChartPanel /></DawProvider>);
         expect(screen.getByText(/まだ解析していません/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '曲を取り込む' })).toBeInTheDocument();
+    });
+
+    it('コードの升目を押すと、カルテの実測のビート列で引いたその小節の頭へ、再生位置が移る', async () => {
+        const engine = (await import('../lib/engine')).default;
+        engine.init();
+        renderChart(makeChart(), true);
+        fireEvent.click(screen.getByRole('button', { name: /^1 小節: C/ }));
+        // カルテの 1 小節目は 1 拍目の位置 (0.35 秒) から
+        expect(engine.playOffset).toBeCloseTo(0.35, 5);
+        expect(screen.getByRole('status')).toHaveTextContent('1 小節（C）へ移動しました');
+        // 構成の行を押すと、区間の頭へ
+        engine.playOffset = 0;
+        fireEvent.click(screen.getByRole('button', { name: /1〜4 小節の区間/ }));
+        expect(engine.playOffset).toBeCloseTo(0.35, 5);
     });
 
     it('キーとBPMを表示する', () => {

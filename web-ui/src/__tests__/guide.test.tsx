@@ -342,9 +342,10 @@ describe('GuidePanel: 保存済みのガイドと費用', () => {
 describe('GuidePanel', () => {
     beforeEach(() => cleanup());
 
-    it('カルテが無ければ何も出さない', () => {
-        const { container } = render(<DawProvider><GuidePanel /></DawProvider>);
-        expect(container).toBeEmptyDOMElement();
+    it('カルテが無ければ、先に曲を取り込むよう案内する (Claude は呼ばない)', () => {
+        render(<DawProvider><GuidePanel /></DawProvider>);
+        expect(screen.getByText(/先に曲を取り込んでください/)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /ガイドを作る/ })).not.toBeInTheDocument();
     });
 
     it('外部に送る内容を、作る前に明示する', () => {

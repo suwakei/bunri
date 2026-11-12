@@ -3,25 +3,29 @@
  */
 import { useDaw } from '../lib/store';
 import HeaderBar from '../components/HeaderBar';
+import ProgressSteps from '../components/ProgressSteps';
 import LeftPanel from '../components/LeftPanel';
 import CenterArea from '../components/CenterArea';
 import StatusBar from '../components/StatusBar';
 import WelcomeGuide from '../components/WelcomeGuide';
 import GridEditor from '../components/GridEditor';
+import { SongPicker } from '../components/LearnPanel';
 
 /**
  * メイン DAW ページコンポーネント。
- * HeaderBar / LeftPanel / CenterArea / StatusBar / WelcomeGuide を組み合わせて
- * DAW の全体レイアウトを構成する。
+ * HeaderBar / 進み具合の段 / LeftPanel / CenterArea / StatusBar / WelcomeGuide を組み合わせて
+ * DAW の全体レイアウトを構成する（縦に並べ、#main が残りの高さを使う）。
  * `showProgress` が true のときグローバルプログレスバーを表示する。
- * @returns DAW ページ全体の JSX フラグメント
+ * 原曲のファイルを選ぶ欄（SongPicker）は、画面に 1 つだけここに置く。
+ * @returns DAW ページ全体の JSX
  */
 export default function DawPage() {
     const { showProgress } = useDaw();
 
     return (
-        <>
+        <div id="daw-layout">
             <HeaderBar />
+            <ProgressSteps />
             <div id="main">
                 <LeftPanel />
                 <CenterArea />
@@ -30,8 +34,9 @@ export default function DawPage() {
                 <div className="bar" />
             </div>
             <StatusBar />
+            <SongPicker />
             <WelcomeGuide />
             <GridEditor />
-        </>
+        </div>
     );
 }

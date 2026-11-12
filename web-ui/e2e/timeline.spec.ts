@@ -3,7 +3,8 @@
  * シーク、トラックの追加と削除。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { makeWav, openDaw, openTab, statusText } from './helpers';
+import { readFileSync } from 'node:fs';
+import { makeWav, openDaw, startFree, openTab, statusText, SONG_MP3 } from './helpers';
 
 /** タイムラインの縮尺 (1 秒 = 80px) と、トラックの見出しの幅。 */
 const PX_PER_SEC = 80;
@@ -17,7 +18,7 @@ const trackNames = async (page: Page) => (await page.locator('#tracks-container 
 async function addClip(page: Page, name: string, seconds: number, sampleRate = 22050) {
     await openTab(page, 'ファイル');
     const before = await clips(page).count();
-    await page.locator('#file-panel input[type="file"]').nth(1)
+    await page.locator('#file-import')
         .setInputFiles({ name, mimeType: 'audio/wav', buffer: makeWav(seconds, [440, 660], sampleRate) });
     await page.getByRole('button', { name: '選択したトラックに追加' }).click();
     await expect(clips(page)).toHaveCount(before + 1, { timeout: 60_000 });
@@ -47,6 +48,7 @@ async function scrollTimeline(page: Page, left: number, top = 0) {
 
 test('小節番号の段が、クリップを置く領域と同じ位置から始まる', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await addClip(page, 'two-sec.wav', 2);
     const ruler = await box(page, '#timeline-header-canvas');
     const clip = await box(page, '#tracks-container .clip');
@@ -62,6 +64,7 @@ test('小節番号の段が、クリップを置く領域と同じ位置から�
 
 test('テンポや拍子を変えると、小節番号の段が描き直される', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     const spacing = async () => { const lines = await barLines(page); return lines[1] - lines[0]; };
     expect(await spacing()).toBe(160);
     // 60 BPM なら 1 小節 = 4 秒 = 320px
@@ -74,6 +77,7 @@ test('テンポや拍子を変えると、小節番号の段が描き直され�
 
 test('長い曲を横にスクロールすると、後ろのクリップが見え、見出しとシークバーは留まる', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await addClip(page, 'sixty-sec.wav', 60, 8000);
     const view = await box(page, '#timeline-area');
     // 曲の長さ + 10 秒の余白ぶんの幅を、横にスクロールできる
@@ -106,6 +110,7 @@ test('長い曲を横にスクロールすると、後ろのクリップが見�
 
 test('スクロールした先でクリップを動かしても、押した分だけ動く', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     await addClip(page, 'two-sec.wav', 2);
     const drag = async (dx: number) => {
         const clip = await box(page, '#tracks-container .clip');
@@ -129,6 +134,7 @@ test('スクロールした先でクリップを動かしても、押した分�
 
 test('縦にスクロールしても、見出しと小節番号の段は上端に留まる', async ({ page }) => {
     await openDaw(page);
+    await startFree(page);
     for (let i = 0; i < 7; i++) await page.getByRole('button', { name: '+ トラック追加' }).click();
     await expect(page.locator('#tracks-container .track-row')).toHaveCount(9);
     await scrollTimeline(page, 0, 0);
@@ -147,6 +153,7 @@ test.describe('シークバー', () => {
 
     test('矢印キーで動かすと、その位置へ移動し、その後も再生位置を追う', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await addClip(page, 'ten-sec.wav', 10, 8000);
         await expect(page.locator('#seek-time-total')).toHaveText('0:10.0');
         await page.locator('#seek-bar').focus();
@@ -163,6 +170,7 @@ test.describe('シークバー', () => {
 
     test('押した位置へ移動する (続けて押しても、1 つ前の位置にならない)', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await addClip(page, 'ten-sec.wav', 10, 8000);
         await expect(page.locator('#seek-time-total')).toHaveText('0:10.0');
         const bar = await box(page, '#seek-bar');
@@ -179,6 +187,7 @@ test.describe('シークバー', () => {
 test.describe('トラックとクリップ', () => {
     test('途中のトラックを消してから足しても、同じ名前のトラックができない', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await page.getByRole('button', { name: '+ トラック追加' }).click();
         expect(await trackNames(page)).toEqual(['Track 1', 'Track 2', 'Track 3']);
         await page.locator('#tracks-container .btn-delete-track').nth(1).click();
@@ -189,12 +198,15 @@ test.describe('トラックとクリップ', () => {
             await page.locator('#tracks-container .btn-delete-track').first().click();
         }
         await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
-        await page.getByRole('button', { name: '+ トラック追加' }).click();
+        // 全部消すと、起動したときと同じ空の状態の案内に戻る。「自由に作る」で足す
+        await expect(page.locator('#empty-state')).toBeVisible();
+        await page.getByRole('button', { name: '自由に作る' }).click();
         expect(await trackNames(page)).toEqual(['Track 1']);
     });
 
     test('ピアノロールで開いているトラックを消すと、ピアノロールは選択なしに戻る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await page.locator('#tracks-container .track-name').nth(1).click();
         await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 2');
         await page.locator('#tracks-container .btn-delete-track').nth(1).click();
@@ -217,6 +229,7 @@ test.describe('トラックとクリップ', () => {
 
     test('クリップを右クリックで消すと、何を消したかが出る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await addClip(page, 'two-sec.wav', 2);
         const clip = await box(page, '#tracks-container .clip');
         await page.mouse.click(clip.x + 10, clip.y + 10, { button: 'right' });
@@ -224,10 +237,11 @@ test.describe('トラックとクリップ', () => {
         await expect(statusText(page)).toHaveText('クリップ「two-sec.wav」を「Track 1」から削除しました');
     });
 
-    test('WAV をドロップすると、落とした位置にクリップが入る。WAV 以外は断る', async ({ page }) => {
+    test('音声ファイルをドロップすると、落とした位置にクリップが入る。音声でないファイルは断る', async ({ page }) => {
         await openDaw(page);
-        const drop = async (fileName: string, x: number) => {
-            const bytes = [...makeWav(1)];
+        await startFree(page);
+        const drop = async (fileName: string, x: number, buffer: Buffer = makeWav(1)) => {
+            const bytes = [...buffer];
             const dataTransfer = await page.evaluateHandle(([name, data]) => {
                 const transfer = new DataTransfer();
                 transfer.items.add(new File([new Uint8Array(data as number[])], name as string, { type: 'audio/wav' }));
@@ -244,10 +258,20 @@ test.describe('トラックとクリップ', () => {
         await expect(statusText(page)).toHaveText('LOUD.WAV を「Track 1」に追加しました');
 
         await drop('notes.txt', 100);
-        await expect(statusText(page)).toContainText('WAV 以外のファイルは追加できません: notes.txt');
+        await expect(statusText(page)).toContainText('音声ではないファイルは追加できません: notes.txt');
         // 断った理由は、失敗の知らせとして出る
         await expect(statusText(page)).toHaveAttribute('role', 'alert');
         await expect(clips(page)).toHaveCount(1);
+
+        // MP3 も、ブラウザで読めればそのまま入る (以前は WAV しか受けなかった)
+        await drop('song.mp3', 400, readFileSync(SONG_MP3));
+        await expect(clips(page)).toHaveCount(2);
+        await expect(statusText(page)).toHaveText('song.mp3 を「Track 1」に追加しました');
+
+        // 拡張子は音声でも、中身が読めなければ、そう知らせる
+        await drop('broken.mp3', 500, Buffer.from('not audio'));
+        await expect(statusText(page)).toContainText('broken.mp3 を読み込めませんでした');
+        await expect(clips(page)).toHaveCount(2);
     });
 });
 
@@ -267,6 +291,7 @@ test.describe('タイムラインとピアノロールの境目', () => {
 
     test('境目をドラッグすると、ピアノロールの高さが変わる', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         expect(await pianoHeight(page)).toBe(300);
         const timelineBefore = await timelineHeight(page);
 
@@ -288,6 +313,7 @@ test.describe('タイムラインとピアノロールの境目', () => {
 
     test('動かせる範囲に下限が在る (ピアノロールは 150px、タイムラインは 200px を残す)', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         await dragHandle(page, 400);
         expect(await pianoHeight(page)).toBe(150);
         await dragHandle(page, -900);
@@ -299,6 +325,7 @@ test.describe('タイムラインとピアノロールの境目', () => {
 
     test('キーボードでも動かせる (上下の矢印キー)', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         const handle = page.getByRole('separator', { name: /タイムラインとピアノロールの境目/ });
         await handle.focus();
         await page.keyboard.press('ArrowUp');
@@ -315,6 +342,7 @@ test.describe('タイムラインとピアノロールの境目', () => {
 test.describe('トラックのボタン', () => {
     test('M・S・✕ が何のボタンかが伝わり、押せる範囲が 24px 四方以上ある', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         const row = page.locator('#tracks-container .track-row').first();
         const expected: [string, string, string][] = [
             ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけ再生'],
@@ -343,6 +371,7 @@ test.describe('トラックのボタン', () => {
 
     test('ミュートとソロは、押した状態が読み上げにも伝わり、キーボードで押してもフォーカスが残る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         const mute = page.getByRole('button', { name: '「Track 1」をミュート' });
         await expect(mute).toHaveAttribute('aria-pressed', 'false');
         await mute.focus();
@@ -362,6 +391,7 @@ test.describe('トラックのボタン', () => {
 
     test('シークバーをキーボードで選ぶと、縁取りが出る', async ({ page }) => {
         await openDaw(page);
+        await startFree(page);
         // キーボードで操作している状態にしてから、シークバーへ移る
         await page.keyboard.press('Tab');
         await page.locator('#seek-bar').focus();

@@ -292,12 +292,23 @@ def _bpm_value(bpm):
     return float(bpm)
 
 
-def _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count):
+def _offset_value(offset):
+    """ピアノロールのステップ 0 の位置（秒）を確かめる（None は 0）。"""
+    if offset is None:
+        return 0.0
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not 0 <= offset <= 3600:
+        raise coach_diff.DiffError("grid_offset_sec が正しくありません")
+    return float(offset)
+
+
+def _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count, grid_offset_sec=0.0):
     """カルテから、言語化に使う事実（キー、その場のコード、セクション）を引く準備をする。
 
     カルテの小節番号は使わない。カルテのグリッド（実測のビートと 1 拍目の位置）と、ピアノロールの
-    グリッド（0 秒から、``bpm`` の等間隔）は別物で、同じ番号が同じ場所を指すとは限らない。
-    そこで、ピアノロールのステップを秒に直し、カルテのコード・セクションの秒の範囲と突き合わせる。
+    グリッド（``grid_offset_sec`` から、``bpm`` の等間隔）は別物で、同じ番号が同じ場所を指すとは限らない
+    （画面はふつう、カルテのテンポと 1 拍目の位置をピアノロールに使うのでそろうが、テンポの揺れる曲や、
+    パートに分けたあとでグリッドを直した場合はずれる）。そこで、ピアノロールのステップを秒に直し、
+    カルテのコード・セクションの秒の範囲と突き合わせる。
     ``bpm`` が無ければ秒に直せないので、キーだけを使う。
 
     Returns:
@@ -332,7 +343,7 @@ def _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count):
     def chord_at(step):
         # ステップの真ん中の時刻で引く。採譜はノートの頭をステップに丸めているので、コードの変わり目に
         # 在る音が、丸めで手前のコードに入るのを避ける
-        at = (step + 0.5) * step_sec
+        at = grid_offset_sec + (step + 0.5) * step_sec
         index = bisect_right(starts, at) - 1
         if index < 0 or at >= chords[index]["end_sec"]:
             return None
@@ -342,7 +353,7 @@ def _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count):
     sections = []
     for section in timed(chart.get("sections")):
         name = section.get("label") or section.get("suggested_label")
-        first_bar = int(round(section["start_sec"] / bar_sec)) + 1
+        first_bar = int(round((section["start_sec"] - grid_offset_sec) / bar_sec)) + 1
         if not name or first_bar > bar_count:
             continue
         sections.append({
@@ -350,7 +361,7 @@ def _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count):
             # 利用者が付けた名前には確信度が無い。解析が付けた名前だけ、3 段階の言い方を添える
             "name_confidence": None if section.get("label") else confidence_label(section.get("suggested_confidence")),
             "first_bar": first_bar,
-            "last_bar": max(first_bar, int(round(section["end_sec"] / bar_sec))),
+            "last_bar": max(first_bar, int(round((section["end_sec"] - grid_offset_sec) / bar_sec))),
         })
     return "chords", key_facts, scale, chord_at, sections
 
@@ -377,7 +388,8 @@ def _role(note, chord, scale):
     return "キー内" if in_key else "キー外"
 
 
-def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_tolerance=2, chart=None, bpm=None):
+def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_tolerance=2, chart=None, bpm=None,
+                grid_offset_sec=None):
     """お手本と打ち込みを突き合わせ、LLM に渡す事実を組み立てる。LLM は使わない。
 
     差分そのものは ``coach_diff.diff_notes`` が出す。ここでは、それに次を足す。
@@ -399,6 +411,8 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
         chart: 楽曲カルテ。お手本と同じ曲のものを渡す。None なら使わない。
         bpm: ピアノロールのテンポ（お手本を採譜したときのテンポ）。カルテのコード・セクションを
             ピアノロールの小節に当てるのに使う。None なら、カルテからはキーだけを使う。
+        grid_offset_sec: ピアノロールのステップ 0 の位置（秒。1 小節目の 1 拍目）。画面は、カルテの
+            1 拍目の位置をここに使う。None なら 0（以前の、0 秒から数えるピアノロール）。
 
     Returns:
         dict: ``{"grid", "summary", "worst_bars", "tendencies", "bars", "issues", "chart_context",
@@ -408,6 +422,7 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
         coach_diff.DiffError: 入力の形が正しくない、お手本が空、``bpm`` が不正な場合。
     """
     bpm = _bpm_value(bpm)
+    grid_offset_sec = _offset_value(grid_offset_sec)
     diff = coach_diff.diff_notes(reference, attempt, steps_per_bar=steps_per_bar, steps_per_beat=steps_per_beat,
                                  timing_tolerance=timing_tolerance)
 
@@ -417,7 +432,8 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
             issues.append({**issue, "index": len(issues) + 1})
     bar_count = max(note["step"] for note in [*reference, *attempt]) // steps_per_bar + 1
 
-    level, key, scale, chord_at, sections = _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count)
+    level, key, scale, chord_at, sections = _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count,
+                                                           grid_offset_sec)
     columns = list(_ISSUE_COLUMNS)
     if level == "chords":
         columns += ["chord", "chord_confidence"]

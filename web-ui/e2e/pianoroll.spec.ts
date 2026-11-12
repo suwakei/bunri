@@ -3,7 +3,7 @@
  * 音域 (C0〜B8) の端の音も扱えること。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw, recordOscillators, soundedFrequencies } from './helpers';
+import { openDaw, startFree, recordOscillators, soundedFrequencies } from './helpers';
 
 const STEP_WIDTH = 20;
 const NOTE_HEIGHT = 14;
@@ -37,6 +37,7 @@ async function isInView(page: Page, selector: string) {
 
 async function openPianoRoll(page: Page) {
     await openDaw(page);
+    await startFree(page);
     await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 1');
 }

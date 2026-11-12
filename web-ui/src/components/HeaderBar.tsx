@@ -12,8 +12,9 @@ import { notesToMidi } from '../lib/midi';
  * プロジェクトデータの構造を表すインターフェース。
  * API の `/api/project/save` / `/api/project/load/{name}` でやり取りされる。
  *
- * @property bpm - テンポ（Beats Per Minute）
+ * @property bpm - テンポ（Beats Per Minute。小数も可）
  * @property beatsPerBar - 1小節あたりの拍数
+ * @property gridOffset - 1 小節目の 1 拍目の位置（秒）。無ければ 0（以前の版が保存したもの）
  * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
  * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
  * @property automation - 以前の版が保存していたオートメーションのデータ。オートメーションの欄は
@@ -22,11 +23,16 @@ import { notesToMidi } from '../lib/midi';
 interface ProjectData {
     bpm?: number;
     beatsPerBar?: number;
+    gridOffset?: number;
     tracks?: Array<{
         name?: string;
         gain?: number;
         pan?: number;
         mute?: boolean;
+        role?: 'song' | 'part' | 'practice';
+        part?: string;
+        /** 練習のトラックが見るパートのトラックの、並びの番号（ID は読み込むたびに変わるので番号で持つ） */
+        practiceOfIndex?: number;
         pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
         referenceNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
     }>;
@@ -77,7 +83,7 @@ export default function HeaderBar() {
         isPlaying, setIsPlaying, setStatus,
         metronomeEnabled, setMetronomeEnabled,
         withProgress, showProgress, bumpTracks, pianoRollRef,
-        setHint,
+        setHint, setGridOffset, setCoachPair,
     } = useDaw();
 
     const handlePlay = useCallback(() => {
@@ -217,12 +223,14 @@ export default function HeaderBar() {
         const pr = pianoRollRef.current;
         if (pr) pr.getNotes();
         const project = {
-            bpm: engine.bpm, beatsPerBar: engine.beatsPerBar,
+            bpm: engine.bpm, beatsPerBar: engine.beatsPerBar, gridOffset: engine.gridOffset,
             tracks: engine.tracks.map(t => ({
                 name: t.name, gain: t.gain, pan: t.pan, mute: t.mute,
                 clips: t.clips.map(c => ({ name: c.name, offset: c.offset, duration: c.duration })),
                 pianoNotes: t.pianoNotes || [],
                 referenceNotes: t.referenceNotes,
+                role: t.role, part: t.part,
+                practiceOfIndex: t.practiceOf !== undefined ? engine.tracks.findIndex(x => x.id === t.practiceOf) : undefined,
             })),
         };
         const fd = new FormData();
@@ -256,6 +264,8 @@ export default function HeaderBar() {
         engine.bpm = project.bpm || 120;
         engine.beatsPerBar = project.beatsPerBar || 4;
         setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
+        // 1 小節目の位置。以前の版が保存したプロジェクトには無いので、0 秒 (以前の数え方) にする
+        setGridOffset(typeof project.gridOffset === 'number' ? project.gridOffset : 0);
         // ピアノロールは、トラックを読み込む「前」に閉じる。ピアノロールは別のトラックへ移るとき、
         // 画面に出しているノートを、開いていたトラックへ書き戻す。読み込んだ後に閉じると、
         // 開いていたトラックのノートが、読み込んだ内容ではなく、画面に出ていた古い内容に戻ってしまう
@@ -272,12 +282,21 @@ export default function HeaderBar() {
                 if (typeof pt.mute === 'boolean' && pt.mute !== track.mute) engine.toggleMute(track.id);
                 if (pt.pianoNotes) track.pianoNotes = pt.pianoNotes;
                 if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
+                track.role = pt.role;
+                track.part = pt.part;
+                track.practiceOf = undefined;
+            });
+            // 練習のトラックが見るパートは、全部のトラックを作ってから結び直す
+            project.tracks.forEach((pt, i) => {
+                const target = typeof pt.practiceOfIndex === 'number' ? engine.tracks[pt.practiceOfIndex] : undefined;
+                if (target && engine.tracks[i]) engine.tracks[i].practiceOf = target.id;
             });
         }
+        setCoachPair({ referenceId: null, attemptId: null });
         // 以前の版が保存したオートメーションのデータ (project.automation) は、在っても使わない
         bumpTracks();
         setStatus(`プロジェクト「${name}」を読み込みました（音声は保存されていません。音声ファイルは、もう一度追加してください）`);
-    }, [setBpm, setBeatsPerBar, pianoRollRef, bumpTracks, setStatus]);
+    }, [setBpm, setBeatsPerBar, setGridOffset, setCoachPair, pianoRollRef, bumpTracks, setStatus]);
 
     const h = (text: string) => ({
         onMouseEnter: () => setHint(text),
@@ -289,7 +308,7 @@ export default function HeaderBar() {
             <h1>bunri DAW</h1>
             <div id="transport">
                 <label htmlFor="transport-bpm">BPM</label>
-                <input id="transport-bpm" type="number" value={bpm} min="20" max="300"
+                <input id="transport-bpm" type="number" value={bpm} min="20" max="300" step="0.01"
                     onChange={e => setBpm(e.target.value)}
                     {...h('テンポ（BPM）。曲の速さを指定します')} />
                 <label htmlFor="transport-meter">拍子</label>

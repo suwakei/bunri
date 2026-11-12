@@ -165,6 +165,9 @@ describe('sidecar の鍵', () => {
 
 describe('音声', () => {
     it('WAV をタイムラインに置くと、クリップが出て、再生と停止ができる', async () => {
+        // 起動したときはトラックが無い (空の状態の案内)。「自由に作る」で Track 1 を作る
+        await app.click('//button[normalize-space()="自由に作る"]');
+        await app.waitFor('トラックが出る', () => document.querySelector('#tracks-container .track-canvas-wrap') !== null, []);
         const wav = makeWav(2, [440, 660]).toString('base64');
         await app.run(async (data: string) => {
             const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));

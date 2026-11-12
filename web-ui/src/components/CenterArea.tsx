@@ -10,6 +10,8 @@ import { cssVar } from '../lib/theme';
 import { isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 import MidiInputBar from './MidiInputBar';
 import GhostBar from './GhostBar';
+import { secToStep, stepSeconds } from '../lib/grid';
+import { isAudioFileName, useLearnActions } from '../lib/learn';
 
 /** 音名を低い順に並べたもの (MIDI ノート番号を出すのに使う)。 */
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -68,8 +70,12 @@ class PianoRollEngine {
         this.snapToGrid = true; this.gridSize = 4;
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
+        // ノートの数が変わったとき (CenterArea が渡す)
+        this.onNotesChanged = null;
         // 縦の位置を自動で据えた行 (_centerOnRow)。利用者がスクロールしたら null に戻す
         this._anchorRow = null; this._anchorTop = 0;
+        // 再生位置の線 (setPlayhead で動かす)
+        this.playhead = null;
     }
     /**
      * ピアノロールを DOM 要素群に紐付けて初期化する。
@@ -85,6 +91,11 @@ class PianoRollEngine {
         this.canvas = el.canvas; this.noteLayer = el.noteLayer;
         this.keysDiv = el.keysDiv; this.wrap = el.wrap;
         this.ctx = this.canvas.getContext('2d');
+        // 再生位置の線。ノートの層は描き直すたびに中身を作り直すので、その外 (スクロールする枠の中) に置く
+        this.playhead = document.createElement('div');
+        this.playhead.className = 'playhead'; this.playhead.id = 'piano-playhead';
+        this.playhead.setAttribute('aria-hidden', 'true');
+        this.wrap.appendChild(this.playhead);
         this._buildKeys(); this._resize(); this._drawGrid(); this._bindEvents();
         // グリッドは見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す。
         // 鍵盤の列は別の要素なので、縦のスクロール位置を合わせる
@@ -146,6 +157,46 @@ class PianoRollEngine {
         const target = (own.length ? own : ghost).slice().sort((a, b) => a - b);
         this._centerOnRow(target[Math.floor(target.length / 2)]);
     }
+    /**
+     * その高さの行が見えるよう、縦にスクロールする。見えていれば動かさない (`center` なら真ん中に据える)。
+     * 差分チェックの指摘や「このパートを練習する」から、その高さを見せるのに使う。
+     *
+     * @param name - 音名
+     * @param octave - オクターブ
+     * @param center - true なら、見えていても真ん中に据える
+     */
+    scrollToPitch(name, octave, center = false) {
+        if (!this.wrap) return;
+        const row = this._noteToRow(name, octave);
+        if (row < 0 || row >= this.totalRows) return;
+        const top = this.wrap.scrollTop, bottom = top + this.wrap.clientHeight;
+        if (!center && row * this.noteHeight >= top && (row + 1) * this.noteHeight <= bottom) return;
+        this._centerOnRow(row);
+    }
+    /**
+     * 再生位置の線を動かす。1 小節目より前 (弱起) は出さない。
+     * 再生中は毎フレーム呼ばれるので、位置は transform で動かす (配置の計算をやり直さない)。
+     *
+     * @param sec - 再生位置 (秒)
+     */
+    setPlayhead(sec) {
+        if (!this.playhead) return;
+        const step = secToStep(sec, engine.grid);
+        const visible = this.activeTrackId !== null && step >= 0 && step <= this.totalSteps;
+        this.playhead.style.display = visible ? 'block' : 'none';
+        if (!visible) return;
+        this.playhead.style.height = (this.totalRows * this.noteHeight) + 'px';
+        this.playhead.style.transform = `translateX(${Math.round(step * this.stepWidth)}px)`;
+        this.playheadStep = step;
+    }
+    /** 再生位置が見えている範囲の外に出たら、見えるところまで横にスクロールする (再生中の自動スクロール)。 */
+    followPlayhead(sec) {
+        if (!this.wrap || this.activeTrackId === null) return;
+        const x = secToStep(sec, engine.grid) * this.stepWidth;
+        if (x < 0) return;
+        const left = this.wrap.scrollLeft, width = this.wrap.clientWidth;
+        if (x < left || x > left + width - 24) this.wrap.scrollLeft = Math.max(0, x - width / 4);
+    }
     /** 1 小節のステップ数 (拍子に従う。4/4 なら 16)。 */
     _stepsPerBar() { return Math.max(1, engine.beatsPerBar || 4) * 4; }
     /**
@@ -160,8 +211,9 @@ class PianoRollEngine {
         for (const n of this.ghostNotes) last = Math.max(last, n.step + n.length);
         const track = this.activeTrackId !== null ? engine.getTrack(this.activeTrackId) : null;
         if (track) {
-            const stepSec = 60 / engine.bpm / 4;
-            for (const clip of track.clips || []) last = Math.max(last, Math.ceil((clip.offset + clip.duration) / stepSec));
+            // クリップは秒で置いてある。ステップ 0 は 1 小節目の位置 (engine.gridOffset)
+            const stepSec = stepSeconds(engine);
+            for (const clip of track.clips || []) last = Math.max(last, Math.ceil((clip.offset + clip.duration - engine.gridOffset) / stepSec));
         }
         const wanted = Math.min(this.maxSteps, Math.max(this.minSteps, (Math.ceil(last / bar) + this.tailBars) * bar));
         if (wanted === this.totalSteps) return false;
@@ -188,7 +240,10 @@ class PianoRollEngine {
         if (this.activeTrackId === null) return;
         const track = engine.getTrack(this.activeTrackId);
         if (!track) return;
+        const before = (track.pianoNotes || []).length;
         track.pianoNotes = this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+        // ノートの数が変わったら知らせる (トラックの見出しのノートの数、進み具合の「打ち込む」を描き直す)
+        if (before !== track.pianoNotes.length && this.onNotesChanged) this.onNotesChanged();
     }
     _loadFromEngine() {
         if (this.activeTrackId === null) { this.notes = []; return; }
@@ -479,6 +534,10 @@ class TimelineEngine {
         // トラックの見出しの幅 (CSS の .track-header と同じ)。クリップを置く領域はこの右から始まるので、
         // 小節番号の段も同じだけ右から始める
         this.headerWidth = 130;
+        // 再生位置の線 (setPlayhead で動かす)
+        this.playhead = null;
+        // 「このパートを練習する」を押したとき (CenterArea が渡す)
+        this.onPractice = null;
     }
     /**
      * タイムラインを DOM 要素群に紐付けて初期化する。
@@ -492,6 +551,13 @@ class TimelineEngine {
     init(el) {
         this.container = el.container; this.headerCanvas = el.headerCanvas; this.scroller = el.scroller || null;
         this.headerCtx = this.headerCanvas.getContext('2d');
+        // 再生位置の線。トラックの行は描き直すたびに作り直すので、その外 (スクロールする枠の中) に置く
+        if (this.scroller) {
+            this.playhead = document.createElement('div');
+            this.playhead.className = 'playhead'; this.playhead.id = 'timeline-playhead';
+            this.playhead.setAttribute('aria-hidden', 'true');
+            this.scroller.appendChild(this.playhead);
+        }
         this._drawHeader(); this._bindGlobalEvents();
         // 小節番号の段は見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す
         if (this.scroller) {
@@ -523,17 +589,53 @@ class TimelineEngine {
         const ctx = this.headerCtx; ctx.fillStyle = cssVar('--bg-secondary', '#17171e'); ctx.fillRect(0, 0, w, h);
         const numberColor = cssVar('--text', '#e8e4de');
         const scrollLeft = this.scroller ? this.scroller.scrollLeft : 0, left = this.headerWidth;
+        // 拍は 1 小節目の 1 拍目 (engine.gridOffset) から数える。ピアノロールの小節番号と同じ番号になる。
+        // それより前 (弱起) の拍は、番号を付けずに目盛りだけ描く
         const beatPx = (60 / engine.bpm) * this.pixelsPerSecond, perBar = Math.max(1, engine.beatsPerBar || 4);
-        const lastBeat = Math.ceil(this._totalSeconds() * this.pixelsPerSecond / beatPx);
-        const first = Math.max(0, Math.floor(scrollLeft / beatPx));
-        const last = Math.min(lastBeat, Math.ceil((scrollLeft + w - left) / beatPx));
+        const originPx = engine.gridOffset * this.pixelsPerSecond;
+        const lastBeat = Math.ceil((this._totalSeconds() * this.pixelsPerSecond - originPx) / beatPx);
+        const firstBeat = -Math.floor(originPx / beatPx);
+        const first = Math.max(firstBeat, Math.floor((scrollLeft - originPx) / beatPx));
+        const last = Math.min(lastBeat, Math.ceil((scrollLeft + w - left - originPx) / beatPx));
         for (let beat = first; beat <= last; beat++) {
-            const x = left + beat * beatPx - scrollLeft;
+            const x = left + originPx + beat * beatPx - scrollLeft;
             if (x < left) continue;
-            if (beat % perBar === 0) { ctx.fillStyle = numberColor; ctx.font = '10px sans-serif'; ctx.fillText(String(beat / perBar + 1), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
-            else ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+            if (beat >= 0 && beat % perBar === 0) { ctx.fillStyle = numberColor; ctx.font = '10px sans-serif'; ctx.fillText(String(beat / perBar + 1), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
+            else ctx.strokeStyle = beat < 0 ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.1)';
             ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, 24); ctx.stroke();
         }
+    }
+    /**
+     * 指定した位置 (秒) が見えるよう、横にスクロールする (見えている幅の 4 分の 1 あたりに来る)。
+     * カルテやガイドの小節、差分チェックの指摘から移動するのに使う。
+     *
+     * @param sec - 見せたい位置 (秒)
+     */
+    scrollToTime(sec) {
+        if (!this.scroller) return;
+        const view = this.scroller.clientWidth - this.headerWidth;
+        this.scroller.scrollLeft = Math.max(0, sec * this.pixelsPerSecond - view / 4);
+    }
+    /**
+     * 再生位置の線を動かす。再生中は毎フレーム呼ばれるので、位置は transform で動かす。
+     *
+     * @param sec - 再生位置 (秒)
+     */
+    setPlayhead(sec) {
+        if (!this.playhead || !this.container) return;
+        const visible = engine.tracks.length > 0;
+        this.playhead.style.display = visible ? 'block' : 'none';
+        if (!visible) return;
+        this.playhead.style.top = this.container.offsetTop + 'px';
+        this.playhead.style.height = this.container.offsetHeight + 'px';
+        this.playhead.style.transform = `translateX(${Math.round(this.headerWidth + sec * this.pixelsPerSecond)}px)`;
+    }
+    /** 再生位置が見えている範囲の外に出たら、見えるところまで横にスクロールする (再生中の自動スクロール)。 */
+    followPlayhead(sec) {
+        if (!this.scroller) return;
+        const x = sec * this.pixelsPerSecond, left = this.scroller.scrollLeft;
+        const view = this.scroller.clientWidth - this.headerWidth;
+        if (x < left || x > left + view - 24) this.scroller.scrollLeft = Math.max(0, x - view / 4);
     }
     /**
      * エンジンの全トラックをタイムラインに再描画する。
@@ -578,6 +680,18 @@ class TimelineEngine {
                 badge.className = 'notes-badge'; badge.title = `${noteCount}ノート`; badge.textContent = String(noteCount);
                 nameEl.appendChild(badge);
             }
+            // パートのトラック (お手本を持つもの) には、「このパートを練習する」を出す
+            if (track.role === 'part' && track.referenceNotes && track.referenceNotes.length > 0 && this.onPractice) {
+                const practice = document.createElement('button');
+                practice.type = 'button'; practice.className = 'btn-practice'; practice.dataset.track = track.id;
+                practice.textContent = '練習する';
+                practice.setAttribute('aria-label', `「${track.name}」を練習する`);
+                practice.title = 'このパートを練習する（お手本を重ねたピアノロールを開きます）';
+                practice.addEventListener('click', (e) => { e.stopPropagation(); this.onPractice(track.id); });
+                header.appendChild(practice);
+            } else if (track.role === 'practice') {
+                header.classList.add('practice-track');
+            }
             row.appendChild(header);
             const canvasWrap = document.createElement('div'); canvasWrap.className = 'track-canvas-wrap'; canvasWrap.dataset.trackId = track.id;
             // クリップを置く領域は、曲全体の幅を持つ (行ごと横にスクロールする)
@@ -606,16 +720,22 @@ class TimelineEngine {
                 e.preventDefault();
                 // 位置は、読み込みを待つ前に取っておく (待っているあいだに描き直されると、要素が入れ替わる)
                 const dropSec = Math.max(0, (e.clientX - canvasWrap.getBoundingClientRect().left) / this.pixelsPerSecond);
-                const added = [], rejected = [];
+                const added = [], rejected = [], failed = [];
                 for (const file of e.dataTransfer.files) {
-                    // 拡張子は大文字でも受ける (.WAV)。WAV 以外は、黙って無視せずに知らせる
-                    if (!/\.wav$/i.test(file.name)) { rejected.push(file.name); continue; }
-                    await engine.addClipFromFile(track.id, file, dropSec);
-                    added.push(file.name);
+                    // 音声のファイル (WAV・MP3・FLAC など。拡張子は大文字でも受ける) だけを受ける。
+                    // それ以外や、このブラウザで読めない形式は、黙って無視せずに知らせる
+                    if (!isAudioFileName(file.name)) { rejected.push(file.name); continue; }
+                    try {
+                        await engine.addClipFromFile(track.id, file, dropSec);
+                        added.push(file.name);
+                    } catch {
+                        failed.push(file.name);
+                    }
                 }
                 this.render(pianoRoll);
                 if (this.onStatus) {
-                    if (rejected.length > 0) this.onStatus(`WAV 以外のファイルは追加できません: ${rejected.join('、')}。WAV に変換してから追加してください`, 'error');
+                    if (rejected.length > 0) this.onStatus(`音声ではないファイルは追加できません: ${rejected.join('、')}。WAV・MP3・FLAC などの音声ファイルを追加してください`, 'error');
+                    else if (failed.length > 0) this.onStatus(`${failed.join('、')} を読み込めませんでした。WAV に変換してから追加してください`, 'error');
                     else if (added.length > 0) this.onStatus(`${added.join('、')} を「${track.name}」に追加しました`);
                 }
                 if (added.length > 0 && this.onTracksChanged) this.onTracksChanged();
@@ -677,8 +797,11 @@ class TimelineEngine {
             const el = this.draggingClip.element, parent = el.parentElement;
             let x = e.clientX - parent.getBoundingClientRect().left - this.dragOffsetX;
             x = Math.max(0, x);
-            const beatPx = (60 / engine.bpm) * this.pixelsPerSecond;
-            el.style.left = Math.round(x / beatPx) * beatPx + 'px';
+            // 拍の線 (1 小節目の位置から数えた拍) に吸い付ける
+            const beatPx = (60 / engine.bpm) * this.pixelsPerSecond, originPx = engine.gridOffset * this.pixelsPerSecond;
+            let snapped = originPx + Math.round((x - originPx) / beatPx) * beatPx;
+            if (snapped < 0) snapped += beatPx * Math.ceil(-snapped / beatPx);
+            el.style.left = snapped + 'px';
         });
         document.addEventListener('mouseup', () => {
             if (!this.draggingClip) return;
@@ -699,6 +822,7 @@ class TimelineEngine {
  */
 // ---- SeekBar コンポーネント ----
 function SeekBar() {
+    const { followPlayhead, setFollowPlayhead, setHint } = useDaw();
     const [seekVal, setSeekVal] = useState(0);
     const [curTime, setCurTime] = useState('0:00.0');
     const [totalTime, setTotalTime] = useState('0:00.0');
@@ -722,10 +846,7 @@ function SeekBar() {
     const finishSeek = (e) => {
         if (!isSeeking.current) return; isSeeking.current = false;
         const dur = engine.getTotalDuration(); if (dur <= 0) return;
-        const seekTo = (Number(e.currentTarget.value) / 100) * dur, wasPlaying = engine.isPlaying, wasSolo = engine.soloTrackId;
-        if (wasPlaying) engine.stop();
-        engine.playOffset = seekTo;
-        if (wasPlaying) { if (wasSolo != null) engine.playSingleTrack(wasSolo); else engine.play(); }
+        engine.seek((Number(e.currentTarget.value) / 100) * dur);
     };
 
     return (
@@ -738,6 +859,36 @@ function SeekBar() {
                 // (確定しないと、移動されないうえに、以後つまみが再生位置を追わなくなる)
                 onKeyUp={finishSeek} onBlur={finishSeek} />
             <span id="seek-time-total">{totalTime}</span>
+            <label id="follow-playhead" onMouseEnter={() => setHint('再生中に、再生位置が見えるようにタイムラインとピアノロールを自動でスクロールします')}
+                onMouseLeave={() => setHint('')}>
+                <input type="checkbox" checked={followPlayhead} onChange={(e) => setFollowPlayhead(e.target.checked)} />
+                再生位置を追う
+            </label>
+        </div>
+    );
+}
+
+/**
+ * トラックが 1 本も無いときに、タイムラインの場所に出す案内。
+ * 主な操作は「曲を取り込んで始める」(学ぶ流れ)。曲を使わずに作るなら「自由に作る」で空のトラックを作る。
+ */
+function EmptyState() {
+    const { openSongPicker, openLearn } = useDaw();
+    const { startFree } = useLearnActions();
+    return (
+        <div id="empty-state" role="region" aria-label="はじめに">
+            <h2>曲を取り込んで、自分で再現してみましょう</h2>
+            <p>
+                取り込んだ曲を解析してカルテを作り、パートに分けたお手本を見ながら、ピアノロールに自分で打ち込みます。
+                最後に差分チェックで、お手本との違いを確かめます。
+            </p>
+            <div className="empty-actions">
+                <button type="button" className="action-btn primary" onClick={() => { openLearn('song'); openSongPicker(); }}>
+                    曲を取り込んで始める
+                </button>
+                <button type="button" className="action-btn secondary" onClick={startFree}>自由に作る</button>
+            </div>
+            <p className="empty-note">MP3・WAV・FLAC・M4A などの曲のファイルを選びます。「自由に作る」は、空のトラックを 1 本作ります。</p>
         </div>
     );
 }
@@ -758,7 +909,12 @@ function SeekBar() {
  */
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
-    const { setStatus, bumpTracks, pianoRollRef, timelineRef, trackVersion, bpm, beatsPerBar } = useDaw();
+    const { setStatus, bumpTracks, pianoRollRef, timelineRef, trackVersion, bpm, beatsPerBar, gridOffset, followPlayhead } = useDaw();
+    const { practicePart } = useLearnActions();
+    // タイムラインの「練習する」は、初期化のときに 1 回だけ渡すので、最新の関数を ref で引く
+    const practiceRef = useRef(practicePart);
+    const followRef = useRef(followPlayhead);
+    useEffect(() => { practiceRef.current = practicePart; followRef.current = followPlayhead; }, [practicePart, followPlayhead]);
     const [activeTrackName, setActiveTrackName] = useState(null);
     const [activeTrackId, setActiveTrackId] = useState(null);
     // ピアノロールの高さ (px)。境目を動かすまでは null で、CSS の既定の高さになる
@@ -790,6 +946,7 @@ export default function CenterArea() {
             setActiveTrackName(track ? track.name : null);
             setActiveTrackId(track ? track.id : null);
         };
+        pr.onNotesChanged = bumpTracks;
         pianoRollRef.current = pr;
 
         // Timeline 初期化
@@ -797,26 +954,49 @@ export default function CenterArea() {
         tl.init({ container: tracksContainerRef.current, headerCanvas: headerCanvasRef.current, scroller: timelineAreaRef.current });
         tl.onStatus = setStatus;
         tl.onTracksChanged = bumpTracks;
+        tl.onPractice = (trackId) => practiceRef.current(trackId);
         tl._pianoRoll = pr;
         timelineRef.current = tl;
 
-        // 初期トラック。開発モード (React の StrictMode) ではこの effect が 2 回走るので、
-        // すでにトラックが在れば足さない (足すと 4 本になる)
-        if (engine.tracks.length === 0) {
-            engine.addTrack('Track 1');
-            engine.addTrack('Track 2');
-        }
+        // 起動したときはトラックを作らない。空の状態の案内 (EmptyState) から、曲を取り込むか、自由に作る
         tl.render(pr);
         bumpTracks();
 
-        setStatus('準備完了 — トラック名をクリックすると、ピアノロールが開きます');
+        setStatus('準備完了 — 「曲を取り込んで始める」から始めます');
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // 再生位置の線。再生中だけ毎フレーム (requestAnimationFrame) 動かす。止まっているあいだは、
+    // 軽い見回り (200ms ごと) で、シークなどで位置が変わったときと、再生が始まったときを拾う
+    useEffect(() => {
+        let frame = 0, last = -1;
+        const draw = () => {
+            const t = engine.getCurrentTime();
+            timelineRef.current?.setPlayhead(t);
+            pianoRollRef.current?.setPlayhead(t);
+            if (engine.isPlaying && followRef.current) {
+                timelineRef.current?.followPlayhead(t);
+                pianoRollRef.current?.followPlayhead(t);
+            }
+            last = t;
+        };
+        const loop = () => {
+            draw();
+            frame = engine.isPlaying ? requestAnimationFrame(loop) : 0;
+        };
+        const watch = setInterval(() => {
+            if (engine.isPlaying) { if (!frame) frame = requestAnimationFrame(loop); }
+            else if (engine.getCurrentTime() !== last) draw();
+        }, 200);
+        draw();
+        return () => { clearInterval(watch); cancelAnimationFrame(frame); };
+    }, [timelineRef, pianoRollRef]);
 
     // trackVersion が変わるたびにタイムラインを再描画
     useEffect(() => {
         const tl = timelineRef.current;
         const pr = pianoRollRef.current;
-        if (tl) tl.render(pr);
+        if (tl) { tl.render(pr); tl.setPlayhead(engine.getCurrentTime()); }
+        pr?.setPlayhead(engine.getCurrentTime());
     }, [trackVersion, timelineRef, pianoRollRef]);
 
     // テンポか拍子が変わったら、拍と小節の線を描き直す (小節番号の段、ピアノロール)。
@@ -824,8 +1004,8 @@ export default function CenterArea() {
     useEffect(() => {
         timelineRef.current?._drawHeader();
         const pr = pianoRollRef.current;
-        if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); }
-    }, [bpm, beatsPerBar, timelineRef, pianoRollRef]);
+        if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); pr.setPlayhead(engine.getCurrentTime()); }
+    }, [bpm, beatsPerBar, gridOffset, timelineRef, pianoRollRef]);
 
     const handleAddTrack = useCallback(() => {
         const t = engine.addTrack();
@@ -901,11 +1081,12 @@ export default function CenterArea() {
             <div id="timeline-area" ref={timelineAreaRef}>
                 {/* 見出しと小節番号の段は、スクロールしても枠の上端・左端に留める */}
                 <div id="timeline-top">
-                    <div className="area-label">タイムライン <span className="area-hint">（WAV ファイルをドロップして追加 / クリップをドラッグで移動 / 右クリックで削除）</span></div>
+                    <div className="area-label">タイムライン <span className="area-hint">（音声ファイルをドロップして追加 / クリップをドラッグで移動 / 右クリックで削除）</span></div>
                     <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
                 </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
-                <button id="btn-add-track" onClick={handleAddTrack}>+ トラック追加</button>
+                {engine.tracks.length === 0 && <EmptyState />}
+                <button id="btn-add-track" onClick={handleAddTrack} hidden={engine.tracks.length === 0}>+ トラック追加</button>
                 <SeekBar />
             </div>
 

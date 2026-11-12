@@ -36,7 +36,7 @@ const TIME_SIGNATURES = [
 export default function GridEditor() {
     const {
         chart, chartId, chartPeaks, showGridEditor, setShowGridEditor,
-        setChartResult, setStatus, setBpm, setBeatsPerBar, withProgress,
+        setChartResult, setStatus, applyChartGrid, withProgress,
     } = useDaw();
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -176,15 +176,17 @@ export default function GridEditor() {
 
             const result: ChartResponse = await resp.json();
             setChartResult(result);
-            // DAW 本体のテンポ・拍子もカルテに合わせる
-            setBpm(Math.round(result.chart.grid.bpm));
-            setBeatsPerBar(result.chart.grid.time_signature[0]);
-            setStatus(`グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`);
+            // DAW 本体のテンポ・拍子・1 小節目の位置もカルテに合わせる (カルテとピアノロールの小節番号をそろえる)。
+            // パートに分けた後は合わせない。お手本は分けたときのグリッドに載っているので、変えると原曲とずれる
+            const applied = applyChartGrid(result.chart);
+            setStatus(applied
+                ? `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`
+                : `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）。お手本は直す前のグリッドで採譜したものなので、ピアノロールのテンポと小節の位置はそのままにしました。合わせるには、もう一度パートに分けてください`);
             setShowGridEditor(false);
         });
         setApplying(false);
     }, [chartId, localBpm, localOffset, localBeats, withProgress,
-        setChartResult, setBpm, setBeatsPerBar, setStatus, setShowGridEditor]);
+        setChartResult, applyChartGrid, setStatus, setShowGridEditor]);
 
     const open = showGridEditor && chart !== null;
     // 再計算の途中は閉じない (閉じると、結果がどうなったか分からなくなる)

@@ -5,7 +5,7 @@
  * プロジェクトを API で保存しておき、画面の「読み込む」で読み込む。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw } from './helpers';
+import { openDaw, openTab } from './helpers';
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 
@@ -73,7 +73,7 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
     // 打ち込み: E4 を抜かし、12 小節目の E4 を F4 に間違えている
     await saveProject(request, [note('C', 4, 0), note('G', 4, 8), note('C', 5, 16), note('F', 4, 176)]);
     await loadProject(page);
-    await page.locator('#panel-tabs').getByText('カルテ').click();
+    await openTab(page, '差分');
 
     const coach = page.locator('#coach-panel');
     await coach.getByRole('button', { name: 'お手本と比べる' }).click();
@@ -90,6 +90,13 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
     expect(scrollLeft).toBeLessThanOrEqual(176 * 20);
     expect(scrollLeft + view).toBeGreaterThan(176 * 20);
     expect(scrollLeft).toBeGreaterThan(0);
+    // 縦も、その音の高さ (F4) まで動いている
+    const wrap = (await page.locator('#piano-grid-wrap').boundingBox())!;
+    const f4 = (await page.locator('#note-layer .note-block[title^="F4 "]').boundingBox())!;
+    expect(f4.y).toBeGreaterThanOrEqual(wrap.y);
+    expect(f4.y + f4.height).toBeLessThanOrEqual(wrap.y + wrap.height);
+    // 再生位置も、その小節 (12 小節目の頭 = 22 秒) へ移る
+    await expect(page.locator('#time-display')).toHaveText('0:22.0');
 });
 
 test('以前の版が保存した、オートメーションのデータを含むプロジェクトも、そのまま読み込める', async ({ page, request }) => {

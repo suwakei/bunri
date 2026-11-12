@@ -4,16 +4,17 @@
  * お手本（原曲を採譜した時点のノート）を、ピアノロールに薄く重ねて見せる。
  * お手本を見ながら自分で打ち込み、「差分チェック」で比べる、という流れのためのもの。
  *
- * - 既定では、いま開いているトラックがお手本を持っていれば、それを重ねる
+ * - 既定では、いま開いているトラックがお手本を持っていれば、それを重ねる。
+ *   練習のトラック（「このパートを練習する」で作ったもの）なら、そのパートのお手本を重ねる
  * - 自分で一から打ち込むトラック（お手本を持たない）では、お手本にするトラックを選ぶ
  * - お手本を持つトラックが 1 本も無いときは、何も出さない
+ *
+ * 重ね方は全体の状態（`ghostChoice`）に置いてある。「このパートを練習する」が既定に戻すため。
  */
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-
-/** 重ね方。auto: 開いているトラック自身のお手本 / off: 重ねない / 数値: そのトラックのお手本 */
-type Choice = 'auto' | 'off' | number;
+import { referenceTrackFor } from '../lib/learn';
 
 const controlStyle = {
     fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
@@ -28,13 +29,14 @@ const controlStyle = {
  */
 export default function GhostBar({ activeTrackId }: { activeTrackId: number | null }) {
     // trackVersion を読んでおくと、トラックやお手本が増減したときに描き直される
-    const { pianoRollRef, trackVersion } = useDaw();
-    const [choice, setChoice] = useState<Choice>('auto');
+    const { pianoRollRef, trackVersion, ghostChoice: choice, setGhostChoice: setChoice } = useDaw();
 
     const withReference = engine.tracks.filter((t) => t.referenceNotes && t.referenceNotes.length > 0);
     const source = choice === 'off'
         ? undefined
-        : withReference.find((t) => t.id === (choice === 'auto' ? activeTrackId : choice));
+        : choice === 'auto'
+            ? referenceTrackFor(activeTrackId !== null ? engine.getTrack(activeTrackId) : undefined)
+            : withReference.find((t) => t.id === choice);
 
     // 選んだお手本を、ピアノロールに渡す
     useEffect(() => {

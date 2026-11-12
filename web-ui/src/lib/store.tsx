@@ -2,15 +2,51 @@
  * bunri DAW — グローバル状態管理（React Context ベース）
  */
 import { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
-import engine from './engine';
+import engine, { type PianoNote } from './engine';
 import { describeError } from './api';
 import type { ChartResponse, Glossary, SongChart, WaveformPeaks } from './chart';
+import type { DiffResult } from './coach';
+import { gridFromChart, roundBpm, secToStep, stepToSec } from './grid';
+import { LEFT_WIDTH_DEFAULT, LEFT_WIDTH_MAX, LEFT_WIDTH_MIN, readStored, writeStored } from './storage';
 
 /** ステータスバーの文の種類。`error` は失敗の知らせで、色を変えて読み上げの対象にする。 */
 export type StatusKind = 'info' | 'error';
 
-/** 左パネルのタブの識別子。 */
-export type LeftTab = 'synth' | 'drum' | 'fx' | 'file' | 'chart';
+/** 左パネルのタブの識別子。学ぶ（取り込み → カルテ → ガイド → 差分チェック）/ 音作り / ファイル。 */
+export type LeftTab = 'learn' | 'sound' | 'file';
+
+/** 「学ぶ」タブの中の段。曲とパート / カルテ / 再現ガイド / 差分チェック。 */
+export type LearnTab = 'song' | 'chart' | 'guide' | 'coach';
+
+/** 「音作り」タブの中の段。 */
+export type SoundTab = 'synth' | 'drum' | 'fx';
+
+/** お手本の重ね方。auto: 開いているトラックのお手本（練習のトラックなら、そのパートのお手本）/ off / 数値: そのトラックのお手本 */
+export type GhostChoice = 'auto' | 'off' | number;
+
+/** 差分チェックで比べる組（お手本を持つトラックと、打ち込みのトラック）。null は「既定のもの」。 */
+export interface CoachPair {
+    referenceId: number | null;
+    attemptId: number | null;
+}
+
+/** 最後に比べた結果。どの組で比べたかも持つ（組を変えたら古い結果を出さないため）。 */
+export interface CoachResult {
+    referenceId: number;
+    attemptId: number;
+    result: DiffResult;
+}
+
+/**
+ * 移動の行き先。秒かステップのどちらかで指す（両方あれば秒を使う）。
+ * `pitch` を付けると、ピアノロールをその高さまで縦にも動かす。
+ */
+export interface JumpTarget {
+    sec?: number;
+    step?: number;
+    pitch?: Pick<PianoNote, 'note' | 'octave'>;
+}
+
 
 /**
  * DAW グローバル状態のコンテキスト型定義。
@@ -84,6 +120,66 @@ export interface DawContextType {
     leftTab: LeftTab;
     /** @param tab - 開くタブ。解析が終わったときにカルテを開く、といった画面の側からの切り替えにも使う */
     setLeftTab: (tab: LeftTab) => void;
+    /** 「学ぶ」タブの中で開いている段 */
+    learnTab: LearnTab;
+    /** @param tab - 開く段（「学ぶ」タブそのものは開かない。両方なら `openLearn`） */
+    setLearnTab: (tab: LearnTab) => void;
+    /** 「学ぶ」タブを開き、その中の段を開く。進み具合の段階を押したとき、解析が終わったときに使う */
+    openLearn: (tab: LearnTab) => void;
+    /** 「音作り」タブの中で開いている段 */
+    soundTab: SoundTab;
+    /** @param tab - 開く段 */
+    setSoundTab: (tab: SoundTab) => void;
+    /** 左パネルの幅（px）。利用者が境目を動かして変えられる。この画面を開いた人ごとに覚える */
+    leftWidth: number;
+    /** @param px - 新しい幅。範囲（LEFT_WIDTH_MIN〜MAX）に収める */
+    setLeftWidth: (px: number) => void;
+
+    /** 1 小節目の 1 拍目の位置（秒）。ピアノロールのステップ 0（lib/grid.ts） */
+    gridOffset: number;
+    /** @param sec - 新しい位置（秒）。再生エンジンにも反映する */
+    setGridOffset: (sec: number) => void;
+    /**
+     * カルテのグリッド（テンポ・拍子・1 小節目の位置）をプロジェクトに当てる。
+     * お手本（パート分離で採譜したノート）が在るときは当てない。お手本は採譜したときのグリッドに
+     * 載っているので、グリッドだけ変えると原曲の音とずれるため。
+     * パートに分け直す直前は `force` で当てる（お手本は作り直すので、ずれない）。
+     * @returns 当てたら true
+     */
+    applyChartGrid: (chart: SongChart, options?: { force?: boolean }) => boolean;
+    /** 取り込んだ原曲のファイル。パートに分けるときに、もう一度送る */
+    songFile: File | null;
+    /** @param file - 取り込んだファイル */
+    setSongFile: (file: File | null) => void;
+    /** 曲を取り込むとき、テンポを自動で検出するか（false なら、いまの BPM で解析する） */
+    autoBpm: boolean;
+    /** @param v - true で自動で検出する */
+    setAutoBpm: (v: boolean) => void;
+    /** 原曲のファイルを選ぶ欄（画面に 1 つだけ。DawPage の SongPicker）。押すとファイルの選択が開く */
+    songPickerRef: React.MutableRefObject<HTMLInputElement | null>;
+    /** 原曲のファイルの選択を開く */
+    openSongPicker: () => void;
+    /** お手本の重ね方（ピアノロールの見出しの「お手本を重ねる」） */
+    ghostChoice: GhostChoice;
+    /** @param choice - 新しい重ね方 */
+    setGhostChoice: (choice: GhostChoice) => void;
+    /** 差分チェックで比べる組 */
+    coachPair: CoachPair;
+    /** @param pair - 新しい組。結果は消す（別の組の結果を出さないため） */
+    setCoachPair: (pair: CoachPair) => void;
+    /** 最後に比べた結果。まだ比べていなければ null */
+    coachResult: CoachResult | null;
+    /** @param result - 比べた結果 */
+    setCoachResult: (result: CoachResult | null) => void;
+    /**
+     * 再生位置を移し、タイムラインとピアノロールをそこまでスクロールする。
+     * カルテのコード・構成、ガイドの小節、差分チェックの指摘から使う。
+     */
+    jumpTo: (target: JumpTarget) => void;
+    /** 再生中に、再生位置が見えるようにタイムラインとピアノロールを自動でスクロールするか */
+    followPlayhead: boolean;
+    /** @param v - true で自動でスクロールする */
+    setFollowPlayhead: (v: boolean) => void;
 
     /** 現在読み込まれている楽曲カルテ。未解析なら null */
     chart: SongChart | null;
@@ -121,9 +217,24 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const [progressCount, setProgressCount] = useState(0);
     // 初めて開いたときに案内を出す。使い方の画面からは `/?guide=1` で、もう一度出せる
     const [showGuide, setShowGuide] = useState(
-        () => !localStorage.getItem('bunri-guide-seen') || new URLSearchParams(window.location.search).has('guide'),
+        () => !readStored('bunri-guide-seen') || new URLSearchParams(window.location.search).has('guide'),
     );
-    const [leftTab, setLeftTab] = useState<LeftTab>('synth');
+    // 起動したときは「学ぶ」タブ。曲を取り込むところから始める
+    const [leftTab, setLeftTab] = useState<LeftTab>('learn');
+    const [learnTab, setLearnTab] = useState<LearnTab>('song');
+    const [soundTab, setSoundTab] = useState<SoundTab>('synth');
+    const [leftWidth, setLeftWidthState] = useState(() => {
+        const stored = Number(readStored('bunri-left-width'));
+        return Number.isFinite(stored) && stored >= LEFT_WIDTH_MIN && stored <= LEFT_WIDTH_MAX ? stored : LEFT_WIDTH_DEFAULT;
+    });
+    const [gridOffset, setGridOffsetState] = useState(0);
+    const [songFile, setSongFile] = useState<File | null>(null);
+    const songPickerRef = useRef<HTMLInputElement | null>(null);
+    const [autoBpm, setAutoBpm] = useState(true);
+    const [ghostChoice, setGhostChoice] = useState<GhostChoice>('auto');
+    const [coachPair, setCoachPairState] = useState<CoachPair>({ referenceId: null, attemptId: null });
+    const [coachResult, setCoachResult] = useState<CoachResult | null>(null);
+    const [followPlayhead, setFollowPlayheadState] = useState(() => readStored('bunri-follow-playhead') !== '0');
     const [bpm, setBpmState] = useState(120);
     const [beatsPerBar, setBeatsPerBarState] = useState(4);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -160,10 +271,18 @@ export function DawProvider({ children }: { children: ReactNode }) {
         setChartPeaks(null);
     }, []);
 
+    // テンポは小数も持つ (カルテの実測のテンポ。整数に丸めると、長い曲の後ろで拍がずれる)
     const setBpm = useCallback((v: string | number) => {
-        const val = parseInt(String(v)) || 120;
+        const parsed = parseFloat(String(v));
+        const val = Number.isFinite(parsed) && parsed > 0 ? roundBpm(parsed) : 120;
         setBpmState(val);
         engine.bpm = val;
+    }, []);
+
+    const setGridOffset = useCallback((sec: number) => {
+        const val = Number.isFinite(sec) && sec > 0 ? Math.round(sec * 10000) / 10000 : 0;
+        setGridOffsetState(val);
+        engine.gridOffset = val;
     }, []);
 
     const setBeatsPerBar = useCallback((v: string | number) => {
@@ -186,7 +305,54 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const closeGuide = useCallback(() => {
         setShowGuide(false);
-        localStorage.setItem('bunri-guide-seen', '1');
+        writeStored('bunri-guide-seen', '1');
+    }, []);
+
+    const openLearn = useCallback((tab: LearnTab) => {
+        setLeftTab('learn');
+        setLearnTab(tab);
+    }, []);
+
+    const setLeftWidth = useCallback((px: number) => {
+        const val = Math.round(Math.max(LEFT_WIDTH_MIN, Math.min(LEFT_WIDTH_MAX, px)));
+        setLeftWidthState(val);
+        writeStored('bunri-left-width', String(val));
+    }, []);
+
+    const applyChartGrid = useCallback((target: SongChart, options: { force?: boolean } = {}) => {
+        // お手本はパート分離のときのグリッドに載っている。グリッドを変えると原曲とずれるので変えない
+        if (!options.force && engine.tracks.some(t => t.role === 'part')) return false;
+        const grid = gridFromChart(target);
+        setBpm(grid.bpm);
+        setBeatsPerBarState(grid.beatsPerBar);
+        engine.beatsPerBar = grid.beatsPerBar;
+        setGridOffset(grid.offsetSec);
+        return true;
+    }, [setBpm, setGridOffset]);
+
+    const openSongPicker = useCallback(() => songPickerRef.current?.click(), []);
+
+    const setCoachPair = useCallback((pair: CoachPair) => {
+        setCoachPairState(pair);
+        setCoachResult(null);
+    }, []);
+
+    const setFollowPlayhead = useCallback((v: boolean) => {
+        setFollowPlayheadState(v);
+        writeStored('bunri-follow-playhead', v ? '1' : '0');
+    }, []);
+
+    const jumpTo = useCallback((target: JumpTarget) => {
+        const grid = engine.grid;
+        const sec = target.sec ?? (target.step !== undefined ? stepToSec(target.step, grid) : null);
+        if (sec === null) return;
+        engine.seek(sec);
+        timelineRef.current?.scrollToTime?.(sec);
+        const pr = pianoRollRef.current;
+        if (pr) {
+            pr.scrollToStep(target.step ?? Math.max(0, secToStep(sec, grid)));
+            if (target.pitch) pr.scrollToPitch?.(target.pitch.note, target.pitch.octave);
+        }
     }, []);
 
     const value: DawContextType = {
@@ -201,7 +367,13 @@ export function DawProvider({ children }: { children: ReactNode }) {
         metronomeEnabled, setMetronomeEnabled,
         trackVersion, bumpTracks,
         pianoRollRef, timelineRef,
-        leftTab, setLeftTab,
+        leftTab, setLeftTab, learnTab, setLearnTab, openLearn, soundTab, setSoundTab,
+        leftWidth, setLeftWidth,
+        gridOffset, setGridOffset, applyChartGrid,
+        songFile, setSongFile, autoBpm, setAutoBpm, songPickerRef, openSongPicker,
+        ghostChoice, setGhostChoice,
+        coachPair, setCoachPair, coachResult, setCoachResult,
+        jumpTo, followPlayhead, setFollowPlayhead,
         chart, chartId, chartPeaks, glossary,
         setChartResult, clearChart,
         showGridEditor, setShowGridEditor,
