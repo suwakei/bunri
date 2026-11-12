@@ -34,6 +34,11 @@ def _soundfile_save(filepath, src, sample_rate, **kwargs):
 
 torchaudio.save = _soundfile_save
 
+# API サーバから起動されたときだけ、進み具合を親に伝え、親が居なくなったら終わるようにする
+import demucs_progress  # noqa: E402
+
+demucs_progress.setup_child()
+
 from demucs.separate import main  # noqa: E402
 
 main()

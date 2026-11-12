@@ -23,6 +23,11 @@ app = FastAPI(title="bunri DAW API")
 import access_control
 access_control.install_from_env(app)
 
+# 時間のかかる処理はジョブとして動かす（進み具合の確認とキャンセルのため。docs/jobs.md）
+from fastapi import Query
+from web import job_routes
+app.include_router(job_routes.router)
+
 # データ置き場（uploads/ results/ projects/）は audio_utils が決める。
 # 置き場は環境変数 BUNRI_DATA_DIR で差し替えられるので、定数に固めず都度引く。
 
@@ -586,6 +591,7 @@ async def api_analyze(
     bpm: float = Form(120),
     sensitivity: float = Form(0.5),
     engine: str = Form("basic_pitch"),
+    run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを解析してピアノロール用ノートデータを返す。
 
@@ -594,30 +600,65 @@ async def api_analyze(
         bpm: プロジェクトの BPM（ノートのステップ計算に使用）。
         sensitivity: ノート検出感度（0.0〜1.0）。高いほど微弱な音も検出する。
         engine: 解析エンジン（``"basic_pitch"`` または ``"pyin"``）。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         ノートデータのリスト（JSON）。各要素は
         ``{"note": str, "octave": int, "step": int, "length": int}`` の形式。
+        ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 解析処理中に例外が発生した場合（HTTP 500）。
     """
-    from analyze import analyze_wav
-    src = _save_upload(file)
-    try:
-        notes = analyze_wav(str(src), bpm=bpm, sensitivity=sensitivity, engine=engine)
-        return JSONResponse(notes)
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    def task(job, src):
+        from analyze import analyze_wav
+        # 採譜はひとまとまりの処理で、途中の進み具合は取れず、途中で止めることもできない
+        job.enter_stage("transcribe")
+        return analyze_wav(str(src), bpm=bpm, sensitivity=sensitivity, engine=engine)
+
+    return await job_routes.dispatch(
+        "analyze", title="採譜", filename=file.filename,
+        stages=[("transcribe", "音を音符にしています")],
+        prepare=lambda: _save_upload(file), task=task, run_async=run_async,
+    )
 
 
 # ---- 音源分離 API ----
+
+def _stem_links(job, paths: dict, prefix: str, filename: str) -> dict:
+    """分離したステムを results/ 直下に置き、ダウンロードリンクの辞書にする（可変数ステム）。
+
+    Args:
+        job: 動かしているジョブ。失敗・キャンセルのときに、置いたファイルを消してもらう。
+        paths: ステム名をキー、分離結果のファイルパスを値とする辞書。
+        prefix: 置くファイル名の頭（``"sep"`` / ``"deep"``）。
+        filename: アップロードされたファイル名。
+
+    Returns:
+        ステム名をキー、``{"url": str, "label": str}`` を値とする辞書。
+    """
+    from separate import STEM_LABELS
+
+    result = {}
+    for key, p in paths.items():
+        p = Path(p)
+        if p.exists():
+            dst = results_dir() / f"{prefix}_{key}_{filename}"
+            job.remove_on_abort(dst)
+            shutil.copy2(str(p), str(dst))
+            result[key] = {
+                "url": f"/api/download/{dst.name}",
+                "label": STEM_LABELS.get(key, key),
+            }
+    return result
+
 
 @app.post("/api/separate")
 async def api_separate(
     file: UploadFile = File(...),
     model: str = Form("htdemucs"),
     two_stems: str = Form("true"),
+    run_async: bool = Query(False, alias="async"),
 ):
     """Demucs で音源を分離してダウンロードリンクを返す。
 
@@ -626,42 +667,38 @@ async def api_separate(
         model: Demucs モデル名（例: ``"htdemucs"``）。
         two_stems: ``"true"`` でボーカル/伴奏の2ステム分離、
             ``"false"`` で4ステム（vocals/drums/bass/other）分離。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+        ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
     """
-    from separate import separate_audio, STEM_LABELS
-    src = _save_upload(file)
-    out_dir = str(results_dir() / "separated")
+    from separate import SEPARATE_STAGES
+    filename = file.filename
     is_two_stems = two_stems.lower() in ("true", "1", "yes")
-    try:
+
+    def task(job, src):
+        from separate import separate_audio
         paths = separate_audio(
-            str(src), output_dir=out_dir, model=model,
-            two_stems=is_two_stems, segment=7, jobs=1,
+            str(src), output_dir=str(results_dir() / "separated"), model=model,
+            two_stems=is_two_stems, segment=7, jobs=1, job=job,
         )
-        # 結果ファイルをJSON + ダウンロードリンクで返す（可変数ステム）
-        result = {}
-        for key, p in paths.items():
-            p = Path(p)
-            if p.exists():
-                dst = results_dir() / f"sep_{key}_{file.filename}"
-                shutil.copy2(str(p), str(dst))
-                result[key] = {
-                    "url": f"/api/download/{dst.name}",
-                    "label": STEM_LABELS.get(key, key),
-                }
-        return JSONResponse(result)
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        return _stem_links(job, paths, "sep", filename)
+
+    return await job_routes.dispatch(
+        "separate", title="音源分離", filename=filename, stages=SEPARATE_STAGES,
+        prepare=lambda: _save_upload(file), task=task, run_async=run_async,
+    )
 
 
 @app.post("/api/deep-separate")
 async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
+    run_async: bool = Query(False, alias="async"),
 ):
     """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
 
@@ -670,34 +707,32 @@ async def api_deep_separate(
     Args:
         file: 分離対象の音声ファイル（マルチパートアップロード）。
         depth: 再帰分離の深さ（1 = 追加再分離なし）。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         ステム名をキー、``{"url": str, "label": str}`` を値とする辞書（JSON）。
+        ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
     """
-    from separate import deep_separate, STEM_LABELS
-    src = _save_upload(file)
-    out_dir = str(results_dir() / "separated")
-    try:
+    from separate import DEEP_SEPARATE_STAGES
+    filename = file.filename
+    # 再分離をしないなら、そのステージは並びに入れない
+    stages = [s for s in DEEP_SEPARATE_STAGES if int(depth) > 0 or s[0] != "separate_other"]
+
+    def task(job, src):
+        from separate import deep_separate
         paths = deep_separate(
-            str(src), output_dir=out_dir,
-            segment=7, jobs=1, recursive_depth=int(depth),
+            str(src), output_dir=str(results_dir() / "separated"),
+            segment=7, jobs=1, recursive_depth=int(depth), job=job,
         )
-        result = {}
-        for key, p in paths.items():
-            p = Path(p)
-            if p.exists():
-                dst = results_dir() / f"deep_{key}_{file.filename}"
-                shutil.copy2(str(p), str(dst))
-                result[key] = {
-                    "url": f"/api/download/{dst.name}",
-                    "label": STEM_LABELS.get(key, key),
-                }
-        return JSONResponse(result)
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        return _stem_links(job, paths, "deep", filename)
+
+    return await job_routes.dispatch(
+        "deep_separate", title="詳細な音源分離", filename=filename, stages=stages,
+        prepare=lambda: _save_upload(file), task=task, run_async=run_async,
+    )
 
 
 @app.post("/api/deep-analyze")
@@ -909,6 +944,7 @@ async def api_decompose(
     file: UploadFile = File(...),
     bpm: int = Form(0),
     sensitivity: float = Form(0.5),
+    run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
 
@@ -916,39 +952,46 @@ async def api_decompose(
         file: 処理対象の音声ファイル（マルチパートアップロード）。
         bpm: プロジェクトの BPM。``0`` を指定すると自動検出する。
         sensitivity: ノート検出感度（0.0〜1.0）。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         分解結果の ``JSONResponse``。各ステムに ``audio_url`` と
         ノートデータ・楽器推定結果が含まれる。``audio_path`` は除去済み。
+        ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 処理中に例外が発生した場合（HTTP 500）。
     """
-    from decompose import decompose
+    from decompose import decompose_stages
 
-    src = _save_upload(file)
+    filename = file.filename
     detected_bpm = bpm if bpm > 0 else None
 
-    try:
+    def task(job, src):
+        from decompose import decompose
         result = decompose(
             str(src), bpm=detected_bpm, sensitivity=sensitivity,
-            segment=7, jobs=1,
+            segment=7, jobs=1, job=job,
         )
 
         # 音声ファイルのパスをダウンロードURLに変換
         for stem_name, stem_data in result["stems"].items():
             audio_path = Path(stem_data["audio_path"])
             if audio_path.exists():
-                dst_name = f"decompose_{stem_name}_{file.filename}"
+                dst_name = f"decompose_{stem_name}_{filename}"
                 dst = results_dir() / dst_name
-                import shutil
+                job.remove_on_abort(dst)
                 shutil.copy2(str(audio_path), str(dst))
                 stem_data["audio_url"] = f"/api/download/{dst_name}"
             del stem_data["audio_path"]
 
-        return JSONResponse(result)
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        return result
+
+    return await job_routes.dispatch(
+        "decompose", title="音源の分解", filename=filename,
+        stages=decompose_stages(detect_bpm=detected_bpm is None),
+        prepare=lambda: _save_upload(file), task=task, run_async=run_async,
+    )
 
 
 # ---- WAV最適化 API ----
@@ -1043,8 +1086,8 @@ def _chart_path(chart_id: str) -> Path:
     return path
 
 
-def _chart_response(chart: dict, chart_id: str, audio_path: Path) -> JSONResponse:
-    """カルテ・波形ピーク・用語辞書をまとめた API レスポンスを組み立てる。
+def _chart_payload(chart: dict, chart_id: str, audio_path: Path) -> dict:
+    """カルテ・波形ピーク・用語辞書をまとめた API レスポンスの中身を組み立てる。
 
     波形ピークと用語辞書はカルテ本体に含めない。カルテはプロンプトキャッシュの
     プレフィックスとしてバイト安定である必要があり、サイズも抑えたいため。
@@ -1055,17 +1098,24 @@ def _chart_response(chart: dict, chart_id: str, audio_path: Path) -> JSONRespons
         audio_path: 波形ピークを生成する元音声のパス。
 
     Returns:
-        ``{"chart_id", "chart", "peaks", "glossary"}`` を持つ ``JSONResponse``。
+        ``{"chart_id", "chart", "peaks", "glossary"}`` を持つ辞書。
     """
     import song_chart
     from music_theory import GLOSSARY
 
-    return JSONResponse({
+    return {
         "chart_id": chart_id,
         "chart": chart,
         "peaks": song_chart.waveform_peaks(str(audio_path)),
         "glossary": GLOSSARY,
-    })
+    }
+
+
+def _chart_stages() -> list:
+    """カルテを作るジョブのステージの並び（解析のステージ + 保存）を返す。"""
+    import song_chart
+
+    return list(song_chart.CHART_STAGES) + [("save", "カルテを保存しています")]
 
 
 @app.post("/api/chart")
@@ -1074,6 +1124,7 @@ async def api_chart(
     bpm: float = Form(0),
     downbeat_offset: float = Form(-1),
     beats_per_bar: int = Form(4),
+    run_async: bool = Query(False, alias="async"),
 ):
     """音声ファイルから楽曲カルテ（速報）を生成する。
 
@@ -1088,36 +1139,47 @@ async def api_chart(
         bpm: BPM の上書き値。``0`` なら自動検出。
         downbeat_offset: 1拍目の位置（秒）の上書き値。負値なら自動推定。
         beats_per_bar: 1小節あたりの拍数。拍子は自動検出せずユーザー指定を信頼する。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         ``{"chart_id": str, "chart": dict, "peaks": dict, "glossary": dict}``
-        形式の ``JSONResponse``。
+        形式の ``JSONResponse``。``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 解析に失敗した場合（HTTP 500）。
     """
-    import song_chart
-    import bunri_file
+    filename = file.filename
+    chart_id = Path(filename).stem or "chart"
 
-    src = _save_upload(file)
-    chart_id = Path(file.filename).stem or "chart"
+    def task(job, src):
+        import song_chart
+        import bunri_file
 
-    try:
-        chart = song_chart.build_chart(
-            str(src),
-            filename=file.filename,
-            bpm=bpm if bpm > 0 else None,
-            downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
-            beats_per_bar=beats_per_bar,
-        )
-        bunri_file.create(
-            _chart_path(chart_id), chart, audio_path=src, embed_audio=True,
-        )
-        return _chart_response(chart, chart_id, src)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"カルテの生成に失敗しました: {e}")
+        try:
+            chart = song_chart.build_chart(
+                str(src),
+                filename=filename,
+                bpm=bpm if bpm > 0 else None,
+                downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
+                beats_per_bar=beats_per_bar,
+                job=job,
+            )
+            job.enter_stage("save")
+            path = _chart_path(chart_id)
+            # 途中でやめたら、新しく作ったファイルは消す。前から在ったカルテを上書きした場合は消さない
+            if not path.exists():
+                job.remove_on_abort(path)
+            bunri_file.create(path, chart, audio_path=src, embed_audio=True)
+            return _chart_payload(chart, chart_id, src)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, f"カルテの生成に失敗しました: {e}")
+
+    return await job_routes.dispatch(
+        "chart", title="楽曲カルテの作成", filename=filename, stages=_chart_stages(),
+        prepare=lambda: _save_upload(file), task=task, run_async=run_async,
+    )
 
 
 @app.post("/api/chart/regrid")
@@ -1126,6 +1188,7 @@ async def api_chart_regrid(
     bpm: float = Form(...),
     downbeat_offset: float = Form(...),
     beats_per_bar: int = Form(4),
+    run_async: bool = Query(False, alias="async"),
 ):
     """グリッドを補正した値でカルテを再計算する。
 
@@ -1138,44 +1201,56 @@ async def api_chart_regrid(
         bpm: 補正後の BPM。
         downbeat_offset: 補正後の1拍目の位置（秒）。
         beats_per_bar: 1小節あたりの拍数。
+        run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
-        ``/api/chart`` と同じ形式の ``JSONResponse``。
+        ``/api/chart`` と同じ形式の ``JSONResponse``。``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: カルテが見つからない場合（HTTP 404）。
         HTTPException: `.bunri` に元音声が保存されていない場合（HTTP 400）。
         HTTPException: 再計算に失敗した場合（HTTP 500）。
     """
-    import song_chart
-    import bunri_file
-    from audio_utils import results_dir
+    def prepare():
+        path = _chart_path(chart_id)
+        if not path.exists():
+            raise HTTPException(404, "カルテが見つかりません")
+        return path
 
-    path = _chart_path(chart_id)
-    if not path.exists():
-        raise HTTPException(404, "カルテが見つかりません")
+    def task(job, path):
+        import song_chart
+        import bunri_file
+        from audio_utils import results_dir
 
-    try:
-        audio = bunri_file.extract_audio(path, results_dir("charts", "audio"))
-        if audio is None:
-            raise HTTPException(400, "このカルテには元音声が保存されていないため再計算できません")
+        try:
+            audio = bunri_file.extract_audio(path, results_dir("charts", "audio"))
+            if audio is None:
+                raise HTTPException(400, "このカルテには元音声が保存されていないため再計算できません")
 
-        previous = bunri_file.read_chart(path)
-        chart = song_chart.build_chart(
-            str(audio),
-            filename=(previous.get("source") or {}).get("filename"),
-            bpm=bpm if bpm > 0 else None,
-            downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
-            beats_per_bar=beats_per_bar,
-        )
-        bunri_file.update_chart(path, chart)
-        return _chart_response(chart, chart_id, audio)
-    except HTTPException:
-        raise
-    except bunri_file.BunriFileError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"カルテの再計算に失敗しました: {e}")
+            previous = bunri_file.read_chart(path)
+            chart = song_chart.build_chart(
+                str(audio),
+                filename=(previous.get("source") or {}).get("filename"),
+                bpm=bpm if bpm > 0 else None,
+                downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
+                beats_per_bar=beats_per_bar,
+                job=job,
+            )
+            # 保存は 1 回の書き込み。ここより前でやめれば、元のカルテはそのまま残る
+            job.enter_stage("save")
+            bunri_file.update_chart(path, chart)
+            return _chart_payload(chart, chart_id, audio)
+        except HTTPException:
+            raise
+        except bunri_file.BunriFileError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"カルテの再計算に失敗しました: {e}")
+
+    return await job_routes.dispatch(
+        "chart_regrid", title="カルテの再計算", filename=chart_id, stages=_chart_stages(),
+        prepare=prepare, task=task, run_async=run_async,
+    )
 
 
 @app.get("/api/settings/llm")
