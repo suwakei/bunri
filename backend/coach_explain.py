@@ -63,8 +63,8 @@ MIN_ISSUES = 3
 
 # 差分の種類の呼び名
 KIND_LABEL = {
-    "missing": "抜け", "pitch": "音の違い", "octave": "オクターブ違い",
-    "extra": "余分な音", "timing": "位置のずれ", "length": "長さの違い",
+    "missing": "抜け", "pitch": "高さの違い", "octave": "オクターブ違い",
+    "extra": "余分なノート", "timing": "位置のずれ", "length": "長さの違い",
 }
 
 COACH_SCHEMA = {
@@ -135,8 +135,8 @@ SYSTEM_PROMPT = """\
 
 facts の読み方:
 - issues は指摘の表で、columns が列の名前、rows の 1 行が 1 件の指摘です。kind は種類で、\
-missing は「抜け」（お手本に在る音が打ち込みに無い）、extra は「余分な音」（お手本に無い音が打ち込みに在る）、\
-pitch は「音の違い」（近い位置に、高さが 2 半音以内で違う音が在る）、octave は「オクターブ違い」、\
+missing は「抜け」（お手本に在るノートが打ち込みに無い）、extra は「余分なノート」（お手本に無いノートが打ち込みに在る）、\
+pitch は「高さの違い」（近い位置に、高さが 2 半音以内で違うノートが在る）、octave は「オクターブ違い」、\
 timing は「位置のずれ」（高さは合っている）、length は「長さの違い」。本文では、この日本語の呼び名を使います。
 - expected はお手本の音、actual は打ち込みの音。semitones は、打ち込みがお手本より何半音高いか\
 （負なら低い）。offset_steps は位置のずれ（正なら遅い）、length_diff は長さの違い（正なら長い）。\
@@ -169,7 +169,7 @@ bars に当てはまる小節を入れる。どの点にも、issue_ids か bars
 
 書く量について: 利用者は、DAW の横の細いパネルでこれを読みながら手を動かします。長い説明は読まれません。
 - summary は 2〜3 文。いちばん目立つ傾向を書く。件数を全部読み上げない。
-- points は 1〜3 個。直す効果が大きい順に並べる（基本は、抜けと音の違い → オクターブ違いと余分な音 → \
+- points は 1〜3 個。直す効果が大きい順に並べる（基本は、抜けと高さの違い → オクターブ違いと余分なノート → \
 位置のずれと長さの違い。件数の偏りが大きければ、多いものを先にする）。原因が同じ指摘は 1 つの点に\
 まとめる。指摘を 1 件ずつ読み上げない（一覧は画面に別に出ている）。
 - observation・cause・fix は、それぞれ 1〜2 文。
@@ -524,8 +524,8 @@ def _plain_summary(facts):
     """件数から、決まった型の要約文を作る（LLM ではない）。"""
     summary = facts["summary"]
     counts = "、".join(f"{KIND_LABEL[kind]} {summary[kind]}" for kind in coach_diff.KINDS if summary[kind])
-    text = (f"お手本 {summary['reference_count']} 音のうち、{summary['accuracy_percent']}% が"
-            "高さと位置の合っている音です。")
+    text = (f"お手本 {summary['reference_count']} ノートのうち、{summary['accuracy_percent']}% が"
+            "高さと位置の合っているノートです。")
     return text + (f"お手本との違いは {facts['issues']['total']} か所です（{counts}）。" if counts else "")
 
 
@@ -551,17 +551,17 @@ def rule_response(facts):
     first_bar = facts["worst_bars"][0] if facts["worst_bars"] else None
     if total == 0:
         return "no_diff", _explanation(
-            f"お手本 {summary['reference_count']} 音と、高さ・位置・長さがすべて合っています。",
+            f"お手本 {summary['reference_count']} ノートと、高さ・位置・長さがすべて合っています。",
             "お手本と違う箇所はありません。お手本は自動採譜の結果なので、原曲と聴き比べて、"
             "お手本そのものが曲と合っているかを確かめてください。")
     if summary["attempt_count"] == 0:
         return "no_attempt", _explanation(
-            f"打ち込みがまだありません（お手本は {summary['reference_count']} 音）。",
-            "ピアノロールでお手本を重ねて表示し、お手本の音が在る最初の小節から打ち込んでください。",
+            f"打ち込みがまだありません（お手本は {summary['reference_count']} ノート）。",
+            "ピアノロールでお手本を重ねて表示し、お手本のノートが在る最初の小節から打ち込んでください。",
             facts["bars"]["rows"][0][0] if facts["bars"]["rows"] else None)
     if summary["reference_count"] < MIN_REFERENCE_NOTES:
         return "few_notes", _explanation(
-            f"お手本が {summary['reference_count']} 音だけなので、傾向を言える量がありません。" + _plain_summary(facts),
+            f"お手本が {summary['reference_count']} ノートだけなので、傾向を言える量がありません。" + _plain_summary(facts),
             "指摘の一覧を 1 件ずつ開いて、お手本と見比べてください。", first_bar)
     if total < MIN_ISSUES:
         return "few_issues", _explanation(

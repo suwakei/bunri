@@ -34,7 +34,7 @@ REFERENCE = [n("C", 2, 0), n("E", 2, 4), n("G", 2, 8), n("C", 3, 12),
              n("G", 2, 16), n("B", 2, 20), n("D", 3, 24), n("G", 3, 28)]
 # 打ち込み。指摘は 10 件:
 #   i1 位置のずれ C2（1 小節 1 拍）   i2 抜け E2      i3 余分 G2      i4 長さ G2      i5 抜け C3
-#   i6 オクターブ G2→G3（2 小節 1 拍） i7 音の違い B2→A#2  i8 抜け D3  i9 抜け G3  i10 余分 F4
+#   i6 オクターブ G2→G3（2 小節 1 拍） i7 高さの違い B2→A#2  i8 抜け D3  i9 抜け G3  i10 余分 F4
 ATTEMPT = [n("C", 2, 1), n("G", 2, 4), n("G", 2, 8, 2), n("G", 3, 16), n("A#", 2, 20), n("F", 4, 30)]
 
 
@@ -484,8 +484,8 @@ class TestValidate:
     def test_要約に事実に無い音が在れば_決まった文に差し替える(self, facts):
         result = ce.validate_explanation(_raw(summary="全体に D4 が多く使われています。"), facts)
         assert result["replaced"] == ["summary"]
-        assert result["summary"] == ("お手本 8 音のうち、25% が高さと位置の合っている音です。お手本との違いは 10 か所です"
-                                     "（抜け 4、音の違い 1、オクターブ違い 1、余分な音 2、位置のずれ 1、長さの違い 1）。")
+        assert result["summary"] == ("お手本 8 ノートのうち、25% が高さと位置の合っているノートです。お手本との違いは 10 か所です"
+                                     "（抜け 4、高さの違い 1、オクターブ違い 1、余分なノート 2、位置のずれ 1、長さの違い 1）。")
 
     def test_最初にやることに事実に無い音が在れば_決まった文に差し替える(self, facts):
         result = ce.validate_explanation(_raw(next_step="2 小節目に E3 を足します。", next_step_bar=1), facts)
@@ -576,7 +576,7 @@ class TestRuleResponse:
     def test_違いが無ければ_呼ばない(self):
         result = self._ask(REFERENCE, [dict(x) for x in REFERENCE])
         assert result["reason"] == "no_diff"
-        assert result["explanation"]["summary"] == "お手本 8 音と、高さ・位置・長さがすべて合っています。"
+        assert result["explanation"]["summary"] == "お手本 8 ノートと、高さ・位置・長さがすべて合っています。"
         assert "自動採譜" in result["explanation"]["next_step"]
         assert result["explanation"]["next_step_bar"] is None
         assert result["input"] == {"issues": 0, "issues_sent": 0, "chart_context": "none"}
@@ -584,13 +584,13 @@ class TestRuleResponse:
     def test_打ち込みが無ければ_呼ばない(self):
         result = self._ask(REFERENCE, [])
         assert result["reason"] == "no_attempt"
-        assert "打ち込みがまだありません（お手本は 8 音）" in result["explanation"]["summary"]
+        assert "打ち込みがまだありません（お手本は 8 ノート）" in result["explanation"]["summary"]
         assert result["explanation"]["next_step_bar"] == 1
 
     def test_お手本が少なければ_呼ばない(self):
         result = self._ask(REFERENCE[:3], [n("D", 2, 0), n("F", 2, 4), n("A", 2, 8)])
         assert result["reason"] == "few_notes"
-        assert "お手本が 3 音だけ" in result["explanation"]["summary"]
+        assert "お手本が 3 ノートだけ" in result["explanation"]["summary"]
 
     def test_違いがごく少なければ_呼ばない(self):
         result = self._ask(REFERENCE, [dict(x) for x in REFERENCE[:-2]])
