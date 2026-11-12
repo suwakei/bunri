@@ -27,7 +27,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const {
-    confidenceTier, formatTime, secondsToBarBeat, TIER_DISPLAY,
+    confidenceTier, formatTime, isChartResponse, secondsToBarBeat, TIER_DISPLAY,
 } = await import('../lib/chart');
 type SongChart = import('../lib/chart').SongChart;
 type ChartGrid = import('../lib/chart').ChartGrid;
@@ -114,6 +114,21 @@ function renderChart(chart: SongChart | null, withStatusBar = false) {
         </DawProvider>
     );
 }
+
+describe('isChartResponse', () => {
+    it('カルテの API の結果の形なら true', () => {
+        expect(isChartResponse({ chart_id: 'demo', chart: makeChart(), glossary: {} })).toBe(true);
+    });
+
+    it('カルテの入っていない結果 (e2e の遅いジョブの結果など)・グリッドの欠けたカルテ・空は false', () => {
+        expect(isChartResponse({ ok: true, kind: 'chart', filename: 'e2e-card.wav' })).toBe(false);
+        expect(isChartResponse({ chart_id: 'demo', chart: { ...makeChart(), grid: undefined } })).toBe(false);
+        expect(isChartResponse({ chart_id: 'demo', chart: { ...makeChart(), chords: null } })).toBe(false);
+        expect(isChartResponse(null)).toBe(false);
+        expect(isChartResponse(undefined)).toBe(false);
+        expect(isChartResponse('chart')).toBe(false);
+    });
+});
 
 describe('confidenceTier', () => {
     it.each([

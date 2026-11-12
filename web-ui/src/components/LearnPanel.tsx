@@ -23,8 +23,6 @@ import JobCard from './JobCard';
 import { useJob } from '../lib/useJob';
 import { useShowJob } from '../lib/job-focus';
 import { jobErrorMessage, type Job } from '../lib/jobs';
-import type { ChartResponse } from '../lib/chart';
-import type { DecomposeResult } from '../lib/learn';
 import GuidePanel from './GuidePanel';
 import CoachPanel from './CoachPanel';
 
@@ -67,8 +65,8 @@ function SongPanel() {
         else if (job.state === 'cancelled') setStatus(`${name}を中止しました`);
         else setStatus(jobErrorMessage(job), 'error');
     };
-    const songJob = useJob('learn-song', attachedEnd('カルテの作成', (job) => finishChart(job.result as ChartResponse)));
-    const partsJob = useJob('learn-parts', attachedEnd('パート分離', (job) => void applyParts(job.result as DecomposeResult)));
+    const songJob = useJob('learn-song', attachedEnd('カルテの作成', (job) => { finishChart(job.result); }));
+    const partsJob = useJob('learn-parts', attachedEnd('パート分離', (job) => void applyParts(job.result)));
     // 重い処理は同時に 1 つ。どこかで動いている間は、始めるボタンを押せなくする
     const blocked = showProgress || songJob.heavyBusy;
     const [sensitivity, setSensitivity] = useState(0.5);
