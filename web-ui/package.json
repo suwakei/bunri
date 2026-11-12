@@ -13,6 +13,8 @@
     "dev:web": "node ../scripts/dev-web.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/outfit": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.14.0"

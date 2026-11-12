@@ -1,5 +1,12 @@
 /* bunri DAW — Analog Warmth Theme */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* フォントはアプリに同梱する (npm の @fontsource)。デスクトップアプリはネットにつながっていなくても
+   同じ見た目で動く必要があるので、実行時に外部 (Google Fonts) から取らない。
+   欧文だけのフォントなので、日本語は --font-ui / --font-mono の後ろに並べた OS のフォントで出る */
+@import '@fontsource-variable/outfit/index.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
 
 :root {
     --bg-deep: #0c0c0f;
@@ -10,6 +17,8 @@
     --bg-elevated: #222230;
     --accent: #d4a44c;
     --accent-hover: #e8bc6a;
+    /* ボタンやノートのグラデーションの暗い側 */
+    --accent-deep: #c49340;
     --accent-glow: rgba(212, 164, 76, 0.25);
     --accent-dim: rgba(212, 164, 76, 0.12);
     --secondary: #4ecdc4;
@@ -18,14 +27,30 @@
     --danger-dim: rgba(231, 76, 60, 0.15);
     --text: #e8e4de;
     --text-mid: #9e9a92;
-    --text-dim: #5e5b55;
+    /* 補助の文字。いちばん明るい背景 (--bg-elevated) の上でも 4.5:1 を超える値にしてある
+       (--bg-panel 上で 5.05:1、--bg-elevated 上で 4.69:1)。以前の #5e5b55 は 2.5:1 前後で読めなかった */
+    --text-dim: #908c85;
     --border: #2a2a35;
     --border-light: #35354a;
+    /* ---- 意味で使う色 ----
+       色の値を直接書かず、ここの名前で使う (docs/ui-terms.md の「色」)。
+       --danger は「消す・止める」操作の色。状態を伝える色は下の 4 つ */
+    --ok: #5ec98f;
+    --warn: #e8bc6a;
+    --error: #e87878;
+    --error-dim: rgba(232, 120, 120, 0.12);
+    --info: #78bee6;
+    /* お手本 (薄く重ねて見せるノート) の色 */
+    --ghost: #78bee6;
+    --ghost-fill: rgba(120, 190, 230, 0.22);
+    /* 選んでいるノートやクリップの縁取り。赤は「違っているノート」のために空けておく */
+    --selection: #f4f1ea;
     --note-color: #d4a44c;
-    --note-selected: #e74c3c;
     --grid-line: rgba(255, 255, 255, 0.03);
     --grid-beat: rgba(255, 255, 255, 0.08);
-    --automation-line: #4ecdc4;
+    /* ---- フォント ---- */
+    --font-ui: 'Outfit Variable', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', monospace;
     --radius-sm: 4px;
     --radius-md: 8px;
     --radius-lg: 12px;
@@ -38,23 +63,12 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: 'Outfit', 'Noto Sans JP', system-ui, sans-serif;
+    font-family: var(--font-ui);
     background: var(--bg-deep);
     color: var(--text);
     overflow: hidden;
     height: 100vh;
     -webkit-font-smoothing: antialiased;
-}
-
-/* ---- Noise texture overlay ---- */
-body::before {
-    content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-    pointer-events: none;
-    z-index: 9999;
-    opacity: 0.4;
 }
 
 /* ---- Scrollbar ---- */
@@ -89,7 +103,7 @@ body::before {
 }
 
 #header h1 {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 15px;
     font-weight: 600;
     color: var(--accent);
@@ -139,7 +153,7 @@ body::before {
     border-radius: var(--radius-sm);
     width: 68px;
     font-size: 13px;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     transition: border-color var(--transition);
 }
 
@@ -150,15 +164,15 @@ body::before {
 }
 
 #transport label {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
-    color: var(--text-dim);
+    color: var(--text-mid);
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 #time-display {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 16px;
     font-weight: 600;
     color: var(--accent);
@@ -187,7 +201,7 @@ body::before {
     padding: 6px 14px !important;
     border-radius: var(--radius-sm) !important;
     font-size: 12px !important;
-    font-family: 'Outfit', sans-serif !important;
+    font-family: var(--font-ui) !important;
     font-weight: 500 !important;
     cursor: pointer;
     transition: all var(--transition);
@@ -199,6 +213,21 @@ body::before {
     background: var(--bg-elevated) !important;
     border-color: var(--border-light) !important;
     color: var(--text) !important;
+}
+
+#header > div:last-child button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ---- キーボードで選んでいる場所を見せる ---- */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role="tab"]:focus-visible,
+[role="separator"]:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 2px;
 }
 
 /* ---- Seek bar ---- */
@@ -220,8 +249,8 @@ body::before {
 
 #seek-bar-area span {
     font-size: 11px;
-    font-family: 'IBM Plex Mono', monospace;
-    color: var(--text-dim);
+    font-family: var(--font-mono);
+    color: var(--text-mid);
     min-width: 56px;
     text-align: center;
 }
@@ -245,6 +274,12 @@ body::before {
 }
 
 #seek-bar:hover { height: 6px; }
+
+/* キーボードで選んだときは、どこに居るかが分かるよう縁取りを出す (既定の縁取りは消してあるため) */
+#seek-bar:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 5px;
+}
 
 #seek-bar::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -305,10 +340,10 @@ body::before {
     white-space: nowrap;
     background: none;
     border: none;
-    color: var(--text-dim);
+    color: var(--text-mid);
     padding: 8px 4px 10px;
-    font-size: 11px;
-    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    font-family: var(--font-ui);
     font-weight: 500;
     cursor: pointer;
     border-radius: var(--radius-sm) var(--radius-sm) 0 0;
@@ -318,7 +353,7 @@ body::before {
 }
 
 #panel-tabs button:hover {
-    color: var(--text-mid);
+    color: var(--text);
     background: rgba(255, 255, 255, 0.02);
 }
 
@@ -329,14 +364,49 @@ body::before {
     text-shadow: 0 0 12px var(--accent-glow);
 }
 
-/* どのタブを見せるかは LeftPanel が外側の div の display で切り替える。
+/* タブの中身を入れる枠 (LeftPanel)。スクロールはここで行う。余白は持たない
+   (余白は中の .panel-content が持つ。両方に付けると 32px になって、中身の幅が足りなくなる) */
+.panel-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.panel-scroll[hidden] { display: none; }
+
+/* どのタブを見せるかは LeftPanel が外側の枠 (.panel-scroll) の hidden で切り替える。
    ここで display: none にすると、active クラスを持たないパネル (シンセ以外) が
-   タブを選んでも表示されなくなる */
+   タブを選んでも表示されなくなる。
+   左右の余白 (16px) は、どのパネルもここで決まる。パネルごとに上書きしない (左端がそろわなくなる) */
 .panel-content {
     display: block;
     padding: 16px;
-    overflow-y: auto;
-    flex: 1;
+}
+
+/* パネルの中の文。本文は 12px、補足は 11px。これより小さくしない */
+.panel-content .body-text {
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text);
+}
+
+.panel-content .note-text {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-dim);
+}
+
+.panel-content .error-text {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--error);
+}
+
+/* 同じタブの中で、前のパネルと区切る (カルテの下の再現ガイド、差分チェック) */
+.panel-section {
+    margin-top: 20px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
 }
 
 .panel-content h3 {
@@ -350,12 +420,12 @@ body::before {
 
 .panel-content label {
     display: block;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
-    color: var(--text-dim);
+    color: var(--text-mid);
     margin: 8px 0 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    /* 大文字にそろえない (dB が DB に、ms が MS になって、単位が読み違えられる) */
+    letter-spacing: 0.3px;
 }
 
 .panel-content input,
@@ -421,39 +491,40 @@ body::before {
 .panel-content textarea { resize: vertical; min-height: 60px; }
 
 .panel-content details summary {
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: 12px;
+    color: var(--text-mid);
     cursor: pointer;
     padding: 4px 0;
     transition: color var(--transition);
 }
 
-.panel-content details summary:hover { color: var(--text-mid); }
+.panel-content details summary:hover { color: var(--text); }
 
-.panel-content button.action-btn {
+/* 主なボタン。左パネルの外 (初回の案内、グリッドの補正) でも同じ見た目にする */
+button.action-btn {
     width: 100%;
     padding: 10px 16px;
     margin-top: 12px;
-    background: linear-gradient(135deg, var(--accent), #c49340);
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
     border: none;
     color: var(--bg-deep);
     border-radius: var(--radius-md);
     cursor: pointer;
     font-size: 12px;
-    font-family: 'Outfit', sans-serif;
+    font-family: var(--font-ui);
     font-weight: 600;
     letter-spacing: 0.5px;
     transition: all var(--transition);
     box-shadow: 0 2px 8px var(--accent-glow);
 }
 
-.panel-content button.action-btn:hover {
+button.action-btn:hover {
     background: linear-gradient(135deg, var(--accent-hover), var(--accent));
     box-shadow: 0 4px 16px var(--accent-glow);
     transform: translateY(-1px);
 }
 
-.panel-content button.action-btn:active {
+button.action-btn:active {
     transform: translateY(0);
 }
 
@@ -466,8 +537,8 @@ body::before {
 
 /* ---- Panel description ---- */
 .panel-desc {
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: 12px;
+    color: var(--text-mid);
     margin-bottom: 12px;
     line-height: 1.6;
     padding: 8px 10px;
@@ -562,17 +633,20 @@ body::before {
 .track-header .track-controls {
     display: flex;
     gap: 3px;
-    margin-top: 4px;
+    margin-top: 3px;
 }
 
 .track-header .track-controls button {
-    font-size: 9px;
+    /* 押せる範囲は 24px 四方以上にする */
+    min-width: 24px;
+    min-height: 24px;
+    font-size: 11px;
     font-weight: 600;
-    font-family: 'IBM Plex Mono', monospace;
-    padding: 2px 6px;
+    font-family: var(--font-mono);
+    padding: 0 4px;
     background: var(--bg-deep);
     border: 1px solid var(--border);
-    color: var(--text-dim);
+    color: var(--text-mid);
     border-radius: 3px;
     cursor: pointer;
     transition: all var(--transition);
@@ -581,7 +655,7 @@ body::before {
 
 .track-header .track-controls button:hover {
     border-color: var(--border-light);
-    color: var(--text-mid);
+    color: var(--text);
 }
 
 .track-header .track-controls button.muted {
@@ -610,9 +684,9 @@ body::before {
     display: inline-block;
     background: var(--accent);
     color: var(--bg-deep);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     padding: 0 5px;
     border-radius: 10px;
     line-height: 16px;
@@ -637,7 +711,7 @@ body::before {
     border: 1px solid rgba(212, 164, 76, 0.4);
     border-radius: var(--radius-sm);
     cursor: grab;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--text);
     padding: 4px 8px;
@@ -645,7 +719,6 @@ body::before {
     white-space: nowrap;
     user-select: none;
     transition: all var(--transition);
-    backdrop-filter: blur(4px);
 }
 
 .clip::before {
@@ -667,14 +740,17 @@ body::before {
 }
 
 .clip.selected {
-    border-color: var(--note-selected);
-    box-shadow: 0 0 0 1px var(--note-selected);
+    border-color: var(--selection);
+    box-shadow: 0 0 0 1px var(--selection);
 }
 
 /* ---- Piano Roll ---- */
 #piano-roll-area {
+    /* 高さは、上の境目 (#resize-piano) を動かして変えられる (CenterArea が style で指定する)。
+       タイムラインに最低 200px を残す */
     height: 300px;
     min-height: 150px;
+    max-height: calc(100% - 207px);
     border-top: 1px solid var(--border);
     position: relative;
     display: flex;
@@ -701,13 +777,17 @@ body::before {
 .piano-key {
     height: 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    font-size: 8px;
-    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    line-height: 1;
+    font-family: var(--font-mono);
     font-weight: 500;
     display: flex;
     align-items: center;
     padding-left: 6px;
     color: var(--text-dim);
+    /* 押すとその高さの音が鳴る */
+    cursor: pointer;
+    user-select: none;
     transition: background var(--transition);
 }
 
@@ -722,6 +802,13 @@ body::before {
 
 .piano-key.black:hover {
     background: rgba(212, 164, 76, 0.12);
+}
+
+/* いま鳴らしている鍵盤 */
+.piano-key.sounding,
+.piano-key.black.sounding {
+    background: var(--accent-dim);
+    color: var(--accent);
 }
 
 #piano-grid-wrap {
@@ -758,7 +845,7 @@ body::before {
 .note-block {
     position: absolute;
     height: 13px;
-    background: linear-gradient(135deg, var(--accent), #c49340);
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
     border-radius: 3px;
     cursor: pointer;
     opacity: 0.9;
@@ -771,8 +858,8 @@ body::before {
 .note-ghost {
     position: absolute;
     height: 13px;
-    background: rgba(120, 190, 230, 0.22);
-    border: 1px dashed rgba(120, 190, 230, 0.7);
+    background: var(--ghost-fill);
+    border: 1px dashed var(--ghost);
     border-radius: 3px;
     pointer-events: none;
 }
@@ -786,7 +873,7 @@ body::before {
     padding: 2px 8px;
     border-radius: 3px;
     background: rgba(0, 0, 0, 0.65);
-    border: 1px solid var(--danger);
+    border: 1px solid var(--warn);
     color: var(--text);
     font-size: 11px;
     pointer-events: none;
@@ -798,42 +885,32 @@ body::before {
     box-shadow: 0 2px 8px var(--accent-glow);
 }
 
+/* 選んでいるノート。色は変えず、明るい縁取りで示す
+   (赤は、差分チェックで「違っているノート」を示すために空けておく) */
 .note-block.selected {
-    background: linear-gradient(135deg, var(--note-selected), #c0392b);
-    border-color: rgba(255, 255, 255, 0.3);
-    box-shadow: 0 0 12px rgba(231, 76, 60, 0.4);
-}
-
-/* ---- Automation ---- */
-#automation-area {
-    height: 100px;
-    border-top: 1px solid var(--border);
-    position: relative;
-    background: var(--bg-track);
-}
-
-#automation-canvas {
-    width: 100%;
-    height: 100%;
+    opacity: 1;
+    border-color: var(--selection);
+    box-shadow: 0 0 0 1px var(--selection), 0 1px 4px rgba(0, 0, 0, 0.3);
+    z-index: 1;
 }
 
 /* ---- Area labels ---- */
 .area-label {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
-    color: var(--text-dim);
+    color: var(--text-mid);
     padding: 3px 12px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    font-family: 'Outfit', sans-serif;
+    /* 大文字にそろえない (見出しに出すトラック名が、付けた名前と違って見える) */
+    letter-spacing: 0.5px;
+    font-family: var(--font-ui);
 }
 
 .area-hint {
     font-weight: 400;
-    font-size: 9px;
-    color: rgba(255, 255, 255, 0.15);
+    font-size: 11px;
+    color: var(--text-mid);
     text-transform: none;
     letter-spacing: 0;
 }
@@ -846,17 +923,32 @@ body::before {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 16px;
     padding: 0 16px;
-    font-size: 11px;
-    color: var(--text-dim);
-    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-mid);
+    font-family: var(--font-ui);
+}
+
+/* 操作の結果。長い文は 1 行に収めて、はみ出すぶんを … にする (全文は title で読める) */
+#status-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+#status-text.error {
+    color: var(--error);
 }
 
 #hint-text {
+    flex: 0 1 auto;
     color: var(--accent);
-    font-size: 10px;
-    font-family: 'Outfit', sans-serif;
-    max-width: 60%;
+    font-size: 11px;
+    font-family: var(--font-ui);
+    max-width: 50%;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -864,11 +956,14 @@ body::before {
 
 /* ---- Resize handles ---- */
 .resize-handle {
-    height: 3px;
+    /* つかみやすいよう、線より広い範囲を押せるようにする */
+    height: 7px;
+    flex-shrink: 0;
     cursor: ns-resize;
     background: var(--border);
     position: relative;
-    transition: all var(--transition);
+    touch-action: none;
+    transition: background var(--transition);
 }
 
 .resize-handle::after {
@@ -884,11 +979,13 @@ body::before {
     transition: all var(--transition);
 }
 
-.resize-handle:hover {
+.resize-handle:hover,
+.resize-handle.dragging {
     background: var(--accent-dim);
 }
 
-.resize-handle:hover::after {
+.resize-handle:hover::after,
+.resize-handle.dragging::after {
     background: var(--accent);
     width: 48px;
     box-shadow: 0 0 8px var(--accent-glow);
@@ -902,12 +999,12 @@ body::before {
     left: 0;
     margin: 8px 12px !important;
     font-size: 11px !important;
-    font-family: 'Outfit', sans-serif !important;
+    font-family: var(--font-ui) !important;
     font-weight: 500 !important;
     padding: 6px 16px !important;
     background: var(--bg-panel) !important;
     border: 1px dashed var(--border-light) !important;
-    color: var(--text-dim) !important;
+    color: var(--text-mid) !important;
     border-radius: var(--radius-sm) !important;
     cursor: pointer;
     transition: all var(--transition);
@@ -925,7 +1022,6 @@ body::before {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0, 0, 0, 0.8);
-    backdrop-filter: blur(8px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -957,7 +1053,7 @@ body::before {
 }
 
 #guide-modal h2 {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     color: var(--accent);
     font-size: 18px;
     font-weight: 600;
@@ -984,7 +1080,7 @@ body::before {
     width: 28px;
     height: 28px;
     min-width: 28px;
-    background: linear-gradient(135deg, var(--accent), #c49340);
+    background: linear-gradient(135deg, var(--accent), var(--accent-deep));
     color: var(--bg-deep);
     border-radius: 50%;
     display: flex;
@@ -992,7 +1088,7 @@ body::before {
     justify-content: center;
     font-size: 12px;
     font-weight: 700;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     box-shadow: 0 2px 8px var(--accent-glow);
 }
 
@@ -1003,14 +1099,14 @@ body::before {
 }
 
 .guide-step p {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-mid);
     margin-top: 3px;
     line-height: 1.6;
 }
 
 .guide-tip {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-mid);
     background: var(--accent-dim);
     border: 1px solid rgba(212, 164, 76, 0.15);
