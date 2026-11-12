@@ -58,8 +58,8 @@
 |---|---|
 | `backend/llm_settings.py` | API キーとモデルの解決。クライアントの生成 |
 | `backend/reproduction_guide.py` | プロンプトの組み立て、出力の形、Claude の呼び出し、出力の検証。保存分の再利用・上限・入力の量の確認をまとめた入口（`guide_for`） |
-| `backend/guide_cache.py` | 作ったガイドの保存（`results/guide/cache/`）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
-| `backend/guide_usage.py` | 使用量の記録（`results/guide/usage.jsonl`）、概算の費用、1 日の上限、設定（`results/guide/settings.json`） |
+| `backend/guide_cache.py` | 作ったガイドの保存（`results/guide/cache/`）と、同じカルテへの呼び出しを 1 つずつ通す錠。差分コーチの説明（第3層）の保存も受け持つ |
+| `backend/guide_usage.py` | 使用量の記録（`results/guide/usage.jsonl`）、概算の費用、1 日の上限、設定（`results/guide/settings.json`）。差分コーチの説明（第3層）と共通 |
 | `backend/llm_pricing.json` | 単価の表（概算の費用の計算に使う） |
 | `backend/web/api.py` | `GET` / `POST /api/chart/{id}/guide`、`GET` / `POST /api/settings/guide`、`GET /api/settings/llm`、`POST` / `DELETE /api/settings/anthropic-key` |
 | `scripts/guide_probe.py` | API を実際に送って確かめる開発用のスクリプト（キャッシュ、トークン数、モデルと思考の深さの比較） |
@@ -105,6 +105,10 @@
   思考のトークン数・概算の費用。**カルテの中身、ガイドの文、API キーは残さない**（決まった項目だけを
   組み立てて書くので、紛れ込む経路が無い）
 - 保存済みを返したとき（API を呼んでいないとき）は記録しない
+- **差分コーチの説明（第3層）も、同じ記録に残し、同じ 1 日の上限で数える**
+  （[coach-diff-design.md](coach-diff-design.md) の「言語化」）。どちらの呼び出しかは、記録の `feature`
+  （`guide` / `coach`。この項目が無い古い行は再現ガイド）で見分ける。キャッシュの保持時間の集計
+  （`cache_report`）は、再現ガイドの呼び出しだけを対象にする
 - **費用は概算。** 単価の表（`backend/llm_pricing.json`。出典と取得日つき）から計算する。請求額そのもの
   ではないので、画面でも「概算」と出す。単価が変わったら、表を直すか、`results/guide/settings.json` の
   `pricing` で上書きする。表に無いモデルは、当て推量をせず、費用を出さない（トークン数だけ出す）
