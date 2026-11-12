@@ -203,6 +203,14 @@ def _tier_label(value):
     return _TIER_LABEL[song_chart.confidence_tier(value)]
 
 
+def confidence_label(value):
+    """確信度の生値を、画面と同じ 3 段階の言い方（確実 / たぶん / 自信なし）にする。
+
+    第3層（``coach_explain``）も同じ言い方で渡すので、外から呼べる名前を付けてある。
+    """
+    return _tier_label(value)
+
+
 def _label_confidences(node):
     """辞書・リストをたどり、確信度の項目（名前が ``confidence`` で終わる）を 3 段階の言い方に置き換える。"""
     if isinstance(node, dict):
@@ -539,7 +547,22 @@ def unverified_terms(text, chart):
     Returns:
         list[str]: カルテに無い語（出てきた順、重複なし）。
     """
-    allowed = chart_vocabulary(chart)
+    return terms_outside(text, chart_vocabulary(chart))
+
+
+def terms_outside(text, allowed):
+    """説明文に出てきた音名・コード名のうち、``allowed`` に無いものを返す。
+
+    ``unverified_terms`` の中身。語の範囲を呼び出し側が決められるよう分けてある
+    （第3層は、カルテではなく差分の事実から範囲を作る）。
+
+    Args:
+        text: 説明文。
+        allowed: 出てきてよい語の集合（``#`` ``b`` で書いたもの）。
+
+    Returns:
+        list[str]: ``allowed`` に無い語（出てきた順、重複なし）。
+    """
     found = []
     for match in _TERM_RE.finditer(text or ""):
         term = _normalize_term(match.group(1))
@@ -667,6 +690,50 @@ def fit_request(chart, focus, client, max_input_tokens, *, model=None, effort=No
     return trimmed
 
 
+def call_structured(request, client,
+                    truncated_message="ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください"):
+    """Claude を 1 回呼び、Structured Outputs の JSON を辞書にして返す。
+
+    呼び出しと、応答の読み取り（断られた・途中で切れた・JSON でない、の見分け）だけを受け持つ。
+    中身の検証は呼び出し側が行う。第2層（``generate``）と第3層（``coach_explain.generate``）が使う。
+
+    Args:
+        request: ``client.beta.messages.create`` に渡すキーワード引数。
+        client: Anthropic のクライアント。
+        truncated_message: 出力が途中で切れたときに、利用者に見せる文。
+
+    Returns:
+        tuple[dict, str, dict]: ``(モデルが返した JSON, 応答したモデル, 使用量)``。
+
+    Raises:
+        GuideError: API キーが無い・正しくない、通信できない、モデルが応答を断った、出力が途中で
+            切れた、JSON として読めない、などの場合。応答が返ってきていた失敗では、``usage`` に
+            使用量が入る。
+    """
+    with _api_errors():
+        response = client.beta.messages.create(**request)
+
+    usage = _usage(response)
+    model = getattr(response, "model", request["model"])
+
+    def fail(message, code):
+        return GuideError(message, code=code, usage=usage, model=model)
+
+    if response.stop_reason == "refusal":
+        raise fail("この内容については、モデルが応答を返しませんでした", "refused")
+    if response.stop_reason == "max_tokens":
+        raise fail(truncated_message, "truncated")
+
+    text = next((block.text for block in response.content if block.type == "text"), None)
+    if not text:
+        raise fail("モデルから説明文が返りませんでした", "invalid")
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        raise fail("モデルの応答を読み取れませんでした", "invalid")
+    return raw, model, usage
+
+
 def generate(chart, focus=None, client=None, request=None):
     """楽曲カルテから再現ガイドを作る（Claude を 1 回呼ぶ）。
 
@@ -692,31 +759,11 @@ def generate(chart, focus=None, client=None, request=None):
     if client is None:
         client = llm_settings.make_client()
 
-    with _api_errors():
-        response = client.beta.messages.create(**request)
-
-    usage = _usage(response)
-    model = getattr(response, "model", request["model"])
-
-    def fail(message, code):
-        return GuideError(message, code=code, usage=usage, model=model)
-
-    if response.stop_reason == "refusal":
-        raise fail("この内容については、モデルが応答を返しませんでした", "refused")
-    if response.stop_reason == "max_tokens":
-        raise fail("ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください", "truncated")
-
-    text = next((block.text for block in response.content if block.type == "text"), None)
-    if not text:
-        raise fail("モデルから説明文が返りませんでした", "invalid")
-    try:
-        raw = json.loads(text)
-    except json.JSONDecodeError:
-        raise fail("モデルの応答を読み取れませんでした", "invalid")
+    raw, model, usage = call_structured(request, client)
     try:
         guide = validate_guide(raw, chart)
     except GuideError as e:
-        raise fail(str(e), e.code)
+        raise GuideError(str(e), code=e.code, usage=usage, model=model)
 
     return {"guide": guide, "model": model, "usage": usage}
 

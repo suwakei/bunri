@@ -1,6 +1,7 @@
 """再現ガイドの使用量 — 呼び出しの記録、概算の費用、1 日の上限
 
-Claude の API は呼ぶたびに費用がかかる。ここでは次の 3 つを持つ。
+Claude の API は呼ぶたびに費用がかかる。ここでは次の 3 つを持つ。差分コーチの説明（第3層。
+``coach_explain``）も、同じ記録に残し、同じ 1 日の上限で数える（記録の ``feature`` で見分ける）。
 
 - **記録**: 呼び出しごとに 1 行、``results/guide/usage.jsonl`` に追記する。残すのはトークン数
   （4 つの計器）・モデル・所要時間・対象・成否だけ。カルテの中身、ガイドの文、API キーは残さない
@@ -32,11 +33,14 @@ DEFAULT_SETTINGS = {
 
 # 記録の 1 行が持つ項目。これ以外は書かない
 _RECORD_FIELDS = (
-    "ts", "ok", "error", "model", "requested_model", "effort", "cache_ttl", "focus", "chart", "version",
+    "ts", "feature", "ok", "error", "model", "requested_model", "effort", "cache_ttl", "focus", "chart", "version",
     "duration_sec", "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
     "output_tokens", "thinking_tokens", "cost_usd",
 )
 _TOKEN_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+# 記録を残す機能。"guide" は再現ガイド（第2層）、"coach" は差分コーチの説明（第3層）。
+# ``feature`` の無い古い行は、再現ガイドのもの
+FEATURES = ("guide", "coach")
 
 _lock = threading.Lock()
 
@@ -186,11 +190,13 @@ def estimate_cost(model, usage, cache_ttl="5m"):
     return round(total, 6)
 
 
-def _record(*, ok, error, model, requested_model, effort, cache_ttl, focus, chart, version, duration_sec, usage):
+def _record(*, feature, ok, error, model, requested_model, effort, cache_ttl, focus, chart, version, duration_sec,
+            usage):
     """記録の 1 行を組み立てる。決まった項目だけを持つ（中身やキーが入る場所が無い）。"""
     usage = usage if isinstance(usage, dict) else {}
     record = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "feature": feature if feature in FEATURES else "guide",
         "ok": bool(ok),
         "error": error,
         "model": model,
@@ -210,7 +216,7 @@ def _record(*, ok, error, model, requested_model, effort, cache_ttl, focus, char
 
 
 def record_call(*, ok, model, requested_model, effort, focus, chart, duration_sec, usage,
-                error=None, cache_ttl="5m", version=None):
+                error=None, cache_ttl="5m", version=None, feature="guide"):
     """API の呼び出し 1 回を記録に追記する。
 
     Args:
@@ -220,16 +226,18 @@ def record_call(*, ok, model, requested_model, effort, focus, chart, duration_se
         effort: 思考の深さの指定。
         focus: 対象のセクション ID。曲全体なら None。
         chart: カルテの指紋（ハッシュの先頭。同じカルテへの呼び出しの間隔を見るのに使う）。
+            差分コーチでは、差分の事実の指紋。
         duration_sec: 所要時間（秒）。
         usage: 使用量（``reproduction_guide._usage`` の形）。応答が返らなかったときは None。
         error: 失敗の種類（``GuideError.code``）。
         cache_ttl: キャッシュの保持時間の指定。
         version: 指示文と出力の形の指紋（``reproduction_guide.request_fingerprint``）。
+        feature: どの機能の呼び出しか。``"guide"``（再現ガイド）か ``"coach"``（差分コーチの説明）。
 
     Returns:
         dict: 追記した 1 行。
     """
-    record = _record(ok=ok, error=error, model=model, requested_model=requested_model, effort=effort,
+    record = _record(feature=feature, ok=ok, error=error, model=model, requested_model=requested_model, effort=effort,
                      cache_ttl=cache_ttl, focus=focus, chart=chart, version=version,
                      duration_sec=duration_sec, usage=usage)
     line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
@@ -272,7 +280,8 @@ def today():
     """今日の使用量と、上限までの残りを返す。
 
     回数に数えるのは、応答が返ってきた呼び出し（トークンを使ったもの）。API キーの誤りや通信の失敗の
-    ように、応答が返らなかったものは費用がかからないので数えない。
+    ように、応答が返らなかったものは費用がかからないので数えない。再現ガイドと差分コーチの説明を、
+    分けずに合わせて数える（上限は 1 つの枠）。
 
     Returns:
         dict: ``{"date", "calls", "cost_usd", "limit_calls", "limit_usd", "blocked"}``。
@@ -329,6 +338,9 @@ def cache_report(records=None):
     """
     groups = {}
     for record in records if records is not None else read_records():
+        if record.get("feature", "guide") != "guide":
+            # 差分コーチの呼び出しは、カルテをキャッシュに載せない（事実が毎回変わる）ので、対象にしない
+            continue
         prefix = (record.get("cache_creation_input_tokens") or 0) + (record.get("cache_read_input_tokens") or 0)
         try:
             ended = datetime.fromisoformat(record.get("ts")).timestamp()

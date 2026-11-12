@@ -705,7 +705,10 @@ class TestUsageLog:
         for record in records:
             assert set(record) == set(guide_usage._RECORD_FIELDS)
             strings = {k: v for k, v in record.items() if isinstance(v, str)}
-            assert set(strings) <= {"ts", "error", "model", "requested_model", "effort", "cache_ttl", "focus", "chart", "version"}
+            assert set(strings) <= {"ts", "feature", "error", "model", "requested_model", "effort", "cache_ttl", "focus",
+                                    "chart", "version"}
+            # どの機能の呼び出しか（差分コーチの説明と同じ記録に残すので、見分けが要る）。決まった値しか入らない
+            assert record["feature"] == "guide"
             assert all(len(v) <= 40 for v in strings.values())
         for leaked in (secret, "sk-ant", "ひみつの曲", "記録に残してはいけません", "テンポを合わせる", "G7", "Am",
                        "V7", "verse", "chorus", "song", "LUFS", "残響"):
