@@ -38,7 +38,8 @@ import {
     type InputMode, type ListenMode, type NoteMark, type PracticeLoop, type StepRange,
 } from '../lib/practice';
 import { PART_LABELS } from '../lib/learn';
-import { StepLengthSelect, midiUnavailableText, type MidiInputController } from './MidiInputBar';
+import { StepLengthSelect } from './MidiInputBar';
+import { midiUnavailableText, type MidiInputController } from '../lib/useMidiInput';
 import { cursorLabel } from '../lib/midi-input';
 
 /** 最後に比べた結果（練習画面の中だけ。保存しない）。 */
