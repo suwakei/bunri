@@ -1,7 +1,7 @@
 # bunri DAW — コマンド集
 # 使い方: make <コマンド>
 
-.PHONY: help install install-frontend install-desktop desktop desktop-build dev-web e2e test lint clean
+.PHONY: help install install-frontend install-desktop desktop desktop-build dev-web e2e e2e-desktop test lint clean
 
 help: ## コマンド一覧を表示
 	@echo ""
@@ -14,6 +14,7 @@ help: ## コマンド一覧を表示
 	@echo "  make desktop-build     デスクトップ版の配布物（.app / .dmg）をビルド"
 	@echo "  make dev-web           開発用: 画面をブラウザで開けるようにする（Vite + API サーバ）"
 	@echo "  make e2e               ブラウザを自動操作するテスト（Playwright）"
+	@echo "  make e2e-desktop       本物の窓（デスクトップアプリ）を自動操作するテスト（mac のみ）"
 	@echo "  make test              全テストを実行（フロント + バック + Rust）"
 	@echo "  make lint              リント実行（ESLint + ruff + cargo fmt / clippy）"
 	@echo "  make clean             生成ファイルとキャッシュを削除"
@@ -40,6 +41,9 @@ dev-web: ## 開発用: 画面をブラウザで開けるようにする（準備
 e2e: ## ブラウザを自動操作するテスト（必要なサーバは自分で起動して止める。初回は npx playwright install が要る）
 	cd web-ui && npm run e2e
 
+e2e-desktop: ## 本物の窓を自動操作するテスト（テスト用にビルドし、アプリを起動して止める。mac のみ。初回のビルドは数分）
+	cd web-ui && npm run e2e:desktop
+
 test: ## 全テストを実行
 	cd web-ui && npm test
 	uv run python -m pytest test/back/ -v
@@ -49,6 +53,9 @@ lint: ## リント実行
 	cd web-ui && npx eslint .
 	uv run ruff check .
 	cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
+	cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings
+	@# 窓を自動操作する WebDriver サーバ (機能 e2e) が、既定のビルドに入っていないこと
+	cd src-tauri && ! cargo tree -e normal --prefix none | grep -q '^tauri-plugin-wdio-webdriver '
 
 clean: ## 生成ファイルとキャッシュを削除
 	rm -rf results uploads projects
