@@ -43,12 +43,12 @@ STEM_LABELS = {
 # モデルが手元に無いときは、"model" の表示名がダウンロード中のものに変わる（``demucs_progress``）
 SEPARATE_STAGES = [
     ("model", "モデルを読み込んでいます"),
-    ("separate", "音源を分離しています"),
+    ("separate", "パートに分けています"),
 ]
 DEEP_SEPARATE_STAGES = [
     ("model", "モデルを読み込んでいます"),
-    ("separate", "6 つのパートに分離しています"),
-    ("separate_other", "「その他」のパートをさらに分離しています"),
+    ("separate", "6 つのパートに分けています"),
+    ("separate_other", "「その他」のパートをさらに分けています"),
 ]
 
 

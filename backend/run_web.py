@@ -11,7 +11,9 @@
 """
 import argparse
 import json
+import logging
 import os
+import re
 import signal
 import socket
 import sys
@@ -151,6 +153,55 @@ def watch_parent(stream=None):
     return thread
 
 
+# アクセスログに残さないクエリの値（``<audio src>`` などで URL に載せる API の鍵。access_control.TOKEN_QUERY）
+_SECRET_QUERY_RE = re.compile(r"([?&]token=)[^&#\s]*")
+# 伏せたあとに置く文字
+REDACTED = "***"
+
+
+def redact_url(text):
+    """URL（またはそれを含む文）の中の ``token=…`` の値を伏せる。
+
+    Args:
+        text: URL やログの文。
+
+    Returns:
+        str: ``?token=abc`` を ``?token=***`` にした文。ほかの部分はそのまま。
+    """
+    return _SECRET_QUERY_RE.sub(lambda m: m.group(1) + REDACTED, text)
+
+
+class RedactTokenFilter(logging.Filter):
+    """uvicorn のアクセスログから、URL に載った API の鍵（``?token=``）を伏せる。
+
+    ``<audio src>`` と ``<a href download>`` はヘッダを付けられないので、鍵をクエリに載せて送ってくる
+    （docs/desktop-architecture.md「API には鍵がかかっている」）。uvicorn は URL をそのままログに出すので、
+    ここで伏せる。ログはアプリの出力（ターミナルやログファイル）に残り、ほかの人に見せることがあるため。
+    """
+
+    def filter(self, record):
+        """ログの引数（uvicorn のアクセスログでは、3 番目が URL）とメッセージの中の鍵を伏せる。
+
+        Args:
+            record: ログの 1 件。
+
+        Returns:
+            bool: 常に True（ログは捨てない。中身だけ書き換える）。
+        """
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_url(a) if isinstance(a, str) else a for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = redact_url(record.msg)
+        return True
+
+
+def install_log_redaction():
+    """uvicorn のアクセスログに、鍵を伏せるフィルタを付ける（何度呼んでも 1 つだけ）。"""
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactTokenFilter) for f in logger.filters):
+        logger.addFilter(RedactTokenFilter())
+
+
 def main(argv=None):
     """引数に従ってサーバを起動する（終了するまで戻らない）。
 
@@ -169,6 +220,8 @@ def main(argv=None):
     announce(port)
 
     config = uvicorn.Config("web.api:app", host=HOST, port=port, reload=False)
+    # uvicorn.Config がログの設定を済ませたあとに付ける（先に付けると設定し直しで外れることがあるため）
+    install_log_redaction()
     uvicorn.Server(config).run(sockets=[sock])
 
 

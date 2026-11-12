@@ -412,13 +412,13 @@ class TestRealEndpoints:
             resp = await client.post("/api/separate?async=1", files=upload(wav_bytes), data={"model": "htdemucs"})
             assert resp.status_code == 202, resp.text
             started = resp.json()
-            assert (started["kind"], started["title"], started["filename"]) == ("separate", "音源分離", "song.wav")
+            assert (started["kind"], started["title"], started["filename"]) == ("separate", "パート分離", "song.wav")
             assert started["stage_count"] == len(separate.SEPARATE_STAGES)
 
             done = await poll(client, started["id"])
             assert done["state"] == "done", done
             assert done["result"] == sync.json()
-            assert (done["stage"], done["stage_index"]) == ("音源を分離しています", 1)
+            assert (done["stage"], done["stage_index"]) == ("パートに分けています", 1)
             assert (await client.get(done["result"]["vocals"]["url"])).status_code == 200
         assert calls == [("song.wav", "htdemucs", True, 7, 1)] * 2
 
@@ -485,7 +485,7 @@ class TestRealEndpoints:
             resp = await client.post("/api/decompose?async=1", files=upload(wav_bytes))
             assert resp.status_code == 202, resp.text
             started = resp.json()
-            assert (started["kind"], started["title"]) == ("decompose", "音源の分解")
+            assert (started["kind"], started["title"]) == ("decompose", "パート分離と採譜")
             assert started["stage_count"] == len(decompose.decompose_stages(detect_bpm=True)) == 5
             done = await poll(client, started["id"])
             assert done["result"] == sync.json()
@@ -511,7 +511,7 @@ class TestRealEndpoints:
             assert (started["kind"], started["stage_count"]) == ("analyze", 1)
             done = await poll(client, started["id"])
             assert done["result"] == notes
-            assert done["stage"] == "音を音符にしています" and done["progress"] is None
+            assert done["stage"] == "ノートを読み取っています" and done["progress"] is None
 
     @pytest.mark.asyncio
     async def test_楽曲カルテは_本物の解析がジョブとして動く(self, real_app, chord_song, tmp_path):
@@ -627,8 +627,65 @@ class TestRealEndpoints:
                 resp = await client.post(f"{path}?async=1", files=upload(wav_bytes, name="second.wav"))
                 assert resp.status_code == 409, path
                 assert resp.json()["job"]["id"] == first["id"]
-                assert "first.wav" in resp.json()["detail"] and "音源の分解" in resp.json()["detail"]
+                assert "first.wav" in resp.json()["detail"] and "パート分離と採譜" in resp.json()["detail"]
             assert not (tmp_path / "uploads" / "second.wav").exists(), "断った分のアップロードは保存しない"
 
             gate.release.set()
             assert (await poll(client, first["id"]))["state"] == "done"
+
+
+class TestE2ESlowJob:
+    """ブラウザのテスト用の、わざと遅いジョブ（web/e2e_routes.py）"""
+
+    def e2e_app(self):
+        from web import e2e_routes
+
+        app = FastAPI()
+        app.include_router(job_routes.router)
+        app.include_router(e2e_routes.router)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_本物と同じ名前とステージで進み_割合も出し_キャンセルですぐ止まる(self):
+        async with client_for(self.e2e_app()) as client:
+            resp = await client.post("/api/e2e/slow-job?kind=separate&seconds=4&filename=song.wav")
+            assert resp.status_code == 202, resp.text
+            job = resp.json()
+            assert (job["kind"], job["title"], job["filename"]) == ("separate", "パート分離", "song.wav")
+            assert job["stage_count"] == 2
+            # 2 つ目のステージ（分離）に入ると、割合が出る
+            body = None
+            for _ in range(400):
+                body = (await client.get(f"/api/jobs/{job['id']}")).json()
+                if body["stage_key"] == "separate" and body["progress"] is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert body["stage_index"] == 1 and 0 <= body["progress"] <= 1
+            # 動いている間の開始は、本物と同じく 409
+            busy = await client.post("/api/e2e/slow-job?kind=chart&seconds=1")
+            assert busy.status_code == 409 and busy.json()["code"] == "job_busy"
+            assert (await client.post(f"/api/jobs/{job['id']}/cancel")).status_code == 200
+            done = await poll(client, job["id"])
+            assert done["state"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_初回のモデルのダウンロードの表示名を出す(self):
+        async with client_for(self.e2e_app()) as client:
+            job = (await client.post("/api/e2e/slow-job?kind=decompose&seconds=0.3")).json()
+            assert job["title"] == "パート分離と採譜"
+            done = await poll(client, job["id"])
+            assert done["state"] == "done" and done["result"]["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_知らない種類は400(self):
+        async with client_for(self.e2e_app()) as client:
+            assert (await client.post("/api/e2e/slow-job?kind=unknown")).status_code == 400
+
+    def test_既定のアプリには無い(self):
+        """環境変数 BUNRI_E2E_HOOKS=1 のときだけ足す（配布物の sidecar には無い）"""
+        from fastapi.testclient import TestClient
+        from web import api
+
+        with TestClient(api.app) as client:
+            assert client.post("/api/e2e/slow-job").status_code in (404, 405)
+            assert client.get("/api/health").json() == {"ok": True}

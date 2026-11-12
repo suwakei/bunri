@@ -663,7 +663,7 @@ def decompose_stages(detect_bpm=True):
     from separate import DEEP_SEPARATE_STAGES
 
     stages = [("tempo", "テンポを調べています")] if detect_bpm else []
-    return stages + list(DEEP_SEPARATE_STAGES) + [("transcribe", "各パートを音符にしています")]
+    return stages + list(DEEP_SEPARATE_STAGES) + [("transcribe", "パートごとにノートを採譜しています")]
 
 
 def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None, grid_offset_sec=0.0):
@@ -766,7 +766,7 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
         # パートの切れ目でだけキャンセルを見る。進み具合は「済んだパートの数」
         job.check_cancelled()
         job.set_label(
-            f"各パートを音符にしています（{index + 1}/{len(stem_paths)}: {STEM_LABELS.get(stem_name, stem_name)}）"
+            f"パートごとにノートを採譜しています（{index + 1}/{len(stem_paths)}: {STEM_LABELS.get(stem_name, stem_name)}）"
         )
         job.set_progress(index / len(stem_paths))
 
