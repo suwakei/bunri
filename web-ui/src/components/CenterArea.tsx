@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import MidiInputBar from './MidiInputBar';
+import GhostBar from './GhostBar';
 
 /**
  * Canvas ベースのピアノロールエディタエンジン。
@@ -38,6 +39,8 @@ class PianoRollEngine {
         this.noteNames = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
         this.blackKeys = new Set(['A#','G#','F#','D#','C#']);
         this.activeTrackId = null; this.notes = []; this.selectedNote = null;
+        // お手本として薄く重ねて見せるノート (編集はできない)。setGhostNotes で入れる
+        this.ghostNotes = [];
         this.isDragging = false; this.isResizing = false;
         this.dragStartX = 0; this.dragStartStep = 0;
         this.snapToGrid = true; this.gridSize = 4;
@@ -86,6 +89,7 @@ class PianoRollEngine {
         const bar = this._stepsPerBar();
         let last = 0;
         for (const n of this.notes) last = Math.max(last, n.step + n.length);
+        for (const n of this.ghostNotes) last = Math.max(last, n.step + n.length);
         const track = this.activeTrackId !== null ? engine.getTrack(this.activeTrackId) : null;
         if (track) {
             const stepSec = 60 / engine.bpm / 4;
@@ -229,6 +233,17 @@ class PianoRollEngine {
             msg.textContent = 'トラックをクリックしてピアノロールを開く';
             this.noteLayer.appendChild(msg); return;
         }
+        // お手本は先に置く (打ち込んだノートの下に見える)。押しても反応しない
+        for (const n of this.ghostNotes) {
+            const row = this._noteToRow(n.note, n.octave);
+            if (row < 0 || row >= this.totalRows) continue;
+            const el = document.createElement('div');
+            el.className = 'note-ghost';
+            el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
+            el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
+            el.title = `お手本 ${n.note}${n.octave}`;
+            this.noteLayer.appendChild(el);
+        }
         this.notes.forEach((n, i) => {
             const row = this._noteToRow(n.note, n.octave), el = document.createElement('div');
             el.className = 'note-block' + (i === this.selectedNote ? ' selected' : '');
@@ -252,6 +267,23 @@ class PianoRollEngine {
      * @param notes - セットするノート情報の配列（`note`, `octave`, `step`, `length` を含む）
      */
     setNotes(notes) { this.notes = notes.map(n => ({ ...n })); this.selectedNote = null; this._saveToEngine(); this._fitLength(); this._renderNotes(); }
+    /**
+     * お手本として薄く重ねて見せるノートを入れ替える (空の配列か null で消す)。
+     * お手本は見るだけで、編集も保存もされない。
+     *
+     * @param notes - お手本のノート (`note`, `octave`, `step`, `length`)
+     */
+    setGhostNotes(notes) { this.ghostNotes = (notes || []).map(n => ({ ...n })); this._fitLength(); this._renderNotes(); }
+    /**
+     * 指定したステップが見える位置まで、横にスクロールする (見えている幅の 4 分の 1 あたりに来る)。
+     * 差分チェックの指摘から、その小節へ移動するのに使う。
+     *
+     * @param step - 見せたいステップ
+     */
+    scrollToStep(step) {
+        if (!this.wrap) return;
+        this.wrap.scrollLeft = Math.max(0, step * this.stepWidth - this.wrap.clientWidth / 4);
+    }
     /**
      * 現在アクティブなトラックの ID を返す。
      *
@@ -600,6 +632,7 @@ function SeekBar() {
 export default function CenterArea() {
     const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion } = useDaw();
     const [activeTrackName, setActiveTrackName] = useState(null);
+    const [activeTrackId, setActiveTrackId] = useState(null);
 
     const tracksContainerRef = useRef(null);
     const headerCanvasRef = useRef(null);
@@ -620,6 +653,7 @@ export default function CenterArea() {
         pr.onTrackSwitch = (trackId) => {
             const track = trackId ? engine.getTrack(trackId) : null;
             setActiveTrackName(track ? track.name : null);
+            setActiveTrackId(track ? track.id : null);
         };
         pianoRollRef.current = pr;
 
@@ -680,7 +714,7 @@ export default function CenterArea() {
             {/* ピアノロール */}
             <div className="resize-handle" id="resize-piano" />
             <div id="piano-roll-area">
-                <div className="area-label">{pianoLabel}<MidiInputBar /></div>
+                <div className="area-label">{pianoLabel}<MidiInputBar /><GhostBar activeTrackId={activeTrackId} /></div>
                 <div id="piano-roll-body">
                     <div ref={keysRef} id="piano-keys" />
                     <div ref={pianoWrapRef} id="piano-grid-wrap">
