@@ -28,6 +28,25 @@ from fastapi import Query
 from web import job_routes
 app.include_router(job_routes.router)
 
+# ブラウザを自動操作するテストのための、わざと遅いジョブ（docs/jobs.md「テスト用の遅いジョブ」）。
+# 環境変数 BUNRI_E2E_HOOKS=1 のときだけ足す。既定では足さない（配布物の sidecar には無い）
+import os as _os
+if _os.environ.get("BUNRI_E2E_HOOKS") == "1":
+    from web import e2e_routes
+    app.include_router(e2e_routes.router)
+
+
+@app.get("/api/health")
+async def api_health():
+    """API サーバが応答できるかを返す（画面の見張りが数秒おきに呼ぶ。軽い処理だけ）。
+
+    重い処理はジョブとして別のスレッドで動くので、その最中でも応答する。
+
+    Returns:
+        ``{"ok": True}``。
+    """
+    return {"ok": True}
+
 # データ置き場（uploads/ results/ projects/）は audio_utils が決める。
 # 置き場は環境変数 BUNRI_DATA_DIR で差し替えられるので、定数に固めず都度引く。
 
@@ -618,7 +637,7 @@ async def api_analyze(
 
     return await job_routes.dispatch(
         "analyze", title="採譜", filename=file.filename,
-        stages=[("transcribe", "音を音符にしています")],
+        stages=[("transcribe", "ノートを読み取っています")],
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )
 
@@ -689,7 +708,7 @@ async def api_separate(
         return _stem_links(job, paths, "sep", filename)
 
     return await job_routes.dispatch(
-        "separate", title="音源分離", filename=filename, stages=SEPARATE_STAGES,
+        "separate", title="パート分離", filename=filename, stages=SEPARATE_STAGES,
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )
 
@@ -730,7 +749,7 @@ async def api_deep_separate(
         return _stem_links(job, paths, "deep", filename)
 
     return await job_routes.dispatch(
-        "deep_separate", title="詳細な音源分離", filename=filename, stages=stages,
+        "deep_separate", title="パート分離（6 パート）", filename=filename, stages=stages,
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )
 
@@ -991,7 +1010,7 @@ async def api_decompose(
         return result
 
     return await job_routes.dispatch(
-        "decompose", title="音源の分解", filename=filename,
+        "decompose", title="パート分離と採譜", filename=filename,
         stages=decompose_stages(detect_bpm=detected_bpm is None),
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )

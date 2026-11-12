@@ -57,8 +57,12 @@ export default defineConfig({
             command: `node ../scripts/dev-web.mjs --port ${PORT}`,
             url: URL,
             timeout: 120_000,
-            // dev-web.mjs は、受け取った環境変数をそのまま API サーバに渡す
-            env: REAL_LLM ? {} : { ANTHROPIC_BASE_URL: FAKE_LLM_URL, ANTHROPIC_API_KEY: 'e2e-fake-key' },
+            // dev-web.mjs は、受け取った環境変数をそのまま API サーバに渡す。
+            // BUNRI_E2E_HOOKS: テスト用の、わざと遅いジョブの API を足す (進み具合のカードと中止を確かめるため)
+            env: {
+                BUNRI_E2E_HOOKS: '1',
+                ...(REAL_LLM ? {} : { ANTHROPIC_BASE_URL: FAKE_LLM_URL, ANTHROPIC_API_KEY: 'e2e-fake-key' }),
+            },
         },
     ],
     projects: [

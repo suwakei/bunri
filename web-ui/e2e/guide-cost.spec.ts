@@ -6,7 +6,7 @@
  * 画面の見た目からではなく、直接確かめられる。
  */
 import { expect, test, type Page } from '@playwright/test';
-import { FAKE_LLM_URL, importSong, makeWav, openDaw, openTab } from './helpers';
+import { FAKE_LLM_URL, importSong, makeWav, openDaw, openTab, runJob } from './helpers';
 
 test.skip(Boolean(process.env.BUNRI_E2E_LLM), '偽の Claude サーバを相手にするテスト。本物を呼ぶ BUNRI_E2E_LLM=1 のときは走らせない');
 
@@ -20,9 +20,8 @@ async function llmCalls(page: Page): Promise<number> {
 async function openChart(page: Page, filename: string) {
     await openDaw(page);
     const wav = makeWav(16, [261.63, 196.0, 220.0, 174.61, 261.63, 196.0, 220.0, 174.61]);
-    const analyzed = page.waitForResponse((r) => r.url().endsWith('/api/chart'), { timeout: 60_000 });
-    await importSong(page, { name: filename, mimeType: 'audio/wav', buffer: wav });
-    expect((await analyzed).status()).toBe(200);
+    const analyzed = await runJob(page, '/api/chart', () => importSong(page, { name: filename, mimeType: 'audio/wav', buffer: wav }));
+    expect(analyzed.state).toBe('done');
     await openTab(page, 'ガイド');
     return page.locator('#guide-panel');
 }

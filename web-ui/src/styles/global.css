@@ -1850,3 +1850,316 @@ button.link-btn:hover {
 
 /* 空の状態のあいだは「+ トラック追加」を出さない (案内の「自由に作る」が同じことをする) */
 #btn-add-track[hidden] { display: none; }
+
+/* ---- 時間のかかる処理の進み具合のカード (components/JobCard.tsx) ---- */
+.job-card {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--text);
+}
+
+.job-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.job-card-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.job-card-title strong {
+    flex: none;
+    white-space: nowrap;
+}
+
+.job-card-file {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-mid);
+    font-size: 11px;
+}
+
+.job-card-stage {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+    color: var(--text-mid);
+    line-height: 1.5;
+}
+
+.job-card-count {
+    flex: none;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.job-bar {
+    position: relative;
+    height: 4px;
+    margin-top: 8px;
+    border-radius: 2px;
+    background: var(--bg-elevated);
+    overflow: hidden;
+}
+
+.job-bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease-out;
+}
+
+/* 割合が分からない段階は、端から端へ動き続けるバー */
+.job-bar.indeterminate .job-bar-fill {
+    width: 30%;
+    animation: job-bar-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes job-bar-slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(340%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .job-bar.indeterminate .job-bar-fill { animation: none; width: 100%; opacity: 0.4; }
+}
+
+.job-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.job-card-elapsed {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.job-cancel {
+    padding: 3px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.job-cancel:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.job-cancel:disabled {
+    color: var(--text-dim);
+    cursor: default;
+}
+
+.job-card-note {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-dim);
+}
+
+/* 始めようとして断られた (ほかの処理が動いていた) ときの知らせ */
+.job-busy {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-left: 2px solid var(--warn);
+    background: rgba(255, 255, 255, 0.02);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+}
+
+.job-busy .link-btn {
+    margin-left: 6px;
+}
+
+/* ステータスバーの、動いている処理の小さな表示 */
+#job-indicator {
+    flex: 0 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 45%;
+}
+
+#job-indicator .job-indicator-open {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+#job-indicator .job-indicator-open:disabled {
+    cursor: default;
+}
+
+#job-indicator .job-indicator-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+
+#job-indicator .job-indicator-dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: job-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes job-dot {
+    50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #job-indicator .job-indicator-dot { animation: none; }
+}
+
+#job-indicator .job-cancel {
+    flex: none;
+    padding: 0 8px;
+    font-size: 11px;
+    line-height: 18px;
+}
+
+/* ---- 処理を担当する部分 (sidecar) が止まったときの知らせ (components/HealthBanner.tsx) ---- */
+/* 画面の下 (ステータスバーの上) に重ねる。ヘッダの再生や保存のボタンを隠さないように */
+#health-banner {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    width: min(560px, calc(100vw - 32px));
+    padding: 10px 14px;
+    border: 1px solid var(--error);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-md);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+}
+
+#health-banner.restarting {
+    border-color: var(--border-light);
+}
+
+#health-banner strong {
+    display: block;
+    font-size: 13px;
+    color: var(--error);
+}
+
+#health-banner.restarting strong {
+    color: var(--text);
+}
+
+#health-banner p {
+    margin-top: 4px;
+    color: var(--text-mid);
+}
+
+#health-banner .health-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+#health-banner .health-actions button {
+    padding: 4px 14px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: var(--bg-deep);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+#health-banner .health-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+#health-banner code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+/* ---- 差分の説明 (CoachPanel) ---- */
+.coach-explain {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.coach-points {
+    padding-left: 18px;
+    margin: 8px 0 0;
+}
+
+.coach-points > li {
+    margin-bottom: 12px;
+}
+
+.coach-point-title {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.coach-point-label {
+    color: var(--text-mid);
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+.coach-refs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+/* 指摘の一覧で、説明の参照から選んだもの */
+.coach-issue.highlighted > button {
+    background: var(--accent-dim) !important;
+    outline: 1px solid var(--accent);
+    border-radius: 2px;
+}

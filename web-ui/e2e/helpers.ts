@@ -1,7 +1,7 @@
 /**
  * ブラウザのテストで使う共通の部品。
  */
-import type { Page } from '@playwright/test';
+import type { Page, Request } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
 /** テスト用の小さな MP3 (C4 E4 G4 C5 を 2 秒ずつ、8 秒)。WAV 以外の曲の取り込みを確かめるのに使う。 */
@@ -180,4 +180,80 @@ export function readWav(bytes: Buffer): { seconds: number; peak: number; sampleR
         pos += 8 + size + (size % 2);
     }
     throw new Error('WAV に data が在りません');
+}
+
+/** ジョブの API (docs/jobs.md) のパスと種類。 */
+const JOB_KINDS: Record<string, string> = {
+    '/api/chart': 'chart', '/api/chart/regrid': 'chart_regrid', '/api/decompose': 'decompose',
+    '/api/analyze': 'analyze', '/api/separate': 'separate', '/api/deep-separate': 'deep_separate',
+};
+
+/**
+ * 時間のかかる API (`?async=1` でジョブとして始める) の応答を差し替える。始めると 202 でジョブを返し、
+ * 状態を聞かれたら「終わった」と `result()` の結果を返す。差し替えは画面を開く前に仕掛ける。
+ *
+ * @param path - API のパス (`/api/chart` など)
+ * @param result - ジョブの結果 (待つ呼び方の応答の本文と同じ形)
+ * @param onStart - 始めるリクエストを受け取ったとき (送られた中身を確かめるのに使う)
+ */
+export async function fakeJob(page: Page, path: string, result: () => unknown, onStart?: (request: Request) => void): Promise<void> {
+    const kind = JOB_KINDS[path] ?? 'chart';
+    const results = new Map<string, unknown>();
+    const job = (id: string, state: string, extra: object = {}) => ({
+        id, kind, title: 'テスト用のジョブ', filename: 'song', state, cancel_requested: false, stage: null, stage_key: null,
+        stage_index: null, stage_count: 1, progress: null, elapsed_sec: 0, error: null, result: null, ...extra,
+    });
+    await page.route((url) => url.pathname === path, (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        onStart?.(route.request());
+        const id = `fake-${kind}-${results.size + 1}`;
+        results.set(id, result());
+        return route.fulfill({ status: 202, json: job(id, 'running') });
+    });
+    await page.route((url) => url.pathname.startsWith(`/api/jobs/fake-${kind}-`), (route) => {
+        const id = decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop() ?? '');
+        if (!results.has(id)) return route.fallback();
+        return route.fulfill({ json: job(id, 'done', { result: results.get(id) }) });
+    });
+}
+
+/**
+ * 時間のかかる API をジョブとして始める操作をして、ジョブが終わるまで待ち、最後の状態を返す。
+ *
+ * @param path - API のパス (`/api/chart` など)
+ * @param action - ジョブを始める操作 (ボタンを押す、ファイルを選ぶ)
+ */
+export async function runJob(page: Page, path: string, action: () => Promise<void>, timeout = 60_000): Promise<{ state: string; result: unknown; id: string }> {
+    const started = page.waitForResponse((r) => new URL(r.url()).pathname === path && r.request().method() === 'POST', { timeout });
+    await action();
+    const response = await started;
+    if (response.status() !== 202) throw new Error(`ジョブが始まりませんでした (${response.status()}): ${await response.text()}`);
+    const { id } = await response.json();
+    const finished = await page.waitForResponse(async (r) => {
+        if (new URL(r.url()).pathname !== `/api/jobs/${id}`) return false;
+        const state = (await r.json().catch(() => ({}))).state;
+        return state === 'done' || state === 'error' || state === 'cancelled';
+    }, { timeout });
+    return finished.json();
+}
+
+/**
+ * テスト用の、わざと遅いジョブを API サーバで直接始める (backend/web/e2e_routes.py。BUNRI_E2E_HOOKS=1 のときだけ在る)。
+ * 名前とステージは本物の種類と同じ。
+ */
+export async function startSlowJob(page: Page, kind: string, seconds: number, filename = 'e2e-slow.wav') {
+    const response = await page.request.post(`/api/e2e/slow-job?kind=${kind}&seconds=${seconds}&filename=${encodeURIComponent(filename)}`);
+    if (response.status() !== 202) throw new Error(`遅いジョブを始められませんでした (${response.status()}): ${await response.text()}`);
+    return response.json() as Promise<{ id: string; title: string }>;
+}
+
+/** 動いているジョブがあれば中止して、終わるまで待つ (ほかのテストに持ち越さない)。 */
+export async function cancelActiveJobs(page: Page): Promise<void> {
+    for (let i = 0; i < 100; i++) {
+        const { active } = await (await page.request.get('/api/jobs')).json();
+        if (!active) return;
+        await page.request.post(`/api/jobs/${active.id}/cancel`);
+        await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error('ジョブが止まりませんでした');
 }

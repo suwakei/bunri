@@ -6,7 +6,7 @@
  * - バックエンド宛てでない URL（blob: や外部）にはトークンを付けないこと
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { apiFetch, backendUrl, initBackend, isDesktop, setBackendForTest, getBackend } from '../lib/api';
+import { apiFetch, backendUrl, initBackend, isDesktop, setBackendForTest, getBackend, setNetworkErrorListener } from '../lib/api';
 
 const DESKTOP = { baseUrl: 'http://127.0.0.1:54321', token: 'tok en/1' };
 const BROWSER = { baseUrl: '', token: null };
@@ -141,5 +141,27 @@ describe('デスクトップ版', () => {
     it('backendUrl は blob: や外部の URL を変えない', () => {
         expect(backendUrl('blob:tauri://localhost/1234')).toBe('blob:tauri://localhost/1234');
         expect(backendUrl('https://example.com/a.wav')).toBe('https://example.com/a.wav');
+    });
+});
+
+describe('届かなかったときの知らせ', () => {
+    afterEach(() => setNetworkErrorListener(null));
+
+    it('API に届かなかったら (fetch の TypeError) 見張りに知らせ、失敗はそのまま返す', async () => {
+        const listener = vi.fn();
+        setNetworkErrorListener(listener);
+        fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        await expect(apiFetch('/api/chart')).rejects.toBeInstanceOf(TypeError);
+        expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('中断や、バックエンド宛てでない URL の失敗では知らせない', async () => {
+        const listener = vi.fn();
+        setNetworkErrorListener(listener);
+        fetchMock.mockRejectedValueOnce(new DOMException('aborted', 'AbortError'));
+        await expect(apiFetch('/api/chart')).rejects.toThrow('aborted');
+        fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        await expect(apiFetch('blob:http://x/1')).rejects.toBeInstanceOf(TypeError);
+        expect(listener).not.toHaveBeenCalled();
     });
 });

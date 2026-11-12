@@ -15,8 +15,9 @@
 import { useCallback } from 'react';
 import { useDaw } from './store';
 import engine, { type PianoNote, type Track } from './engine';
-import { apiFetch, errorDetail } from './api';
+import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
+import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
 import type { ChartResponse } from './chart';
 
 /** 原曲のトラックの名前。 */
@@ -28,6 +29,18 @@ export const SONG_ACCEPT = '.wav,.mp3,.flac,.ogg,.m4a,.aac,.aif,.aiff';
 /** トラックに読み込める音声ファイルか（拡張子で見る。最後はデコードできるかで決まる）。 */
 export function isAudioFileName(name: string): boolean {
     return /\.(wav|mp3|flac|ogg|oga|m4a|aac|aif|aiff|webm)$/i.test(name);
+}
+
+/**
+ * いまのパートのトラックを、どのカルテのグリッドで採譜したか（カルテの ID）。カルテ無しで分けたなら null。
+ * 差分の説明（`/api/coach/explain`）にカルテを添えてよいか（お手本と同じ曲のカルテか）を決めるのに使う。
+ * 別の曲を取り込むとカルテは入れ替わるが、パートは前の曲のまま残るので、ID を比べて見分ける。
+ */
+let partsChartId: string | null = null;
+
+/** いまのパートのトラックを採譜したときのカルテの ID（カルテ無しで分けた、またはまだ分けていなければ null）。 */
+export function chartIdOfParts(): string | null {
+    return partsChartId;
 }
 
 /** パートの名前（API の識別子）から、画面に出す名前へ。 */
@@ -164,9 +177,9 @@ export function stepStates(facts: ProgressFacts): Record<StepKey, StepState> {
  */
 export function useLearnActions() {
     const {
-        setStatus, withProgress, bumpTracks, pianoRollRef, bpm, setBpm, beatsPerBar,
+        setStatus, bumpTracks, pianoRollRef, bpm, setBpm, beatsPerBar,
         setChartResult, openLearn, applyChartGrid, setGridOffset, songFile, setSongFile,
-        setGhostChoice, setCoachPair, setLeftTab, chart, record, recordAsync,
+        setGhostChoice, setCoachPair, setLeftTab, chart, chartId, record, recordAsync,
     } = useDaw();
 
     /**
@@ -189,18 +202,56 @@ export function useLearnActions() {
     }, []);
 
     /**
-     * 原曲を取り込む。音声を「原曲」のトラックに置き、カルテを作る。
-     * 終わったら「学ぶ」タブのカルテを開く（結果がどこに出たかを探させない）。
+     * カルテの結果を画面に当てる。テンポ・拍子・1 小節目の位置をカルテに合わせ、カルテの段を開く。
+     * 曲の取り込みの最後と、画面を開き直す前に始めたカルテの作成が終わったとき（つなぎ直し）に使う。
+     *
+     * @param result - `/api/chart` の結果
+     * @param placed - 原曲の音声をタイムラインに置けたか（置けなかったら、その旨を添える）
+     */
+    const finishChart = useCallback((result: ChartResponse, placed = true) => {
+        setChartResult(result);
+        // テンポ・拍子・1 小節目の位置を、カルテに合わせる (カルテとピアノロールの小節番号をそろえる)
+        const applied = applyChartGrid(result.chart);
+        openLearn('chart');
+        bumpTracks();
+        const key = result.chart.key.tonic
+            ? `キー ${result.chart.key.tonic} ${result.chart.key.mode === 'minor' ? 'マイナー' : 'メジャー'}`
+            : 'キー不明';
+        const notes: string[] = [];
+        if (!placed) notes.push('原曲の音声はこのアプリで再生できない形式だったので、タイムラインには置いていません（WAV に変換してから取り込むと置けます）');
+        if (!applied) notes.push('テンポと小節の位置は、パートに分けたときのままにしました');
+        setStatus(`カルテを作りました（${key} / ${result.chart.chords.length} コード）${notes.length ? '。' + notes.join('。') : ''}`,
+            placed ? 'info' : 'error');
+    }, [setChartResult, applyChartGrid, openLearn, bumpTracks, setStatus]);
+
+    /**
+     * 原曲を取り込む。カルテの作成（時間のかかる処理。進み具合は「曲とパート」の段に出る）を始め、
+     * その間に音声を「原曲」のトラックに置く。カルテができたら「学ぶ」タブのカルテを開く
+     * （結果がどこに出たかを探させない）。
+     *
+     * ほかの重い処理が動いていて始められなかったときは、トラックには何もしない（断られた旨を出す）。
      *
      * @param file - 曲のファイル（mp3 / flac / m4a / wav など）
      * @param options.autoBpm - true ならテンポを自動で検出する（false なら、いまの BPM で解析する）
      */
     const importSong = useCallback(async (file: File, options: { autoBpm?: boolean } = {}) => {
         const autoBpm = options.autoBpm ?? true;
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('bpm', autoBpm ? '0' : String(bpm));
+        fd.append('beats_per_bar', String(beatsPerBar));
+        let job: Job;
+        try {
+            job = await jobTracker.start('learn-song', '/api/chart', fd);
+        } catch (e) {
+            setStatus(e instanceof JobBusyError ? e.message : describeError(e), 'error');
+            return;
+        }
         setSongFile(file);
+        setStatus(`原曲を解析しています…（${file.name}）`);
         engine.init();
 
-        // 1. 原曲のトラック。在れば中身を入れ替える (2 本目は作らない)。元に戻せる
+        // 1. 原曲のトラック。在れば中身を入れ替える (2 本目は作らない)。カルテの作成と並べて行う。元に戻せる
         let placed = true;
         await recordAsync('原曲を取り込む', async () => {
             let song = engine.tracks.find(t => t.role === 'song');
@@ -220,32 +271,80 @@ export function useLearnActions() {
         bumpTracks();
 
         // 2. カルテ
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('bpm', autoBpm ? '0' : String(bpm));
-        fd.append('beats_per_bar', String(beatsPerBar));
-        await withProgress(`原曲を解析しています…（${file.name}）`, async () => {
-            const resp = await apiFetch('/api/chart', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const result: ChartResponse = await resp.json();
-            setChartResult(result);
-            // テンポ・拍子・1 小節目の位置を、カルテに合わせる (カルテとピアノロールの小節番号をそろえる)
-            const applied = applyChartGrid(result.chart);
-            openLearn('chart');
-            bumpTracks();
-            const key = result.chart.key.tonic
-                ? `キー ${result.chart.key.tonic} ${result.chart.key.mode === 'minor' ? 'マイナー' : 'メジャー'}`
-                : 'キー不明';
-            const notes: string[] = [];
-            if (!placed) notes.push('原曲の音声はこのアプリで再生できない形式だったので、タイムラインには置いていません（WAV に変換してから取り込むと置けます）');
-            if (!applied) notes.push('テンポと小節の位置は、パートに分けたときのままにしました');
-            setStatus(`カルテを作りました（${key} / ${result.chart.chords.length} コード）${notes.length ? '。' + notes.join('。') : ''}`,
-                placed ? 'info' : 'error');
-        });
-    }, [placeAudio, setSongFile, bumpTracks, bpm, beatsPerBar, withProgress, setChartResult, applyChartGrid, openLearn, setStatus, recordAsync]);
+        const final = await jobTracker.wait(job.id);
+        if (final.state === 'done') finishChart(final.result as ChartResponse, placed);
+        else if (final.state === 'cancelled') setStatus('カルテの作成を中止しました。原曲はトラックに置いてあります。もう一度取り込むと、カルテを作り直せます');
+        else setStatus(jobErrorMessage(final), 'error');
+    }, [placeAudio, setSongFile, bumpTracks, bpm, beatsPerBar, finishChart, setStatus, recordAsync]);
 
     /**
-     * 原曲をパートに分けて採譜する。パートごとに、パートの音声とお手本を持つトラックを作る。
+     * パート分離の結果を、トラックにする。パートごとに、パートの音声とお手本を持つトラックを作る。
+     * 前に分けたパート（と練習のトラック）は入れ替える。
+     * パートに分けたときの最後と、画面を開き直す前に始めたパート分離が終わったとき（つなぎ直し）に使う。
+     *
+     * @param result - `/api/decompose` の結果
+     */
+    const applyParts = useCallback(async (result: DecomposeResult) => {
+        // パートのトラックの入れ替えは、まとめて元に戻せる。記録を開くのは結果が届いてから
+        // (ジョブの間ずっと開いておくと、その間のほかの操作がこの記録に混ざるため)
+        let created = 0, withReference = 0;
+        await recordAsync('パートに分ける', async () => {
+            if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
+            if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
+
+            // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
+            for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
+                if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
+                engine.removeTrack(old.id);
+            }
+
+            for (const [stemName, stem] of Object.entries(result.stems)) {
+                const label = PART_LABELS[stemName] || stemName;
+                const track = engine.addTrack(label);
+                track.role = 'part';
+                track.part = stemName;
+                created++;
+                if (stem.mix) {
+                    engine.updateTrackGain(track.id, stem.mix.volume_db);
+                    engine.updateTrackPan(track.id, stem.mix.pan);
+                }
+                if (stem.audio_url) {
+                    try {
+                        await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
+                    } catch (e) {
+                        console.warn(`${stemName} の音声を読み込めませんでした:`, e);
+                    }
+                }
+                if (stem.notes && stem.notes.length > 0) {
+                    // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
+                    track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+                    track.pianoNotes = [];
+                    withReference++;
+                }
+                if (stem.drum_events && stem.drum_events.length > 0) {
+                    // ドラムは以前どおり、種類ごとに決まった高さのノートとして置く (お手本にはしない)
+                    const drumMap: Record<string, { note: string; octave: number }> = {
+                        kick: { note: 'C', octave: 2 },
+                        snare: { note: 'D', octave: 2 },
+                        hihat: { note: 'F#', octave: 2 },
+                    };
+                    track.pianoNotes = stem.drum_events.map(e => ({ ...(drumMap[e.type] || drumMap.kick), step: e.step, length: 1 }));
+                }
+                // 原曲と重なると音が大きくなるので、パートは最初はミュートしておく
+                if (engine.tracks.some(t => t.role === 'song')) {
+                    if (!track.mute) engine.toggleMute(track.id);
+                }
+            }
+        });
+        setCoachPair({ referenceId: null, attemptId: null });
+        bumpTracks();
+        openLearn('song');
+        setStatus(`パートに分けました（${created} パート、お手本 ${withReference} パート）。練習するパートの「このパートを練習する」を押してください`);
+    }, [setBpm, setGridOffset, pianoRollRef, setCoachPair, bumpTracks, openLearn, setStatus, recordAsync]);
+
+    /**
+     * 原曲をパートに分けて採譜する（時間のかかる処理。進み具合は「パートに分ける」の下に出る）。
+     * パートごとに、パートの音声とお手本を持つトラックを作る（`applyParts`）。
      * 打ち込み（ピアノロールのノート）は空のまま。お手本は水色で重ねて見せる。
      * ドラムは以前どおり、採譜したリズムをノートとして置く（差分チェックの対象外）。
      *
@@ -267,71 +366,19 @@ export function useLearnActions() {
         fd.append('bpm', chart ? String(engine.bpm) : '0');
         fd.append('grid_offset', chart ? String(engine.gridOffset) : '0');
         fd.append('sensitivity', String(sensitivity));
+        const usedChart = chart ? chartId : null;
 
         const notice = await modelDownloadNotice('htdemucs_6s');
-        await withProgress(
-            `原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`,
-            async () => {
-                const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
-                if (!resp.ok) throw new Error(await errorDetail(resp));
-                const result: DecomposeResult = await resp.json();
-                // ここから先 (パートのトラックの入れ替え) は、まとめて元に戻せる
-                let created = 0, withReference = 0;
-                await recordAsync('パートに分ける', async () => {
-                    if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
-                    if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
-
-                    // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
-                    for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
-                        if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
-                        engine.removeTrack(old.id);
-                    }
-
-                    for (const [stemName, stem] of Object.entries(result.stems)) {
-                        const label = PART_LABELS[stemName] || stemName;
-                        const track = engine.addTrack(label);
-                        track.role = 'part';
-                        track.part = stemName;
-                        created++;
-                        if (stem.mix) {
-                            engine.updateTrackGain(track.id, stem.mix.volume_db);
-                            engine.updateTrackPan(track.id, stem.mix.pan);
-                        }
-                        if (stem.audio_url) {
-                            try {
-                                await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
-                            } catch (e) {
-                                console.warn(`${stemName} の音声を読み込めませんでした:`, e);
-                            }
-                        }
-                        if (stem.notes && stem.notes.length > 0) {
-                            // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
-                            track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
-                            track.pianoNotes = [];
-                            withReference++;
-                        }
-                        if (stem.drum_events && stem.drum_events.length > 0) {
-                            // ドラムは以前どおり、種類ごとに決まった高さのノートとして置く (お手本にはしない)
-                            const drumMap: Record<string, { note: string; octave: number }> = {
-                                kick: { note: 'C', octave: 2 },
-                                snare: { note: 'D', octave: 2 },
-                                hihat: { note: 'F#', octave: 2 },
-                            };
-                            track.pianoNotes = stem.drum_events.map(e => ({ ...(drumMap[e.type] || drumMap.kick), step: e.step, length: 1 }));
-                        }
-                        // 原曲と重なると音が大きくなるので、パートは最初はミュートしておく
-                        if (engine.tracks.some(t => t.role === 'song')) {
-                            if (!track.mute) engine.toggleMute(track.id);
-                        }
-                    }
-                });
-                setCoachPair({ referenceId: null, attemptId: null });
-                bumpTracks();
-                openLearn('song');
-                setStatus(`パートに分けました（${created} パート、お手本 ${withReference} パート）。練習するパートの「このパートを練習する」を押してください`);
-            },
-        );
-    }, [songFile, chart, applyChartGrid, setStatus, withProgress, setBpm, setGridOffset, pianoRollRef, setCoachPair, bumpTracks, openLearn, recordAsync]);
+        setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
+        try {
+            const result = await jobTracker.run<DecomposeResult>('learn-parts', '/api/decompose', fd);
+            partsChartId = usedChart;
+            await applyParts(result);
+        } catch (e) {
+            if (e instanceof JobCancelledError) setStatus('パート分離を中止しました。いまのパートはそのままです');
+            else setStatus(describeError(e), 'error');
+        }
+    }, [songFile, chart, chartId, applyChartGrid, setStatus, applyParts]);
 
     /**
      * そのパートを練習する。1 回の操作で、次をまとめて行う。
@@ -413,5 +460,5 @@ export function useLearnActions() {
         setStatus(`「${track.name}」を作りました。下のピアノロールをダブルクリックするとノートを置けます`);
     }, [pianoRollRef, setLeftTab, bumpTracks, setStatus, record]);
 
-    return { importSong, separateParts, practicePart, adoptReference, startFree, placeAudio };
+    return { importSong, finishChart, separateParts, applyParts, practicePart, adoptReference, startFree, placeAudio };
 }

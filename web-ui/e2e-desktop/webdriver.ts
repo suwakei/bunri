@@ -68,7 +68,11 @@ export class WebDriverSession {
     }
 
     /**
-     * 条件が真になるまで、画面の中で繰り返し確かめる。
+     * 条件が満たされるまで、画面の中で繰り返し確かめる。
+     *
+     * `fn` は、満たされたら `true` を、まだなら `false` か、いまの様子を説明する文を返す
+     * (文は時間切れのときの説明に出る)。`true` 以外はすべて「まだ」として扱う
+     * (以前は、説明の文も真とみなして待たずに通っていた)。
      *
      * @param what - 待っているもの (時間切れのときの説明)
      */
@@ -78,7 +82,7 @@ export class WebDriverSession {
         while (Date.now() < deadline) {
             try {
                 last = await this.run(fn, ...args);
-                if (last) return;
+                if (last === true) return;
             } catch (e) {
                 last = e;
             }

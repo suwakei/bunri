@@ -176,3 +176,23 @@ describe('HelpPage', () => {
         expect(document.body.textContent).not.toMatch(/オートメーション|AI アシスタント|答え|正解|読込|書出/);
     });
 });
+
+describe('BootMessage', () => {
+    beforeEach(() => cleanup());
+
+    it('起動できなかったときは理由と「再試行」を出し、押すと呼ぶ', async () => {
+        const BootMessage = (await import('../components/BootMessage')).default;
+        let retried = 0;
+        render(<BootMessage title="bunri を起動できませんでした" detail="uv が見つかりません" onRetry={() => { retried += 1; }} />);
+        expect(screen.getByText('uv が見つかりません')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: '再試行' }));
+        expect(retried).toBe(1);
+    });
+
+    it('待っている間は「再試行」を出さない', async () => {
+        const BootMessage = (await import('../components/BootMessage')).default;
+        render(<BootMessage title="bunri を起動しています…" busy />);
+        expect(screen.queryByRole('button', { name: '再試行' })).not.toBeInTheDocument();
+        expect(screen.getByText(/経過 0秒/)).toBeInTheDocument();
+    });
+});
