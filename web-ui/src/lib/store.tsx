@@ -8,6 +8,21 @@ import type { ChartResponse, Glossary, SongChart, WaveformPeaks } from './chart'
 import type { DiffResult } from './coach';
 import { gridFromChart, roundBpm, secToStep, stepToSec } from './grid';
 import { LEFT_WIDTH_DEFAULT, LEFT_WIDTH_MAX, LEFT_WIDTH_MIN, readStored, writeStored } from './storage';
+import { UndoHistory, type PushOptions } from './history';
+import { HISTORY_BUDGET, HISTORY_LIMIT, applyProject, captureProject, projectsEqual, snapshotCost, type ProjectSnapshot } from './project-snapshot';
+
+/** 「〜を削除しました — 元に戻す」の知らせ。 */
+export interface UndoToastState {
+    /** 知らせの番号（同じ文が続いても、出し直しを見分ける） */
+    id: number;
+    /** 知らせの文（「「Track 1」を削除しました」） */
+    message: string;
+    /** この知らせの「元に戻す」で戻す記録。その後に別の操作をしたら、戻さない */
+    entryId: number | null;
+}
+
+/** 編集の記録を始めたときに返す、記録を終える関数。操作で何かが変わっていたら記録して true を返す。 */
+export type CommitEdit = (override?: { label?: string }) => boolean;
 
 /** ステータスバーの文の種類。`error` は失敗の知らせで、色を変えて読み上げの対象にする。 */
 export type StatusKind = 'info' | 'error';
@@ -200,6 +215,48 @@ export interface DawContextType {
     showGridEditor: boolean;
     /** @param v - true でグリッド補正モーダルを開く */
     setShowGridEditor: (v: boolean) => void;
+
+    // ---- 元に戻す / やり直す（lib/history.ts、lib/project-snapshot.ts） ----
+    /** 元に戻せる操作が在るか */
+    canUndo: boolean;
+    /** やり直せる操作が在るか */
+    canRedo: boolean;
+    /** 次に元に戻す操作の名前（「ノートを追加」など）。無ければ null */
+    undoLabel: string | null;
+    /** 次にやり直す操作の名前。無ければ null */
+    redoLabel: string | null;
+    /** 最後の操作を元に戻す（ピアノロールのドラッグ中は何もしない） */
+    undo: () => void;
+    /** 元に戻した操作をやり直す */
+    redo: () => void;
+    /**
+     * プロジェクトを書き換える操作を、元に戻せるように記録する。`fn` の前後でプロジェクトの控えを取る。
+     * 何も変わらなければ記録しない。記録の中で `record` を呼ぶと、外側の記録にまとまる。
+     * @param label - 操作の名前（「ノートを追加」。ボタンの説明と、元に戻したときの知らせに出す）
+     * @param fn - 書き換える処理（同期）
+     * @param options - 続けて同じ操作をしたら 1 つにまとめる鍵など
+     */
+    record: <T>(label: string, fn: () => T, options?: PushOptions) => T;
+    /**
+     * `record` の非同期版。待っているあいだにほかの操作をすると、この記録にまとまる。
+     * 待つのは、デコードなど書き換えに直接かかわるところだけにする（API の応答を待つのは、囲む前に済ませる）。
+     */
+    recordAsync: <T>(label: string, fn: () => Promise<T>, options?: PushOptions) => Promise<T>;
+    /**
+     * 記録を始める（ドラッグのように、始めと終わりが別のイベントになる操作に使う）。
+     * 返す関数を必ず 1 回呼んで終える。
+     */
+    beginEdit: (label: string, options?: PushOptions) => CommitEdit;
+    /** 履歴を全部消す */
+    clearHistory: () => void;
+    /** 「〜を削除しました — 元に戻す」の知らせ。出していなければ null */
+    undoToast: UndoToastState | null;
+    /** いま記録した操作について、「元に戻す」付きの知らせを出す（`record` の直後に呼ぶ） */
+    showUndoToast: (message: string) => void;
+    /** 知らせを閉じる */
+    dismissUndoToast: () => void;
+    /** 知らせの「元に戻す」。知らせを出した後に別の操作をしていたら、戻さずにそう知らせる */
+    undoFromToast: () => void;
 }
 
 const DawContext = createContext<DawContextType | null>(null);
@@ -355,6 +412,146 @@ export function DawProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
+    // ---- 元に戻す / やり直す ----
+    // 履歴は 1 本 (プロジェクト全体)。記録の中身はプロジェクトの控え (lib/project-snapshot.ts。
+    // なぜ控えで持つかは、そのファイルの説明)。描き直しのきっかけは historyVersion
+    const historyRef = useRef<UndoHistory<ProjectSnapshot> | null>(null);
+    if (historyRef.current === null) {
+        historyRef.current = new UndoHistory<ProjectSnapshot>({
+            limit: HISTORY_LIMIT, budget: HISTORY_BUDGET, cost: snapshotCost, equals: projectsEqual,
+        });
+    }
+    const [historyVersion, setHistoryVersion] = useState(0);
+    // 直前に取った控え。中身が同じノートの並びを共有して、メモリを節約する
+    const lastSnapshotRef = useRef<ProjectSnapshot | null>(null);
+    // いま開いている記録の深さ (記録の中の記録は、外側にまとめる)
+    const editDepthRef = useRef(0);
+    const [undoToast, setUndoToast] = useState<UndoToastState | null>(null);
+    const toastRef = useRef<UndoToastState | null>(null);
+    const toastSeq = useRef(0);
+
+    const setToast = useCallback((toast: UndoToastState | null) => {
+        toastRef.current = toast;
+        setUndoToast(toast);
+    }, []);
+
+    /** いまのプロジェクトの控えを取る。ピアノロールが手元に持っているノートを、先にトラックへ書き戻す。 */
+    const capture = useCallback((): ProjectSnapshot => {
+        pianoRollRef.current?._saveToEngine?.();
+        const snap = captureProject(engine, lastSnapshotRef.current);
+        lastSnapshotRef.current = snap;
+        return snap;
+    }, []);
+
+    const beginEdit = useCallback((label: string, options: PushOptions = {}): CommitEdit => {
+        let done = false;
+        if (editDepthRef.current > 0) {
+            // 記録の中の記録。外側の記録にまとまるので、ここでは記録しない
+            editDepthRef.current += 1;
+            return () => {
+                if (!done) { done = true; editDepthRef.current = Math.max(0, editDepthRef.current - 1); }
+                return false;
+            };
+        }
+        editDepthRef.current = 1;
+        const before = capture();
+        return (override) => {
+            if (done) return false;
+            done = true;
+            editDepthRef.current = 0;
+            const after = capture();
+            const entry = historyRef.current!.push(override?.label ?? label, before, after, options);
+            setHistoryVersion(v => v + 1);
+            // 別の操作をしたら、前の「元に戻す」の知らせは閉じる (押すと、その別の操作が戻ってしまう)
+            if (toastRef.current && (!entry || entry.id !== toastRef.current.entryId)) setToast(null);
+            return entry !== null;
+        };
+    }, [capture, setToast]);
+
+    const record = useCallback(<T,>(label: string, fn: () => T, options?: PushOptions): T => {
+        const commit = beginEdit(label, options);
+        try {
+            return fn();
+        } finally {
+            commit();
+        }
+    }, [beginEdit]);
+
+    const recordAsync = useCallback(async <T,>(label: string, fn: () => Promise<T>, options?: PushOptions): Promise<T> => {
+        const commit = beginEdit(label, options);
+        try {
+            return await fn();
+        } finally {
+            commit();
+        }
+    }, [beginEdit]);
+
+    /** 記録の前後どちらかの控えを当てる。グリッドが変わっていれば、それも戻す。 */
+    const restore = useCallback((target: ProjectSnapshot, other: ProjectSnapshot) => {
+        const grid = applyProject(engine, target, other);
+        if (grid) {
+            setBpm(grid.bpm);
+            setBeatsPerBarState(grid.beatsPerBar);
+            engine.beatsPerBar = grid.beatsPerBar;
+            setGridOffset(grid.offsetSec);
+        }
+        lastSnapshotRef.current = target;
+        pianoRollRef.current?.reloadFromEngine?.();
+        setTrackVersion(v => v + 1);
+        setHistoryVersion(v => v + 1);
+    }, [setBpm, setGridOffset]);
+
+    /** 元に戻す・やり直すをしてよいか (記録の途中や、ピアノロールのドラッグ中はしない)。 */
+    const canStep = useCallback(() => editDepthRef.current === 0 && !pianoRollRef.current?.isBusy?.(), []);
+
+    const undo = useCallback(() => {
+        if (!canStep()) return;
+        pianoRollRef.current?._saveToEngine?.();
+        const entry = historyRef.current!.undo();
+        if (!entry) return;
+        restore(entry.before, entry.after);
+        if (toastRef.current?.entryId === entry.id) setToast(null);
+        setStatus(`元に戻しました（${entry.label}）`);
+    }, [canStep, restore, setToast, setStatus]);
+
+    const redo = useCallback(() => {
+        if (!canStep()) return;
+        pianoRollRef.current?._saveToEngine?.();
+        const entry = historyRef.current!.redo();
+        if (!entry) return;
+        restore(entry.after, entry.before);
+        setStatus(`やり直しました（${entry.label}）`);
+    }, [canStep, restore, setStatus]);
+
+    const clearHistory = useCallback(() => {
+        historyRef.current!.clear();
+        lastSnapshotRef.current = null;
+        setToast(null);
+        setHistoryVersion(v => v + 1);
+    }, [setToast]);
+
+    const showUndoToast = useCallback((message: string) => {
+        toastSeq.current += 1;
+        setToast({ id: toastSeq.current, message, entryId: historyRef.current!.peekUndo()?.id ?? null });
+    }, [setToast]);
+
+    const dismissUndoToast = useCallback(() => setToast(null), [setToast]);
+
+    const undoFromToast = useCallback(() => {
+        const toast = toastRef.current;
+        setToast(null);
+        if (!toast || toast.entryId === null) return;
+        if (historyRef.current!.peekUndo()?.id !== toast.entryId) {
+            setStatus('その後に別の操作をしたので、この知らせからは元に戻せません。「元に戻す」で 1 つずつ戻してください');
+            return;
+        }
+        undo();
+    }, [setToast, setStatus, undo]);
+
+    const history = historyRef.current;
+    const nextUndo = history.peekUndo(), nextRedo = history.peekRedo();
+    void historyVersion;
+
     const value: DawContextType = {
         engine,
         status: statusState.text, statusKind: statusState.kind, setStatus,
@@ -377,6 +574,10 @@ export function DawProvider({ children }: { children: ReactNode }) {
         chart, chartId, chartPeaks, glossary,
         setChartResult, clearChart,
         showGridEditor, setShowGridEditor,
+        canUndo: nextUndo !== null, canRedo: nextRedo !== null,
+        undoLabel: nextUndo?.label ?? null, redoLabel: nextRedo?.label ?? null,
+        undo, redo, record, recordAsync, beginEdit, clearHistory,
+        undoToast, showUndoToast, dismissUndoToast, undoFromToast,
     };
 
     return <DawContext.Provider value={value}>{children}</DawContext.Provider>;
