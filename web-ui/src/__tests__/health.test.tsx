@@ -79,6 +79,25 @@ describe('開発用のブラウザ起動', () => {
     });
 });
 
+describe('応答が遅いとき', () => {
+    it('時間切れが 1〜2 回続くだけでは知らせない (重い解析の最中)。続けば知らせる', async () => {
+        health.configure({ timeout: 20, ok: 5, down: 5, retry: 1 });
+        // 中断されるまで応答しない (遅い)
+        fetchMock.mockImplementation((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }));
+        const seen: { kind: string; at: number }[] = [];
+        let checks = 0;
+        health.subscribe(() => seen.push({ kind: health.getState().kind, at: checks }));
+        const stop = health.start();
+        await waitFor(() => expect(health.getState().kind).toBe('down'), { timeout: 3000 });
+        // 1 回の確かめで 2 回問い合わせる。3 回の確かめ (6 回の問い合わせ) より前には知らせていない
+        checks = fetchMock.mock.calls.length;
+        expect(checks).toBeGreaterThanOrEqual(6);
+        stop();
+    });
+});
+
 describe('デスクトップ版', () => {
     function desktop(invoke: (cmd: string) => unknown) {
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async (cmd: string) => invoke(cmd)) } };

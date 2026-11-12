@@ -247,6 +247,8 @@ function listenersOn(port: number): number[] {
 describe('sidecar が止まったとき', () => {
     it('止まったことを知らせ、「再起動」で新しいポートとトークンの sidecar に差し替わる', async () => {
         const before = await backendInfo();
+        // 止める前は、知らせは出ていない (重い処理のあとでも、応答が遅いだけで知らせない)
+        expect(await app.run(() => document.querySelector('#health-banner') === null)).toBe(true);
         // このテストが起動したアプリの sidecar だけを止める (backend_info が教えたポートで待ち受けているプロセス)
         const pids = listenersOn(before.port);
         expect(pids.length, `ポート ${before.port} で待ち受けている sidecar が見つからない`).toBeGreaterThan(0);
@@ -257,9 +259,10 @@ describe('sidecar が止まったとき', () => {
             const banner = document.querySelector('#health-banner');
             return banner?.textContent?.includes('処理を担当する部分が止まりました') ? true : `いまの知らせ: ${banner?.textContent ?? '無し'}`;
         }, [], 20_000);
-        expect(await app.run(() => (window as unknown as {
+        // Rust も sidecar の終了に気づいている (画面の問い合わせが先に失敗して、知らせが先に出ることもある)
+        await app.waitFor('boot_status が失敗になる', () => (window as unknown as {
             __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } };
-        }).__TAURI__.core.invoke<{ phase: string }>('boot_status').then((s) => s.phase))).toBe('failed');
+        }).__TAURI__.core.invoke<{ phase: string }>('boot_status').then((s) => s.phase === 'failed' ? true : s.phase), [], 10_000);
 
         await app.click('//*[@id="health-banner"]//button[normalize-space()="再起動"]');
         await app.waitFor('知らせが消える', () => document.querySelector('#health-banner') === null, [], 60_000);

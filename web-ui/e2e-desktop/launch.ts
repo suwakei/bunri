@@ -149,10 +149,11 @@ export async function launchApp(): Promise<LaunchedApp> {
         let sidecarPort: number | null = null;
         try {
             const session = await WebDriverSession.create(webdriverPort);
+            // sidecar が止まったまま (テストが途中で失敗した) なら聞けないが、窓は閉じる
             sidecarPort = await session.run(async () => {
                 const tauri = (window as unknown as { __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } } }).__TAURI__;
                 return (await tauri.core.invoke<{ port: number }>('backend_info')).port;
-            });
+            }).catch(() => null);
             // メインの窓を閉じる = 利用者が窓を閉じたときと同じ終わり方 (sidecar も一緒に止まるはず)
             await session.closeWindow();
         } catch (e) {

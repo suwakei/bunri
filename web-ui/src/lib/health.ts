@@ -36,7 +36,16 @@ interface Intervals {
     retry: number;
 }
 
-const DEFAULT_INTERVALS: Intervals = { ok: 5000, down: 3000, hidden: 15000, timeout: 4000, retry: 800 };
+const DEFAULT_INTERVALS: Intervals = { ok: 5000, down: 3000, hidden: 15000, timeout: 6000, retry: 800 };
+
+/**
+ * 応答が遅いだけ (時間切れ) のときに、止まったと決めるまでの回数。重い解析が CPU を使い切っている間は、
+ * 軽い応答でも遅れることがあるので、つながらない (待ち受けていない) ときより慎重に決める。
+ */
+const SLOW_STRIKES = 3;
+
+/** 1 回の問い合わせの結果。ok: 応答した / unreachable: つながらない・失敗した / slow: 時間切れ */
+type Ping = 'ok' | 'unreachable' | 'slow';
 
 const OK: HealthState = { kind: 'ok' };
 
@@ -47,6 +56,8 @@ class HealthMonitor {
     private timer: ReturnType<typeof setTimeout> | null = null;
     private running = false;
     private checking = false;
+    /** 続けて時間切れになった回数 */
+    private slowStrikes = 0;
     private intervals: Intervals = DEFAULT_INTERVALS;
 
     subscribe = (listener: () => void): (() => void) => {
@@ -84,6 +95,7 @@ class HealthMonitor {
         this.set({ kind: 'restarting' });
         try {
             await restartBackend();
+            this.slowStrikes = 0;
             jobTracker.serverRestarted();
             this.set(OK);
         } catch (e) {
@@ -128,15 +140,16 @@ class HealthMonitor {
         return this.state.kind === 'ok' ? this.intervals.ok : this.intervals.down;
     }
 
-    /** 1 回の軽い問い合わせ。応答が返れば true。 */
-    private async ping(): Promise<boolean> {
+    /** 1 回の軽い問い合わせ。 */
+    private async ping(): Promise<Ping> {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.intervals.timeout);
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; controller.abort(); }, this.intervals.timeout);
         try {
             const resp = await apiFetch('/api/health', { cache: 'no-store', signal: controller.signal });
-            return resp.ok;
+            return resp.ok ? 'ok' : 'unreachable';
         } catch {
-            return false;
+            return timedOut ? 'slow' : 'unreachable';
         } finally {
             clearTimeout(timer);
         }
@@ -169,25 +182,32 @@ class HealthMonitor {
                 // ほかの窓が起動し直している。終わったら、新しい接続情報を受け取る
                 try {
                     await refreshBackend();
-                    return (await this.ping()) ? OK : { kind: 'down', detail: null };
+                    return (await this.ping()) === 'ok' ? OK : { kind: 'down', detail: null };
                 } catch (e) {
                     return { kind: 'down', detail: describeError(e) };
                 }
             }
             if (status?.phase === 'failed') return { kind: 'down', detail: status.message };
         }
-        if (await this.ping()) return OK;
+        if (await this.ping() === 'ok') { this.slowStrikes = 0; return OK; }
         // 一瞬の取りこぼし (重い処理の切り替わりなど) で知らせないよう、少し待ってもう 1 回だけ確かめる
         await new Promise((resolve) => setTimeout(resolve, this.intervals.retry));
-        if (await this.ping()) return OK;
+        const second = await this.ping();
+        if (second === 'ok') { this.slowStrikes = 0; return OK; }
         if (isDesktop()) {
             // ほかの窓が起動し直して、ポートとトークンが変わっていたら、受け取り直して確かめる
             try {
-                if (await refreshBackend() && await this.ping()) return OK;
+                if (await refreshBackend() && await this.ping() === 'ok') { this.slowStrikes = 0; return OK; }
             } catch (e) {
                 detail = describeError(e);
             }
         }
+        // 遅いだけなら、何回か続くまでは止まったと決めない (いまの状態のまま)
+        if (second === 'slow' && this.state.kind === 'ok') {
+            this.slowStrikes += 1;
+            if (this.slowStrikes < SLOW_STRIKES) return OK;
+        }
+        this.slowStrikes = 0;
         return { kind: 'down', detail };
     }
 }
