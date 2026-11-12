@@ -1472,3 +1472,93 @@ async def api_coach_diff(payload: dict = Body(...)):
         return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"), **options)
     except coach_diff.DiffError as e:
         raise HTTPException(400, str(e))
+
+
+# ---- 差分コーチの言語化（第3層）API ----
+
+def _coach_facts(payload: dict):
+    """リクエストの本文から、差分の事実を組み立てる（内部用）。
+
+    差分は、利用者が送ってきた結果を信じず、ノートからサーバの側で計算し直す。
+
+    Raises:
+        HTTPException: 入力の形が正しくない・お手本が空（400）、``chart_id`` のカルテが見つからない（404）。
+    """
+    import coach_diff
+    import coach_explain
+
+    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance") if key in payload}
+    chart = None
+    if payload.get("chart_id"):
+        chart, _ = _guide_chart(str(payload["chart_id"]), "")
+    try:
+        return coach_explain.build_facts(payload.get("reference"), payload.get("attempt"),
+                                         chart=chart, bpm=payload.get("bpm"), **options)
+    except coach_diff.DiffError as e:
+        raise HTTPException(400, {"message": str(e), "code": "invalid"})
+
+
+@app.post("/api/coach/explain/saved")
+def api_coach_explain_saved(payload: dict = Body(...)):
+    """Claude を呼ばずに返せる差分の説明を返す（費用はかからない）。
+
+    画面は、お手本と比べた直後にこれを呼び、返せる説明が在れば最初から表示する。返せるのは、
+    同じ事実で作った保存済みの説明か、LLM に頼むまでもないとき（違いが無い・少ない、など）の決まった文。
+
+    Args:
+        payload: ``POST /api/coach/explain`` と同じ本文（``regenerate`` は見ない）。
+
+    Returns:
+        ``{"saved": bool, "today": 今日の使用量}``。``saved`` が True のときは、
+        ``POST /api/coach/explain`` と同じ項目も持つ。
+
+    Raises:
+        HTTPException: ``POST /api/coach/explain`` の、入力に関するものと同じ（400、404）。
+    """
+    import coach_explain
+    import guide_usage
+
+    saved = coach_explain.saved_explanation(_coach_facts(payload))
+    return {"saved": saved is not None, **(saved or {}), "today": guide_usage.today()}
+
+
+@app.post("/api/coach/explain")
+def api_coach_explain(payload: dict = Body(...)):
+    """お手本と打ち込みの差分を、言葉の説明にする（第3層）。
+
+    差分の事実（``coach_diff``）を Claude に渡し、「どんな傾向の違いか、音楽的になぜそうなったと
+    考えられるか、まず何を見直すか」を受け取る。Claude は言葉にするだけで、音符は出さない。
+    出力は、事実と突き合わせてから返す。
+
+    同じ事実の説明が保存済みなら、Claude を呼ばずにそれを返す。違いが無い・ごく少ない、打ち込みが無い、
+    お手本が少ないときも、Claude を呼ばずに決まった文を返す（``source`` が ``"rule"``）。
+    使用量の記録と 1 日の上限は、再現ガイドと共通。Claude の応答を待つ間ほかのリクエストを
+    止めないよう、同期関数にしてある。
+
+    Args:
+        payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みのノート列）は必須。
+            ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ）。
+            ``chart_id``（お手本と同じ曲のカルテ）を付けると、キーを事実に足す。さらに ``bpm``
+            （お手本を採譜したときのテンポ）も付けると、その場のコードとセクションも足す。
+            ``regenerate`` が真なら、保存済みが在っても作り直す（費用がかかる）。
+
+    Returns:
+        ``{"explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
+        "created_at", "cached": bool, "input", "today": 今日の使用量}``。``cost_usd`` は概算。
+
+    Raises:
+        HTTPException: 入力の形が正しくない・お手本が空・Claude の出力を事実と結び付けられなかった（400）、
+            カルテが見つからない（404）、API キーが無い・正しくない（401）、利用制限・1 日の上限（429）、
+            入力が長すぎる（413）、Claude 側の失敗（502）。
+            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``（再現ガイドと同じ）。
+    """
+    import coach_explain
+    import guide_usage
+    import reproduction_guide
+
+    facts = _coach_facts(payload)
+    try:
+        result = coach_explain.explain_for(facts, regenerate=payload.get("regenerate") is True)
+    except reproduction_guide.GuideError as e:
+        raise _guide_http_error(e)
+    return {**result, "today": guide_usage.today()}
