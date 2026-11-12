@@ -4,22 +4,39 @@ bunri の画面を、人の代わりにプログラム（Playwright）や Claude
 
 ## 何を操作しているか
 
-製品の形はデスクトップアプリだが、Playwright や Chrome DevTools が操作できるのは **ブラウザ** で、
-Tauri アプリの窓（mac の WebView）には接続できない。そこで、同じ画面をブラウザで開く
-「開発用のブラウザ起動」を相手にする。
+自動操作のテストは 2 層ある。
+
+| 層 | 相手 | コマンド | いつ回すか |
+|---|---|---|---|
+| ブラウザのテスト | 同じ画面をブラウザ (Chromium / WebKit) で開く「開発用のブラウザ起動」 | `make e2e` | 画面を触る変更のたび。数分 |
+| 本物の窓のテスト | テスト用にビルドしたデスクトップアプリの窓 (WKWebView) | `make e2e-desktop` | CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の起動や鍵・書き出しを変えたとき。2 回目以降は 20 秒ほど (初回はビルドで数分) |
 
 ```
 ブラウザ (Chromium / WebKit) ──► Vite の開発サーバ (127.0.0.1:5199) ──/api──► API サーバ (空きポート、トークン無し)
+
+テスト (vitest) ──WebDriver──► bunri (テスト用のビルド) の窓 ──► sidecar (空きポート、トークン付き) ──► 偽の Claude
 ```
 
-`scripts/dev-web.mjs` がこの 2 つのサーバを起動して、止める。データ置き場は一時ディレクトリなので、
+ブラウザのテストは画面の操作を広く細かく見る。本物の窓のテストは、ブラウザでは確かめられないこと
+(WKWebView、`tauri://localhost`、トークン、同梱したフォント、ネイティブ側の動き) だけを短く見る。
+
+### ブラウザのテストの相手
+
+`scripts/dev-web.mjs` が Vite の開発サーバと API サーバを起動して、止める。データ置き場は一時ディレクトリなので、
 手元の `uploads/` `results/` `projects/` は汚れない。
 
-**確かめられる範囲:** 画面の操作全般と、画面から API までの通し（ファイルの読み込み、解析、カルテ、
-差分チェック、MIDI の書き出しなど）。
+画面には **デスクトップアプリと同じ CSP** を掛ける (`src-tauri/tauri.conf.json` から起動のたびに読む。
+`scripts/desktop-csp.mjs`)。足しているのは、Vite が埋め込むスクリプトの nonce、自動再読み込みの接続 (`ws:`)、
+違反の知らせ先 (`report-uri`) だけ。違反はブラウザから開発サーバに届き、**どのテストの途中で起きた違反でも、
+最後にまとめて失敗になる** (`e2e/csp-check.ts`)。失敗の文に、止められた URL とページが出る。
+デスクトップアプリでは、CSP に止められたもの (フォント、音声、API の呼び出し) は黙って読み込まれないので、
+ここで先に見つける。
 
-**確かめられない範囲:** ネイティブ側（Rust）の機能。API キーのキーチェーン保存、MIDI のネイティブ入力、
-別窓、初回セットアップ、アプリの終了時の後始末。これらは `src-tauri` のテストで見る。
+**確かめられる範囲:** 画面の操作全般と、画面から API までの通し（ファイルの読み込み、解析、カルテ、
+差分チェック、MIDI の書き出しなど）。CSP の違反。
+
+**確かめられない範囲:** 本物の窓 (WKWebView) とネイティブ側（Rust）の機能。これは本物の窓のテスト (3.) と
+`src-tauri` のテストで見る。
 
 ## 1. 決まった手順を自動で確かめる（Playwright のテスト）
 
@@ -31,8 +48,8 @@ make e2e
 - テストは `web-ui/e2e/` に在る。サーバの起動と停止はテストが自分で行う
 - ブラウザは 2 つで走る。Chromium と、デスクトップアプリの WebView に近い WebKit
 - 失敗すると、スクリーンショットと操作の記録が `web-ui/e2e-results/` に残る
-- 画面のポートは 5199。同じリポジトリの別の作業ツリー（git worktree）で同時に走らせるときは、
-  `BUNRI_E2E_PORT=5197 make e2e` のように番号を変える（同じ番号だと、後から始めたほうが起動に失敗する）
+- 画面のポートは 5199、偽の Claude サーバは 5198。同じリポジトリの別の作業ツリー（git worktree）で同時に走らせるときは、
+  `BUNRI_E2E_PORT=5299 BUNRI_E2E_FAKE_LLM_PORT=5298 make e2e` のように両方の番号を変える（同じ番号だと、後から始めたほうが起動に失敗する）
 
 いま在るテスト:
 
@@ -47,6 +64,7 @@ make e2e
 | `coach.spec.ts` | お手本の重ね表示と差分チェック、オートメーションのデータを含む古いプロジェクトの読み込み |
 | `tools.spec.ts` | ツールの画面の WAV 情報、`../` を含むファイル名の拒否、使い方の画面 |
 | `tools-tabs.spec.ts` | ツールの画面の編集、エフェクト、一括編集、音源合成、変換、解析 |
+| `csp.spec.ts` | デスクトップアプリと同じ CSP が掛かっていること、CSP が実際に効いていること、同梱したフォントがすべて読み込めること |
 
 音は API サーバが実際に作る。テストは、返ってきた WAV の長さと振幅を読んで「指定どおりの長さで、
 無音ではない」ことまで確かめている（`e2e/helpers.ts` の `readWav`）。
@@ -86,6 +104,73 @@ cd web-ui && BUNRI_E2E_LLM=1 npx playwright test e2e/guide.spec.ts --project=chr
 サーバの起動は、利用者が自分のターミナルで行うか、Claude Code に起動を頼む
 （Claude Code は、頼まれない限り自分ではサーバを起動しない運用になっている）。
 
+## 3. 本物の窓を自動操作する（make e2e-desktop）
+
+```bash
+make e2e-desktop     # = cd web-ui && npm run e2e:desktop
+```
+
+テスト用のビルド (Cargo の機能 `e2e`) のアプリを起動し、アプリの中で動く WebDriver サーバ
+(`tauri-plugin-wdio-webdriver`) を通して、本物の窓を操作する。mac だけで動く。
+
+やっていること:
+
+1. **ビルド** (`web-ui/e2e-desktop/build.mjs`): `tauri build --debug --no-bundle --features e2e`。配布物と同じく
+   画面を同梱して `tauri://localhost` で出す (CSP も同じ)。出力は `src-tauri/target/e2e/`
+   (開発用の `tauri dev` のビルドとは分けてある)。初回は数分、2 回目からは数秒
+2. **起動** (`web-ui/e2e-desktop/launch.ts`): 利用者のデータから切り離して起動する。データ置き場と書き出しの保存先は
+   一時ディレクトリ、WebView の保存領域は使い捨て、Claude は偽のサーバ、API キーは偽の値 (キーチェーンは読まない)、
+   ポートはすべて空いている番号。手元で bunri が動いていてもぶつからない
+3. **テスト** (`web-ui/e2e-desktop/smoke.test.ts`。vitest で書いてある)
+4. **後片付け**: 窓を閉じて (利用者が閉じたときと同じ終わり方) アプリを終わらせ、**sidecar まで終わったことを確かめる**。
+   残っていたら止めて失敗にする。一時ディレクトリは消す (`BUNRI_E2E_KEEP=1` で残せる)
+
+アプリの出力は `web-ui/e2e-desktop-results/app.log`、最後の窓の画像は `last-window.png` に残る。
+
+いま在るテスト (`smoke.test.ts`):
+
+| 確かめていること | なぜ本物の窓で見るか |
+|---|---|
+| 同梱した画面が `tauri://localhost` で出て、起動の表示が消え、`boot_status` が待ち受け中になる | sidecar の起動と、画面への接続情報の受け渡しは、デスクトップ版にしか無い |
+| データ置き場が空なら初回の案内が出て、閉じられる | |
+| 起動から最後まで、CSP の違反も、捕まえられなかった例外も無い (`window.__bunriE2E`。画面の読み込みより前から記録する) | 本物の CSP は Tauri が掛ける (ハッシュや nonce を足す)。ブラウザの写しとずれていないかの最後の確認 |
+| CSP が実際に効いている (許していない読み込みが止まる) | 「違反が無い」が、CSP が効いていないせいではないことの確認 |
+| 同梱したフォント (Outfit / IBM Plex Mono) の全部の書体が読み込め、画面がそのフォントで描かれる | WKWebView と `tauri://` で配られるフォントは、ブラウザでは確かめられない |
+| トークン無し・違うトークンの API 呼び出しは 401、正しいトークンなら `tauri://localhost` から呼べる (CORS) | 鍵は、デスクトップ版でだけ掛かる |
+| `<audio src>` は、クエリのトークンで sidecar の音声を読める (トークン無しでは読めない) | `media-src` と、ヘッダを付けられない経路の鍵 |
+| WAV をタイムラインに置くとクリップが出て、再生すると再生位置が進み、停止できる | WKWebView の Web Audio が実際に動くか |
+| WAV の書き出しで、ファイルが保存される (長さと振幅も確かめる) | WKWebView の `<a download>` (blob) の保存は、ブラウザとは別の仕組み (Rust の `on_download`) を通る |
+| カルテを作って再現ガイドを頼むと、sidecar が (偽の) Claude を呼んでガイドが返る | `tauri://localhost` → sidecar (トークン、CORS、`connect-src`) → Claude の通し |
+
+**確かめられない範囲** (テスト用のビルドの事情):
+
+- **初回セットアップ** (アプリのデータ置き場への `uv sync`)。テスト用のビルドは、sidecar を開発時と同じく
+  リポジトリの `uv run` で起動する。セットアップの流れは `src-tauri` のテスト (`sidecar.rs`) で見ている
+- **別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認。** WebDriver のプラグインが、WKWebView の
+  UI の受け手 (WKUIDelegate) を自分のものに差し替えるため、テスト用のビルドではこれらが配布物と同じには動かない
+- **キーチェーン、MIDI のネイティブ入力。** 利用者のキーチェーンに触れないよう、テストでは使わない。
+  `cargo test -- --ignored` の手で回すテストで見る
+- **クリックは画面の中の `element.click()`** で、OS のマウス操作ではない。ドラッグなど細かな操作はブラウザのテストで見る
+- **書き出しの保存先**: テストでは一時ディレクトリに差し替える。`~/Downloads` に保存されることそのものは見ていない
+- 画面の細かな操作。タブの並びなどの画面の構造には深く依存させていない (ブラウザのテストの役目)
+
+CI では、main への push と手での起動のときだけ、mac のランナーで走る (`.github/workflows/desktop-e2e.yml`。
+mac のランナーは高いので PR のたびには走らせない。このテストの仕組み自体を変える PR では走る)。
+依存は `uv sync --frozen` で全部入れる (sidecar の起動に使う `uv run` が、抜いた依存を入れ直すため)。
+あわせて、配布物の設定に WebDriver サーバが入らないことも確かめる (docs/desktop-architecture.md「窓を自動操作するテスト」)。
+
+### その場で窓を覗く（Claude Code 向け）
+
+```bash
+cd web-ui && npm run desktop:inspect
+```
+
+テストと同じく切り離した状態でアプリを起動し、WebDriver のセッションの URL を 1 行の JSON で出す
+(`{"event": "ready", "session": "http://127.0.0.1:<port>/session/<id>", ...}`)。この URL に W3C WebDriver の
+API を送れば、窓の画像 (`GET <session>/screenshot`) や、画面の中での JavaScript の実行
+(`POST <session>/execute/sync`) ができる。Ctrl+C でアプリ・sidecar・偽の Claude サーバをまとめて止める。
+サーバの起動にあたるので、Claude Code は頼まれたときだけ使う。`.mcp.json` には登録していない。
+
 ## 見つけた不具合の例
 
 この仕組みを作る過程で、ブラウザを実際に操作して初めて分かった不具合が 3 つ在った。
@@ -123,3 +208,5 @@ cd web-ui && BUNRI_E2E_LLM=1 npx playwright test e2e/guide.spec.ts --project=chr
 - 音が鳴ったかどうかは、`e2e/helpers.ts` の `recordOscillators` で確かめられる
   （鳴らされたオシレータの周波数を記録する。画面を開く前に仕掛ける）
 - 画面の文を変えるときは、先に [ui-terms.md](ui-terms.md)（ことばの決まり）を見る
+- 本物の窓のテストに足すのは、ブラウザでは確かめられないことだけにする (起動に時間がかかり、mac でしか動かないため)。
+  画面の中で確かめる処理は `app.run(() => ...)` で書く (関数は文字列にして窓に送られるので、外の変数は引数で渡す)

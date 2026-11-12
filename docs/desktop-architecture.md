@@ -116,6 +116,64 @@ API の約束、どのステージで割合が出るか、キャンセルで止�
   (中継先のポートは環境変数 `BUNRI_API_PORT`)
 - この経路では、ネイティブ側 (Rust) の機能は動かない: API キーのキーチェーン保存、MIDI のネイティブ入力、
   別窓、初回セットアップ。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+- `scripts/dev-web.mjs` で起動したときは、画面にデスクトップ版と同じ CSP を掛ける (`tauri.conf.json` から
+  起動のたびに読む。`scripts/desktop-csp.mjs`)。違いは、Vite が埋め込むスクリプトの nonce、自動再読み込みの
+  接続 (`ws:`)、違反の知らせ先 (`report-uri`) を足したことだけ。CSP を変えたら、ブラウザのテスト (`make e2e`) で
+  違反が無いことまで確かめられる
+
+## 窓を自動操作するテスト
+
+本物の窓 (WKWebView) をプログラムで操作するテスト (`make e2e-desktop`、[ui-testing.md](ui-testing.md))。
+mac の WKWebView には、ブラウザのような外から操作する口 (WebDriver) が無い。Tauri 公式の `tauri-driver` も
+mac には対応していない。そこで、**テスト用のビルドだけ**、アプリの中で WebDriver サーバを動かす。
+
+- 使うもの: `tauri-plugin-wdio-webdriver` (Rust のプラグイン。WebdriverIO の公式、MIT)。版は `=1.5.1` で固定
+- テスト側は npm のクライアントを入れず、W3C WebDriver の HTTP の API を直接呼ぶ (`web-ui/e2e-desktop/webdriver.ts`)
+- 機能 `e2e` (Cargo の feature) を付けたときだけ入る。付けるのは `web-ui/e2e-desktop/build.mjs` だけ
+
+### 守ること (配布物に WebDriver サーバを入れない)
+
+WebDriver サーバには認証が無い。同じ PC のプロセスなら誰でも窓を操作し、任意の JavaScript を実行できる
+(= sidecar のトークンも読める)。**配布物には絶対に入れない。** 次の 4 重で止めている:
+
+1. 依存は `optional = true` で、機能 `e2e` は `default` に入れない (`Cargo.toml`)。既定のビルドには
+   プラグインのコードが入らない (`cargo tree -i tauri-plugin-wdio-webdriver` が「見つからない」になる。`make lint` で確かめる)
+2. release ビルドで機能 `e2e` を付けると、`compile_error!` でビルドが止まる (`src-tauri/src/lib.rs`)。
+   `tauri build` (配布物) は release なので、誤って `--features e2e` を付けても配布物はできない。
+   プラグインの登録自体も `#[cfg(all(feature = "e2e", debug_assertions))]` の中にある
+3. 設定ファイルからの混入を Rust のテストで止める (`lib.rs` の `配布物の設定では_webdriverの機能が有効にならない`):
+   `default` に `e2e` が無い、`tauri.conf.json` の `build.features` に `e2e` が無い、窓の権限 (`capabilities/`) に
+   プラグインの権限が無い (プラグインの既定の権限は空なので、足す必要も無い)
+4. デスクトップの e2e の CI (`.github/workflows/desktop-e2e.yml`) で、既定の依存にプラグインが無いことと、
+   release + `e2e` のビルドが失敗することを確かめる
+
+### テスト用のビルドで変わること
+
+機能 `e2e` のときだけ、次のように動く (`src-tauri/src/e2e.rs`)。どれも、利用者のデータに触れないためと、
+テストが確かめやすくするため。
+
+| 何が | どう変わるか | なぜ |
+|---|---|---|
+| 画面 | 配布物と同じく、同梱した画面を `tauri://localhost` で出す (CSP も同じ) | 本物と同じ条件で確かめるため |
+| sidecar の起動 | 開発時と同じく、リポジトリの `backend/` を開発機の `uv run` で起動する (`sidecar.rs` の `for_e2e`)。CORS の許可先は `tauri://localhost` だけ | 配布物の起動方法 (アプリのデータ置き場に `uv sync`) だと、利用者のデータ置き場に触れ、毎回 torch を入れ直すことになる |
+| データの置き場 | テストが環境変数 `BUNRI_DATA_DIR` で一時ディレクトリを渡す | 利用者の `uploads/` などを汚さない |
+| WebView の保存領域 | 使い捨て (incognito)。localStorage は毎回空から始まる | 開発用の `tauri dev` と実行ファイル名が同じで、そのままだと保存領域を共有してしまう |
+| キーチェーン | 起動時に読まない。API キーの保存・削除は、別の項目名 (`<識別子>.e2e`) に向ける | 利用者の本物のキーに触れない。テストは偽のキーを環境変数で渡す |
+| 書き出したファイル | 環境変数 `BUNRI_E2E_DOWNLOAD_DIR` の場所に保存する | `~/Downloads` に書かない |
+| 記録 | CSP の違反と、捕まえられなかった例外を `window.__bunriE2E` に記録する (画面の読み込みより前に入れる) | テストが、起動の途中で起きた違反まで拾えるように |
+| WebView の UI の受け手 | プラグインが WKWebView の UI の受け手 (WKUIDelegate) を自分のものに差し替える | `alert()` などをテストから扱うため。代わりに、別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認は、テスト用のビルドでは配布物と同じには動かない ([ui-testing.md](ui-testing.md) の「確かめられない範囲」) |
+
+### 選んだ理由と、検討して捨てた案
+
+| 候補 | 判断 |
+|---|---|
+| `tauri-plugin-wdio-webdriver` 1.5.1 (採用) | WebdriverIO の公式 (github.com/webdriverio/desktop-mobile)、MIT。2026-05 に公開、月に 1〜2 回の更新、crates.io で 41 万ダウンロード (直近 90 日 37 万)。127.0.0.1 だけで待ち受け、ポートは環境変数で変えられる。mac (WKWebView) に対応 |
+| `@wdio/tauri-service` (npm。上のプラグインを使う WebdriverIO の仕組み) | 不採用。アプリの起動を受け持つが、環境変数 (データ置き場、偽の Claude) を渡す設定が無く、sidecar まで終わったかの確認もできない。`@wdio/cli` などを含め依存が多い |
+| `webdriverio` (npm のクライアント) 9.31.9 | 不採用。試したが、200 を超える依存 (ブラウザや FTP のダウンロードなど、ここでは使わないもの) が入り、そのうち `basic-ftp` に深刻度 high の勧告が出ていた。使う API は 7 つだけなので、fetch で直接呼ぶ |
+| Tauri 公式の `tauri-driver` | mac に対応していない (WKWebView の WebDriver が無い) |
+| `@crabnebula/tauri-driver` | mac では有料のキーが要る |
+| `tauri-webdriver-automation` + `tauri-wd` | MIT/Apache-2.0 だが、利用が少ない (約 4 千ダウンロード) |
+| MCP の橋渡し (`tauri-plugin-mcp-bridge` など) | 入れていない。窓の画像と JS の実行は WebDriver で足りる (`npm run desktop:inspect`)。もう 1 つ自動操作のサーバをアプリに入れることになり、npm の MCP サーバも第三者製のため |
 
 ## ビルド
 
@@ -182,4 +240,6 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新
-- 書き出しの保存先を選ぶダイアログ (WebView の既定の動きで `~/Downloads` に保存される)
+- 書き出しの保存先を選ぶダイアログ。いまは `~/Downloads` に保存する (同じ名前が在れば `名前 (1).wav` のように番号を付ける)。
+  保存は Rust が受けている (`src-tauri/src/windows.rs` の `on_download`)。受けなくても WKWebView は `~/Downloads` に
+  保存するが、受けておくとログに残り、窓を自動操作するテストが保存先を差し替えられる
