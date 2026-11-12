@@ -4,11 +4,13 @@
 //! 別の窓として開けるようにする。ブラウザ版ではこれらは別タブで開き、作業中の DAW の状態を
 //! 保ったままツールを使える。WebView は何もしないと新しい窓の要求を黙って捨てるので、
 //! ここで受けて窓を作る。
+//!
+//! どの窓でも、画面の書き出し (`<a download>`。WAV・MIDI の書き出しなど) を Rust で受けて保存する。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tauri::webview::{NewWindowFeatures, NewWindowResponse};
-use tauri::{App, AppHandle, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse};
+use tauri::{App, AppHandle, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 
 /// メインの窓のラベル (tauri.conf.json の `app.windows[].label` と合わせる)。
 const MAIN_LABEL: &str = "main";
@@ -29,9 +31,13 @@ pub fn create_main_window(app: &App) -> tauri::Result<()> {
         .find(|w| w.label == MAIN_LABEL)
         .expect("tauri.conf.json に main の窓の設定が在りません");
     let handle = app.handle().clone();
-    WebviewWindowBuilder::from_config(app.handle(), config)?
+    let builder = WebviewWindowBuilder::from_config(app.handle(), config)?
         .on_new_window(move |url, features| open_window(&handle, &url, features))
-        .build()?;
+        .on_download(on_download);
+    // 窓を自動操作するテストのビルドだけ、保存領域を使い捨てにし、CSP の違反などを記録する
+    #[cfg(feature = "e2e")]
+    let builder = crate::e2e::configure_main_window(builder);
+    builder.build()?;
     Ok(())
 }
 
@@ -55,6 +61,7 @@ fn open_window(
         .window_features(features)
         .title("bunri")
         .inner_size(1200.0, 800.0)
+        .on_download(on_download)
         .build();
     match built {
         Ok(window) => NewWindowResponse::Create { window },
@@ -63,6 +70,39 @@ fn open_window(
             NewWindowResponse::Deny
         }
     }
+}
+
+/// 画面からのダウンロード (書き出し) を受けて、保存を許す。
+///
+/// 保存先は WebView (wry) が決める既定のまま: 利用者のダウンロードフォルダ (`~/Downloads`) に、
+/// 画面が付けた名前で置く。同じ名前のファイルが在れば上書きせず、`名前 (1).wav` のように番号を付ける。
+///
+/// 受け手が無くても WKWebView は `~/Downloads` に保存する (実測) が、ここで受けておくと、
+/// 保存したかどうかがログに残り、窓を自動操作するテストが保存先を一時ディレクトリに差し替えられる
+/// (テストと配布物が、同じ保存の経路を通る)。
+fn on_download<R: tauri::Runtime>(_webview: Webview<R>, event: DownloadEvent<'_>) -> bool {
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            // テスト用のビルドでは、保存先をテストが指定した一時ディレクトリにする
+            #[cfg(feature = "e2e")]
+            crate::e2e::redirect_download(destination);
+            eprintln!(
+                "[download] {} を保存します: {}",
+                url.scheme(),
+                destination.display()
+            );
+        }
+        DownloadEvent::Finished { path, success, .. } => {
+            let path = path.map(|p| p.display().to_string()).unwrap_or_default();
+            if success {
+                eprintln!("[download] 保存しました: {path}");
+            } else {
+                eprintln!("[download] 保存できませんでした: {path}");
+            }
+        }
+        _ => {}
+    }
+    true
 }
 
 /// アプリ自身のページの URL か。

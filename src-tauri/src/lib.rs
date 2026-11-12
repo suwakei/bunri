@@ -13,6 +13,15 @@
 //! 将来、再生・録音・MIDI 入力を低レイテンシにするための音声エンジン (cpal / midir) は
 //! このクレートに `mod audio;` として足し、`invoke_handler` にコマンドを並べる想定。
 
+// 窓を自動操作するテスト用の仕掛け (WebDriver サーバ) は、配布物に入れてはいけない。
+// 開発用のビルド (debug) でしか有効にできないようにする。docs/desktop-architecture.md「窓を自動操作するテスト」
+#[cfg(all(feature = "e2e", not(debug_assertions)))]
+compile_error!(
+    "機能 e2e (窓を自動操作する WebDriver サーバ) は release ビルドでは使えません。配布物に入れないでください"
+);
+
+#[cfg(feature = "e2e")]
+mod e2e;
 mod midi;
 mod secrets;
 mod sidecar;
@@ -41,13 +50,25 @@ fn boot_status(sidecar: State<'_, Sidecar>) -> BootStatus {
 /// 画面が別途 API で渡す (web-ui/src/lib/guide.ts)。
 #[tauri::command]
 fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
-    secrets::save(&app.config().identifier, &key)
+    secrets::save(&keychain_service(&app), &key)
 }
 
 /// キーチェーンに保存した Claude の API キーを消す。
 #[tauri::command]
 fn delete_api_key(app: tauri::AppHandle) -> Result<(), String> {
-    secrets::delete(&app.config().identifier)
+    secrets::delete(&keychain_service(&app))
+}
+
+/// API キーを置く、キーチェーン上のサービス名 (アプリの識別子)。
+#[cfg(not(feature = "e2e"))]
+fn keychain_service(app: &tauri::AppHandle) -> String {
+    app.config().identifier.clone()
+}
+
+/// テスト用のビルドでは、利用者の本物の項目に触れないよう別の名前にする。
+#[cfg(feature = "e2e")]
+fn keychain_service(app: &tauri::AppHandle) -> String {
+    e2e::keychain_service(&app.config().identifier)
 }
 
 /// MIDI 入力を開く。つながっている入力ポートをすべて開き、開けたポートの名前を返す。
@@ -73,7 +94,11 @@ fn midi_stop(inputs: State<'_, midi::MidiInputs>) {
 
 /// アプリを起動する (終了するまで戻らない)。
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // テスト用のビルドだけ、窓を外から操作する WebDriver サーバを入れる (配布物には入らない)
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let builder = builder.plugin(e2e::webdriver_plugin());
+    let app = builder
         .setup(|app| {
             let config = LaunchConfig::for_app(app.handle());
             app.manage(Sidecar::spawn(config));
@@ -101,4 +126,79 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    fn read(path: &str) -> String {
+        let full = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        std::fs::read_to_string(&full)
+            .unwrap_or_else(|e| panic!("{} を読めません: {e}", full.display()))
+    }
+
+    /// 窓を自動操作する WebDriver サーバ (機能 e2e) が、配布物の設定で有効にならないことを確かめる。
+    ///
+    /// release ビルドで有効にすると compile_error! で止まるが、ここでは「既定で入る」「tauri build が
+    /// 勝手に付ける」「権限に紛れ込む」という、設定ファイルの書き換えによる混入を先に止める。
+    #[test]
+    fn 配布物の設定では_webdriverの機能が有効にならない() {
+        let cargo = read("Cargo.toml");
+        // [features] の default に e2e を入れない
+        let default = cargo
+            .lines()
+            .find(|line| line.trim_start().starts_with("default"))
+            .expect("Cargo.toml に [features] の default が在りません");
+        assert!(
+            !default.contains("e2e"),
+            "default に e2e が入っています: {default}"
+        );
+        // プラグインは optional (機能 e2e のときだけ入る)
+        let plugin = cargo
+            .lines()
+            .find(|line| line.starts_with("tauri-plugin-wdio-webdriver"))
+            .expect("Cargo.toml に tauri-plugin-wdio-webdriver が在りません");
+        assert!(
+            plugin.contains("optional = true"),
+            "optional ではありません: {plugin}"
+        );
+        // ほかの依存から機能 e2e を有効にしない (e2e を有効にするのは [features] の e2e の行だけ)
+        for line in cargo
+            .lines()
+            .filter(|l| l.contains("dep:tauri-plugin-wdio-webdriver"))
+        {
+            assert!(
+                line.trim_start().starts_with("e2e ="),
+                "e2e 以外から有効にしています: {line}"
+            );
+        }
+
+        // tauri build に機能を足す設定 (build.features) に e2e を入れない。mac 用の設定ファイルも見る
+        for name in ["tauri.conf.json", "tauri.macos.conf.json"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let config: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let features = config["build"]["features"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                features.iter().all(|f| f.as_str() != Some("e2e")),
+                "{name} の build.features に e2e が入っています"
+            );
+        }
+
+        // 窓の権限に、WebDriver のプラグインの権限を足さない (足すと機能 e2e 無しではビルドできなくなる)
+        let capabilities = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        for entry in std::fs::read_dir(capabilities).unwrap() {
+            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            assert!(
+                !text.contains("wdio"),
+                "権限に WebDriver のプラグインが入っています"
+            );
+        }
+    }
 }
