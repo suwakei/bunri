@@ -19,18 +19,34 @@ For the quick overview, see [README.md](../README.md).
 
 ### DAW Screen (`/`)
 
+Layout: header / learning-flow progress bar / left panel (resizable, 280–520 px) + center (timeline above, piano roll below) / status bar.
+
+- **Startup**: no tracks are created. The center shows an empty state with 「曲を取り込んで始める」 (import a song, the
+  learning flow) and 「自由に作る」 (one blank track for free use).
+- **Progress bar** (under the header): ① 曲を取り込む ② カルテを見る ③ パートに分ける ④ 打ち込む ⑤ 差分で直す.
+  Each step is done / current / not yet, derived from the actual state (a 原曲 track or imported file, a chart, part
+  tracks, notes on a practice track, a diff against a non-empty attempt). Clicking a step opens the place where that
+  step is done. Collapsible; the collapsed state is remembered per viewer (localStorage).
+- **Left panel tabs**: 学ぶ (sub-tabs 曲とパート / カルテ / ガイド / 差分) / 音作り (シンセ / ドラム / FX) /
+  ファイル (audio file loading, monophonic analysis, recording). 学ぶ is the default.
+
 | Feature | Detail |
 |---|---|
-| Timeline | Place clips on tracks. Drag to move, beat-snapping, drag-and-drop WAV files |
+| Song import (取り込む) | One file picker (mp3 / wav / flac / ogg / m4a / aac / aiff). The audio is decoded in the browser and placed on a track named 原曲; if the WebView cannot decode it, `/api/convert/wav` (ffmpeg) is tried, otherwise the status bar says so. The chart is built at the same time, and its tempo, meter and downbeat become the project grid (see "Bar numbering" below) |
+| Part separation | `/api/decompose` with the project grid. One track per part holding the part's audio and its お手本 (`referenceNotes`); the editable notes stay **empty**. Part tracks start muted (the 原曲 already plays everything). Drums keep the transcribed rhythm as notes and are excluded from the diff coach |
+| Practice a part (このパートを練習する) | From the part list or the part's track header: creates/selects the practice track (「ベースの練習」) next to the part, opens it in the piano roll with the part's お手本 as the ghost overlay, scrolls to the お手本's pitch and first bar, sets the diff pair (reference = part, attempt = practice track) and unmutes the part's audio. 「お手本をノートとして取り込む」 (after an inline confirmation) copies the お手本 into the part's own notes |
+| Playhead | A line in the timeline and the piano roll, moved with requestAnimationFrame while playing (idle: checked every 200 ms). Auto-scrolls to keep it visible; 「再生位置を追う」 next to the seek bar turns that off (remembered per viewer) |
+| Chart / guide / diff links | Clicking a chord cell or a section row in the chart, a bar chip in the guide, or an issue in the diff list seeks playback there and scrolls the timeline and piano roll (the diff also scrolls vertically to the pitch) |
+| Bar numbering | Piano roll, timeline ruler, playback, metronome and the diff coach count bars from the project grid: tempo (decimals allowed) and the offset of bar 1 (`gridOffset`, seconds). After importing a song this is the chart's grid, so chart bar N and piano-roll bar N are the same moment. Free use: offset 0 |
+| Timeline | Place clips on tracks. Drag to move, beat-snapping, drag-and-drop audio files (anything the WebView can decode) |
 | Piano roll | Per-track, independent. C0–B8 range. Double-click to add a note, drag to move (horizontal = position, vertical = pitch), drag the right edge to resize, Delete / Backspace to remove. Placing a note, changing its pitch, or pressing a key on the keyboard column plays that pitch |
 | Synthesizer | 4 basic waveforms (sine / square / sawtooth / triangle), 6 instrument presets (guitar / violin / chorus / flute / bass / organ), 84 GM voices via FluidSynth (MuseScore_General.sf3) |
 | Drum machine | 4 patterns (8-beat / 4-on-the-floor / bossa nova / reggae), configurable bars and volume |
 | Effects | 3-band EQ / compressor / reverb / delay / normalize / pitch shift / time stretch |
-| Full song analysis | One click: Demucs separation → polyphonic pitch detection → track auto-generation → piano roll population |
 | Monophonic analysis | pyin pitch detection converts a single-voice WAV to piano roll notes |
 | Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar. Space toggles play / pause |
 | Recording | Microphone input recorded to a track |
-| Project save/load | JSON format |
+| Project save/load | JSON format. Also stores `gridOffset` and each track's learning role (`role`, `part`, `practiceOfIndex`); older projects load with offset 0 |
 | MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
 | WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
@@ -152,7 +168,7 @@ Returns a JSON array: `[{filename, url, status}, ...]`
 | POST | `/api/deep-analyze` | `file` | Frequency band, instrument composition, tempo estimation |
 | POST | `/api/separate` | `file`, `model`, `two_stems` | Demucs stem separation |
 | POST | `/api/deep-separate` | `file`, `depth` | htdemucs_6s + recursive "other" re-separation |
-| POST | `/api/decompose` | `file`, `bpm`, `sensitivity` | Full pipeline: separate → pitch detect → instrument estimate |
+| POST | `/api/decompose` | `file`, `bpm` (float, 0 = detect), `grid_offset` (seconds of step 0), `sensitivity` | Full pipeline: separate → pitch detect → instrument estimate. Notes are counted from `grid_offset`; notes before it (pickup) are dropped |
 
 Demucs `model` values: `htdemucs` (default, recommended), `htdemucs_ft` (slow, higher quality), `htdemucs_6s` (6-stem).
 
