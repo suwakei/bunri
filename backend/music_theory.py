@@ -329,7 +329,11 @@ def detect_chords(file_path, beat_times, tonic=None, mode=None, min_confidence=0
         y=y, sr=sr, hop_length=512,
         fmin=librosa.note_to_hz("C1"), n_octaves=_BASS_OCTAVES,
     )
-    frame_times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr, hop_length=512)
+    # 2 つのクロマは、音声の長さによってフレーム数が 1 つ食い違うことがある（CQT は帯域の
+    # 低さに応じて音声を間引いてから解析するので、端の数え方が変わる）。短いほうにそろえる
+    n_frames = min(chroma.shape[1], bass_chroma.shape[1])
+    chroma, bass_chroma = chroma[:, :n_frames], bass_chroma[:, :n_frames]
+    frame_times = librosa.frames_to_time(np.arange(n_frames), sr=sr, hop_length=512)
 
     # ビートごとにクロマとベース音を平均する
     beat_chroma = []
@@ -342,7 +346,7 @@ def detect_chords(file_path, beat_times, tonic=None, mode=None, min_confidence=0
             beat_bass.append(None)
             continue
         beat_chroma.append(np.mean(chroma[:, mask], axis=1))
-        low = np.mean(bass_chroma[:, mask[:bass_chroma.shape[1]]], axis=1)
+        low = np.mean(bass_chroma[:, mask], axis=1)
         beat_bass.append(int(np.argmax(low)) if float(np.sum(low)) > 0 else None)
 
     # 音が減衰しきった拍は和音成分が乏しく、幽霊コードの発生源になる。
