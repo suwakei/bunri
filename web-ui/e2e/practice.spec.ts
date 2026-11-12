@@ -176,16 +176,16 @@ test('区間ループ: 小節の段のドラッグ・キーで区間を決め、
     // 再生位置が頭に戻ることを、時刻の表示で確かめる
     await page.locator('#transport-bpm').fill('240');
     await page.locator('#practice-controls').getByRole('button', { name: '再生', exact: true }).click();
+    // 再生位置を読み続けて、頭に戻る (0.5 秒より大きく戻る) のを待つ。区間の外 (1.75 秒より後) には出ない
     const seen: number[] = [];
-    for (let i = 0; i < 25; i++) {
-        const text = await page.locator('#time-display').textContent();
-        const m = /(\d+):(\d+\.\d)/.exec(text ?? '');
+    const wrapped = () => seen.some((t, i) => i > 0 && t < seen[i - 1] - 0.5);
+    await expect.poll(async () => {
+        const m = /(\d+):(\d+\.\d)/.exec((await page.locator('#time-display').textContent()) ?? '');
         if (m) seen.push(Number(m[1]) * 60 + Number(m[2]));
-        await page.waitForTimeout(100);
-    }
+        return wrapped();
+    }, { timeout: 15_000, intervals: [100] }).toBe(true);
     await page.locator('#practice-controls').getByRole('button', { name: '停止', exact: true }).click();
-    expect(Math.max(...seen)).toBeLessThan(1.85);
-    expect(seen.some((t, i) => i > 0 && t < seen[i - 1] - 0.5), `再生位置: ${seen.join(", ")}`).toBe(true);
+    expect(Math.max(...seen), `再生位置: ${seen.join(', ')}`).toBeLessThan(1.85);
     // ピアノロールの再生位置の線も区間の中 (ステップ 0〜16)
     const x = await page.locator('#piano-playhead').evaluate((el) => Number(/translateX\((-?[\d.]+)px\)/.exec((el as HTMLElement).style.transform)?.[1]));
     expect(x).toBeGreaterThanOrEqual(0);
