@@ -7,7 +7,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page, type Request } from '@playwright/test';
-import { importSong, makeWav, openDaw, openTab, SONG_MP3, startFree, statusText, trackSummary } from './helpers';
+import { fakeJob, importSong, makeWav, openDaw, openTab, SONG_MP3, startFree, statusText, trackSummary } from './helpers';
 
 const DOWNBEAT = 0.75;
 const PX_PER_SEC = 80;
@@ -71,9 +71,9 @@ function fakeDecompose() {
 /** カルテとパート分離の API を差し替える。パート分離に送られたリクエストを返す。 */
 async function fakeBackend(page: Page) {
     const sent: { decompose?: Request } = {};
-    await page.route('**/api/chart', (route) => route.fulfill({ json: fakeChart() }));
+    await fakeJob(page, '/api/chart', fakeChart);
     await page.route('**/api/chart/song/guide*', (route) => route.fulfill({ json: { saved: false } }));
-    await page.route('**/api/decompose', (route) => { sent.decompose = route.request(); return route.fulfill({ json: fakeDecompose() }); });
+    await fakeJob(page, '/api/decompose', fakeDecompose, (request) => { sent.decompose = request; });
     await page.route('**/api/download/decompose_*', (route) => route.fulfill({ contentType: 'audio/wav', body: makeWav(8, [130.81]) }));
     return sent;
 }

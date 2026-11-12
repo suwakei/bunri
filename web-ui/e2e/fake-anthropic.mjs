@@ -8,9 +8,14 @@
  *
  * 呼ばれた回数を数えているので、テストは「Claude を呼んだか・呼ばなかったか」を直接確かめられる。
  *
- *   POST /v1/messages               決まったガイドを返す (呼ばれた回数に数える)
+ *   POST /v1/messages               決まったガイド、または差分の説明を返す (呼ばれた回数に数える)
  *   POST /v1/messages/count_tokens  トークン数を返す (費用のかからない呼び出し。回数には数えない)
- *   GET  /__calls                   {"messages": ガイドを作った回数, "count_tokens": 数えた回数}
+ *   GET  /__calls                   {"messages": 呼ばれた回数 (ガイドと説明の合計), "explain": そのうち説明の回数,
+ *                                    "count_tokens": 数えた回数}
+ *
+ * ガイドか説明かは、出力の形 (output_config.format.schema) で見分ける。説明の形は `points` を持つ
+ * (ガイドは `steps`)。説明は、送られてきた事実 (<facts> の JSON) の指摘の ID と小節を指して返す
+ * (事実に無い場所や、事実に無いオクターブつきの音名を書くと、アプリが点ごと落とすため)。
  *
  * 使い方: node e2e/fake-anthropic.mjs [--port <ポート>]
  */
@@ -19,7 +24,7 @@ import { createServer } from 'node:http';
 const portIndex = process.argv.indexOf('--port');
 const port = Number(portIndex >= 0 ? process.argv[portIndex + 1] : 5198);
 
-const calls = { messages: 0, count_tokens: 0 };
+const calls = { messages: 0, explain: 0, count_tokens: 0 };
 
 /** どのカルテにも当てはまる、決まったガイド (1 小節 1 拍目は、解析できた曲なら必ず在る)。 */
 const GUIDE = {
@@ -31,6 +36,44 @@ const GUIDE = {
     ],
     cautions: [],
 };
+
+/**
+ * 差分の説明 (backend/coach_explain.py の COACH_SCHEMA の形) を、送られてきた事実から作る。
+ * 1 つ目の点は最初の指摘を、2 つ目の点は 2 つ目の指摘の小節だけを指す。音名は書かない。
+ */
+function explanationFor(body) {
+    const content = String(body.messages?.[0]?.content ?? '');
+    const start = content.indexOf('<facts>\n');
+    const end = content.indexOf('\n</facts>');
+    let facts = {};
+    try { facts = JSON.parse(content.slice(start + '<facts>\n'.length, end)); } catch { /* 事実が読めなければ空 */ }
+    const rows = facts.issues?.rows ?? [];
+    const [firstId, firstBar] = rows[0] ?? ['i1', 1];
+    const points = [{
+        title: 'お手本との違いが続く場所を見直す',
+        observation: `これはテスト用の偽の説明です。${firstBar} 小節目から、お手本と違うノートが続いています。`,
+        cause: '拍の数え方がずれたのかもしれません。',
+        fix: `${firstBar} 小節目を開いて、お手本の水色のノートと見比べてください。`,
+        issue_ids: [firstId],
+        bars: [firstBar],
+    }];
+    if (rows[1]) {
+        points.push({
+            title: '次の小節もそろえる',
+            observation: `${rows[1][1]} 小節目にも違いがあります。`,
+            cause: '同じ理由かもしれません。',
+            fix: 'お手本を重ねて、位置をそろえてください。',
+            issue_ids: [],
+            bars: [rows[1][1]],
+        });
+    }
+    return {
+        summary: 'これはテスト用の偽の説明です。お手本との違いが、いくつかの小節にまとまっています。',
+        points,
+        next_step: `まず ${firstBar} 小節目を開いて、お手本と見比べてください。`,
+        next_step_bar: firstBar,
+    };
+}
 
 function send(res, status, body) {
     const text = JSON.stringify(body);
@@ -52,12 +95,14 @@ const server = createServer((req, res) => {
         }
         if (req.method === 'POST' && path === '/v1/messages') {
             calls.messages += 1;
+            const explain = Boolean(body.output_config?.format?.schema?.properties?.points);
+            if (explain) calls.explain += 1;
             return send(res, 200, {
                 id: `msg_fake_${calls.messages}`,
                 type: 'message',
                 role: 'assistant',
                 model: body.model ?? 'claude-opus-5-5',
-                content: [{ type: 'text', text: JSON.stringify(GUIDE) }],
+                content: [{ type: 'text', text: JSON.stringify(explain ? explanationFor(body) : GUIDE) }],
                 stop_reason: 'end_turn',
                 stop_sequence: null,
                 usage: { input_tokens: 20, cache_creation_input_tokens: 3000, cache_read_input_tokens: 0, output_tokens: 400 },

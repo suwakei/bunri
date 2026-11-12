@@ -7,6 +7,7 @@
  *
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
@@ -229,5 +230,56 @@ describe('sidecar から Claude まで', () => {
         const after = (await (await fetch(`${fakeLlm}/__calls`)).json()).messages as number;
         expect(after).toBe(before + 1);
         expect((await record()).csp).toEqual([]);
+    });
+});
+
+/** そのポートで待ち受けているプロセスの番号 (無ければ空)。 */
+function listenersOn(port: number): number[] {
+    try {
+        return execFileSync('lsof', ['-t', '-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' })
+            .split('\n').filter(Boolean).map(Number);
+    } catch {
+        return [];
+    }
+}
+
+// 最後に置く (sidecar を止めて起動し直すので、ほかのテストの sidecar を入れ替えてしまわないように)
+describe('sidecar が止まったとき', () => {
+    it('止まったことを知らせ、「再起動」で新しいポートとトークンの sidecar に差し替わる', async () => {
+        const before = await backendInfo();
+        // このテストが起動したアプリの sidecar だけを止める (backend_info が教えたポートで待ち受けているプロセス)
+        const pids = listenersOn(before.port);
+        expect(pids.length, `ポート ${before.port} で待ち受けている sidecar が見つからない`).toBeGreaterThan(0);
+        for (const pid of pids) process.kill(pid, 'SIGKILL');
+
+        // 数秒以内に、止まったことの知らせが出る (モーダルではない)
+        await app.waitFor('止まったことの知らせ', () => {
+            const banner = document.querySelector('#health-banner');
+            return banner?.textContent?.includes('処理を担当する部分が止まりました') ? true : `いまの知らせ: ${banner?.textContent ?? '無し'}`;
+        }, [], 20_000);
+        expect(await app.run(() => (window as unknown as {
+            __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } };
+        }).__TAURI__.core.invoke<{ phase: string }>('boot_status').then((s) => s.phase))).toBe('failed');
+
+        await app.click('//*[@id="health-banner"]//button[normalize-space()="再起動"]');
+        await app.waitFor('知らせが消える', () => document.querySelector('#health-banner') === null, [], 60_000);
+
+        const after = await backendInfo();
+        expect(after.port).not.toBe(before.port);
+        expect(after.token).not.toBe(before.token);
+        // 画面は新しい接続先とトークンを使う (画面の apiFetch を通した呼び出しが通る)
+        const status = await app.run(async (base: string, key: string) => {
+            const response = await fetch(`${base}/api/health`, { headers: { 'X-Bunri-Token': key } });
+            return response.status;
+        }, `http://127.0.0.1:${after.port}`, after.token);
+        expect(status).toBe(200);
+        // 画面の見張りも新しい接続先で応答を確かめ続ける (古い接続先を使っていたら、次の回でまた知らせが出る)
+        await new Promise((r) => setTimeout(r, 7_000));
+        expect(await app.run(() => document.querySelector('#health-banner') === null)).toBe(true);
+        // 画面の側に在るトラックとクリップは、そのまま残る
+        expect(await app.run(() => document.querySelectorAll('#tracks-container .clip').length)).toBe(1);
+        // 前の sidecar のポートは、もう誰も待ち受けていない
+        expect(listenersOn(before.port)).toEqual([]);
+        expect((await record())).toEqual({ csp: [], errors: [] });
     });
 });

@@ -3,18 +3,20 @@
  * 解析は API サーバ側で実際に走る (数秒)。
  */
 import { expect, test } from '@playwright/test';
-import { makeWav, openDaw, openTab, importSong, statusText, trackSummary } from './helpers';
+import { makeWav, openDaw, openTab, importSong, runJob, statusText, trackSummary } from './helpers';
 
 test('曲を取り込むと、原曲のトラックに音声が置かれ、カルテにテンポとキーが出る。再現ガイドと差分チェックの段も出る', async ({ page }) => {
     await openDaw(page);
 
     // C4 E4 G4 C5 を 2 秒ずつ
     const wav = makeWav(8, [261.63, 329.63, 392.0, 523.25]);
-    const analyzed = page.waitForResponse((r) => r.url().endsWith('/api/chart'), { timeout: 60_000 });
-    await importSong(page, { name: 'e2e-song.wav', mimeType: 'audio/wav', buffer: wav });
-    // 解析のあいだは、もう一度取り込めない (二重に始まらない)
-    await expect(page.locator('#song-panel').getByRole('button', { name: /曲を取り込む/ })).toBeDisabled();
-    expect((await analyzed).status()).toBe(200);
+    const analyzed = runJob(page, '/api/chart', async () => {
+        await importSong(page, { name: 'e2e-song.wav', mimeType: 'audio/wav', buffer: wav });
+        // 解析のあいだは、もう一度取り込めない (二重に始まらない)。進み具合のカードが出る
+        await expect(page.locator('#song-panel').getByRole('button', { name: /曲を取り込む/ })).toBeDisabled();
+        await expect(page.locator('#song-panel').getByRole('group', { name: '楽曲カルテの作成の進み具合' })).toBeVisible();
+    });
+    expect((await analyzed).state).toBe('done');
 
     // 解析が終わると、カルテの段が自分で開く (結果がどこに出たかを探させない)
     await expect(page.getByRole('tab', { name: 'カルテ' })).toHaveAttribute('aria-selected', 'true');

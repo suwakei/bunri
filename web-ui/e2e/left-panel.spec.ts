@@ -5,7 +5,7 @@
  * GM 音源を選んでも内蔵シンセで代替されることを確かめる。
  */
 import { expect, test, type Page } from '@playwright/test';
-import { openDaw, startFree, openTab, readWav, statusText, trackSummary, wavFile } from './helpers';
+import { openDaw, startFree, openTab, readWav, runJob, statusText, trackSummary, wavFile } from './helpers';
 
 /** Track 1 を開いて、ピアノロールにノートを 2 つ置く。 */
 async function placeTwoNotes(page: Page) {
@@ -414,9 +414,9 @@ test.describe('単音メロディ解析', () => {
         await openTab(page, 'ファイル');
         // C4 E4 G4 C5 を 1 秒ずつ (120 BPM なら 8 ステップずつ)
         await page.locator('#file-melody').setInputFiles(wavFile('e2e-melody.wav', 4, [261.63, 329.63, 392.0, 523.25]));
-        const analyzed = page.waitForResponse((r) => r.url().endsWith('/api/analyze'), { timeout: 80_000 });
-        await page.getByRole('button', { name: '解析してピアノロールに配置' }).click();
-        expect((await analyzed).status()).toBe(200);
+        const analyzed = await runJob(page, '/api/analyze',
+            () => page.getByRole('button', { name: '解析してピアノロールに配置' }).click(), 80_000);
+        expect(analyzed.state).toBe('done');
         await expect(statusText(page)).toHaveText('4個のノートを検出しました');
         const titles = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
         expect(titles.map((t) => t.split(' ')[0])).toEqual(['C4', 'E4', 'G4', 'C5']);
