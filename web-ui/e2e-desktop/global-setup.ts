@@ -19,6 +19,8 @@ declare module 'vitest' {
         dataDir: string;
         /** 書き出したファイルの保存先。 */
         downloadDir: string;
+        /** プロジェクトの保存・開くのダイアログの代わりに使う場所。 */
+        projectPath: string;
         /** 偽の Claude サーバの URL。 */
         fakeLlmUrl: string;
     }
@@ -29,6 +31,7 @@ export default async function setup(project: TestProject) {
     project.provide('webdriverPort', app.webdriverPort);
     project.provide('dataDir', app.dataDir);
     project.provide('downloadDir', app.downloadDir);
+    project.provide('projectPath', app.projectPath);
     project.provide('fakeLlmUrl', app.fakeLlmUrl);
 
     return async () => {

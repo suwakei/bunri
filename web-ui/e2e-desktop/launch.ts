@@ -15,7 +15,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { WebDriverSession, waitForWebDriver } from './webdriver.ts';
 
@@ -33,6 +33,8 @@ export interface LaunchedApp {
     dataDir: string;
     /** 書き出したファイルの保存先。 */
     downloadDir: string;
+    /** プロジェクトの保存・開くのダイアログの代わりに使う場所 (BUNRI_E2E_SAVE_PATH / BUNRI_E2E_OPEN_PATH)。 */
+    projectPath: string;
     /** 偽の Claude サーバの URL。 */
     fakeLlmUrl: string;
     /** アプリの出力 (標準出力と標準エラー) のファイル。 */
@@ -97,6 +99,10 @@ export async function launchApp(): Promise<LaunchedApp> {
     const downloadDir = join(workDir, 'downloads');
     mkdirSync(dataDir);
     mkdirSync(downloadDir);
+    // ネイティブのダイアログは WebDriver で操作できないので、テスト用のビルドはこの場所が選ばれたことにする
+    // (src-tauri/src/e2e.rs の SAVE_PATH_ENV)。利用者の ~/Documents には書かない
+    const projectPath = join(workDir, 'projects', 'e2e-project.bunri');
+    mkdirSync(dirname(projectPath));
 
     const children: ChildProcess[] = [];
     // 途中で止められても (Ctrl+C など)、起動したものを残さない
@@ -113,6 +119,8 @@ export async function launchApp(): Promise<LaunchedApp> {
         ...process.env,
         BUNRI_DATA_DIR: dataDir,
         BUNRI_E2E_DOWNLOAD_DIR: downloadDir,
+        BUNRI_E2E_SAVE_PATH: projectPath,
+        BUNRI_E2E_OPEN_PATH: projectPath,
         TAURI_WEBDRIVER_PORT: String(webdriverPort),
         ANTHROPIC_BASE_URL: fakeLlmUrl,
         ANTHROPIC_API_KEY: 'e2e-fake-key',
@@ -180,5 +188,5 @@ export async function launchApp(): Promise<LaunchedApp> {
         return problems;
     };
 
-    return { webdriverPort, dataDir, downloadDir, fakeLlmUrl, logFile, stop };
+    return { webdriverPort, dataDir, downloadDir, projectPath, fakeLlmUrl, logFile, stop };
 }

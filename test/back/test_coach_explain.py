@@ -878,9 +878,11 @@ class TestApi:
         resp = await client.post("/api/coach/explain", json=self.BODY)
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body) == {"explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
+        assert set(body) == {"key", "explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
                              "created_at", "cached", "input", "today"}
         assert body["source"] == "claude" and body["cached"] is False and body["model"] == "claude-opus-5-5"
+        # 保存の鍵 (学習の記録が説明を指す識別子)。保存済みを返すときも同じ鍵
+        assert len(body["key"]) == 40
         assert set(body["explanation"]) == {"summary", "points", "next_step", "next_step_bar", "dropped_refs",
                                             "dropped_points", "unverified_terms", "replaced"}
         assert body["explanation"]["points"][0]["refs"][0] == {"issue_id": "i6", "bar": 2, "beat": 1, "kind": "octave"}

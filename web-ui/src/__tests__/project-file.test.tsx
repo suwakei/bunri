@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useEffect } from 'react';
 import { render, cleanup, act } from '@testing-library/react';
+import type * as PF from '../lib/project-file';
 
 class MockGainNode {
     gain = { value: 1 };
@@ -124,7 +125,7 @@ describe('文書を作る (buildDocument)', () => {
         expect(doc.tracks[0].clips[0].audio).toBe(doc.tracks[2].clips[0].audio);
         expect(audio.size).toBe(2);
         expect(sourceOf(rendered)?.name).toBe('bass.wav');
-        const learn = doc.state.learn as unknown as pf.LearnState;
+        const learn = doc.state.learn as unknown as PF.LearnState;
         expect(learn.ghostChoice).toEqual({ track: 1 });
         expect(learn.coachPair).toEqual({ reference: 1, attempt: 2 });
         expect(learn.coachResult?.compared?.reference).toEqual([note('C', 2, 0)]);
@@ -156,7 +157,7 @@ describe('文書を作る (buildDocument)', () => {
     });
 });
 
-function applyTarget(over: Partial<pf.ApplyTarget> = {}): pf.ApplyTarget {
+function applyTarget(over: Partial<PF.ApplyTarget> = {}): PF.ApplyTarget {
     return {
         setBpm: (v) => { engine.bpm = v; }, setBeatsPerBar: (v) => { engine.beatsPerBar = v; }, setGridOffset: (v) => { engine.gridOffset = v; },
         setChartResult: vi.fn(), clearChart: vi.fn(), setSongFile: vi.fn(), setGhostChoice: vi.fn(), setCoachPair: vi.fn(),
@@ -176,7 +177,7 @@ describe('文書を画面に戻す (applyDocument)', () => {
             return new Response('', { status: 404 });
         }));
         const result = diff(1, 1);
-        const doc: pf.ProjectDocument = {
+        const doc: PF.ProjectDocument = {
             version: 1, meta: { name: '曲' }, grid: { bpm: 96, beatsPerBar: 3, gridOffset: 0.5 },
             tracks: [
                 { name: 'ベース', role: 'part', part: 'bass', practiceOf: null, gain: -3, pan: 0.5, mute: true, solo: false,
@@ -227,7 +228,7 @@ describe('音声を送る (uploadAudio)', () => {
     it('sidecar が持っていないものだけを送る。開いたプロジェクトの音声で写しから消えていたら、手元のバイト列のハッシュで送り直す', async () => {
         const known = await pf.payloadForBlob(blob('aaa'), 'a.wav');
         const reopened = { hash: 'e'.repeat(64), blob: blob('wav-from-flac'), name: 'b.wav', verified: false };
-        const doc = { tracks: [{ clips: [{ audio: known.hash }, { audio: reopened.hash }] }], chart: null } as unknown as pf.ProjectDocument;
+        const doc = { tracks: [{ clips: [{ audio: known.hash }, { audio: reopened.hash }] }], chart: null } as unknown as PF.ProjectDocument;
         const calls: { url: string; method?: string }[] = [];
         vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
             calls.push({ url, method: init?.method });

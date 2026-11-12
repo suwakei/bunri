@@ -72,7 +72,7 @@ test('起動したときは、空のトラックを作らず、曲を取り込�
     // 左パネルは「学ぶ」の「曲とパート」
     await expect(page.getByRole('tab', { name: '学ぶ', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('tab', { name: '曲とパート' })).toHaveAttribute('aria-selected', 'true');
-    for (const label of ['保存', '読み込む', 'WAV 書き出し', 'MIDI 書き出し']) {
+    for (const label of ['保存', '開く', 'WAV 書き出し', 'MIDI 書き出し']) {
         await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
     }
 });

@@ -2,10 +2,10 @@
  * お手本の重ね表示と、差分チェック (第3層の土台) を、画面から通す。
  *
  * お手本は本来、楽曲の解析 (採譜) で出来る。採譜は数分かかるので、ここではお手本入りの
- * プロジェクトを API で保存しておき、画面の「読み込む」で読み込む。
+ * プロジェクトを API で保存しておき、画面の「開く」で以前の形式として開く。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw, openTab } from './helpers';
+import { openDaw, openTab, openNewestLegacy } from './helpers';
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 
@@ -28,8 +28,8 @@ async function saveProject(request: APIRequestContext, attempt = REFERENCE) {
 
 async function loadProject(page: Page) {
     await openDaw(page);
-    await page.getByRole('button', { name: '読み込む', exact: true }).click();
-    await expect(page.getByText(/を読み込みました/)).toBeVisible();
+    // 以前の形式 (API で用意した projects/*.json) として開く
+    await openNewestLegacy(page);
 }
 
 test('お手本を持つトラックを開くと、お手本が薄く重なり、長さもお手本に合わせて伸びる', async ({ page, request }) => {
@@ -77,7 +77,7 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
 
     const coach = page.locator('#coach-panel');
     await coach.getByRole('button', { name: 'お手本と比べる' }).click();
-    await expect(coach.getByText('60%')).toBeVisible();
+    await expect(coach.getByText('60%', { exact: true })).toBeVisible();
     await expect(coach.getByText('抜け 1 / 高さの違い 1')).toBeVisible();
     await expect(coach.getByText('1 小節 2 拍目: E4 が抜けています')).toBeVisible();
 
@@ -117,9 +117,12 @@ test('以前の版が保存した、オートメーションのデータを含�
     await expect(page.locator('#automation-area')).toHaveCount(0);
     expect(errors).toEqual([]);
 
-    // 保存し直すと、オートメーションのデータは残らない
-    const saved = page.waitForRequest((r) => r.url().endsWith('/api/project/save'));
+    // 保存し直すと (.bunri になる。以前の形式から開いたので名前を尋ねられる)、オートメーションのデータは残らない
+    const saved = page.waitForRequest((r) => r.url().endsWith('/api/project/document'));
     await page.getByRole('button', { name: '保存', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'プロジェクトを保存' });
+    await dialog.getByLabel('プロジェクトの名前').fill(`coach-legacy-resave-${Date.now()}`);
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
     const body = (await saved).postData() ?? '';
     expect(body).toContain('Lead');
     expect(body).not.toContain('automation');

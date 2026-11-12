@@ -9,7 +9,7 @@
  * 片方のテストで保存した説明が、もう片方で使われないようにしてある。
  */
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
-import { FAKE_LLM_URL, openDaw, openTab } from './helpers';
+import { FAKE_LLM_URL, openDaw, openTab, openNewestLegacy } from './helpers';
 
 test.skip(Boolean(process.env.BUNRI_E2E_LLM), '偽の Claude サーバを相手にするテスト。本物を呼ぶ BUNRI_E2E_LLM=1 のときは走らせない');
 
@@ -26,7 +26,7 @@ function attemptWithManyIssues(variant: number) {
     return [note('C', 4, 0), note('G', 4, 8), note('D', 5, 16), note('F', 4, 32), note('G', 4, 36), note('ABFD'[variant], 3, 48)];
 }
 
-/** お手本を持つトラック (Track 1。打ち込みもこのトラック) のプロジェクトを保存して、読み込む。 */
+/** お手本を持つトラック (Track 1。打ち込みもこのトラック) のプロジェクトを以前の形式で保存して、開く。 */
 async function loadProject(page: Page, request: APIRequestContext, attempt: ReturnType<typeof note>[]) {
     const project = {
         bpm: 120, beatsPerBar: 4,
@@ -35,8 +35,8 @@ async function loadProject(page: Page, request: APIRequestContext, attempt: Retu
     };
     expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
     await openDaw(page);
-    await page.getByRole('button', { name: '読み込む', exact: true }).click();
-    await expect(page.getByText(/を読み込みました/)).toBeVisible();
+    // 以前の形式 (API で用意した projects/*.json) として開く
+    await openNewestLegacy(page);
 }
 
 /** 差分の説明を Claude (偽) に作らせた回数。 */

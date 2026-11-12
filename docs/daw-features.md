@@ -52,7 +52,12 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 | Monophonic analysis | pyin pitch detection converts a single-voice WAV to piano roll notes |
 | Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar. Space toggles play / pause |
 | Recording | Microphone input recorded to a track |
-| Project save/load | JSON format. Also stores `gridOffset` and each track's learning role (`role`, `part`, `practiceOfIndex`); older projects load with offset 0 |
+| Project file (保存 / 別名で保存 / 開く) | One `.bunri` file per song (SQLite, format 2.0; see song-chart-design.md "プロジェクトの保存"): tracks (role, part, practice partner, name, mute/solo/volume/pan), notes and お手本, clips **with audio** (integer-PCM WAV stored as FLAC, others as-is; deduplicated by SHA-256), grid (tempo, meter, `gridOffset`), the chart, the learn state (ghost choice, diff pair, last diff result), the learning history, and copies of the cached guide / coach explanations. ⌘S saves (first time: native save dialog, default `~/Documents/bunri/<曲名>.bunri`), ⇧⌘S saves as, ⌘O opens (list of recent projects + 「ほかのファイルを選ぶ…」). Reopening restores the learning session without re-analysis or Claude calls. Opening clears the undo history. Dev browser path: asks for a name and stores in the data dir's `projects/` |
+| Recent projects (最近使ったプロジェクト) | In the empty state and the header ▾ menu. Kept by the desktop shell in the data dir (`recent-projects.json`, 12 entries). Entries can be removed (the file is not deleted); missing files are shown as 「見つかりません」 |
+| Unsaved changes | The window title and the header show the project name and 「●」 while there are unsaved changes (compared against the snapshot taken at save/open, so undoing back to the saved state clears it). Opening, 新しいプロジェクト and closing the window / ⌘Q ask 保存 / 保存しない / キャンセル |
+| Legacy projects (以前の形式) | Old `projects/*.json` appear in the open list with a 「以前の形式」 badge. Clips have no audio: they are placeholders listed in a bar with 「音声を読み込み直す」. Saving converts to `.bunri`; the JSON file is kept |
+| Learning history (学習の記録) | Every 「お手本と比べる」 records time, bar range, match rate (= the diff's `accuracy`), issue counts by kind and the explanation key. The 差分 tab shows 「一致 67% 前回より +34%」, a trend and the last 5 attempts. Saved in the project |
+| データの整理 | In the ファイル tab: disk usage of the data dir by category and a cleanup of temporary files (uploads, generated audio, chart work files, project working copies older than 5 minutes; never the open project, cached guides/explanations, `projects/`, or files outside the data dir) |
 | MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
 | WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
@@ -208,9 +213,18 @@ Demucs `model` values: `htdemucs` (default, recommended), `htdemucs_ft` (slow, h
 
 | Method | Path | Form / Path | Description |
 |---|---|---|---|
-| POST | `/api/project/save` | `data` (JSON string) | Save project; returns `{filename}` |
-| GET | `/api/project/list` | — | Returns array of saved project filenames |
-| GET | `/api/project/load/{name}` | path param | Returns project JSON |
+| POST | `/api/project/audio/missing` | JSON `{base, hashes}` | Which audio hashes still need uploading for a save (`{missing}`) |
+| PUT | `/api/project/audio/{hash}` | raw body, `?name=` | Stage one audio file (SHA-256 must match) |
+| POST | `/api/project/document` | JSON `{base, document}` | Write the project document to a working copy `work/<token>.bunri`; returns `{token, size_bytes, audio_count, duration_sec}` |
+| POST | `/api/project/open/{token}` | path param | Open a working copy (migrates v1, restores the chart file and cached guide/coach copies); returns the document |
+| GET | `/api/project/{token}/audio/{hash}` | path params | One audio file of an opened project (FLAC returned as WAV) |
+| GET | `/api/project/library` | — | `.bunri` and legacy JSON in the data dir's `projects/` |
+| POST | `/api/project/library/save` | JSON `{token, name}` or `{token, file}` | Dev browser path: place a working copy in `projects/` |
+| POST | `/api/project/library/open` | JSON `{file}` | `.bunri` → `{token}`; legacy JSON → `{document}` |
+| GET | `/api/storage` | — | Data dir usage by category |
+| POST | `/api/storage/cleanup` | JSON `{keep_tokens, keep_charts}` | Delete temporary files (409 while a job runs) |
+| POST | `/api/project/save` | `data` (JSON string) | Legacy: write an old-format JSON project (kept for opening old files and for tests) |
+| GET | `/api/project/list` / `/api/project/load/{name}` | — | Legacy JSON list / read |
 | GET | `/api/download/{filename}` | path param | Download a file from `results/` |
 
 ---

@@ -10,7 +10,8 @@ bunri.app (Tauri v2)
 ├─ WebView: web-ui (React) をアプリに同梱して表示
 │     ├─ HTTP ──► Python sidecar (FastAPI。127.0.0.1 の空きポート)
 │     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く)
-├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了
+├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了、
+│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ
 └─ Python sidecar (backend/): demucs / basic-pitch / librosa / fluidsynth / dawdreamer
 ```
 
@@ -118,11 +119,61 @@ kill するが、アプリが強制終了された場合、`uv` は親が居な�
 | `bunri.app/Contents/MacOS/uv` | 同梱した `uv` (版とハッシュは `scripts/prepare-desktop.mjs` で固定) |
 | `bunri.app/Contents/Resources/runtime/` | `backend/` と `pyproject.toml` / `uv.lock` (読み取り専用) |
 | `~/Library/Application Support/io.github.suwakei.bunri/runtime/` | Python 本体、venv、uv のキャッシュ、`.pyc` |
-| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` `soundfonts/` (`BUNRI_DATA_DIR`) |
+| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` (以前の形式) `work/` (作業中のプロジェクトの写し) `soundfonts/` `recent-projects.json` (最近使ったプロジェクト) (`BUNRI_DATA_DIR`) |
+| 利用者が選んだ場所 (既定は `~/Documents/bunri/`) | 保存したプロジェクト (`.bunri`)。書くのは Rust だけ (下の「プロジェクトのファイル」) |
 | `~/.cache/huggingface/` `~/.cache/torch/` | 音源分離のモデル (ライブラリの既定の置き場のまま) |
 
 Python 側は、データの場所を `audio_utils.data_dir()` から引く。パスを直書きしない。
 外から受け取ったファイル名は `audio_utils.safe_join()` を通す。
+
+## プロジェクトのファイル
+
+プロジェクト (`.bunri`。形は [song-chart-design.md](song-chart-design.md)「プロジェクトの保存」) は、利用者が選んだ場所に保存する。
+ダイアログは Tauri 公式の `tauri-plugin-dialog` (`=2.8.4`、MIT/Apache-2.0) を **Rust から**出す。
+
+### 誰がどこを読み書きするか (変えるときは両側を一緒に変える)
+
+| 誰が | 読み書きする場所 |
+|---|---|
+| sidecar (Python) | データ置き場の中だけ。保存は `work/<token>.bunri` (作業用の写し) に書いて名前を返す。開くのは `work/` に置かれた写しだけ |
+| Rust (`src-tauri/src/project.rs`) | 利用者が選んだ場所と `work/` の間で写す。写してよい行き先は「この起動でダイアログで選ばれた場所」と「最近使ったプロジェクトに在る場所」(これもダイアログで選ばれたものだけが入る) だけ。拡張子は `.bunri` だけ。写しの名前は 24 桁の 16 進だけ (パスの区切りを含められない) |
+| 画面 (WebView) | パスを Rust に渡すだけ。ファイルの中身には触らない。ダイアログの権限 (`dialog:*`) は渡していない (`capabilities/` に足していない) |
+
+- 保存: 画面が文書と音声を sidecar に送る → sidecar が `work/` に書く → 画面が `project_pick_save` (初めて・別名で保存のときだけ) →
+  `project_commit(token, path)` → Rust が同じフォルダの別名に写してから置き換える (書きかけを利用者のファイルとして残さない)
+- 開く: `project_pick_open` (ダイアログ) か `project_open_recent(path)` (一覧に在るものだけ) → Rust が `work/` に写す →
+  画面が sidecar の `POST /api/project/open/{token}` を呼ぶ。古い形式の写しは sidecar が v2 に上げる (利用者のファイルはそのまま)
+- 最近使ったプロジェクト: Rust がデータ置き場の `recent-projects.json` に持つ (12 件まで。外せる。無くなったファイルは `exists: false`)
+- 作業用の写しは「データの整理」で消せる (開いているものは残す)。sidecar の起動では消さない
+
+**なぜこの形か**: sidecar の API に任意のパスを受け取らせると、API の鍵を持つ画面が乗っ取られたとき (XSS など)、利用者の
+どのファイルでも上書きできてしまう (`~/.zshrc` など)。パスの検査を sidecar に足しても、何が「利用者が選んだ」かを sidecar は知らない。
+ダイアログを出したのは Rust なので、Rust が選ばれた場所を覚え、そこにだけ写す。sidecar は今までどおり「データ置き場の外に触らない」。
+検討して捨てた案: 画面からダイアログを出してパスを sidecar に渡す (上の理由)、Rust と sidecar の間に別の鍵を作って許可したパスを
+sidecar に教える (鍵と HTTP の呼び出しが Rust に増える。写すだけなら Rust で足りる)、ファイルの中身を画面経由で運ぶ (100 MB を超える)。
+
+開発用のブラウザ起動 (Rust が無い) では、名前を尋ねてデータ置き場の `projects/` に置く (`POST /api/project/library/save`)。
+一覧もそこから作る。ブラウザのテストはこの経路で、保存・開く・以前の形式・確かめを通す。
+
+### 保存していない変更と、閉じる前の確かめ
+
+画面が `document_state(dirty, title)` で、窓の題名 (「曲名 ● — bunri」) と保存していない変更の有無を Rust に知らせる。
+
+- メインの窓を閉じる (`CloseRequested`) / ⌘Q (`RunEvent::ExitRequested` で `code` が無いもの) とき、変更が在れば止めて、
+  イベント `close-requested` (`{quit}`) を画面に送る。画面は「保存 / 保存しない / キャンセル」を尋ね、保存か保存しないなら
+  `close_confirmed(quit)` を呼ぶ。Rust は印を下ろしてから閉じる (終える)
+- 判断は `DocumentState::decide_close` (Rust のテストで確かめる)。画面が何も知らせていない (起動中など) ときは止めない
+- 開く・新しいプロジェクトの前の確かめは、画面だけで行う (`lib/project-actions.ts` の `confirmDiscard`)
+- 開発用のブラウザ起動では、タブを閉じる前の確かめ (`beforeunload`) は付けていない (製品の形ではなく、テストの再読み込みを妨げるため)
+
+`.bunri` をダブルクリックして開く (ファイルの関連付け) は、まだ入れていない (`tauri.conf.json` の `fileAssociations` と、起動時に渡された
+パスを受けて開く仕組みが要る)。
+
+### テスト用のビルドで
+
+WebDriver はネイティブのダイアログ (NSSavePanel / NSOpenPanel) を操作できない。機能 `e2e` のときだけ、ダイアログを出さずに環境変数
+`BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所が選ばれたことにする (`src-tauri/src/e2e.rs` の `dialog_path`)。テストは一時ディレクトリの
+中を渡す。それ以外 (写してよい場所の確かめ、最近使ったプロジェクト、閉じる前の確かめ) は配布物と同じに動く。
 
 ## 時間のかかる処理
 
@@ -189,6 +240,7 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 | WebView の保存領域 | 使い捨て (incognito)。localStorage は毎回空から始まる | 開発用の `tauri dev` と実行ファイル名が同じで、そのままだと保存領域を共有してしまう |
 | キーチェーン | 起動時に読まない。API キーの保存・削除は、別の項目名 (`<識別子>.e2e`) に向ける | 利用者の本物のキーに触れない。テストは偽のキーを環境変数で渡す |
 | 書き出したファイル | 環境変数 `BUNRI_E2E_DOWNLOAD_DIR` の場所に保存する | `~/Downloads` に書かない |
+| プロジェクトの保存・開くのダイアログ | 出さずに、環境変数 `BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所を使う | WebDriver はネイティブのダイアログを操作できない。`~/Documents` に書かない |
 | 記録 | CSP の違反と、捕まえられなかった例外を `window.__bunriE2E` に記録する (画面の読み込みより前に入れる) | テストが、起動の途中で起きた違反まで拾えるように |
 | WebView の UI の受け手 | プラグインが WKWebView の UI の受け手 (WKUIDelegate) を自分のものに差し替える | `alert()` などをテストから扱うため。代わりに、別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認は、テスト用のビルドでは配布物と同じには動かない ([ui-testing.md](ui-testing.md) の「確かめられない範囲」) |
 
@@ -269,6 +321,6 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新
-- 書き出しの保存先を選ぶダイアログ。いまは `~/Downloads` に保存する (同じ名前が在れば `名前 (1).wav` のように番号を付ける)。
+- 書き出し (WAV・MIDI) の保存先を選ぶダイアログ (プロジェクトの保存にはダイアログを入れた)。いまは `~/Downloads` に保存する (同じ名前が在れば `名前 (1).wav` のように番号を付ける)。
   保存は Rust が受けている (`src-tauri/src/windows.rs` の `on_download`)。受けなくても WKWebView は `~/Downloads` に
   保存するが、受けておくとログに残り、窓を自動操作するテストが保存先を差し替えられる
