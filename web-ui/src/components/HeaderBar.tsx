@@ -4,41 +4,11 @@
 import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { apiFetch, describeError, errorDetail } from '../lib/api';
+import { describeError } from '../lib/api';
+import { UNTITLED, useProjectActions, useProjectWiring } from '../lib/project-actions';
+import PopupMenu, { type MenuRequest } from './PopupMenu';
 import { historyShortcut, isDialogOpen, isKeyboardFocusedControl, isTypingTarget, modKeyLabel } from '../lib/keys';
 import { notesToMidi } from '../lib/midi';
-
-/**
- * プロジェクトデータの構造を表すインターフェース。
- * API の `/api/project/save` / `/api/project/load/{name}` でやり取りされる。
- *
- * @property bpm - テンポ（Beats Per Minute。小数も可）
- * @property beatsPerBar - 1小節あたりの拍数
- * @property gridOffset - 1 小節目の 1 拍目の位置（秒）。無ければ 0（以前の版が保存したもの）
- * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
- * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
- * @property automation - 以前の版が保存していたオートメーションのデータ。オートメーションの欄は
- *   外したので、読み込んでも使わない（在っても無視する）
- */
-interface ProjectData {
-    bpm?: number;
-    beatsPerBar?: number;
-    gridOffset?: number;
-    tracks?: Array<{
-        name?: string;
-        gain?: number;
-        pan?: number;
-        mute?: boolean;
-        role?: 'song' | 'part' | 'practice';
-        part?: string;
-        /** 練習のトラックが見るパートのトラックの、並びの番号（ID は読み込むたびに変わるので番号で持つ） */
-        practiceOfIndex?: number;
-        pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-        referenceNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-    }>;
-    pianoRollNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-    automation?: Record<string, unknown>;
-}
 
 /**
  * 再生時間（秒）を `M:SS.d` 形式の文字列に変換する。
@@ -83,8 +53,8 @@ export default function HeaderBar() {
         isPlaying, setIsPlaying, setStatus,
         metronomeEnabled, setMetronomeEnabled,
         withProgress, showProgress, bumpTracks, pianoRollRef,
-        setHint, setGridOffset, setCoachPair,
-        canUndo, canRedo, undoLabel, redoLabel, undo, redo, record, recordAsync,
+        setHint,
+        canUndo, canRedo, undoLabel, redoLabel, undo, redo, recordAsync, project, isDirty,
     } = useDaw();
 
     // Cmd+Z (Ctrl+Z) で元に戻す、Cmd+Shift+Z (Ctrl+Shift+Z, Ctrl+Y) でやり直す。
@@ -236,87 +206,23 @@ export default function HeaderBar() {
         }
     }, [setStatus, pianoRollRef]);
 
-    const handleSave = useCallback(async () => {
-        const pr = pianoRollRef.current;
-        if (pr) pr.getNotes();
-        const project = {
-            bpm: engine.bpm, beatsPerBar: engine.beatsPerBar, gridOffset: engine.gridOffset,
-            tracks: engine.tracks.map(t => ({
-                name: t.name, gain: t.gain, pan: t.pan, mute: t.mute,
-                clips: t.clips.map(c => ({ name: c.name, offset: c.offset, duration: c.duration })),
-                pianoNotes: t.pianoNotes || [],
-                referenceNotes: t.referenceNotes,
-                role: t.role, part: t.part,
-                practiceOfIndex: t.practiceOf !== undefined ? engine.tracks.findIndex(x => x.id === t.practiceOf) : undefined,
-            })),
-        };
-        const fd = new FormData();
-        fd.append('data', JSON.stringify(project));
-        try {
-            const resp = await apiFetch('/api/project/save', { method: 'POST', body: fd });
-            if (!resp.ok) { setStatus('プロジェクトを保存できませんでした。' + await errorDetail(resp), 'error'); return; }
-        } catch (e) {
-            setStatus('プロジェクトを保存できませんでした。' + describeError(e), 'error');
-            return;
-        }
-        setStatus('プロジェクトを保存しました');
-    }, [pianoRollRef, setStatus]);
-
-    const handleLoad = useCallback(async () => {
-        let name: string;
-        let project: ProjectData;
-        try {
-            const resp = await apiFetch('/api/project/list');
-            if (!resp.ok) { setStatus('プロジェクトを読み込めませんでした。' + await errorDetail(resp), 'error'); return; }
-            const files = await resp.json();
-            if (files.length === 0) { setStatus('保存したプロジェクトがまだありません。先に「保存」を押してください'); return; }
-            name = files[0];
-            const projResp = await apiFetch(`/api/project/load/${name}`);
-            if (!projResp.ok) { setStatus('プロジェクトを読み込めませんでした。' + await errorDetail(projResp), 'error'); return; }
-            project = await projResp.json();
-        } catch (e) {
-            setStatus('プロジェクトを読み込めませんでした。' + describeError(e), 'error');
-            return;
-        }
-        // 読み込みも元に戻せる (読み込む前のトラック・ノート・テンポに戻る)
-        record(`プロジェクト「${name}」の読み込み`, () => {
-            engine.bpm = project.bpm || 120;
-            engine.beatsPerBar = project.beatsPerBar || 4;
-            setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
-            // 1 小節目の位置。以前の版が保存したプロジェクトには無いので、0 秒 (以前の数え方) にする
-            setGridOffset(typeof project.gridOffset === 'number' ? project.gridOffset : 0);
-            // ピアノロールは、トラックを読み込む「前」に閉じる。ピアノロールは別のトラックへ移るとき、
-            // 画面に出しているノートを、開いていたトラックへ書き戻す。読み込んだ後に閉じると、
-            // 開いていたトラックのノートが、読み込んだ内容ではなく、画面に出ていた古い内容に戻ってしまう
-            const pr = pianoRollRef.current;
-            if (pr) pr.switchToTrack(null);
-            if (project.tracks) {
-                project.tracks.forEach((pt, i) => {
-                    // 保存したときのほうがトラックが多ければ、足りないぶんを作る
-                    // (作らないと、3 本目以降のノートが読み込まれずに消える)
-                    const track = engine.tracks[i] ?? engine.addTrack(pt.name);
-                    if (pt.name) track.name = pt.name;
-                    if (typeof pt.gain === 'number') engine.updateTrackGain(track.id, pt.gain);
-                    if (typeof pt.pan === 'number') engine.updateTrackPan(track.id, pt.pan);
-                    if (typeof pt.mute === 'boolean' && pt.mute !== track.mute) engine.toggleMute(track.id);
-                    if (pt.pianoNotes) track.pianoNotes = pt.pianoNotes;
-                    if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
-                    track.role = pt.role;
-                    track.part = pt.part;
-                    track.practiceOf = undefined;
-                });
-                // 練習のトラックが見るパートは、全部のトラックを作ってから結び直す
-                project.tracks.forEach((pt, i) => {
-                    const target = typeof pt.practiceOfIndex === 'number' ? engine.tracks[pt.practiceOfIndex] : undefined;
-                    if (target && engine.tracks[i]) engine.tracks[i].practiceOf = target.id;
-                });
-            }
+    // プロジェクトの保存・開く (lib/project-actions.ts)。⌘S / ⇧⌘S / ⌘O と、窓を閉じる前の確かめもここで受ける
+    const projectActions = useProjectActions();
+    useProjectWiring(projectActions);
+    const [projectMenu, setProjectMenu] = useState<MenuRequest | null>(null);
+    const openProjectMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const mod = modKeyLabel();
+        setProjectMenu({
+            label: 'プロジェクト', x: rect.left, y: rect.bottom + 2,
+            returnFocus: () => document.getElementById('btn-project-menu'),
+            items: [
+                { label: '新しいプロジェクト', action: () => void projectActions.newProject() },
+                { label: `別名で保存…（${mod}Shift+S）`, action: () => void projectActions.save(true) },
+                { label: `最近使ったプロジェクト…（${mod}O）`, action: () => void projectActions.open() },
+            ],
         });
-        setCoachPair({ referenceId: null, attemptId: null });
-        // 以前の版が保存したオートメーションのデータ (project.automation) は、在っても使わない
-        bumpTracks();
-        setStatus(`プロジェクト「${name}」を読み込みました（音声は保存されていません。音声ファイルは、もう一度追加してください）`);
-    }, [setBpm, setBeatsPerBar, setGridOffset, setCoachPair, pianoRollRef, bumpTracks, setStatus, record]);
+    }, [projectActions]);
 
     const h = (text: string) => ({
         onMouseEnter: () => setHint(text),
@@ -326,6 +232,11 @@ export default function HeaderBar() {
     return (
         <div id="header">
             <h1>bunri DAW</h1>
+            <span id="project-title" title={project.path ?? project.file ?? 'まだ保存していません'}
+                aria-label={`プロジェクト: ${project.name ?? UNTITLED}${isDirty ? '（保存していない変更があります）' : ''}`}>
+                {project.name ?? UNTITLED}{project.legacy ? '（以前の形式）' : ''}
+                {isDirty && <span className="unsaved-mark" aria-hidden="true"> ●</span>}
+            </span>
             <div id="transport">
                 <label htmlFor="transport-bpm">BPM</label>
                 <input id="transport-bpm" type="number" value={bpm} min="20" max="300" step="0.01"
@@ -367,8 +278,14 @@ export default function HeaderBar() {
                         <span aria-hidden="true">↷</span>
                     </button>
                 </div>
-                <button onClick={handleSave} {...h('プロジェクト（テンポ・トラック・ノート）を保存します')}>保存</button>
-                <button onClick={handleLoad} {...h('最後に保存したプロジェクトを読み込みます')}>読み込む</button>
+                <button onClick={() => void projectActions.save(false)} aria-keyshortcuts="Meta+S Control+S"
+                    {...h(`プロジェクト（トラック・ノート・音声・カルテ・学習の記録）を 1 つのファイルに保存します（${modKeyLabel()}S）`)}>保存</button>
+                <button onClick={() => void projectActions.open()} aria-keyshortcuts="Meta+O Control+O"
+                    {...h(`保存したプロジェクトを開きます（${modKeyLabel()}O）`)}>開く</button>
+                <button id="btn-project-menu" type="button" aria-label="プロジェクトのメニュー" aria-haspopup="menu"
+                    aria-expanded={projectMenu !== null} onClick={openProjectMenu}
+                    {...h('新しいプロジェクト・別名で保存・最近使ったプロジェクト')}>▾</button>
+                <PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />
                 <button onClick={handleExport} disabled={showProgress}
                     {...h('再生で鳴る音を、1 つの WAV ファイルとして書き出します')}>WAV 書き出し</button>
                 <button onClick={handleExportMidi} {...h('ピアノロールのノートを、MIDI ファイルとして書き出します')}>MIDI 書き出し</button>

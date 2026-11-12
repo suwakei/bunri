@@ -19,6 +19,7 @@ import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
 import type { ChartResponse } from './chart';
+import { decodeWithSource } from './audio-sources';
 
 /** 原曲のトラックの名前。 */
 export const SONG_TRACK_NAME = '原曲';
@@ -41,6 +42,11 @@ let partsChartId: string | null = null;
 /** いまのパートのトラックを採譜したときのカルテの ID（カルテ無しで分けた、またはまだ分けていなければ null）。 */
 export function chartIdOfParts(): string | null {
     return partsChartId;
+}
+
+/** パートを採譜したときのカルテの ID を設定する（プロジェクトを開いたとき。lib/project-file.ts）。 */
+export function setChartIdOfParts(id: string | null): void {
+    partsChartId = id;
 }
 
 /** パートの名前（API の識別子）から、画面に出す名前へ。 */
@@ -197,7 +203,8 @@ export function useLearnActions() {
         fd.append('file', file);
         const resp = await apiFetch('/api/convert/wav', { method: 'POST', body: fd });
         if (!resp.ok) throw new Error(await errorDetail(resp));
-        const buffer = await engine.ctx!.decodeAudioData(await resp.arrayBuffer());
+        // 変換した WAV を元のバイト列として覚える (プロジェクトの保存で、そのまま入れる)
+        const buffer = await decodeWithSource(engine.ctx!, await resp.arrayBuffer(), file.name.replace(/\.[^.]+$/, '') + '.wav');
         await engine.addClipFromBuffer(trackId, buffer, file.name, offsetSec);
     }, []);
 

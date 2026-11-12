@@ -13,6 +13,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useDaw, type LeftTab, type SoundTab } from '../lib/store';
 import { LEFT_WIDTH_MAX, LEFT_WIDTH_MIN } from '../lib/storage';
 import engine, { type PianoNote } from '../lib/engine';
+import { decodeWithSource } from '../lib/audio-sources';
 import { apiFetch, describeError, errorDetail } from '../lib/api';
 import { useLearnActions } from '../lib/learn';
 import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
@@ -22,6 +23,7 @@ import JobCard from './JobCard';
 import SubTabs from './SubTabs';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
+import DataCleanup from './DataCleanup';
 
 /**
  * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
@@ -177,7 +179,8 @@ function SynthPanel() {
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx!.decodeAudioData(buf);
+            // 元のバイト列を覚えておく (プロジェクトの保存で、そのまま入れる。lib/audio-sources.ts)
+            const buffer = await decodeWithSource(engine.ctx!, buf, 'synth-seq.wav');
 
             // 追加先は、セレクタで選んだトラック。選んでいなければ、ピアノロールで開いているトラック
             let trackId: number | string | null = synthTrack && engine.getTrack(synthTrack) ? synthTrack : pr.getActiveTrackId();
@@ -296,7 +299,8 @@ function DrumPanel() {
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx!.decodeAudioData(buf);
+            // 元のバイト列を覚えておく (プロジェクトの保存で、そのまま入れる。lib/audio-sources.ts)
+            const buffer = await decodeWithSource(engine.ctx!, buf, `drum-${pattern}.wav`);
 
             // トラックを作ること・クリップを置くことは、まとめて元に戻せる
             const track = await recordAsync('ドラムを追加', async () => {
@@ -379,7 +383,8 @@ function FxPanel() {
             if (!resp.ok) throw new Error(await errorDetail(resp));
             const blob = await resp.blob();
             const buf = await blob.arrayBuffer();
-            const buffer = await engine.ctx!.decodeAudioData(buf);
+            // 元のバイト列を覚えておく (プロジェクトの保存で、そのまま入れる。lib/audio-sources.ts)
+            const buffer = await decodeWithSource(engine.ctx!, buf, `${clip.name}[${fxType}].wav`);
             // エフェクトをかけたクリップに差し替える (元に戻すと、かける前のクリップに戻る)
             record(`「${label}」を適用`, () => {
                 track.clips[0] = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
@@ -538,6 +543,8 @@ function FilePanel() {
                 ? <button className="action-btn" onClick={handleMicRecord}>マイク録音開始</button>
                 : <button className="action-btn" onClick={handleMicStop}>録音停止</button>
             }
+            <hr />
+            <DataCleanup />
         </div>
     );
 }

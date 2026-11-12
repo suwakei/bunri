@@ -47,6 +47,30 @@ export interface DiffResult {
     worst_bars: number[];
 }
 
+/** 比べたときのノートと 1 小節のステップ数。 */
+export interface ComparedNotes {
+    reference: PianoNote[];
+    attempt: PianoNote[];
+    stepsPerBar: number;
+}
+
+/**
+ * 比べた結果ごとの、比べたときのノート。説明は、画面に出ている差分と同じノートで頼む
+ * （比べたあとにノートを直していても、説明の指摘の ID が一覧とずれないように）。
+ * プロジェクトにも入れ、開き直したときに同じ材料で保存済みの説明を探す（lib/project-file.ts）。
+ */
+const comparedWith = new WeakMap<DiffResult, ComparedNotes>();
+
+/** 比べた結果に、比べたときのノートを結び付ける。 */
+export function rememberCompared(result: DiffResult, compared: ComparedNotes): void {
+    comparedWith.set(result, compared);
+}
+
+/** 比べた結果の、比べたときのノート（分からなければ undefined）。 */
+export function comparedOf(result: DiffResult): ComparedNotes | undefined {
+    return comparedWith.get(result);
+}
+
 /** 種類ごとの短い呼び名。 */
 export const KIND_LABEL: Record<IssueKind, string> = {
     missing: '抜け',
@@ -165,6 +189,8 @@ export interface ExplanationResponse {
     created_at?: string | null;
     /** 保存済みの説明を返したとき true（Claude は呼んでいない） */
     cached: boolean;
+    /** 保存の鍵（Claude の説明のとき。学習の記録が説明を指す識別子。決まった文では null） */
+    key?: string | null;
     /** 材料の要約（指摘の全件数と、Claude に渡した件数） */
     input?: { issues: number; issues_sent: number; chart_context: string };
     today?: GuideToday;
