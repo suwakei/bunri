@@ -73,6 +73,12 @@ export interface RecorderOptions {
     minOctave: number;
     /** 表示できる最高のオクターブ（含まない）。 */
     maxOctave: number;
+    /**
+     * 録る範囲（ステップ。`end` は含まない）。練習画面の区間ループ。無ければ（null）ピアノロール全体。
+     * ステップ入力は範囲の頭から始めて、終わりで止まる。リアルタイム録音は、区間の終わりをまたいで
+     * 押していたノートを、区間の終わりまでの長さにする（再生位置が区間の頭に戻るため）。
+     */
+    bounds?: () => { start: number; end: number } | null;
 }
 
 /**
@@ -135,7 +141,10 @@ export class MidiNoteRecorder {
         }
         this.stepHeld.add(event.pitch);
         if (!this.inRange(event.pitch)) return { kind: 'skipped', reason: 'range' };
-        if (this.cursor + this.stepLength > this.options.totalSteps) return { kind: 'skipped', reason: 'end' };
+        const bounds = this.options.bounds?.() ?? null;
+        // 範囲の外にカーソルが在れば、範囲の頭から始める (和音の途中では動かさない)
+        if (bounds && !this.stepPlaced && (this.cursor < bounds.start || this.cursor >= bounds.end)) this.cursor = bounds.start;
+        if (this.cursor + this.stepLength > (bounds ? bounds.end : this.options.totalSteps)) return { kind: 'skipped', reason: 'end' };
         const note = { ...pitchToNote(event.pitch), step: this.cursor, length: this.stepLength };
         this.options.addNote(note);
         this.stepPlaced = true;
@@ -156,7 +165,10 @@ export class MidiNoteRecorder {
         const step = Math.max(0, Math.round(start));
         if (step >= this.options.totalSteps) return { kind: 'skipped', reason: 'end' };
         // 離す前に再生が止まっていたら、長さは最短（16 分音符 1 つ）にする
-        const end = position ?? start;
+        let end = position ?? start;
+        // 区間ループの終わりをまたいだ (再生位置が頭に戻った) ら、区間の終わりまでにする
+        const bounds = this.options.bounds?.() ?? null;
+        if (bounds && end < start) end = bounds.end;
         const length = Math.min(Math.max(1, Math.round(end - start)), this.options.totalSteps - step);
         const note = { ...pitchToNote(event.pitch), step, length };
         this.options.addNote(note);

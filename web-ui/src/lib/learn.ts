@@ -179,7 +179,7 @@ export function useLearnActions() {
     const {
         setStatus, bumpTracks, pianoRollRef, bpm, setBpm, beatsPerBar,
         setChartResult, openLearn, applyChartGrid, setGridOffset, songFile, setSongFile,
-        setGhostChoice, setCoachPair, setLeftTab, chart, chartId, record, recordAsync,
+        setGhostChoice, setCoachPair, setLeftTab, chart, chartId, record, recordAsync, openPractice,
     } = useDaw();
 
     /**
@@ -387,6 +387,7 @@ export function useLearnActions() {
      * - お手本のノートが在る高さと小節まで、ピアノロールをスクロールする
      * - 差分チェックの組を「お手本 = このパート、打ち込み = 練習のトラック」にする
      * - パートの音声と練習のトラックを鳴るようにする（原曲のミュート・ソロは利用者に任せる）
+     * - 練習画面（components/PracticeView.tsx）を開く
      *
      * @param partId - パートのトラックの ID
      */
@@ -423,8 +424,9 @@ export function useLearnActions() {
             pr.scrollToStep(Math.max(0, first));
         }
         bumpTracks();
-        setStatus(`「${part.name}」を練習します。水色のお手本を見ながら「${practice.name}」にノートを置き、終わったら「差分チェック」で比べてください`);
-    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus, record]);
+        openPractice(part.id, practice.id);
+        setStatus(`「${part.name}」を練習します。水色のお手本を見ながら「${practice.name}」にノートを置き、「比べる」で確かめてください`);
+    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus, record, openPractice]);
 
     /**
      * お手本を、そのパートのトラックの打ち込みとして写す（採譜を自由に直したい人向け）。

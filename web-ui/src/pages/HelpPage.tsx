@@ -97,9 +97,20 @@ export default function HelpPage() {
                         <li><strong>① 曲を取り込む:</strong> 起動したときの「曲を取り込んで始める」か、「学ぶ」タブの「曲を取り込む」で曲のファイル（MP3・WAV・FLAC・M4A など）を選びます。音声が「原曲」のトラックに置かれ、カルテが作られます</li>
                         <li><strong>② カルテを見る:</strong> キー・コード進行・構成・ミックスの特性が出ます。まず「グリッドを確認・補正する」で、拍の位置が合っているかを確かめてください。コードや構成を押すと、その小節へ移動します。カルテの小節番号は、タイムラインとピアノロールの小節番号と同じです</li>
                         <li><strong>③ パートに分ける:</strong> 「曲とパート」の「パートに分けて採譜する」で、原曲をパート（ボーカル・ドラム・ベースなど）に分け、パートごとにノートを採譜します（数分）。採譜したノートが<strong>お手本</strong>になります。パートのトラックは、原曲と重ならないようミュートした状態で作られます</li>
-                        <li><strong>④ 打ち込む:</strong> パートの「このパートを練習する」を押すと、練習のトラック（「ベースの練習」など）が開き、お手本が水色で重なります。お手本と、そのパートの音を聴きながらノートを置きます。お手本を最初から打ち込みとして使いたいときは「お手本をノートとして取り込む」を押します</li>
+                        <li><strong>④ 打ち込む:</strong> パートの「このパートを練習する」を押すと、練習画面が開き、練習のトラック（「ベースの練習」など）にお手本が水色で重なります。お手本と、そのパートの音を聴きながらノートを置きます。お手本を最初から打ち込みとして使いたいときは「お手本をノートとして取り込む」を押します</li>
                         <li><strong>⑤ 差分で直す:</strong> 「差分」の「お手本と比べる」で、打ち込みとお手本の違い（抜け、高さの違いなど）が一覧で出ます。指摘を押すと、その場所（小節とノートの高さ）へ移動します</li>
                     </ol>
+                    <h3 id="practice">練習画面</h3>
+                    <p>「入力 → 比べる → 直す」を 1 つの画面で回すための画面です。「このパートを練習する」か、練習のトラックの「練習画面」で開き、「← アレンジに戻る」か <span className="kbd">Esc</span> でふだんの画面に戻ります（表示の大きさやスクロールの位置は元に戻ります）。</p>
+                    <ul>
+                        <li><strong>構成・コード・小節の段:</strong> ピアノロールと同じ横の位置に並びます。小節の段をドラッグすると、その範囲が区間ループになります。構成の区間を押すと、その区間が区間ループになります</li>
+                        <li><strong>区間ループ:</strong> 区間の終わりで頭に戻って、繰り返し鳴ります。小節の欄で決めることもできます</li>
+                        <li><strong>速度:</strong> 50〜100% に遅くします。音の高さは変わりません（区間ループの中だけで効きます。最初の 1 回は、音を用意するあいだ 100% で鳴ります）</li>
+                        <li><strong>聴く:</strong> パート（パートの音声）/ 自分（自分のノート）/ 両方。<strong>お手本:</strong> 見せる / 隠す。どちらもプロジェクトのミュート・ソロは変えず、元に戻す履歴にも残りません</li>
+                        <li><strong>入力:</strong> マウス / MIDI ステップ（区間の頭から 1 つずつ置く）/ MIDI リアルタイム（再生しながら弾く。区間ループ中は 1 周ごとに重ねて録り、元に戻すと最後の 1 周ぶんが消えます）</li>
+                        <li><strong>比べる:</strong> 区間の中のノートをお手本と比べ、ノートに色と模様を付けます（緑の縁: 合っている / 黄色の斜線: 高さが違う / 黄色の点線の縁: 位置か長さがずれている / 赤と ×: お手本にない / 赤い破線のお手本: 抜け）。右の一覧の指摘を押すと、そのノートを選んで光らせます。色の付いたノートを押すと、その指摘が出ます。ノートを変えると色は消え、「もう一度比べてください」と出ます</li>
+                        <li><strong>一致:</strong> 比べた区間のお手本のうち、高さが同じで、位置が 16 分音符 2 個以内だったノートの割合です</li>
+                    </ul>
                     <p>「ガイド」では、カルテの内容を「こう作れば再現できる」という手順の説明にできます（Claude の API キーが要ります）。手順の小節を押すと、その小節へ移動します。</p>
                     <p>お手本は自動で採譜したもので、原曲とぴったり同じとは限りません。耳でも確かめながら使ってください。ドラムは差分チェックの対象外です。</p>
                 </section>
@@ -224,14 +235,17 @@ export default function HelpPage() {
                 <section id="shortcuts">
                     <h2>キーボードとマウスの操作</h2>
                     <ul>
-                        <li><span className="kbd">Space</span> — 再生 / 一時停止（文字を入力する欄に居るときは効きません）</li>
+                        <li><span className="kbd">Space</span> — 再生 / 一時停止（文字を入力する欄に居るときは効きません）。練習画面では区間の中で再生します</li>
                         <li><span className="kbd">⌘Z</span>（<span className="kbd">Ctrl+Z</span>） — 元に戻す。ノート・トラック・クリップ・音量とパンの変更を、1 つずつ戻します（文字を入力する欄の中では、その欄の文字を戻します）</li>
                         <li><span className="kbd">⌘⇧Z</span>（<span className="kbd">Ctrl+Shift+Z</span> / <span className="kbd">Ctrl+Y</span>） — やり直す</li>
                         <li><span className="kbd">Delete</span> / <span className="kbd">Backspace</span> — 選んでいるノートを削除（クリップを選んでいるときは、そのクリップを削除）</li>
                         <li><span className="kbd">⌘A</span> / <span className="kbd">⌘C</span> / <span className="kbd">⌘X</span> / <span className="kbd">⌘V</span> / <span className="kbd">⌘D</span> — ピアノロールで、全部選ぶ / コピー / 切り取り / 再生位置に貼り付け / すぐ後ろに複製</li>
                         <li><span className="kbd">←</span> <span className="kbd">→</span> <span className="kbd">↑</span> <span className="kbd">↓</span>（ピアノロール） — 選んだノートを動かす（<span className="kbd">Shift</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> で 1 オクターブ）</li>
                         <li><span className="kbd">Esc</span>（ピアノロール） — ノートの選択を外す</li>
-                        <li><span className="kbd">Esc</span> — 案内やグリッドの補正の窓を閉じる</li>
+                        <li><span className="kbd">Esc</span> — 案内やグリッドの補正の窓を閉じる。練習画面では、アレンジに戻る</li>
+                        <li><span className="kbd">L</span>（練習画面） — 区間ループを入れる / 止める</li>
+                        <li><span className="kbd">[</span> <span className="kbd">]</span>（練習画面） — 区間を 1 小節前 / 後ろへ動かす</li>
+                        <li><strong>ドラッグ</strong>（練習画面の小節の段） — その範囲を区間ループにする</li>
                         <li><span className="kbd">←</span> <span className="kbd">→</span> — 左パネルのタブを移る（タブを選んでいるとき）。左パネルの幅を変える（右端の境目を選んでいるとき）</li>
                         <li><span className="kbd">↑</span> <span className="kbd">↓</span> — ピアノロールの高さを変える（タイムラインとの境目を選んでいるとき）</li>
                         <li><strong>ダブルクリック</strong>（ピアノロール） — ノートを追加</li>

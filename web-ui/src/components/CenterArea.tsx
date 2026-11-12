@@ -10,7 +10,9 @@ import { cssVar } from '../lib/theme';
 import { hasPrimaryModifier, isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 import { sameNotes } from '../lib/project-snapshot';
 import MidiInputBar from './MidiInputBar';
+import { useMidiInput } from '../lib/useMidiInput';
 import GhostBar from './GhostBar';
+import { PracticeBands, PracticeControls, PracticeHeader, PracticeProvider, PracticeSide } from './PracticeView';
 import { secToStep, stepSeconds } from '../lib/grid';
 import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
@@ -111,6 +113,69 @@ class PianoRollEngine {
         this.playhead = null;
         // Cmd+ホイール / ピンチの量をためる (トラックパッドは 1 回の量が小さい)
         this._wheelAccum = 0;
+        // 見えている範囲 (横のスクロール・表示の大きさ・長さ) が変わったときに知らせる先。
+        // 練習画面の構成・コード・小節の段が、ピアノロールと横の位置をそろえるのに使う (onView)
+        this._viewListeners = new Set();
+        // ノートの中身が変わったときに知らせる先 (onNotesEdited)。練習画面が「比べた後に変えた」を知るのに使う
+        this._notesListeners = new Set();
+        // 差分の印 (setDiffMarks)。own[i] が notes[i]、ghost[i] が ghostNotes[i] の印。ノートを変えたら消す
+        this.diffMarks = null;
+        // 区間ループの範囲 (ステップ。setLoopRange)。グリッドに範囲を描く
+        this.loopRange = null;
+        // ノートを押したとき (練習画面が、そのノートの指摘を見せる)
+        this.onNotePressed = null;
+    }
+    /**
+     * 見えている範囲が変わったときに呼ばれる関数を足す。
+     * @returns 外す関数
+     */
+    onView(fn) { this._viewListeners.add(fn); return () => this._viewListeners.delete(fn); }
+    _emitView() { for (const fn of this._viewListeners) fn(this.viewState()); }
+    /** 横の位置を出すのに要る値 (1 ステップの幅・横のスクロール・長さ・見えている幅・鍵盤の列の幅)。 */
+    viewState() {
+        return {
+            stepWidth: this.stepWidth, scrollLeft: this.wrap ? this.wrap.scrollLeft : 0, totalSteps: this.totalSteps,
+            clientWidth: this.wrap ? this.wrap.clientWidth : 0, keysWidth: this.keysDiv ? this.keysDiv.offsetWidth : 0,
+        };
+    }
+    /**
+     * ノートの中身が変わったときに呼ばれる関数を足す (書き戻したとき・元に戻したとき)。
+     * @returns 外す関数
+     */
+    onNotesEdited(fn) { this._notesListeners.add(fn); return () => this._notesListeners.delete(fn); }
+    _emitNotesEdited() { for (const fn of this._notesListeners) fn(); }
+    /**
+     * 差分の印を付ける (null で外す)。印はノートの並びの番号で持つので、ノートを変えると自動で外れる。
+     * @param marks - `{ own, ghost, label }`。own[i] は notes[i] の印、ghost[i] は ghostNotes[i] の印 (lib/practice.ts の markNotes)。
+     *   label(note, mark, isGhost) が読み上げの名前を返す
+     */
+    setDiffMarks(marks) { this.diffMarks = marks; this._renderNotes(); }
+    /**
+     * 区間ループの範囲を描く (null で消す)。
+     * @param range - `{ start, end }` (ステップ。end は含まない)
+     */
+    setLoopRange(range) {
+        const same = (range === null && this.loopRange === null)
+            || (range && this.loopRange && range.start === this.loopRange.start && range.end === this.loopRange.end);
+        if (same) return;
+        this.loopRange = range ? { start: range.start, end: range.end } : null;
+        if (this.canvas) this._drawGrid();
+    }
+    /**
+     * ノートを選んで、短いあいだ光らせる (練習画面の指摘の一覧から)。お手本は選べないので光らせるだけ。
+     * @param list - `{ own: notes の番号[], ghost: ghostNotes の番号[] }`
+     */
+    flashNotes(list) {
+        const own = new Set(list.own || []), ghost = new Set(list.ghost || []);
+        this.selection = new Set(this.notes.filter((_n, i) => own.has(i)));
+        this._renderNotes();
+        const els = [
+            ...[...this.noteLayer.querySelectorAll('.note-block')].filter(el => own.has(Number(el.dataset.index))),
+            ...[...this.noteLayer.querySelectorAll('.note-ghost')].filter(el => ghost.has(Number(el.dataset.index))),
+        ];
+        for (const el of els) el.classList.add('flash');
+        clearTimeout(this._flashTimer);
+        this._flashTimer = setTimeout(() => { for (const el of els) el.classList.remove('flash'); }, 1600);
     }
     /**
      * ピアノロールを DOM 要素群に紐付けて初期化する。
@@ -140,6 +205,7 @@ class PianoRollEngine {
             if (this._anchorRow != null && Math.abs(this.wrap.scrollTop - this._anchorTop) > 1) this._anchorRow = null;
             this.keysDiv.scrollTop = this.wrap.scrollTop;
             this._drawGrid();
+            this._emitView();
         });
         if (typeof ResizeObserver !== 'undefined') {
             // 大きさの変更は次の描画のタイミングに回す (その場で canvas の大きさを変えると、
@@ -149,6 +215,7 @@ class PianoRollEngine {
                 this._resizeFrame = requestAnimationFrame(() => {
                     this._resize(); this._drawGrid();
                     if (this._anchorRow != null) this._centerOnRow(this._anchorRow);
+                    this._emitView();
                 });
             });
             this._resizeObserver.observe(this.wrap);
@@ -256,6 +323,7 @@ class PianoRollEngine {
         this.totalSteps = wanted;
         this._resize();
         this._drawGrid();
+        this._emitView();
         return true;
     }
     /**
@@ -267,8 +335,10 @@ class PianoRollEngine {
      */
     switchToTrack(trackId) {
         this._saveToEngine();
+        const changed = this.activeTrackId !== (trackId !== null ? Number(trackId) : null);
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
         this.selection = new Set();
+        if (changed) this.diffMarks = null;
         this._loadFromEngine(); this._fitLength(); this._renderNotes(); this._revealNotes();
         if (this.onTrackSwitch) this.onTrackSwitch(this.activeTrackId);
     }
@@ -282,7 +352,10 @@ class PianoRollEngine {
             if (this.onTrackSwitch) this.onTrackSwitch(null);
         }
         this.selection = new Set();
-        this._loadFromEngine(); this._fitLength(); this._renderNotes();
+        const before = this.notes;
+        this._loadFromEngine();
+        if (!sameNotes(before, this.notes)) { this.diffMarks = null; this._emitNotesEdited(); }
+        this._fitLength(); this._renderNotes();
     }
     /** ドラッグの途中か (このあいだは、元に戻す・やり直すをしない)。 */
     isBusy() { return this._drag !== null || this._band !== null; }
@@ -294,6 +367,9 @@ class PianoRollEngine {
         // 中身が同じなら書き換えない (元に戻すための控えが、同じ並びを共有できるように)
         if (sameNotes(before, this.notes)) return;
         track.pianoNotes = this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+        // 差分の印は、比べたときのノートに付けたもの。中身が変わったら外す (古い色を出さない)
+        if (this.diffMarks) { this.diffMarks = null; this._renderNotes(); }
+        this._emitNotesEdited();
         // ノートの数が変わったら知らせる (トラックの見出しのノートの数、進み具合の「打ち込む」を描き直す)
         if (before.length !== track.pianoNotes.length && this.onNotesChanged) this.onNotesChanged();
     }
@@ -337,6 +413,16 @@ class PianoRollEngine {
         const sx = this.wrap.scrollLeft, sy = this.wrap.scrollTop;
         const bar = this._stepsPerBar();
         ctx.clearRect(0, 0, w, h);
+        // 区間ループ: 区間の外を暗くし、区間の端に金色の線を引く
+        if (this.loopRange) {
+            const x0 = this.loopRange.start * this.stepWidth - sx, x1 = this.loopRange.end * this.stepWidth - sx;
+            const bottomY = Math.min(h, this.totalRows * this.noteHeight - sy);
+            ctx.fillStyle = 'rgba(0,0,0,0.32)';
+            if (x0 > 0) ctx.fillRect(0, 0, Math.min(w, x0), bottomY);
+            if (x1 < w) ctx.fillRect(Math.max(0, x1), 0, w - Math.max(0, x1), bottomY);
+            ctx.fillStyle = cssVar('--accent-dim', 'rgba(212,164,76,0.12)');
+            ctx.fillRect(Math.max(0, x0), 0, Math.min(w, x1) - Math.max(0, x0), 3);
+        }
         // 横線 (音の高さ)。見えている行だけ
         const firstRow = Math.max(0, Math.floor(sy / this.noteHeight));
         const lastRow = Math.min(this.totalRows, Math.ceil((sy + h) / this.noteHeight));
@@ -355,6 +441,11 @@ class PianoRollEngine {
             if (!isBeat && this.stepWidth < 8) continue;
             ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.25)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.03)';
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
+            if (this.loopRange && (step === this.loopRange.start || step === this.loopRange.end)) {
+                ctx.strokeStyle = cssVar('--accent', '#d4a44c'); ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
+                ctx.lineWidth = 1;
+            }
             // 小節番号 (上の端に小さく)
             if (isBar && step < this.totalSteps) {
                 ctx.fillStyle = cssVar('--text-dim', '#908c85'); ctx.font = '10px sans-serif';
@@ -405,7 +496,10 @@ class PianoRollEngine {
             this.wrap.focus({ preventScroll: true });
             if (e.target.classList.contains('note-block')) {
                 e.preventDefault();
+                const index = Number(e.target.dataset.index);
                 this._startNoteDrag(e);
+                // 差分の印が付いたノートを押したら、練習画面にその指摘を見せる
+                if (this.onNotePressed) this.onNotePressed(index, this.diffMarks?.own?.[index] ?? null);
                 return;
             }
             if (e.target !== this.noteLayer) return;
@@ -755,17 +849,28 @@ class PianoRollEngine {
             msg.textContent = 'トラック名をクリックすると、ここにピアノロールが開きます';
             this.noteLayer.appendChild(msg); return;
         }
+        const marks = this.diffMarks;
+        // 印の数がノートの数と合わないときは使わない (お手本を入れ替えた直後など)
+        const ghostMarks = marks && marks.ghost && marks.ghost.length === this.ghostNotes.length ? marks.ghost : null;
+        const ownMarks = marks && marks.own && marks.own.length === this.notes.length ? marks.own : null;
         // お手本は先に置く (打ち込んだノートの下に見える)。押しても反応せず、選べない
-        for (const n of this.ghostNotes) {
+        this.ghostNotes.forEach((n, i) => {
             const row = this._noteToRow(n.note, n.octave);
-            if (row < 0 || row >= this.totalRows) continue;
+            if (row < 0 || row >= this.totalRows) return;
             const el = document.createElement('div');
             el.className = 'note-ghost';
+            el.dataset.index = String(i);
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.title = `お手本 ${n.note}${n.octave}`;
+            const mark = ghostMarks?.[i];
+            if (mark) {
+                el.classList.add(`ghost-${mark.kind}`);
+                const label = marks.label ? marks.label(n, mark, true) : el.title;
+                el.title = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
+            }
             this.noteLayer.appendChild(el);
-        }
+        });
         // 表示できる音域の外のノートは描かず (データは残す)、在ることだけ知らせる
         let outOfRange = 0;
         this.notes.forEach((n, i) => {
@@ -776,6 +881,15 @@ class PianoRollEngine {
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.dataset.index = i; el.title = `${n.note}${n.octave} step:${n.step} len:${n.length}`;
+            const mark = ownMarks?.[i];
+            if (mark) {
+                el.classList.add(`diff-${mark.kind}`);
+                // 位置のずれは、ずれの向きも印で見せる (遅い ›、早い ‹)
+                const timing = mark.issues.find(x => x.kind === 'timing');
+                if (timing) el.dataset.shift = (timing.offset_steps ?? 0) > 0 ? 'late' : 'early';
+                const label = marks.label ? marks.label(n, mark, false) : el.title;
+                el.title = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
+            }
             this.noteLayer.appendChild(el);
         });
         if (outOfRange > 0) {
@@ -849,6 +963,7 @@ class PianoRollEngine {
         this._anchorRow = null;
         this._drawGrid(); this._renderNotes(); this.setPlayhead(engine.getCurrentTime());
         if (this.onZoom) this.onZoom(this.zoomState());
+        this._emitView();
     }
     /** 次の段階の大きさ (dir: 1 で大きく、-1 で小さく)。 */
     _nextLevel(levels, current, dir) {
@@ -915,6 +1030,8 @@ class TimelineEngine {
         this.playhead = null;
         // 「このパートを練習する」を押したとき (CenterArea が渡す)
         this.onPractice = null;
+        // 練習のトラックの「練習画面」を押したとき (CenterArea が渡す)
+        this.onOpenPractice = null;
         // メニューを開くとき (CenterArea が PopupMenu で出す)
         this.onMenu = null;
         // 消したときの「元に戻す」付きの知らせ (CenterArea がストアの showUndoToast を渡す)
@@ -923,6 +1040,16 @@ class TimelineEngine {
         this.history = { record: (_label, fn) => fn(), begin: () => () => false };
         // 名前を変えている途中のトラック ID
         this.renamingId = null;
+        // 練習画面の区間ループ (秒)。小節番号の段に帯で描く (setLoopRange)
+        this.loopRange = null;
+    }
+    /**
+     * 練習画面の区間を、小節番号の段に描く (null で消す)。
+     * @param range - `{ start, end }` (秒)
+     */
+    setLoopRange(range) {
+        this.loopRange = range ? { start: range.start, end: range.end } : null;
+        this._drawHeader();
     }
     /**
      * タイムラインを DOM 要素群に紐付けて初期化する。
@@ -974,6 +1101,12 @@ class TimelineEngine {
         const ctx = this.headerCtx; ctx.fillStyle = cssVar('--bg-secondary', '#17171e'); ctx.fillRect(0, 0, w, h);
         const numberColor = cssVar('--text', '#e8e4de');
         const scrollLeft = this.scroller ? this.scroller.scrollLeft : 0, left = this.headerWidth;
+        // 練習画面の区間 (区間ループ)。上の端に金色の帯を引く (下の端は拍の目盛りなので空ける)
+        if (this.loopRange) {
+            const x0 = Math.max(left, left + this.loopRange.start * this.pixelsPerSecond - scrollLeft);
+            const x1 = Math.min(w, left + this.loopRange.end * this.pixelsPerSecond - scrollLeft);
+            if (x1 > x0) { ctx.fillStyle = cssVar('--accent', '#d4a44c'); ctx.fillRect(x0, 0, x1 - x0, 3); }
+        }
         // 拍は 1 小節目の 1 拍目 (engine.gridOffset) から数える。ピアノロールの小節番号と同じ番号になる。
         // それより前 (弱起) の拍は、番号を付けずに目盛りだけ描く
         const beatPx = (60 / engine.bpm) * this.pixelsPerSecond, perBar = Math.max(1, engine.beatsPerBar || 4);
@@ -1111,6 +1244,16 @@ class TimelineEngine {
                 header.querySelector('.btn-track-menu').before(practice);
             } else if (track.role === 'practice') {
                 header.classList.add('practice-track');
+                // 練習のトラックには、練習画面を開くボタンを出す
+                if (this.onOpenPractice && track.practiceOf !== undefined && engine.getTrack(track.practiceOf)) {
+                    const open = document.createElement('button');
+                    open.type = 'button'; open.className = 'btn-practice'; open.dataset.track = track.id;
+                    open.textContent = '練習画面';
+                    open.setAttribute('aria-label', `「${track.name}」を練習画面で開く`);
+                    open.title = '練習画面で開く（区間ループ・速度・比べる）';
+                    open.addEventListener('click', (e) => { e.stopPropagation(); this.onOpenPractice(track.id); });
+                    header.querySelector('.btn-track-menu').before(open);
+                }
             }
             row.appendChild(header);
             const canvasWrap = document.createElement('div'); canvasWrap.className = 'track-canvas-wrap'; canvasWrap.dataset.trackId = track.id;
@@ -1277,6 +1420,10 @@ class TimelineEngine {
             label: `「${track.name}」のメニュー`, x, y,
             returnFocus: () => this.container.querySelector(`.btn-track-menu[data-track="${trackId}"]`),
             items: [
+                ...(track.role === 'practice' && this.onOpenPractice && track.practiceOf !== undefined && engine.getTrack(track.practiceOf)
+                    ? [{ label: '練習画面で開く', action: () => this.onOpenPractice(trackId), restoreFocus: false }] : []),
+                ...(track.role === 'part' && track.referenceNotes?.length && this.onPractice
+                    ? [{ label: 'このパートを練習する', action: () => this.onPractice(trackId), restoreFocus: false }] : []),
                 { label: '名前を変更', action: () => this.startRename(trackId), restoreFocus: false },
                 { label: '上へ移動', action: () => this.moveTrack(trackId, -1), disabled: index === 0, title: index === 0 ? 'いちばん上のトラックです' : undefined },
                 { label: '下へ移動', action: () => this.moveTrack(trackId, 1), disabled: index === engine.tracks.length - 1, title: index === engine.tracks.length - 1 ? 'いちばん下のトラックです' : undefined },
@@ -1508,9 +1655,13 @@ function EmptyState() {
 export default function CenterArea() {
     const {
         setStatus, bumpTracks, pianoRollRef, timelineRef, trackVersion, bpm, beatsPerBar, gridOffset, followPlayhead,
-        record, beginEdit, showUndoToast,
+        record, beginEdit, showUndoToast, practiceOpen, openPractice,
     } = useDaw();
     const { practicePart } = useLearnActions();
+    // MIDI 入力の仕組みは 1 つだけ持ち、ふだんの見出しと練習画面の「入力」の両方から使う
+    const midi = useMidiInput();
+    const openPracticeRef = useRef(openPractice);
+    useEffect(() => { openPracticeRef.current = openPractice; }, [openPractice]);
     // 開いているメニュー (クリップの右クリック、トラックの「…」)
     const [menu, setMenu] = useState(null);
     // ピアノロールの表示の大きさ (+/- のボタンの押せる・押せない)
@@ -1564,6 +1715,14 @@ export default function CenterArea() {
         tl.onStatus = setStatus;
         tl.onTracksChanged = bumpTracks;
         tl.onPractice = (trackId) => practiceRef.current(trackId);
+        tl.onOpenPractice = (trackId) => {
+            const track = engine.getTrack(trackId);
+            if (!track || track.practiceOf === undefined) return;
+            pr.switchToTrack(trackId);
+            openPracticeRef.current(track.practiceOf, trackId);
+            bumpTracks();
+            setStatus(`「${track.name}」を練習画面で開きました（Esc でアレンジに戻ります）`);
+        };
         tl.onMenu = setMenu;
         tl.onUndoToast = showUndoToast;
         tl.history = history;
@@ -1684,7 +1843,7 @@ export default function CenterArea() {
     }, [currentPianoHeight, maxPianoHeight, clampPianoHeight]);
 
     const pianoLabel = activeTrackName
-        ? <>ピアノロール — <strong style={{ color: 'var(--accent)' }}>{activeTrackName}</strong> <span className="area-hint">（ダブルクリックでノートを追加 / ドラッグで移動・高さの変更・囲んで選ぶ / Delete か Backspace で削除）</span></>
+        ? <>ピアノロール — <strong style={{ color: 'var(--accent)' }}>{activeTrackName}</strong> {!practiceOpen && <span className="area-hint">（ダブルクリックでノートを追加 / ドラッグで移動・高さの変更・囲んで選ぶ / Delete か Backspace で削除）</span>}</>
         : <>ピアノロール <span className="area-hint">（タイムラインのトラック名をクリックすると開きます）</span></>;
     const zoomBy = (axis, dir) => {
         const pr = pianoRollRef.current;
@@ -1693,7 +1852,10 @@ export default function CenterArea() {
     };
 
     return (
-        <div id="center" ref={centerRef}>
+        <PracticeProvider midi={midi}>
+        <div id="center" ref={centerRef} className={practiceOpen ? 'practice-mode' : undefined}>
+            {/* 練習画面の見出し。練習画面のあいだは、タイムラインと境目を隠す (外さない。CSS の .practice-mode) */}
+            {practiceOpen && <PracticeHeader />}
             {/* タイムライン */}
             <div id="timeline-area" ref={timelineAreaRef}>
                 {/* 見出しと小節番号の段は、スクロールしても枠の上端・左端に留める */}
@@ -1716,9 +1878,10 @@ export default function CenterArea() {
                 onPointerDown={handleResizeDown} onKeyDown={handleResizeKey} />
 
             {/* ピアノロール */}
-            <div id="piano-roll-area" ref={pianoAreaRef} style={pianoHeight === null ? undefined : { height: pianoHeight }}>
+            <div id="piano-roll-area" ref={pianoAreaRef} style={pianoHeight === null || practiceOpen ? undefined : { height: pianoHeight }}>
                 <div className="area-label">
-                    {pianoLabel}<MidiInputBar /><GhostBar activeTrackId={activeTrackId} />
+                    {/* 練習画面では、MIDI 入力とお手本の切り替えは下の操作に出す (お手本の重ね方を決める GhostBar は隠して残す) */}
+                    {pianoLabel}{!practiceOpen && <MidiInputBar midi={midi} />}<GhostBar activeTrackId={activeTrackId} />
                     {/* 表示の大きさ。Cmd (Ctrl) + ホイールか、トラックパッドのピンチでも横の大きさを変えられる */}
                     <span className="piano-zoom" role="group" aria-label="ピアノロールの表示の大きさ">
                         <span className="area-hint" aria-hidden="true">横</span>
@@ -1731,6 +1894,7 @@ export default function CenterArea() {
                         <button type="button" aria-label="縦に広げる" title="縦に広げる" disabled={!zoom.canZoomInY} onClick={() => zoomBy('y', 1)}>＋</button>
                     </span>
                 </div>
+                {practiceOpen && <PracticeBands />}
                 <div id="piano-roll-body">
                     <div ref={keysRef} id="piano-keys" />
                     {/* フォーカスを受けて、キーの操作 (矢印・Cmd+A/C/X/V/D・Delete) を受ける */}
@@ -1741,7 +1905,10 @@ export default function CenterArea() {
                     </div>
                 </div>
             </div>
+            {practiceOpen && <PracticeSide />}
+            {practiceOpen && <PracticeControls />}
             <PopupMenu request={menu} onClose={() => setMenu(null)} />
         </div>
+        </PracticeProvider>
     );
 }

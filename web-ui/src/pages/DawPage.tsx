@@ -22,10 +22,11 @@ import UndoToast from '../components/UndoToast';
  * @returns DAW ページ全体の JSX
  */
 export default function DawPage() {
-    const { showProgress } = useDaw();
+    const { showProgress, practiceOpen } = useDaw();
 
     return (
-        <div id="daw-layout">
+        // 練習画面のあいだは、左パネルと進み具合の段を隠す (外さない。CSS の .practice-mode)
+        <div id="daw-layout" className={practiceOpen ? 'practice-mode' : undefined}>
             <HeaderBar />
             <ProgressSteps />
             <div id="main">

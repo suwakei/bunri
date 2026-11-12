@@ -175,23 +175,31 @@ test('パートに分けると、お手本は重ねて見せるだけで、打�
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
 
-    // 「このパートを練習する」(パートの一覧から)
+    // 「このパートを練習する」(パートの一覧から)。練習画面が開く (タイムラインと左パネルは隠れる)
     await page.locator('#part-list').getByRole('button', { name: '「ベース」を練習する' }).click();
+    await expect(page.getByRole('region', { name: '練習画面' })).toBeVisible();
+    await expect(page.locator('#timeline-area')).toBeHidden();
+    await expect(page.locator('#left-panel')).toBeHidden();
     expect((await trackSummary(page)).map((t) => t.name)).toEqual(['原曲', 'ボーカル', 'ドラム', 'ベース', 'ベースの練習']);
     await expect(page.locator('#piano-roll-area .area-label')).toContainText('ベースの練習');
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
     // お手本の在る高さ (C2〜G2) まで縦にスクロールしてある
     expect(await inPianoView(page, '#note-layer .note-ghost')).toBe(true);
-    // パートの音が鳴るようになる (原曲はそのまま)
-    await expect(page.getByRole('button', { name: '「ベース」をミュート' })).toHaveAttribute('aria-pressed', 'false');
-    await expect(page.getByRole('button', { name: '「原曲」をミュート' })).toHaveAttribute('aria-pressed', 'false');
-    await expect(page.getByRole('button', { name: '「ボーカル」をミュート' })).toHaveAttribute('aria-pressed', 'true');
 
     // お手本の 1 つ目をなぞって置く
     const ghost = (await page.locator('#note-layer .note-ghost').first().boundingBox())!;
     await page.mouse.dblclick(ghost.x + 10, ghost.y + 6);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
+
+    // アレンジに戻ると、タイムラインと左パネルが戻る
+    await page.getByRole('button', { name: '← アレンジに戻る' }).click();
+    await expect(page.locator('#timeline-area')).toBeVisible();
+    await expect(page.locator('#left-panel')).toBeVisible();
+    // パートの音が鳴るようになる (原曲はそのまま)
+    await expect(page.getByRole('button', { name: '「ベース」をミュート' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: '「原曲」をミュート' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: '「ボーカル」をミュート' })).toHaveAttribute('aria-pressed', 'true');
     expect(await stepState(page, 'practice')).toBe('done');
     expect(await stepState(page, 'diff')).toBe('current');
 
@@ -317,6 +325,7 @@ test('お手本をノートとして取り込む・練習する・パートに�
     await expect(statusText(page)).toHaveText('0 ノートを選びました');
     await page.keyboard.press('Delete');
     await expect(page.locator('#note-layer .note-ghost')).toHaveCount(BASS.length);
+    await page.getByRole('button', { name: '← アレンジに戻る' }).click();
 
     // お手本をノートとして取り込む (確かめてから写す) → 元に戻すと、それまでの打ち込み (空) に戻る
     await page.getByRole('button', { name: '「ベース」のお手本をノートとして取り込む' }).click();

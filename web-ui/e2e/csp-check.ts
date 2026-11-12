@@ -25,8 +25,11 @@ export default async function cspCheck(): Promise<void> {
     } catch (e) {
         throw new Error(`CSP の違反の一覧を取れませんでした (開発サーバが CSP を掛けていない?): ${(e as Error).message}`);
     }
-    // 「CSP が効いているか」を確かめるテスト (csp.spec.ts) が、わざと起こした違反は除く
-    const real = reports.filter((r) => !(r['blocked-uri'] ?? '').startsWith(CSP_PROBE_ORIGIN));
+    // 「CSP が効いているか」を確かめるテスト (csp.spec.ts) が、わざと起こした違反は除く。
+    // 開発サーバの自動再読み込みの仕組み (@vite/client) が出した違反も除く。接続が切れたときに、つなぎ直せるかを
+    // blob の SharedWorker で確かめにいくもので、デスクトップアプリ (同梱した画面) には入っていない
+    const real = reports.filter((r) => !(r['blocked-uri'] ?? '').startsWith(CSP_PROBE_ORIGIN)
+        && !(r['source-file'] ?? '').endsWith('/@vite/client'));
     if (real.length > 0) {
         const lines = real.map((r) => `- ${r['effective-directive'] ?? r['violated-directive']} が ${r['blocked-uri']} を止めました`
             + ` (ページ: ${r['document-uri']}${r['source-file'] ? `、出どころ: ${r['source-file']}:${r['line-number']}` : ''})`);
