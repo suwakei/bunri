@@ -83,8 +83,29 @@ def announce(port):
     print(json.dumps({"event": "listening", "port": port, "pid": os.getpid()}), flush=True)
 
 
+# 終わる前に、動いているジョブの片付け（子プロセスの停止と、書きかけの出力の削除）を待つ秒数の上限。
+# アプリは標準入力を閉じてから 3 秒で kill しに来るので、それより短くする
+JOB_SHUTDOWN_TIMEOUT_SEC = 1.5
+
+
+def _stop_jobs():
+    """動いているジョブを止め、書きかけの出力を片付ける。
+
+    ジョブの仕組み（``background_jobs``）がまだ読み込まれていなければ、何もしない。
+    片付けに失敗しても、終了は続ける。
+    """
+    module = sys.modules.get("background_jobs")
+    if module is None:
+        return
+    try:
+        module.shutdown(JOB_SHUTDOWN_TIMEOUT_SEC)
+    except Exception:
+        pass
+
+
 def _terminate_self():
     """自分と、自分が起動した子プロセス（demucs など）をまとめて終わらせる。"""
+    _stop_jobs()
     if hasattr(os, "killpg"):
         try:
             os.killpg(os.getpgrp(), signal.SIGTERM)
