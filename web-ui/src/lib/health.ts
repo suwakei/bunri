@@ -58,6 +58,8 @@ class HealthMonitor {
     private checking = false;
     /** 続けて時間切れになった回数 */
     private slowStrikes = 0;
+    /** やめるたびに進める番号。やめる前に始まった確かめの結果は捨てる */
+    private epoch = 0;
     private intervals: Intervals = DEFAULT_INTERVALS;
 
     subscribe = (listener: () => void): (() => void) => {
@@ -119,6 +121,8 @@ class HealthMonitor {
 
     private stop(): void {
         this.running = false;
+        this.epoch += 1;
+        this.checking = false;
         if (this.timer) clearTimeout(this.timer);
         this.timer = null;
         setNetworkErrorListener(null);
@@ -159,8 +163,10 @@ class HealthMonitor {
     private async check(): Promise<void> {
         if (this.checking || this.state.kind === 'restarting') return;
         this.checking = true;
+        const epoch = this.epoch;
         try {
             const next = await this.diagnose();
+            if (epoch !== this.epoch) return;
             // 確かめている間に「再起動」が押されていたら、そちらに任せる (状態は await の間に変わりうる)
             const now = this.getState();
             if (now.kind !== 'restarting') {
@@ -169,9 +175,9 @@ class HealthMonitor {
                 if (next.kind !== 'ok' || now.kind !== 'ok') this.set(next);
             }
         } finally {
-            this.checking = false;
+            if (epoch === this.epoch) this.checking = false;
         }
-        if (this.getState().kind !== 'restarting') this.schedule(this.nextDelay());
+        if (epoch === this.epoch && this.getState().kind !== 'restarting') this.schedule(this.nextDelay());
     }
 
     private async diagnose(): Promise<HealthState> {
