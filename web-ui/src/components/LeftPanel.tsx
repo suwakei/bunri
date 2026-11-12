@@ -1,16 +1,23 @@
 /**
- * bunri DAW — 左パネル（シンセ / ドラム / FX / ファイル / カルテ タブ）
+ * bunri DAW — 左パネル（学ぶ / 音作り / ファイル の 3 タブ）
+ *
+ * - 学ぶ: 曲を取り込んで、カルテ・再現ガイド・差分チェックへ進む流れ（LearnPanel）
+ * - 音作り: シンセ・ドラム・FX
+ * - ファイル: 音声ファイルの読み込み、単音メロディ解析、録音（曲を使わずに自由に作るとき）
+ *
+ * 幅は、右端の境目をドラッグするか、左右の矢印キーで変えられる（この画面を開いた人ごとに覚える）。
  *
  * 画面の文は docs/ui-terms.md の決まりに合わせる。
  */
-import { useState, useCallback, useEffect, useRef, type KeyboardEvent } from 'react';
-import { useDaw, type LeftTab } from '../lib/store';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useDaw, type LeftTab, type SoundTab } from '../lib/store';
+import { LEFT_WIDTH_MAX, LEFT_WIDTH_MIN } from '../lib/storage';
 import engine from '../lib/engine';
 import { apiFetch, errorDetail } from '../lib/api';
-import { modelDownloadNotice } from '../lib/models';
-import ChartPanel from './ChartPanel';
-import CoachPanel from './CoachPanel';
-import type { ChartResponse } from '../lib/chart';
+import { useLearnActions } from '../lib/learn';
+import SubTabs from './SubTabs';
+import { tabPanelProps, type TabDef } from '../lib/tabs';
+import LearnPanel from './LearnPanel';
 
 /**
  * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
@@ -175,7 +182,8 @@ function SynthPanel() {
                 trackId = engine.tracks[0].id;
             }
             const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
-            await engine.addClipFromBuffer(trackId, buffer, 'synth-seq');
+            // 音声のクリップは、1 小節目の位置 (ノートのステップ 0) に置く
+            await engine.addClipFromBuffer(trackId, buffer, 'synth-seq', engine.gridOffset);
             bumpTracks();
             setStatus(`シーケンスを「${trackName}」に追加しました`);
         });
@@ -290,7 +298,8 @@ function DrumPanel() {
                 track = engine.tracks.find(t => String(t.id) === drumTrack);
                 if (!track) track = engine.addTrack('Drum');
             }
-            await engine.addClipFromBuffer(track.id, buffer, `drum-${pattern}`);
+            // 1 小節目の位置から置く (ピアノロールの小節とそろえる)
+            await engine.addClipFromBuffer(track.id, buffer, `drum-${pattern}`, engine.gridOffset);
             bumpTracks();
             setStatus(`ドラムを「${track.name}」に追加しました`);
         });
@@ -393,90 +402,44 @@ function FxPanel() {
 }
 
 /**
- * `/api/decompose` レスポンスにおける 1 パート（原曲を楽器ごとに分けた 1 つぶん）のデータ構造。
- * API の側では「ステム」と呼んでいる。画面では「パート」と呼ぶ（docs/ui-terms.md）。
- *
- * @property audio_url - 分離済み音声ファイルのサーバー側 URL（省略可）
- * @property notes - ピアノロールへ配置するノート情報の配列（ドラム以外のパート用、省略可）
- * @property drum_events - ドラムイベントの配列（ドラムのパート用、省略可）
- * @property gm_program - 推定された GM プログラム番号（推定不能時は `null`）
- * @property mix - 推定されたミックスパラメータ（音量 dB・パン・リバーブウェット）
- */
-interface DecomposeStem {
-    audio_url?: string;
-    notes?: Array<{ note: string; octave: number; step: number; length: number; velocity?: number }>;
-    drum_events?: Array<{ type: string; step: number; velocity: number }>;
-    gm_program: number | null;
-    mix: { volume_db: number; pan: number; reverb_wet: number };
-}
-
-/**
- * `/api/decompose` レスポンス全体のデータ構造。
- *
- * @property bpm - 自動検出された楽曲テンポ（Beats Per Minute）
- * @property stems - パートの名前（`"vocals"`, `"drums"` など）をキーとする分離結果マップ
- */
-interface DecomposeResult {
-    bpm: number;
-    stems: Record<string, DecomposeStem>;
-}
-
-/**
- * パートの名前（英語）から日本語表示ラベルへのマッピング定数。
- * `/api/decompose` レスポンスのキーをトラック名として UI に表示する際に使用する。
- */
-const STEM_LABELS_JP: Record<string, string> = {
-    vocals: 'ボーカル',
-    drums: 'ドラム',
-    bass: 'ベース',
-    guitar: 'ギター',
-    piano: 'ピアノ',
-    other: 'その他',
-};
-
-/**
- * ファイルパネルコンポーネント。以下の機能を統合する:
- * - 原曲を取り込んでカルテを作る（`/api/chart`）
- * - 原曲をパートに分けて採譜する（`/api/decompose`）: パート分離 → 採譜 → トラック自動生成
- * - WAV ファイルをトラックに読み込む
+ * ファイルパネルコンポーネント。曲を使わずに自由に作るときの読み込みをまとめる:
+ * - 音声ファイル（WAV・MP3・FLAC など）をトラックに読み込む
  * - 単音メロディの解析（`/api/analyze`）によるピアノロール自動配置
  * - マイク録音の開始・停止とトラックへの追加
+ *
+ * 原曲の取り込み（カルテを作る）とパート分離は、「学ぶ」タブに在る。
  *
  * @returns ファイルパネル全体の `<div id="file-panel">` 要素
  */
 // ---- ファイルパネル ----
 function FilePanel() {
-    const {
-        setStatus, bumpTracks, withProgress, showProgress, pianoRollRef, bpm, setBpm, beatsPerBar,
-        setChartResult, setLeftTab,
-    } = useDaw();
+    const { setStatus, bumpTracks, withProgress, showProgress, pianoRollRef, bpm } = useDaw();
+    const { placeAudio } = useLearnActions();
     const [fileTrack, setFileTrack] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const analyzeFileRef = useRef<HTMLInputElement>(null);
-    const transcribeFileRef = useRef<HTMLInputElement>(null);
     const [sensitivity, setSensitivity] = useState(0.5);
-    const [transcribeSensitivity, setTranscribeSensitivity] = useState(0.5);
-    const [autoBpm, setAutoBpm] = useState(true);
     const [isRecording, setIsRecording] = useState(false);
 
     const handleImport = useCallback(async () => {
         const files = fileInputRef.current?.files;
-        if (!files?.length) { setStatus('読み込む WAV ファイルを選んでください', 'error'); return; }
+        if (!files?.length) { setStatus('読み込む音声ファイルを選んでください', 'error'); return; }
         if (engine.tracks.length === 0) engine.addTrack();
         const trackId = resolveTrackId(fileTrack);
         const trackName = engine.tracks.find(t => String(t.id) === String(trackId))?.name || '';
         for (const file of files) {
             try {
-                await engine.addClipFromFile(trackId, file);
+                // ブラウザで読めない形式は、API で WAV に変換してから置く
+                await placeAudio(Number(trackId), file);
             } catch {
-                setStatus(`${file.name} を読み込めませんでした。WAV ファイルかどうかを確かめてください`, 'error');
+                setStatus(`${file.name} を読み込めませんでした。WAV・MP3・FLAC などの音声ファイルかどうかを確かめてください`, 'error');
                 bumpTracks();
                 return;
             }
             setStatus(`${file.name} を「${trackName}」に追加しました`);
         }
         bumpTracks();
-    }, [fileTrack, setStatus, bumpTracks]);
+    }, [fileTrack, setStatus, bumpTracks, placeAudio]);
 
     const handleAnalyze = useCallback(async () => {
         const file = analyzeFileRef.current?.files?.[0];
@@ -499,135 +462,6 @@ function FilePanel() {
         });
     }, [sensitivity, bpm, pianoRollRef, withProgress, setStatus, bumpTracks]);
 
-    /**
-     * 原曲を取り込んで、楽曲カルテ（速報）を作る。解析の入口。
-     *
-     * パート分離を行わないため数秒〜十数秒で返る。まずここで
-     * キー・コード進行・構成・ミックスを掴んでもらい、パート分離が必要なら
-     * そのあとで「パートに分ける」に進んでもらう導線にしている。
-     * 終わったら、カルテのタブを開く（結果がどこに出たかを探させない）。
-     */
-    const handleAnalyzeChart = useCallback(async () => {
-        const file = transcribeFileRef.current?.files?.[0];
-        if (!file) { setStatus('取り込む曲のファイルを選んでください', 'error'); return; }
-
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('bpm', autoBpm ? '0' : String(bpm));
-        fd.append('beats_per_bar', String(beatsPerBar));
-
-        await withProgress(`原曲を解析しています…（${file.name}）`, async () => {
-            const resp = await apiFetch('/api/chart', { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-
-            const result: ChartResponse = await resp.json();
-            setChartResult(result);
-            if (autoBpm) setBpm(Math.round(result.chart.grid.bpm));
-            setLeftTab('chart');
-
-            const chords = result.chart.chords.length;
-            setStatus(
-                `カルテを作りました（${result.chart.key.tonic
-                    ? `キー ${result.chart.key.tonic} ${result.chart.key.mode === 'minor' ? 'マイナー' : 'メジャー'}`
-                    : 'キー不明'} / ${chords} コード）`
-            );
-        });
-    }, [autoBpm, bpm, beatsPerBar, withProgress, setStatus, setBpm, setChartResult, setLeftTab]);
-
-    const handleFullTranscribe = useCallback(async () => {
-        const file = transcribeFileRef.current?.files?.[0];
-        if (!file) { setStatus('取り込む曲のファイルを選んでください', 'error'); return; }
-
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('bpm', autoBpm ? '0' : String(bpm));
-        fd.append('sensitivity', String(transcribeSensitivity));
-
-        // 分離用のモデルが手元に無ければ、初回ダウンロードが入ることを添える
-        const notice = await modelDownloadNotice('htdemucs_6s');
-        await withProgress(
-            `原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`,
-            async () => {
-                const resp = await apiFetch('/api/decompose', { method: 'POST', body: fd });
-                if (!resp.ok) throw new Error(await errorDetail(resp));
-                const result: DecomposeResult = await resp.json();
-
-                // BPM を自動検出値で更新
-                if (autoBpm && result.bpm) {
-                    setBpm(result.bpm);
-                }
-
-                const pr = pianoRollRef.current;
-                const stemEntries = Object.entries(result.stems);
-                let createdTracks = 0;
-                let firstTrackId: number | null = null;
-                let totalNotes = 0;
-
-                for (const [stemName, stem] of stemEntries) {
-                    const label = STEM_LABELS_JP[stemName] || stemName;
-                    const track = engine.addTrack(label);
-                    if (firstTrackId === null) firstTrackId = track.id;
-                    createdTracks++;
-
-                    // ミックスパラメータ反映
-                    if (stem.mix) {
-                        engine.updateTrackGain(track.id, stem.mix.volume_db);
-                        engine.updateTrackPan(track.id, stem.mix.pan);
-                    }
-
-                    // 音声クリップを追加
-                    if (stem.audio_url) {
-                        try {
-                            await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
-                        } catch (e) {
-                            console.warn(`${stemName} の音声読み込みに失敗:`, e);
-                        }
-                    }
-
-                    // ピアノロールノートを設定（ドラム以外）
-                    if (stem.notes && stem.notes.length > 0) {
-                        track.pianoNotes = stem.notes.map(n => ({
-                            note: n.note,
-                            octave: n.octave,
-                            step: n.step,
-                            length: n.length,
-                        }));
-                        // 採譜した時点のノートを、お手本として控えておく（差分コーチが使う）
-                        track.referenceNotes = track.pianoNotes.map(n => ({ ...n }));
-                        totalNotes += stem.notes.length;
-                    }
-
-                    // ドラムイベントを長さ1のパーカッションノートとして近似配置
-                    if (stem.drum_events && stem.drum_events.length > 0) {
-                        // type ごとに別のMIDIノートに割り当て（C1=kick, D1=snare, F#1=hihat 近似）
-                        const drumMap: Record<string, { note: string; octave: number }> = {
-                            kick: { note: 'C', octave: 2 },
-                            snare: { note: 'D', octave: 2 },
-                            hihat: { note: 'F#', octave: 2 },
-                        };
-                        track.pianoNotes = stem.drum_events.map(e => ({
-                            ...(drumMap[e.type] || drumMap.kick),
-                            step: e.step,
-                            length: 1,
-                        }));
-                        totalNotes += stem.drum_events.length;
-                    }
-                }
-
-                bumpTracks();
-
-                // 最初のパートのピアノロールを開く
-                if (firstTrackId !== null && pr) {
-                    pr.switchToTrack(firstTrackId);
-                }
-
-                setStatus(
-                    `パートに分けました（BPM ${result.bpm} / ${createdTracks} トラック / ${totalNotes} ノートを配置）`
-                );
-            },
-        );
-    }, [bpm, autoBpm, transcribeSensitivity, withProgress, setStatus, setBpm, bumpTracks, pianoRollRef]);
-
     const handleMicRecord = useCallback(async () => {
         try {
             await engine.startRecording();
@@ -648,48 +482,13 @@ function FilePanel() {
 
     return (
         <div id="file-panel" className="panel-content">
-            <h3>原曲を取り込む</h3>
+            <h3>音声ファイルを読み込む</h3>
             <p className="panel-desc">
-                曲のファイルを取り込んで、キー・コード進行・構成・ミックスの特性を調べます（数秒〜十数秒）。
-                結果は<strong>カルテ</strong>に出て、自分で再現するための材料になります。
+                WAV・MP3・FLAC などの音声ファイルをトラックに追加します。タイムラインに直接ドラッグ&ドロップしても追加できます。
+                曲を教材にして学ぶときは、「学ぶ」タブで曲を取り込んでください。
             </p>
-            <label htmlFor="file-song">原曲のファイル</label>
-            <input id="file-song" type="file" ref={transcribeFileRef} accept=".wav,.mp3,.flac,.ogg,.m4a" />
-            <div className="param-row">
-                <div>
-                    <label htmlFor="file-auto-bpm">
-                        <input id="file-auto-bpm" type="checkbox" checked={autoBpm}
-                            onChange={e => setAutoBpm(e.target.checked)}
-                            style={{ marginRight: 4 }} />
-                        BPM を自動で検出する
-                    </label>
-                </div>
-            </div>
-            <button className="action-btn" onClick={handleAnalyzeChart} disabled={showProgress}>
-                原曲を取り込んでカルテを作る
-            </button>
-
-            <details style={{ marginTop: 10 }}>
-                <summary>パートに分ける（パート分離）</summary>
-                <p className="panel-desc" style={{ marginTop: 6 }}>
-                    原曲をパート（ボーカル・ドラム・ベースなど）に分け、パートごとにノートを採譜して、
-                    トラックとピアノロールに並べます。採譜したノートは<strong style={{ color: 'var(--accent)' }}>お手本</strong>として残り、
-                    「差分チェック」で自分の打ち込みと比べられます。
-                    先に自分で打ち込んでみてから、お手本と比べるのがおすすめです。
-                </p>
-                <label htmlFor="file-transcribe-sensitivity">採譜の感度（{transcribeSensitivity}）</label>
-                <input id="file-transcribe-sensitivity" type="range" min="0.1" max="1" step="0.05"
-                    value={transcribeSensitivity}
-                    onChange={e => setTranscribeSensitivity(+e.target.value)} />
-                <button className="action-btn" onClick={handleFullTranscribe} disabled={showProgress}>
-                    パートに分けて採譜する（数分かかります）
-                </button>
-            </details>
-            <hr />
-            <h3>WAV ファイルを読み込む</h3>
-            <p className="panel-desc">WAV ファイルをトラックに追加します。タイムラインに直接ドラッグ&ドロップしても追加できます。</p>
-            <label htmlFor="file-import">WAV ファイル</label>
-            <input id="file-import" type="file" ref={fileInputRef} accept=".wav" multiple />
+            <label htmlFor="file-import">音声ファイル</label>
+            <input id="file-import" type="file" ref={fileInputRef} accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.aif,.aiff,audio/*" multiple />
             <label htmlFor="file-track">追加先トラック</label>
             <TrackSelector id="file-track" value={fileTrack} onChange={setFileTrack} />
             <button className="action-btn" onClick={handleImport}>選択したトラックに追加</button>
@@ -776,83 +575,109 @@ function TrackSelector({ value, onChange, includeNew, emptyLabel, id }: TrackSel
     );
 }
 
-/**
- * 左パネルのタブ定義。`key` はパネルの識別子、`label` はタブボタンの表示文字列。
- */
+/** 左パネルの上の段のタブ。 */
 // ---- メインの LeftPanel ----
-const TABS: { key: LeftTab; label: string }[] = [
+const TABS: TabDef<LeftTab>[] = [
+    { key: 'learn', label: '学ぶ' },
+    { key: 'sound', label: '音作り' },
+    { key: 'file', label: 'ファイル' },
+];
+
+/** 「音作り」タブの中の段。 */
+const SOUND_TABS: TabDef<SoundTab>[] = [
     { key: 'synth', label: 'シンセ' },
     { key: 'drum', label: 'ドラム' },
     { key: 'fx', label: 'FX' },
-    { key: 'file', label: 'ファイル' },
-    { key: 'chart', label: 'カルテ' },
 ];
+
+/** 境目をキーボードで動かすときの 1 回ぶん (px)。 */
+const WIDTH_KEY_STEP = 20;
+
+/**
+ * 「音作り」タブの中身。シンセ・ドラム・FX を段で切り替える。
+ */
+function SoundPanel() {
+    const { soundTab, setSoundTab } = useDaw();
+    return (
+        <div id="sound-panel">
+            <SubTabs idPrefix="sound" label="音作りの段" tabs={SOUND_TABS} active={soundTab} onSelect={setSoundTab}
+                className="sub-tabs" id="sound-tabs" />
+            <div {...tabPanelProps('sound', 'synth', soundTab, 'sub-panel')}><SynthPanel /></div>
+            <div {...tabPanelProps('sound', 'drum', soundTab, 'sub-panel')}><DrumPanel /></div>
+            <div {...tabPanelProps('sound', 'fx', soundTab, 'sub-panel')}><FxPanel /></div>
+        </div>
+    );
+}
 
 /**
  * 左パネルコンポーネント。
- * シンセ・ドラム・FX・ファイル・カルテの 5 タブを切り替えて表示する。
+ * 学ぶ・音作り・ファイルの 3 タブを切り替えて表示する。起動したときは「学ぶ」。
  * 各タブの内容は常に DOM に存在し、`hidden` の切り替えで表示・非表示を制御する。
  *
- * どのタブを開いているかは全体の状態（`leftTab`）に置いてある。解析が終わったときにカルテを開く、
- * といった切り替えを、ほかの部品からもできるようにするため。
+ * どのタブを開いているかは全体の状態（`leftTab` / `learnTab` / `soundTab`）に置いてある。
+ * 解析が終わったときにカルテを開く、進み具合の段階を押したときにその場所を開く、といった切り替えを、
+ * ほかの部品からもできるようにするため。
  *
  * タブは `role="tablist"` / `tab` / `tabpanel` で組んであり、左右の矢印キーと Home / End で移れる。
  * 余白は中のパネル（`.panel-content`）が持つ。この枠には付けない（二重に付けると中身の幅が足りなくなる）。
  *
- * @returns 左パネル全体の `<div id="left-panel">` 要素
+ * @returns 左パネル全体の `<div id="left-panel">` 要素と、右端の境目
  */
 export default function LeftPanel() {
-    const { leftTab, setLeftTab } = useDaw();
-    const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+    const { leftTab, setLeftTab, leftWidth, setLeftWidth } = useDaw();
+    const [resizing, setResizing] = useState(false);
+    const startRef = useRef<{ x: number; width: number } | null>(null);
 
-    /** 左右の矢印キーと Home / End で、タブを移る。 */
-    const handleTabKey = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
-        const index = TABS.findIndex(tab => tab.key === leftTab);
-        let next = -1;
-        if (e.key === 'ArrowRight') next = (index + 1) % TABS.length;
-        else if (e.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
-        else if (e.key === 'Home') next = 0;
-        else if (e.key === 'End') next = TABS.length - 1;
-        if (next < 0) return;
+    const handleResizeDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+        if (e.button !== undefined && e.button !== 0) return;
         e.preventDefault();
-        setLeftTab(TABS[next].key);
-        tabRefs.current[TABS[next].key]?.focus();
-    }, [leftTab, setLeftTab]);
-
-    /** タブの中身を入れる枠の属性。 */
-    const panelProps = (key: LeftTab) => ({
-        id: `tabpanel-${key}`,
-        className: 'panel-scroll',
-        role: 'tabpanel',
-        'aria-labelledby': `tab-${key}`,
-        hidden: leftTab !== key,
-    });
+        startRef.current = { x: e.clientX, width: leftWidth };
+        try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* 取れなくても、窓の中では動かせる */ }
+        setResizing(true);
+    }, [leftWidth]);
+    // ドラッグのあいだの動きは、窓全体で受ける (境目は細いので、境目の上だけで受けると、すぐに外れる)
+    useEffect(() => {
+        if (!resizing) return;
+        const onMove = (e: PointerEvent) => {
+            const start = startRef.current;
+            if (start) setLeftWidth(start.width + (e.clientX - start.x));
+        };
+        const onEnd = () => { startRef.current = null; setResizing(false); };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onEnd);
+        window.addEventListener('pointercancel', onEnd);
+        return () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onEnd);
+            window.removeEventListener('pointercancel', onEnd);
+        };
+    }, [resizing, setLeftWidth]);
+    const handleResizeKey = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+        let next: number | null = null;
+        if (e.key === 'ArrowRight') next = leftWidth + WIDTH_KEY_STEP;
+        else if (e.key === 'ArrowLeft') next = leftWidth - WIDTH_KEY_STEP;
+        else if (e.key === 'Home') next = LEFT_WIDTH_MIN;
+        else if (e.key === 'End') next = LEFT_WIDTH_MAX;
+        if (next === null) return;
+        e.preventDefault();
+        setLeftWidth(next);
+    }, [leftWidth, setLeftWidth]);
 
     return (
-        <div id="left-panel">
-            <div id="panel-tabs" role="tablist" aria-label="左パネルのタブ" onKeyDown={handleTabKey}>
-                {TABS.map(tab => (
-                    <button key={tab.key} type="button" role="tab"
-                        id={`tab-${tab.key}`}
-                        ref={el => { tabRefs.current[tab.key] = el; }}
-                        aria-selected={leftTab === tab.key}
-                        aria-controls={`tabpanel-${tab.key}`}
-                        // 矢印キーで移るので、Tab キーで止まるのは開いているタブだけにする
-                        tabIndex={leftTab === tab.key ? 0 : -1}
-                        className={leftTab === tab.key ? 'active' : ''}
-                        onClick={() => setLeftTab(tab.key)}>
-                        {tab.label}
-                    </button>
-                ))}
+        <>
+            <div id="left-panel" style={{ width: leftWidth, minWidth: leftWidth }}>
+                <SubTabs idPrefix="" label="左パネルのタブ" tabs={TABS} active={leftTab} onSelect={setLeftTab} id="panel-tabs" />
+                <div {...tabPanelProps('', 'learn', leftTab)}><LearnPanel /></div>
+                <div {...tabPanelProps('', 'sound', leftTab)}><SoundPanel /></div>
+                <div {...tabPanelProps('', 'file', leftTab)}><FilePanel /></div>
             </div>
-            <div {...panelProps('synth')}><SynthPanel /></div>
-            <div {...panelProps('drum')}><DrumPanel /></div>
-            <div {...panelProps('fx')}><FxPanel /></div>
-            <div {...panelProps('file')}><FilePanel /></div>
-            <div {...panelProps('chart')}>
-                <ChartPanel />
-                <CoachPanel />
-            </div>
-        </div>
+            {/* 左パネルと中央の境目。ドラッグか、左右の矢印キーで動かす */}
+            <div className={'resize-handle vertical' + (resizing ? ' dragging' : '')} id="resize-left"
+                role="separator" aria-orientation="vertical" tabIndex={0}
+                aria-label="左パネルの幅（左右の矢印キーで変えられます）"
+                aria-valuemin={LEFT_WIDTH_MIN} aria-valuemax={LEFT_WIDTH_MAX} aria-valuenow={leftWidth}
+                title="ドラッグすると、左パネルの幅が変わります"
+                onPointerDown={handleResizeDown} onKeyDown={handleResizeKey} />
+        </>
     );
 }

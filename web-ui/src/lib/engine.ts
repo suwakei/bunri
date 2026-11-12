@@ -3,6 +3,7 @@
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
  */
 import { apiFetch } from './api';
+import { stepSeconds, type ProjectGrid } from './grid';
 
 /**
  * ピアノロール上の1ノートを表すデータ構造。
@@ -52,6 +53,18 @@ export interface Track {
      * 採譜で作ったトラックにだけ在り、ピアノロールで編集しても変わらない。
      */
     referenceNotes?: PianoNote[];
+    /**
+     * 学ぶ流れの中での役割。
+     * - `song`: 取り込んだ原曲の音声を置いたトラック
+     * - `part`: パート分離で作った、パートの音声（とお手本）を持つトラック
+     * - `practice`: そのパートを自分で打ち込むトラック（「このパートを練習する」で作る）
+     * 自由に作ったトラックには無い。
+     */
+    role?: 'song' | 'part' | 'practice';
+    /** パートの名前（API の識別子。`bass` など）。`part` と `practice` のトラックに在る */
+    part?: string;
+    /** 練習のトラックが、どのパートのトラックのお手本を見ながら打ち込むか（トラック ID） */
+    practiceOf?: number;
     /** ゲイン量（dB） */
     gain: number;
     /** パン位置（-1.0〜1.0） */
@@ -97,6 +110,11 @@ class AudioEngine {
     playOffset: number;
     bpm: number;
     beatsPerBar: number;
+    /**
+     * 1 小節目の 1 拍目の位置（秒）。ピアノロールのステップ 0 はここに当たる。
+     * 曲を取り込むとカルテの 1 拍目の位置になる（lib/grid.ts）。自由に作るときは 0
+     */
+    gridOffset: number;
     metronomeEnabled: boolean;
     metronomeInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -120,6 +138,7 @@ class AudioEngine {
         this.playOffset = 0;
         this.bpm = 120;
         this.beatsPerBar = 4;
+        this.gridOffset = 0;
         this.metronomeEnabled = false;
         this.nextTrackId = 1;
     }
@@ -142,6 +161,11 @@ class AudioEngine {
         this.ctx = new AudioContext();
         this.masterGain = this.ctx.createGain();
         this.masterGain.connect(this.ctx.destination);
+    }
+
+    /** いまのグリッド（テンポ・拍子・1 小節目の位置）。 */
+    get grid(): ProjectGrid {
+        return { bpm: this.bpm, beatsPerBar: this.beatsPerBar, offsetSec: this.gridOffset };
     }
 
     /**
@@ -190,6 +214,20 @@ class AudioEngine {
     removeTrack(trackId: number | string): void {
         trackId = Number(trackId);
         this.tracks = this.tracks.filter(t => t.id !== trackId);
+    }
+
+    /**
+     * トラックの並びを変え、指定したトラックのすぐ後ろに置く。
+     * 練習のトラックを、そのパートのトラックの隣に並べるのに使う。
+     * @param trackId - 動かすトラックの ID
+     * @param afterId - このトラックの後ろに置く
+     */
+    moveTrackAfter(trackId: number, afterId: number): void {
+        const track = this.getTrack(trackId);
+        if (!track || !this.getTrack(afterId)) return;
+        this.tracks = this.tracks.filter(t => t.id !== trackId);
+        const index = this.tracks.findIndex(t => t.id === afterId);
+        this.tracks.splice(index + 1, 0, track);
     }
 
     /**
@@ -396,11 +434,11 @@ class AudioEngine {
      */
     _scheduleTrackNotes(track: Track): void {
         if (!track.pianoNotes || track.pianoNotes.length === 0) return;
-        const stepSec = 60 / this.bpm / 4;
+        const stepSec = stepSeconds(this);
         for (const n of track.pianoNotes) {
             const freq = NOTE_FREQ[`${n.note}${n.octave}`];
             if (!freq) continue;
-            const noteStart = n.step * stepSec;
+            const noteStart = this.gridOffset + n.step * stepSec;
             const noteDur = n.length * stepSec;
             const relStart = noteStart - this.playOffset;
             if (relStart + noteDur <= 0) continue;
@@ -462,6 +500,22 @@ class AudioEngine {
     getPlayPosition(): number | null {
         if (!this.isPlaying || !this.ctx) return null;
         return this.playOffset + (this.ctx.currentTime - this.startTime);
+    }
+
+    /**
+     * 再生位置を移す。再生中なら、その位置から鳴らし直す（トラック単体の再生なら、そのトラックを）。
+     * シークバー、カルテやガイドの小節、差分チェックの指摘からの移動が使う。
+     * @param sec - 移る先（秒）。0 未満は 0 にする
+     */
+    seek(sec: number): void {
+        const target = Math.max(0, sec);
+        const wasPlaying = this.isPlaying, wasSolo = this.soloTrackId;
+        if (wasPlaying) this.stop();
+        this.playOffset = target;
+        if (wasPlaying) {
+            if (wasSolo != null) this.playSingleTrack(wasSolo);
+            else this.play();
+        }
     }
 
     /**
@@ -537,7 +591,7 @@ class AudioEngine {
      */
     getTotalDuration(): number {
         let maxEnd = 0;
-        const stepSec = 60 / this.bpm / 4;
+        const stepSec = stepSeconds(this);
         for (const track of this.tracks) {
             maxEnd = Math.max(maxEnd, this._getTrackEndTime(track, stepSec));
         }
@@ -552,14 +606,14 @@ class AudioEngine {
     getTrackDuration(trackId: number | string): number {
         const track = this.getTrack(trackId);
         if (!track) return 0;
-        const stepSec = 60 / this.bpm / 4;
+        const stepSec = stepSeconds(this);
         return this._getTrackEndTime(track, stepSec);
     }
 
     /**
      * トラック内の全クリップ・ノートの終端時刻の最大値を返す内部メソッド。
      * @param track - 対象トラック
-     * @param stepSec - 1 ステップの秒数（60 / bpm / 4）
+     * @param stepSec - 1 ステップの秒数（60 / bpm / 4）。ノートは 1 小節目の位置（gridOffset）から数える
      * @returns 最終終端時刻（秒）
      */
     _getTrackEndTime(track: Track, stepSec: number): number {
@@ -568,7 +622,7 @@ class AudioEngine {
             maxEnd = Math.max(maxEnd, clip.offset + clip.duration);
         }
         for (const n of (track.pianoNotes || [])) {
-            maxEnd = Math.max(maxEnd, (n.step + n.length) * stepSec);
+            maxEnd = Math.max(maxEnd, this.gridOffset + (n.step + n.length) * stepSec);
         }
         return maxEnd;
     }
@@ -579,13 +633,16 @@ class AudioEngine {
      */
     _startMetronome(): void {
         this._stopMetronome();
+        // 拍は 1 小節目の 1 拍目 (gridOffset) から数える。それより前 (弱起) の拍も同じ間隔で鳴らす
         const beatSec = 60 / this.bpm;
-        let nextBeat = Math.ceil(this.playOffset / beatSec) * beatSec;
+        const origin = this.gridOffset;
+        let nextBeat = origin + Math.ceil((this.playOffset - origin) / beatSec) * beatSec;
         const schedule = (): void => {
             if (!this.isPlaying || !this.metronomeEnabled) return;
             const now = this.getCurrentTime();
             while (nextBeat < now + 0.1) {
-                const beatInBar = Math.round(nextBeat / beatSec) % this.beatsPerBar;
+                const perBar = Math.max(1, this.beatsPerBar);
+                const beatInBar = ((Math.round((nextBeat - origin) / beatSec) % perBar) + perBar) % perBar;
                 const freq = beatInBar === 0 ? 1500 : 1000;
                 this._playClick(nextBeat - this.playOffset + this.startTime, freq);
                 nextBeat += beatSec;
@@ -668,7 +725,7 @@ class AudioEngine {
         const offCtx = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
         const master = offCtx.createGain();
         master.connect(offCtx.destination);
-        const stepSec = 60 / this.bpm / 4;
+        const stepSec = stepSeconds(this);
 
         for (const track of this.audibleTracks()) {
             const gainNode = offCtx.createGain();
@@ -688,7 +745,7 @@ class AudioEngine {
             for (const n of (track.pianoNotes || [])) {
                 const freq = NOTE_FREQ[`${n.note}${n.octave}`];
                 if (!freq) continue;
-                const noteStart = n.step * stepSec;
+                const noteStart = this.gridOffset + n.step * stepSec;
                 const noteDur = n.length * stepSec;
                 const attack = 0.01;
                 const release = Math.min(0.15, noteDur * 0.3);

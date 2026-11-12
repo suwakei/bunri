@@ -4,14 +4,21 @@
  * お手本（原曲を採譜した時点のノート）と、いまの打ち込みを比べて、どの小節のどのノートが
  * 抜けているか・違っているかを一覧にする。指摘は機械的に出した事実で、LLM は使っていない。
  *
- * お手本を持つのは、楽曲の解析（採譜）で作ったトラックだけ。そのトラック自身を直した結果と
- * 比べることも、別のトラックに自分で打ち込んだものと比べることもできる。
+ * お手本を持つのは、パート分離（採譜）で作ったパートのトラックだけ。既定では、そのパートの
+ * 練習のトラック（「このパートを練習する」で作ったもの）と比べる。パートのトラック自身や、
+ * 別のトラックに自分で打ち込んだものと比べることもできる。
+ *
+ * 比べる組と結果は全体の状態（`coachPair` / `coachResult`）に置いてある。「このパートを練習する」が
+ * 組を決め、進み具合の段が「差分で直す」の済んだかを見るため。
+ *
+ * 指摘を押すと、その場所へ移動する（ピアノロールは、その小節とノートの高さまでスクロールする）。
  */
 import { useCallback, useState } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import { describeError } from '../lib/api';
-import { KIND_LABEL, issueText, requestDiff, type DiffResult, type IssueKind } from '../lib/coach';
+import { practiceTrackOf } from '../lib/learn';
+import { KIND_LABEL, issueText, requestDiff, type DiffIssue, type IssueKind } from '../lib/coach';
 
 /** 一覧に出す指摘の上限。多すぎると読めないので、重い小節から順に出して打ち切る。 */
 const MAX_ISSUES = 40;
@@ -23,17 +30,19 @@ const KIND_ORDER: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing'
  */
 export default function CoachPanel() {
     // trackVersion を読んでおくと、トラックが増減したときに選択肢が更新される
-    const { pianoRollRef, beatsPerBar, trackVersion, bumpTracks } = useDaw();
-    const [referenceId, setReferenceId] = useState<number | null>(null);
-    const [attemptId, setAttemptId] = useState<number | null>(null);
+    const { pianoRollRef, beatsPerBar, trackVersion, bumpTracks, coachPair, setCoachPair, coachResult, setCoachResult, jumpTo, openLearn } = useDaw();
     const [busy, setBusy] = useState(false);
-    const [result, setResult] = useState<DiffResult | null>(null);
     const [error, setError] = useState('');
     void trackVersion;
 
     const withReference = engine.tracks.filter((t) => t.referenceNotes && t.referenceNotes.length > 0);
-    const reference = withReference.find((t) => t.id === referenceId) ?? withReference[0];
-    const attempt = engine.tracks.find((t) => t.id === attemptId) ?? reference;
+    const reference = withReference.find((t) => t.id === coachPair.referenceId) ?? withReference[0];
+    // 打ち込みの既定は、そのパートの練習のトラック。無ければお手本のトラック自身
+    const attempt = engine.tracks.find((t) => t.id === coachPair.attemptId)
+        ?? (reference ? practiceTrackOf(reference.id) ?? reference : undefined);
+    // 結果は、いま選んでいる組で比べたものだけを出す
+    const result = coachResult && reference && attempt
+        && coachResult.referenceId === reference.id && coachResult.attemptId === attempt.id ? coachResult.result : null;
 
     const handleCompare = useCallback(async () => {
         if (!reference || !attempt) return;
@@ -42,25 +51,30 @@ export default function CoachPanel() {
         setBusy(true);
         setError('');
         try {
-            setResult(await requestDiff(reference.referenceNotes ?? [], attempt.pianoNotes ?? [], (beatsPerBar || 4) * 4));
+            const diff = await requestDiff(reference.referenceNotes ?? [], attempt.pianoNotes ?? [], (beatsPerBar || 4) * 4);
+            setCoachResult({ referenceId: reference.id, attemptId: attempt.id, result: diff });
         } catch (e) {
-            setResult(null);
+            setCoachResult(null);
             setError(describeError(e));
         } finally {
             setBusy(false);
         }
-    }, [reference, attempt, pianoRollRef, beatsPerBar]);
+    }, [reference, attempt, pianoRollRef, beatsPerBar, setCoachResult]);
 
-    /** 指摘の在る場所を、ピアノロールで開く（比べた打ち込みのトラックを開いて、その拍まで移動する）。 */
-    const handleJump = useCallback((bar: number, beat: number) => {
+    /**
+     * 指摘の在る場所を開く。比べた打ち込みのトラックをピアノロールで開き、再生位置をその拍へ移して、
+     * タイムラインとピアノロールをそこまで（ピアノロールは、そのノートの高さまで縦にも）スクロールする。
+     */
+    const handleJump = useCallback((issue: DiffIssue) => {
         const pr = pianoRollRef.current;
         if (!pr || !attempt) return;
         if (pr.getActiveTrackId() !== attempt.id) {
             pr.switchToTrack(attempt.id);
             bumpTracks();
         }
-        pr.scrollToStep((bar - 1) * (beatsPerBar || 4) * 4 + (beat - 1) * 4);
-    }, [pianoRollRef, attempt, beatsPerBar, bumpTracks]);
+        const pitch = issue.actual ?? issue.expected ?? undefined;
+        jumpTo({ step: (issue.bar - 1) * (beatsPerBar || 4) * 4 + (issue.beat - 1) * 4, pitch });
+    }, [pianoRollRef, attempt, beatsPerBar, bumpTracks, jumpTo]);
 
     const header = (
         <>
@@ -70,19 +84,14 @@ export default function CoachPanel() {
             </p>
         </>
     );
-    // 左右の余白は、ほかのパネルと同じ (.panel-content の 16px)。ここで上書きしない。
-    // 上のカルテとの区切りの線は、中の枠 (.panel-section) に引く
-    const wrapper = { paddingTop: 0 } as const;
-
     if (!reference) {
         return (
-            <div id="coach-panel" className="panel-content" style={wrapper}>
-                <div className="panel-section" style={{ marginTop: 4 }}>
-                    {header}
-                    <p className="body-text" style={{ color: 'var(--text-mid)' }}>
-                        お手本になるトラックがまだありません。「ファイル」タブで原曲をパートに分けると、採譜したノートがお手本になります。
-                    </p>
-                </div>
+            <div id="coach-panel" className="panel-content">
+                {header}
+                <p className="body-text" style={{ color: 'var(--text-mid)' }}>
+                    お手本になるトラックがまだありません。「曲とパート」で原曲をパートに分けると、採譜したノートがお手本になります。
+                </p>
+                <button className="action-btn" onClick={() => openLearn('song')}>曲とパートを開く</button>
             </div>
         );
     }
@@ -98,20 +107,19 @@ export default function CoachPanel() {
     const total = result ? result.bars.reduce((sum, b) => sum + b.issues.length, 0) : 0;
 
     return (
-        <div id="coach-panel" className="panel-content" style={wrapper}>
-          <div className="panel-section" style={{ marginTop: 4 }}>
+        <div id="coach-panel" className="panel-content">
             {header}
             <div>
                 <label htmlFor="coach-reference">お手本</label>
                 <select id="coach-reference" value={reference.id} disabled={busy}
-                    onChange={(e) => { setReferenceId(Number(e.target.value)); setResult(null); }}>
+                    onChange={(e) => setCoachPair({ referenceId: Number(e.target.value), attemptId: null })}>
                     {withReference.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.referenceNotes!.length} ノート）</option>)}
                 </select>
             </div>
             <div>
                 <label htmlFor="coach-attempt">比べる打ち込み</label>
                 <select id="coach-attempt" value={attempt?.id ?? reference.id} disabled={busy}
-                    onChange={(e) => { setAttemptId(Number(e.target.value)); setResult(null); }}>
+                    onChange={(e) => setCoachPair({ referenceId: reference.id, attemptId: Number(e.target.value) })}>
                     {engine.tracks.map((t) => <option key={t.id} value={t.id}>{t.name}（{(t.pianoNotes || []).length} ノート）</option>)}
                 </select>
             </div>
@@ -147,7 +155,7 @@ export default function CoachPanel() {
                                     return [
                                         <li key={`${bar.bar}-${i}`} className="body-text">
                                             <button type="button" title="ピアノロールでこの場所を開く"
-                                                onClick={() => handleJump(issue.bar, issue.beat)}
+                                                onClick={() => handleJump(issue)}
                                                 style={{ display: 'block', width: '100%', background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer', textDecoration: 'underline dotted' }}>
                                                 {issueText(issue)}
                                             </button>
@@ -164,7 +172,6 @@ export default function CoachPanel() {
                     )}
                 </div>
             )}
-          </div>
         </div>
     );
 }

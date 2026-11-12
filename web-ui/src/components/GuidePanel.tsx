@@ -1,6 +1,7 @@
 /**
  * bunri DAW — 再現ガイド（第2層）のパネル。
- * 楽曲カルテの下に出す。カルテを Claude に渡し、「こう作れば再現できる」という手順を表示する。
+ * 「学ぶ」タブの「ガイド」の段に出す。カルテを Claude に渡し、「こう作れば再現できる」という手順を表示する。
+ * 手順に付いた場所（区間・小節）を押すと、そこへ移動する。
  *
  * 表示するのは説明文と、カルテ上の場所（セクション・小節）だけ。音符は出さない。
  * 説明文にカルテに無い音名・コード名が出てきたら、その旨を添える。
@@ -13,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useDaw } from '../lib/store';
 import { SECTION_LABEL_JA } from '../lib/chart';
+import { chartBarToSec } from '../lib/grid';
 import { isDesktop } from '../lib/api';
 import {
     GuideRequestError, deleteApiKey, fetchSavedGuide, formatUsd, refLabel, requestGuide, saveApiKey, saveGuideSettings,
@@ -56,7 +58,7 @@ function todayLine(today: GuideToday): string {
  * 再現ガイドのパネル。カルテが無いときは何も出さない。
  */
 export default function GuidePanel() {
-    const { chart, chartId } = useDaw();
+    const { chart, chartId, jumpTo, setStatus, openLearn } = useDaw();
     const [focus, setFocus] = useState('');
     const [busy, setBusy] = useState(false);
     const [result, setResult] = useState<GuideResponse | null>(null);
@@ -145,11 +147,31 @@ export default function GuidePanel() {
         }
     }, [limitInput]);
 
-    if (!chart || !chartId) return null;
+    if (!chart || !chartId) {
+        return (
+            <div id="guide-panel" className="panel-content">
+                <h3 style={{ marginBottom: 6 }}>再現ガイド</h3>
+                <p className="body-text" style={{ color: 'var(--text-mid)' }}>
+                    カルテができると、ここで「こう作れば再現できる」という手順を作れます。先に曲を取り込んでください。
+                </p>
+                <button className="action-btn" onClick={() => openLearn('song')}>曲を取り込む</button>
+            </div>
+        );
+    }
     const guide = result?.guide;
 
+    /** 手順の場所（区間・小節）へ移動する。小節が在れば小節へ、無ければ区間の頭へ。 */
+    const jumpToRef = (ref: { bar: number | null; beat: number | null; section_id: string | null }, label: string) => {
+        let sec: number | null = null;
+        if (ref.bar !== null) sec = chartBarToSec(chart, ref.bar, ref.beat ?? 1);
+        else if (ref.section_id !== null) sec = chart.sections.find((s) => s.id === ref.section_id)?.start_sec ?? null;
+        if (sec === null) return;
+        jumpTo({ sec });
+        setStatus(`${label} へ移動しました`);
+    };
+
     return (
-        <div id="guide-panel" className="panel-section">
+        <div id="guide-panel" className="panel-content">
             <h3 style={{ marginBottom: 6 }}>再現ガイド</h3>
             <p className="panel-desc" style={{ marginBottom: 8 }}>
                 カルテの内容を「こう作れば再現できる」という手順に言い換えます。
@@ -230,12 +252,16 @@ export default function GuidePanel() {
                                 <p className="body-text" style={{ margin: '4px 0', whiteSpace: 'pre-wrap' }}>{step.body}</p>
                                 {step.refs.length > 0 && (
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                                        {step.refs.map((ref, j) => (
-                                            <span key={j} className="guide-ref"
-                                                style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-mid)' }}>
-                                                {refLabel(ref, chart)}
-                                            </span>
-                                        ))}
+                                        {step.refs.map((ref, j) => {
+                                            const label = refLabel(ref, chart);
+                                            return (
+                                                <button type="button" key={j} className="guide-ref" title="押すと、この場所へ移動します"
+                                                    onClick={() => jumpToRef(ref, label)}
+                                                    style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-mid)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                                    {label}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </li>
