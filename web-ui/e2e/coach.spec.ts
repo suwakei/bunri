@@ -2,7 +2,7 @@
  * お手本の重ね表示と、差分チェック (第3層の土台) を、画面から通す。
  *
  * お手本は本来、楽曲の解析 (採譜) で出来る。採譜は数分かかるので、ここではお手本入りの
- * プロジェクトを API で保存しておき、画面の「読込」で読み込む。
+ * プロジェクトを API で保存しておき、画面の「読み込む」で読み込む。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { openDaw } from './helpers';
@@ -28,7 +28,7 @@ async function saveProject(request: APIRequestContext, attempt = REFERENCE) {
 
 async function loadProject(page: Page) {
     await openDaw(page);
-    await page.getByRole('button', { name: '読込', exact: true }).click();
+    await page.getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(page.getByText(/を読み込みました/)).toBeVisible();
 }
 
@@ -78,7 +78,7 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
     const coach = page.locator('#coach-panel');
     await coach.getByRole('button', { name: 'お手本と比べる' }).click();
     await expect(coach.getByText('60%')).toBeVisible();
-    await expect(coach.getByText('抜け 1 / 音の間違い 1')).toBeVisible();
+    await expect(coach.getByText('抜け 1 / 高さの違い 1')).toBeVisible();
     await expect(coach.getByText('1 小節 2 拍目: E4 が抜けています')).toBeVisible();
 
     // 12 小節目の指摘を押す → 比べたトラックがピアノロールに開き、12 小節目まで横に移動する
@@ -90,4 +90,30 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
     expect(scrollLeft).toBeLessThanOrEqual(176 * 20);
     expect(scrollLeft + view).toBeGreaterThan(176 * 20);
     expect(scrollLeft).toBeGreaterThan(0);
+});
+
+test('以前の版が保存した、オートメーションのデータを含むプロジェクトも、そのまま読み込める', async ({ page, request }) => {
+    // オートメーションの欄は外したので、データが在っても無視する (読み込みは失敗しない)
+    const project = {
+        bpm: 100, beatsPerBar: 4,
+        tracks: [{ name: 'Lead', pianoNotes: REFERENCE, referenceNotes: REFERENCE }],
+        automation: { '1_volume': [{ time: 0.5, value: 0.8 }, { time: 2, value: 0.2 }], '2_pan': [{ time: 1, value: 0.5 }] },
+    };
+    expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await loadProject(page);
+    await expect(page.locator('#transport input[type="number"]')).toHaveValue('100');
+    await expect(page.locator('#tracks-container .track-name').first()).toContainText('Lead');
+    await page.locator('#tracks-container .track-name').first().click();
+    await expect(page.locator('#note-layer .note-block')).toHaveCount(REFERENCE.length);
+    await expect(page.locator('#automation-area')).toHaveCount(0);
+    expect(errors).toEqual([]);
+
+    // 保存し直すと、オートメーションのデータは残らない
+    const saved = page.waitForRequest((r) => r.url().endsWith('/api/project/save'));
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    const body = (await saved).postData() ?? '';
+    expect(body).toContain('Lead');
+    expect(body).not.toContain('automation');
 });

@@ -28,7 +28,7 @@ test('タブを切り替えると、そのタブの中身だけが見える。�
     await openDaw(page);
     const panels: Record<string, string> = {
         'シンセ': '#synth-panel', 'ドラム': '#drum-panel', 'FX': '#fx-panel',
-        'ファイル': '#file-panel', 'カルテ': '#chart-panel', 'AI': '#assistant-panel',
+        'ファイル': '#file-panel', 'カルテ': '#chart-panel',
     };
     for (const [label, selector] of Object.entries(panels)) {
         await openTab(page, label);
@@ -40,6 +40,123 @@ test('タブを切り替えると、そのタブの中身だけが見える。�
     // 文字が折り返すと、タブの段が 2 行ぶんの高さになる
     const height = await page.locator('#panel-tabs').evaluate((el) => el.getBoundingClientRect().height);
     expect(height).toBeLessThan(44);
+});
+
+test('タブはタブとして組んであり、左右の矢印キーで移れる', async ({ page }) => {
+    await openDaw(page);
+    const tabs = page.getByRole('tablist', { name: '左パネルのタブ' }).getByRole('tab');
+    await expect(tabs).toHaveCount(5);
+    await expect(page.getByRole('tab', { name: 'シンセ' })).toHaveAttribute('aria-selected', 'true');
+    // 開いているタブの中身は、そのタブの名前が付いた枠 (tabpanel) に入っている
+    await expect(page.getByRole('tabpanel', { name: 'シンセ' })).toBeVisible();
+    await expect(page.getByRole('tabpanel', { name: 'シンセ' }).locator('#synth-panel')).toBeVisible();
+
+    await page.getByRole('tab', { name: 'シンセ' }).focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('tab', { name: 'ドラム' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: 'ドラム' })).toBeFocused();
+    await expect(page.locator('#drum-panel')).toBeVisible();
+    await expect(page.locator('#synth-panel')).toBeHidden();
+    // 左端から左へ行くと、右端 (カルテ) に回る。End / Home で端へ移る
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.getByRole('tab', { name: 'カルテ' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#chart-panel')).toBeVisible();
+    await page.keyboard.press('Home');
+    await expect(page.getByRole('tab', { name: 'シンセ' })).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('End');
+    await expect(page.getByRole('tab', { name: 'カルテ' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('パネルの余白は 16px で、どのタブも同じ左端にそろう (二重に付いていない)', async ({ page }) => {
+    await openDaw(page);
+    const panelBox = (await page.locator('#left-panel').boundingBox())!;
+    const lefts: Record<string, number> = {};
+    for (const [label, selector] of [['シンセ', '#synth-panel'], ['ドラム', '#drum-panel'], ['FX', '#fx-panel'], ['ファイル', '#file-panel'], ['カルテ', '#chart-panel']]) {
+        await openTab(page, label);
+        const heading = (await page.locator(`${selector} h3`).first().boundingBox())!;
+        lefts[label] = heading.x - panelBox.x;
+        // 見出しの幅 = パネルの幅 (280px、右の線 1px) から、左右の余白 16px ずつを引いた残り。以前は 216px しか無かった
+        expect(heading.width, label).toBeGreaterThanOrEqual(240);
+    }
+    expect(Object.values(lefts)).toEqual([16, 16, 16, 16, 16]);
+    // カルテのタブの中の「楽曲カルテ」と「差分チェック」も、同じ左端
+    const chart = (await page.locator('#chart-panel h3').first().boundingBox())!;
+    const coach = (await page.locator('#coach-panel h3').first().boundingBox())!;
+    expect(coach.x).toBe(chart.x);
+    expect(coach.width).toBe(chart.width);
+});
+
+test('見出しが入力欄と結び付いていて、見出しの文で入力欄を引ける', async ({ page }) => {
+    await openDaw(page);
+    await expect(page.getByLabel('楽器（GM 音源）')).toBeVisible();
+    await expect(page.getByLabel('アタック')).toHaveAttribute('type', 'range');
+    await expect(page.locator('#synth-panel').getByLabel('追加先トラック')).toBeVisible();
+    await openTab(page, 'ドラム');
+    await page.getByLabel('小節数').fill('2');
+    await expect(page.locator('#drum-panel input[type="number"]')).toHaveValue('2');
+    await expect(page.getByLabel('パターン')).toHaveValue('8ビート');
+    await openTab(page, 'FX');
+    await expect(page.getByLabel('対象トラック')).toBeVisible();
+    // つまみの名前は日本語で、いまの値が添えてある
+    await expect(page.getByLabel('低域 (dB)（0）')).toHaveAttribute('type', 'range');
+    await openTab(page, 'ファイル');
+    await expect(page.getByLabel('原曲のファイル')).toHaveAttribute('type', 'file');
+    await expect(page.getByLabel('BPM を自動で検出する')).toBeChecked();
+});
+
+test('時間のかかる処理が走っているあいだは、処理を始めるボタンを押せない (二重に始まらない)', async ({ page }) => {
+    await openDaw(page);
+    await openTab(page, 'ドラム');
+    await page.getByLabel('小節数').fill('1');
+    // API の応答を遅らせて、処理中の状態を作る
+    let calls = 0;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/synth/drum', async (route) => {
+        calls += 1;
+        await held;
+        await route.continue();
+    });
+    const button = page.getByRole('button', { name: /ドラム生成/ });
+    await button.click();
+    await expect(button).toBeDisabled();
+    await expect(statusText(page)).toHaveText('ドラムを作っています…');
+    // 押せないボタンは、無理に押しても何も起きない
+    await button.click({ force: true });
+    // ほかのタブの、処理を始めるボタンも押せない。処理に関係しないボタンは押せる
+    await openTab(page, 'シンセ');
+    await expect(page.getByRole('button', { name: 'シーケンスをレンダリング' })).toBeDisabled();
+    await openTab(page, 'ファイル');
+    await expect(page.locator('#file-panel').getByRole('button', { name: /カルテ/ })).toBeDisabled();
+    await page.locator('#file-panel summary').click();
+    await expect(page.getByRole('button', { name: /パートに分けて採譜する/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '+ トラック追加' })).toBeEnabled();
+
+    release();
+    await expect(statusText(page)).toHaveText('ドラムを「Drum」に追加しました');
+    await openTab(page, 'ドラム');
+    await expect(button).toBeEnabled();
+    expect(calls).toBe(1);
+    await expect(page.locator('#tracks-container .clip')).toHaveCount(1);
+});
+
+test('API が理由を返さずに失敗しても、番号や生の JSON ではなく、次にどうすればよいかが出る', async ({ page }) => {
+    await openDaw(page);
+    await openTab(page, 'ドラム');
+    await page.route('**/api/synth/drum', (route) => route.fulfill({
+        status: 500, contentType: 'application/json', body: JSON.stringify({ detail: [{ loc: ['body', 'x'], msg: 'boom', type: 'server' }] }),
+    }));
+    await page.getByRole('button', { name: /ドラム生成/ }).click();
+    await expect(statusText(page)).toContainText('処理の途中で問題が起きました。もう一度試してください');
+    await expect(statusText(page)).not.toContainText('{');
+    await expect(statusText(page)).not.toContainText('HTTP');
+    await expect(statusText(page)).not.toContainText('boom');
+    // 失敗の知らせは、色が変わり、読み上げの対象になる
+    await expect(statusText(page)).toHaveAttribute('role', 'alert');
+    await expect(statusText(page)).toHaveCSS('color', 'rgb(232, 120, 120)');
+    // 失敗した後は、もう一度押せる
+    await expect(page.getByRole('button', { name: /ドラム生成/ })).toBeEnabled();
 });
 
 test.describe('シンセ', () => {
@@ -142,7 +259,7 @@ test.describe('FX', () => {
         // 対象トラックの欄には、先頭の Track 1 が表示されている
         expect(await page.locator('#fx-panel select').first().evaluate((s: HTMLSelectElement) => s.options[s.selectedIndex].textContent)).toBe('Track 1');
         await page.getByRole('button', { name: 'エフェクト適用' }).click();
-        await expect(statusText(page)).toHaveText('eq を適用しました');
+        await expect(statusText(page)).toHaveText('「EQ（3 バンド）」を適用しました');
         await expect(page.locator('#tracks-container .clip')).toHaveText('synth-seq[eq]');
     });
 
@@ -156,15 +273,20 @@ test.describe('FX', () => {
         await openTab(page, 'FX');
         await page.locator('#fx-panel select').first().selectOption({ label: 'Drum' });
         let name = 'drum-8ビート';
-        const sliders: Record<string, number> = { eq: 3, compressor: 2, reverb: 2, delay: 3, normalize: 0, pitch_shift: 1, time_stretch: 1 };
-        for (const [fx, count] of Object.entries(sliders)) {
+        // エフェクト名と、つまみの数、画面に出る名前
+        const sliders: Record<string, [number, string]> = {
+            eq: [3, 'EQ（3 バンド）'], compressor: [2, 'コンプレッサー'], reverb: [2, 'リバーブ'], delay: [3, 'ディレイ'],
+            normalize: [0, 'ノーマライズ'], pitch_shift: [1, 'ピッチシフト'], time_stretch: [1, 'タイムストレッチ'],
+        };
+        for (const [fx, [count, label]] of Object.entries(sliders)) {
             await page.locator('#fx-panel select').nth(1).selectOption(fx);
             // エフェクトごとのつまみが出る
             await expect(page.locator('#fx-params input[type="range"]')).toHaveCount(count);
             const wav = await wavResponse(page, `/api/effects/${fx}`, () => page.getByRole('button', { name: 'エフェクト適用' }).click());
             expect(wav.peak, fx).toBeGreaterThan(0.01);
             name += `[${fx}]`;
-            await expect(statusText(page)).toHaveText(`${fx} を適用しました`);
+            // 知らせは、識別子 (pitch_shift など) ではなく日本語の名前で出る
+            await expect(statusText(page)).toHaveText(`「${label}」を適用しました`);
             await expect(page.locator('#tracks-container .clip')).toHaveText(name);
         }
     });

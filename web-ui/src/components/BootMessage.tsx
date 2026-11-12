@@ -35,7 +35,7 @@ export default function BootMessage({ title, detail, log, busy }: BootMessagePro
     }, [busy]);
 
     return (
-        <div style={{ padding: 32, fontFamily: 'sans-serif', color: '#e8e4de', background: '#111116', minHeight: '100vh', boxSizing: 'border-box' }}>
+        <div style={{ padding: 32, fontFamily: 'sans-serif', color: 'var(--text)', background: 'var(--bg-primary)', minHeight: '100vh', boxSizing: 'border-box' }}>
             <p style={{ fontSize: 16 }}>{title}</p>
             {busy && <p style={{ fontSize: 13, opacity: 0.7 }}>経過 {formatElapsed(elapsed)}</p>}
             {detail && <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, opacity: 0.8 }}>{detail}</pre>}

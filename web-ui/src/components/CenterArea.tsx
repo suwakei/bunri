@@ -1,19 +1,34 @@
 /**
- * bunri DAW — 中央エリア（タイムライン + ピアノロール + オートメーション）
+ * bunri DAW — 中央エリア（タイムライン + ピアノロール）
  * TODO: Canvas系クラスの完全な型定義を追加する
  */
 // @ts-nocheck
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { cssVar } from '../lib/theme';
+import { isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 import MidiInputBar from './MidiInputBar';
 import GhostBar from './GhostBar';
+
+/** 音名を低い順に並べたもの (MIDI ノート番号を出すのに使う)。 */
+const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+/** ノートを置いたり動かしたりしたときに、その高さの音を鳴らす長さ (ミリ秒)。 */
+const AUDITION_MS = 220;
+
+/** ピアノロールの高さの下限と、タイムラインに残す高さの下限 (px)。CSS の min-height と合わせる。 */
+const PIANO_MIN_HEIGHT = 150;
+const TIMELINE_MIN_HEIGHT = 200;
+/** 境目をキーボードで動かすときの 1 回ぶん (px)。 */
+const RESIZE_KEY_STEP = 24;
 
 /**
  * Canvas ベースのピアノロールエディタエンジン。
  *
- * グリッド描画・ノートの追加/移動/リサイズ/削除・アクティブトラックとの
+ * グリッド描画・ノートの追加/移動（横で位置、縦で高さ）/リサイズ/削除・アクティブトラックとの
  * 双方向同期（`_saveToEngine` / `_loadFromEngine`）を担う。
+ * ノートを置いたとき・高さを変えたとき・鍵盤を押したときは、その高さの音を短く鳴らす。
  * React コンポーネントから `pianoRollRef.current` 経由で操作する。
  *
  * 主なパブリック API:
@@ -46,6 +61,10 @@ class PianoRollEngine {
         this.ghostNotes = [];
         this.isDragging = false; this.isResizing = false;
         this.dragStartX = 0; this.dragStartStep = 0;
+        // 縦のドラッグ (高さの変更) の起点
+        this.dragStartY = 0; this.dragStartRow = 0;
+        // 試し聴きの音を止めるタイマー (キーは MIDI ノート番号) と、押している鍵盤
+        this._auditionTimers = new Map(); this._heldKey = null;
         this.snapToGrid = true; this.gridSize = 4;
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
@@ -185,6 +204,8 @@ class PianoRollEngine {
                 div.className = 'piano-key' + (this.blackKeys.has(name) ? ' black' : '');
                 div.textContent = `${name}${oct}`;
                 div.style.height = this.noteHeight + 'px';
+                div.dataset.pitch = String(this._pitchOf(name, oct));
+                div.title = `${name}${oct}（押すと鳴ります）`;
                 this.keysDiv.appendChild(div);
             }
         }
@@ -228,8 +249,8 @@ class PianoRollEngine {
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
             // 小節番号 (上の端に小さく)
             if (isBar && step < this.totalSteps) {
-                ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = '9px sans-serif';
-                ctx.fillText(String(step / bar + 1), x + 3, 9);
+                ctx.fillStyle = cssVar('--text-dim', '#908c85'); ctx.font = '10px sans-serif';
+                ctx.fillText(String(step / bar + 1), x + 3, 10);
             }
         }
     }
@@ -246,18 +267,37 @@ class PianoRollEngine {
             if (row < 0 || row >= this.totalRows || step < 0) return;
             const { note, octave } = this._rowToNote(row);
             this._addNote(note, octave, step, this.gridSize);
+            // 置いた高さを耳で確かめられるように鳴らす
+            this._audition(note, octave);
+        });
+        // 鍵盤を押すと、その高さの音が鳴る (押しているあいだ鳴り、離すと止まる)
+        this.keysDiv.addEventListener('mousedown', (e) => {
+            const key = e.target.closest ? e.target.closest('.piano-key') : null;
+            if (!key || key.dataset.pitch === undefined) return;
+            e.preventDefault();
+            this._releaseKey();
+            const pitch = Number(key.dataset.pitch);
+            this._clearAudition(pitch);
+            engine.liveNoteOn(pitch, 96);
+            key.classList.add('sounding');
+            this._heldKey = { pitch, el: key };
         });
         this.noteLayer.addEventListener('mousedown', (e) => {
             if (e.target.classList.contains('note-block')) {
                 e.preventDefault();
                 const idx = parseInt(e.target.dataset.index);
-                this._selectNote(idx);
+                // 押した場所 (右端か、それ以外か) は、選ぶ前に測る。選ぶとノートを描き直すので、
+                // 押した要素は画面から外れて、大きさが 0 になる (以前はここで必ず「右端」と判定されて、
+                // どこをつかんでも長さの変更になり、ノートを動かせなかった)
                 const rect = e.target.getBoundingClientRect();
+                this._selectNote(idx);
                 if (e.clientX > rect.right - 10) this.isResizing = true;
                 else this.isDragging = true;
                 this.dragStartX = e.clientX;
                 this.dragStartStep = this.notes[idx].step;
                 this._dragLength = this.notes[idx].length;
+                this.dragStartY = e.clientY;
+                this.dragStartRow = this._noteToRow(this.notes[idx].note, this.notes[idx].octave);
             }
         });
         document.addEventListener('mousemove', (e) => {
@@ -265,12 +305,66 @@ class PianoRollEngine {
             if (this.selectedNote === null) return;
             const dx = e.clientX - this.dragStartX, dSteps = Math.round(dx / this.stepWidth);
             const note = this.notes[this.selectedNote];
-            if (this.isDragging) { let ns = this.dragStartStep + dSteps; if (this.snapToGrid) ns = Math.round(ns / this.gridSize) * this.gridSize; note.step = Math.max(0, ns); }
+            if (this.isDragging) {
+                let ns = this.dragStartStep + dSteps; if (this.snapToGrid) ns = Math.round(ns / this.gridSize) * this.gridSize; note.step = Math.max(0, ns);
+                // 縦に動かすと、音の高さが変わる (1 行 = 半音)。音域の端で止める
+                const dRows = Math.round((e.clientY - this.dragStartY) / this.noteHeight);
+                const row = Math.max(0, Math.min(this.totalRows - 1, this.dragStartRow + dRows));
+                const next = this._rowToNote(row);
+                if (next.note !== note.note || next.octave !== note.octave) {
+                    note.note = next.note; note.octave = next.octave;
+                    this._audition(note.note, note.octave);
+                }
+            }
             else if (this.isResizing) { let nl = this._dragLength + dSteps; if (this.snapToGrid) nl = Math.max(this.gridSize, Math.round(nl / this.gridSize) * this.gridSize); else nl = Math.max(1, nl); note.length = nl; }
             this._renderNotes();
         });
-        document.addEventListener('mouseup', () => { if (this.isDragging || this.isResizing) { this._saveToEngine(); this._fitLength(); } this.isDragging = false; this.isResizing = false; });
-        document.addEventListener('keydown', (e) => { if (e.key === 'Delete' && this.selectedNote !== null) this._removeNote(this.selectedNote); });
+        document.addEventListener('mouseup', () => {
+            this._releaseKey();
+            if (this.isDragging || this.isResizing) { this._saveToEngine(); this._fitLength(); }
+            this.isDragging = false; this.isResizing = false;
+        });
+        // 選んでいるノートを消す。Mac の delete キーは Backspace なので、両方を受ける。
+        // 入力欄に居るとき (BPM の数字を消しているときなど) と、案内などの窓が開いているときは消さない
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+            // Backspace は、ブラウザによっては「前のページへ戻る」に割り当てられている (WebKit)。
+            // 戻ると打ち込んだ内容が全部消えるので、文字を消す欄の外では戻らせない
+            if (e.key === 'Backspace' && !isTextEntry(e.target)) e.preventDefault();
+            if (this.selectedNote === null || isTypingTarget(e.target) || isDialogOpen()) return;
+            e.preventDefault();
+            this._removeNote(this.selectedNote);
+        });
+    }
+    /** 音名とオクターブから MIDI ノート番号を出す (C4 = 60)。 */
+    _pitchOf(name, octave) { return (octave + 1) * 12 + CHROMATIC.indexOf(name); }
+    /** 試し聴きの音を止めるタイマーを取り消す。 */
+    _clearAudition(pitch) {
+        const timer = this._auditionTimers.get(pitch);
+        if (timer !== undefined) { clearTimeout(timer); this._auditionTimers.delete(pitch); }
+    }
+    /**
+     * その高さの音を短く鳴らす (試し聴き)。ノートを置いたときと、高さを変えたときに使う。
+     * MIDI 入力のモニターと同じ仕組み (engine.liveNoteOn) で鳴らす。
+     *
+     * @param name - 音名
+     * @param octave - オクターブ
+     */
+    _audition(name, octave) {
+        const pitch = this._pitchOf(name, octave);
+        this._clearAudition(pitch);
+        engine.liveNoteOn(pitch, 96);
+        this._auditionTimers.set(pitch, setTimeout(() => {
+            this._auditionTimers.delete(pitch);
+            engine.liveNoteOff(pitch);
+        }, AUDITION_MS));
+    }
+    /** 押していた鍵盤を離す (音を止める)。 */
+    _releaseKey() {
+        if (!this._heldKey) return;
+        engine.liveNoteOff(this._heldKey.pitch);
+        this._heldKey.el.classList.remove('sounding');
+        this._heldKey = null;
     }
     _rowToNote(row) { return { note: this.noteNames[row % 12], octave: this.octaveRange[1] - 1 - Math.floor(row / 12) }; }
     _noteToRow(name, oct) { return (this.octaveRange[1] - 1 - oct) * 12 + this.noteNames.indexOf(name); }
@@ -282,7 +376,7 @@ class PianoRollEngine {
         if (this.activeTrackId === null) {
             const msg = document.createElement('div');
             msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--text-dim);font-size:13px;pointer-events:none;';
-            msg.textContent = 'トラックをクリックしてピアノロールを開く';
+            msg.textContent = 'トラック名をクリックすると、ここにピアノロールが開きます';
             this.noteLayer.appendChild(msg); return;
         }
         // お手本は先に置く (打ち込んだノートの下に見える)。押しても反応しない
@@ -368,6 +462,7 @@ class PianoRollEngine {
  * - WAV ファイルのドラッグ＆ドロップによるインポート
  * - トラックヘッダーのクリックによるピアノロール切り替え
  * - ミュート / ソロ / トラック削除 / トラック単体再生
+ *   (M・S・✕ は 1 文字のボタンなので、何のボタンかを aria-label と title で伝える)
  *
  * 主なパブリック API:
  * - `init(el)` — DOM 要素を渡して初期化する
@@ -425,7 +520,8 @@ class TimelineEngine {
         const w = Math.max(1, this.scroller ? this.scroller.clientWidth : this.headerCanvas.clientWidth), h = 24;
         // 大きさを設定し直すと canvas は消える (描き直しの前の消去を兼ねる)
         this.headerCanvas.width = w; this.headerCanvas.height = h; this.headerCanvas.style.width = w + 'px';
-        const ctx = this.headerCtx; ctx.fillStyle = '#17171e'; ctx.fillRect(0, 0, w, h);
+        const ctx = this.headerCtx; ctx.fillStyle = cssVar('--bg-secondary', '#17171e'); ctx.fillRect(0, 0, w, h);
+        const numberColor = cssVar('--text', '#e8e4de');
         const scrollLeft = this.scroller ? this.scroller.scrollLeft : 0, left = this.headerWidth;
         const beatPx = (60 / engine.bpm) * this.pixelsPerSecond, perBar = Math.max(1, engine.beatsPerBar || 4);
         const lastBeat = Math.ceil(this._totalSeconds() * this.pixelsPerSecond / beatPx);
@@ -434,7 +530,7 @@ class TimelineEngine {
         for (let beat = first; beat <= last; beat++) {
             const x = left + beat * beatPx - scrollLeft;
             if (x < left) continue;
-            if (beat % perBar === 0) { ctx.fillStyle = '#e0e0e0'; ctx.font = '10px sans-serif'; ctx.fillText(String(beat / perBar + 1), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
+            if (beat % perBar === 0) { ctx.fillStyle = numberColor; ctx.font = '10px sans-serif'; ctx.fillText(String(beat / perBar + 1), x + 3, 14); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; }
             else ctx.strokeStyle = 'rgba(255,255,255,0.1)';
             ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, 24); ctx.stroke();
         }
@@ -458,11 +554,21 @@ class TimelineEngine {
             const isTrackPlaying = engine.isPlaying && engine.soloTrackId === track.id;
             header.innerHTML = `<span class="track-name"></span>
                 <div class="track-controls">
-                    <button class="btn-track-play ${isTrackPlaying ? 'playing' : ''}" data-track="${track.id}" title="このトラックだけ再生">${isTrackPlaying ? '⏸' : '▶'}</button>
-                    <button class="btn-mute ${track.mute ? 'muted' : ''}" data-track="${track.id}">M</button>
-                    <button class="btn-solo ${track.solo ? 'soloed' : ''}" data-track="${track.id}">S</button>
-                    <button class="btn-delete-track" data-track="${track.id}">✕</button>
+                    <button type="button" class="btn-track-play ${isTrackPlaying ? 'playing' : ''}" data-track="${track.id}">${isTrackPlaying ? '⏸' : '▶'}</button>
+                    <button type="button" class="btn-mute ${track.mute ? 'muted' : ''}" data-track="${track.id}" aria-pressed="${track.mute ? 'true' : 'false'}">M</button>
+                    <button type="button" class="btn-solo ${track.solo ? 'soloed' : ''}" data-track="${track.id}" aria-pressed="${track.solo ? 'true' : 'false'}">S</button>
+                    <button type="button" class="btn-delete-track" data-track="${track.id}">✕</button>
                 </div>`;
+            // 1 文字のボタンが何をするかを、読み上げ (aria-label) とマウスを載せたときの説明 (title) で伝える。
+            // トラック名を含むので、HTML に埋め込まず属性として入れる
+            const describe = (selector, label, title) => {
+                const button = header.querySelector(selector);
+                button.setAttribute('aria-label', label); button.title = title;
+            };
+            describe('.btn-track-play', isTrackPlaying ? `「${track.name}」の再生を一時停止` : `「${track.name}」だけを再生`, isTrackPlaying ? '一時停止' : 'このトラックだけ再生');
+            describe('.btn-mute', `「${track.name}」をミュート`, track.mute ? 'ミュート中（押すと鳴るように戻す）' : 'ミュート（このトラックを鳴らさない）');
+            describe('.btn-solo', `「${track.name}」をソロ`, track.solo ? 'ソロ中（押すと解除）' : 'ソロ（このトラックだけ鳴らす）');
+            describe('.btn-delete-track', `「${track.name}」を削除`, 'トラックを削除');
             // トラック名は文字として入れる。HTML に埋め込むと、名前に < や & が在るときに崩れ、
             // 読み込んだプロジェクトの名前がタグとして解釈されてしまう
             const nameEl = header.querySelector('.track-name');
@@ -509,7 +615,7 @@ class TimelineEngine {
                 }
                 this.render(pianoRoll);
                 if (this.onStatus) {
-                    if (rejected.length > 0) this.onStatus(`WAV 以外のファイルは追加できません: ${rejected.join('、')}`);
+                    if (rejected.length > 0) this.onStatus(`WAV 以外のファイルは追加できません: ${rejected.join('、')}。WAV に変換してから追加してください`, 'error');
                     else if (added.length > 0) this.onStatus(`${added.join('、')} を「${track.name}」に追加しました`);
                 }
                 if (added.length > 0 && this.onTracksChanged) this.onTracksChanged();
@@ -534,14 +640,14 @@ class TimelineEngine {
                 if (!track) return;
                 if (engine.isPlaying && engine.soloTrackId === id) { engine.pause(); if (this.onStatus) this.onStatus('一時停止'); }
                 else { engine.playSingleTrack(id); if (this.onStatus) this.onStatus(`再生中: ${track.name}`); }
-                this.render(pianoRoll);
+                this._renderKeepingFocus(pianoRoll, '.btn-track-play', id);
             });
         });
         this.container.querySelectorAll('.btn-mute').forEach(btn => {
-            btn.addEventListener('click', () => { engine.toggleMute(parseInt(btn.dataset.track)); this.render(pianoRoll); });
+            btn.addEventListener('click', () => { const id = parseInt(btn.dataset.track); engine.toggleMute(id); this._renderKeepingFocus(pianoRoll, '.btn-mute', id); });
         });
         this.container.querySelectorAll('.btn-solo').forEach(btn => {
-            btn.addEventListener('click', () => { const t = engine.getTrack(parseInt(btn.dataset.track)); if (t) t.solo = !t.solo; this.render(pianoRoll); });
+            btn.addEventListener('click', () => { const id = parseInt(btn.dataset.track); const t = engine.getTrack(id); if (t) t.solo = !t.solo; this._renderKeepingFocus(pianoRoll, '.btn-solo', id); });
         });
         this.container.querySelectorAll('.btn-delete-track').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -551,6 +657,19 @@ class TimelineEngine {
                 if (this.onTracksChanged) this.onTracksChanged();
             });
         });
+    }
+    /**
+     * 描き直したあと、押したボタンにフォーカスを戻す。
+     * 描き直しは行を作り直すので、そのままだとキーボードで操作している人の現在地が失われる。
+     *
+     * @param pianoRoll - 連携するピアノロールエンジン
+     * @param selector - 押したボタンのセレクタ
+     * @param trackId - 押したボタンのトラック ID
+     */
+    _renderKeepingFocus(pianoRoll, selector, trackId) {
+        const hadFocus = this.container.contains(document.activeElement);
+        this.render(pianoRoll);
+        if (hadFocus) this.container.querySelector(`${selector}[data-track="${trackId}"]`)?.focus();
     }
     _bindGlobalEvents() {
         document.addEventListener('mousemove', (e) => {
@@ -568,120 +687,6 @@ class TimelineEngine {
             this.draggingClip = null; this.render(pr);
         });
     }
-}
-
-/**
- * Canvas ベースのオートメーション曲線エディタエンジン。
- *
- * トラック・パラメータごとにタイムライン上のコントロールポイントを管理し、
- * ベジェ曲線で補間して描画する。
- *
- * 操作:
- * - ダブルクリック: ポイントを追加
- * - ドラッグ: ポイントを移動
- * - 右クリック: ポイントを削除
- *
- * 主なパブリック API:
- * - `init(el)` — Canvas 要素を渡して初期化する
- * - `setTrack(trackId, param)` — 表示するトラック / パラメータを切り替える
- * - `draw()` — 曲線とポイントを再描画する
- * - `toJSON()` — 全オートメーションデータをシリアライズする
- * - `fromJSON(data)` — シリアライズデータを復元して再描画する
- */
-// ---- AutomationEditor クラス ----
-class AutomationEditorEngine {
-    constructor() {
-        this.canvas = null; this.ctx = null; this.data = {};
-        this.activeTrackId = null; this.activeParam = 'volume';
-        this.draggingPoint = null; this.pixelsPerSecond = 80;
-    }
-    /**
-     * オートメーションエディタを Canvas 要素に紐付けて初期化する。
-     * Canvas をリサイズしてイベントリスナーを登録する。
-     *
-     * @param el - 初期化に必要な DOM 要素群
-     * @param el.canvas - オートメーション曲線を描画する `<canvas>` 要素
-     */
-    init(el) {
-        this.canvas = el.canvas; this.ctx = this.canvas.getContext('2d');
-        this._resize(); this._bindEvents();
-    }
-    _resize() {
-        if (!this.canvas) return;
-        const rect = this.canvas.parentElement.getBoundingClientRect();
-        this.canvas.width = rect.width; this.canvas.height = rect.height;
-    }
-    /**
-     * 表示対象のトラックとパラメータを切り替えて再描画する。
-     *
-     * @param trackId - 表示するトラックの ID（`null` を渡すとトラック未選択状態になる）
-     * @param param - 表示するオートメーションパラメータ名（省略時は `"volume"`）
-     */
-    setTrack(trackId, param) { this.activeTrackId = trackId; this.activeParam = param || 'volume'; this.draw(); }
-    _getPoints() { if (!this.activeTrackId) return []; const k = `${this.activeTrackId}_${this.activeParam}`; if (!this.data[k]) this.data[k] = []; return this.data[k]; }
-    _setPoints(pts) { if (!this.activeTrackId) return; this.data[`${this.activeTrackId}_${this.activeParam}`] = pts; }
-    draw() {
-        if (!this.canvas) return; this._resize();
-        const { ctx, canvas } = this, w = canvas.width, h = canvas.height;
-        ctx.clearRect(0, 0, w, h);
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-        for (let y = 0; y <= h; y += h / 4) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-        if (engine.bpm) { const bp = (60 / engine.bpm) * this.pixelsPerSecond; ctx.strokeStyle = 'rgba(255,255,255,0.08)'; for (let x = 0; x < w; x += bp) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); } }
-        const points = this._getPoints();
-        if (points.length === 0) { ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.font = '12px sans-serif'; ctx.fillText(this.activeTrackId ? 'ダブルクリックでポイントを追加' : 'トラックを選択してください', 12, h / 2); return; }
-        ctx.strokeStyle = '#4ecdc4'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, h - points[0].value * h);
-        for (let i = 0; i < points.length; i++) {
-            const px = points[i].time * this.pixelsPerSecond, py = h - points[i].value * h;
-            if (i === 0) ctx.lineTo(px, py);
-            else { const prev = points[i - 1]; ctx.bezierCurveTo((prev.time * this.pixelsPerSecond + px) / 2, h - prev.value * h, (prev.time * this.pixelsPerSecond + px) / 2, py, px, py); }
-        }
-        ctx.lineTo(w, h - points[points.length - 1].value * h); ctx.stroke();
-        for (const p of points) {
-            const px = p.time * this.pixelsPerSecond, py = h - p.value * h;
-            ctx.fillStyle = '#4ecdc4'; ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.fill();
-            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI * 2); ctx.fill();
-        }
-        ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '10px sans-serif';
-        const track = engine.getTrack(this.activeTrackId); ctx.fillText(track ? `${track.name} — ${this.activeParam}` : '', 8, 14);
-    }
-    _bindEvents() {
-        this.canvas.addEventListener('dblclick', (e) => {
-            if (!this.activeTrackId) return; const rect = this.canvas.getBoundingClientRect();
-            const pts = this._getPoints(); pts.push({ time: Math.max(0, (e.clientX - rect.left) / this.pixelsPerSecond), value: Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)) });
-            pts.sort((a, b) => a.time - b.time); this._setPoints(pts); this.draw();
-        });
-        this.canvas.addEventListener('mousedown', (e) => {
-            if (!this.activeTrackId) return; const rect = this.canvas.getBoundingClientRect();
-            const mx = e.clientX - rect.left, my = e.clientY - rect.top, pts = this._getPoints();
-            for (let i = 0; i < pts.length; i++) { if (Math.abs(mx - pts[i].time * this.pixelsPerSecond) < 8 && Math.abs(my - (rect.height - pts[i].value * rect.height)) < 8) { this.draggingPoint = i; break; } }
-        });
-        this.canvas.addEventListener('mousemove', (e) => {
-            if (this.draggingPoint === null) return; const rect = this.canvas.getBoundingClientRect(); const pts = this._getPoints();
-            pts[this.draggingPoint].time = Math.max(0, (e.clientX - rect.left) / this.pixelsPerSecond);
-            pts[this.draggingPoint].value = Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height)); this.draw();
-        });
-        this.canvas.addEventListener('mouseup', () => { if (this.draggingPoint !== null) { this._getPoints().sort((a, b) => a.time - b.time); this.draggingPoint = null; this.draw(); } });
-        this.canvas.addEventListener('contextmenu', (e) => {
-            e.preventDefault(); if (!this.activeTrackId) return; const rect = this.canvas.getBoundingClientRect();
-            const mx = e.clientX - rect.left, my = e.clientY - rect.top, pts = this._getPoints();
-            for (let i = 0; i < pts.length; i++) { if (Math.abs(mx - pts[i].time * this.pixelsPerSecond) < 8 && Math.abs(my - (rect.height - pts[i].value * rect.height)) < 8) { pts.splice(i, 1); this._setPoints(pts); this.draw(); break; } }
-        });
-        window.addEventListener('resize', () => this.draw());
-    }
-    /**
-     * 全トラック・全パラメータのオートメーションデータをシリアライズして返す。
-     * プロジェクト保存（`/api/project/save`）時に使用する。
-     *
-     * @returns コントロールポイントを含むオートメーションデータのディープコピー
-     */
-    toJSON() { return JSON.parse(JSON.stringify(this.data)); }
-    /**
-     * シリアライズされたオートメーションデータを復元して再描画する。
-     * プロジェクト読み込み（`/api/project/load/{name}`）時に使用する。
-     *
-     * @param data - `toJSON()` が返した形式のオートメーションデータ（`null` / `undefined` 時は空データとして扱う）
-     */
-    fromJSON(data) { this.data = data || {}; this.draw(); }
 }
 
 /**
@@ -726,7 +731,7 @@ function SeekBar() {
     return (
         <div id="seek-bar-area">
             <span id="seek-time-current">{curTime}</span>
-            <input type="range" id="seek-bar" min="0" max="100" step="0.1" value={seekVal}
+            <input type="range" id="seek-bar" aria-label="再生位置" min="0" max="100" step="0.1" value={seekVal}
                 onMouseDown={() => { isSeeking.current = true; }} onTouchStart={() => { isSeeking.current = true; }}
                 onInput={handleInput} onMouseUp={finishSeek} onTouchEnd={finishSeek}
                 // 矢印キーでも動かせる。キーを離したときと、欄を離れたときにも確定する
@@ -739,21 +744,29 @@ function SeekBar() {
 
 /**
  * 中央エリアコンポーネント。
- * タイムライン・ピアノロール・オートメーションエディタの 3 ペインを縦に並べて表示する。
+ * タイムラインとピアノロールを縦に並べて表示する。あいだの境目を動かすと、ピアノロールの高さが変わる。
  *
- * マウント時に `PianoRollEngine` / `TimelineEngine` / `AutomationEditorEngine` を初期化し、
- * それぞれを `pianoRollRef` / `timelineRef` / `automationRef` に格納して
+ * マウント時に `PianoRollEngine` / `TimelineEngine` を初期化し、
+ * それぞれを `pianoRollRef` / `timelineRef` に格納して
  * 他のコンポーネントからも参照できるようにする。
  * `trackVersion` が変わるたびにタイムラインを再描画して最新の状態を反映する。
+ *
+ * オートメーションの欄は、再生エンジンにつながっていない見た目だけのものだったので外した
+ * (docs/daw-features.md の「実装していない機能」)。
  *
  * @returns 中央エリア全体の `<div id="center">` 要素
  */
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
-    const { setStatus, bumpTracks, pianoRollRef, timelineRef, automationRef, trackVersion, bpm, beatsPerBar } = useDaw();
+    const { setStatus, bumpTracks, pianoRollRef, timelineRef, trackVersion, bpm, beatsPerBar } = useDaw();
     const [activeTrackName, setActiveTrackName] = useState(null);
     const [activeTrackId, setActiveTrackId] = useState(null);
+    // ピアノロールの高さ (px)。境目を動かすまでは null で、CSS の既定の高さになる
+    const [pianoHeight, setPianoHeight] = useState(null);
+    const [resizing, setResizing] = useState(false);
 
+    const centerRef = useRef(null);
+    const pianoAreaRef = useRef(null);
     const timelineAreaRef = useRef(null);
     const tracksContainerRef = useRef(null);
     const headerCanvasRef = useRef(null);
@@ -761,7 +774,8 @@ export default function CenterArea() {
     const noteLayerRef = useRef(null);
     const keysRef = useRef(null);
     const pianoWrapRef = useRef(null);
-    const autoCanvasRef = useRef(null);
+    // 境目のドラッグの起点 (押した位置と、そのときのピアノロールの高さ)
+    const resizeStartRef = useRef(null);
 
     useEffect(() => {
         // 初期化は 1 回だけ。開発モード (React の StrictMode) ではこの effect が 2 回走るが、
@@ -786,11 +800,6 @@ export default function CenterArea() {
         tl._pianoRoll = pr;
         timelineRef.current = tl;
 
-        // Automation 初期化
-        const auto = new AutomationEditorEngine();
-        auto.init({ canvas: autoCanvasRef.current });
-        automationRef.current = auto;
-
         // 初期トラック。開発モード (React の StrictMode) ではこの effect が 2 回走るので、
         // すでにトラックが在れば足さない (足すと 4 本になる)
         if (engine.tracks.length === 0) {
@@ -798,10 +807,9 @@ export default function CenterArea() {
             engine.addTrack('Track 2');
         }
         tl.render(pr);
-        auto.draw();
         bumpTracks();
 
-        setStatus('準備完了 — トラック名をクリックしてピアノロールを開く / WAVをD&Dで追加');
+        setStatus('準備完了 — トラック名をクリックすると、ピアノロールが開きます');
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // trackVersion が変わるたびにタイムラインを再描画
@@ -811,14 +819,13 @@ export default function CenterArea() {
         if (tl) tl.render(pr);
     }, [trackVersion, timelineRef, pianoRollRef]);
 
-    // テンポか拍子が変わったら、拍と小節の線を描き直す (小節番号の段、ピアノロール、オートメーション)。
+    // テンポか拍子が変わったら、拍と小節の線を描き直す (小節番号の段、ピアノロール)。
     // 描き直さないと、次にトラックを触るまで古いテンポの目盛りが残る
     useEffect(() => {
         timelineRef.current?._drawHeader();
         const pr = pianoRollRef.current;
         if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); }
-        automationRef.current?.draw();
-    }, [bpm, beatsPerBar, timelineRef, pianoRollRef, automationRef]);
+    }, [bpm, beatsPerBar, timelineRef, pianoRollRef]);
 
     const handleAddTrack = useCallback(() => {
         const t = engine.addTrack();
@@ -826,17 +833,75 @@ export default function CenterArea() {
         setStatus(`「${t.name}」を追加しました`);
     }, [bumpTracks, setStatus]);
 
+    // ---- タイムラインとピアノロールの境目 ----
+    /** ピアノロールに取れる高さの上限。タイムラインに最低限の高さを残す。 */
+    const maxPianoHeight = useCallback(() => {
+        const center = centerRef.current;
+        if (!center) return PIANO_MIN_HEIGHT;
+        const handle = center.querySelector('#resize-piano');
+        return Math.max(PIANO_MIN_HEIGHT, center.clientHeight - TIMELINE_MIN_HEIGHT - (handle ? handle.offsetHeight : 0));
+    }, []);
+    const clampPianoHeight = useCallback(
+        (height) => Math.round(Math.max(PIANO_MIN_HEIGHT, Math.min(maxPianoHeight(), height))),
+        [maxPianoHeight],
+    );
+    const currentPianoHeight = useCallback(
+        () => (pianoAreaRef.current ? pianoAreaRef.current.getBoundingClientRect().height : 300),
+        [],
+    );
+
+    const handleResizeDown = useCallback((e) => {
+        if (e.button !== undefined && e.button !== 0) return;
+        e.preventDefault();
+        resizeStartRef.current = { y: e.clientY, height: currentPianoHeight() };
+        // 押したまま窓の外へ出ても、動きを受け取り続ける
+        try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* 取れなくても、窓の中では動かせる */ }
+        setResizing(true);
+    }, [currentPianoHeight]);
+    // ドラッグのあいだの動きは、窓全体で受ける (境目は細いので、境目の上だけで受けると、すぐに外れる)
+    useEffect(() => {
+        if (!resizing) return;
+        const onMove = (e) => {
+            const start = resizeStartRef.current;
+            if (!start) return;
+            // 境目を上へ動かすと、ピアノロールが高くなる
+            setPianoHeight(clampPianoHeight(start.height - (e.clientY - start.y)));
+        };
+        const onEnd = () => {
+            resizeStartRef.current = null;
+            setResizing(false);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onEnd);
+        window.addEventListener('pointercancel', onEnd);
+        return () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onEnd);
+            window.removeEventListener('pointercancel', onEnd);
+        };
+    }, [resizing, clampPianoHeight]);
+    const handleResizeKey = useCallback((e) => {
+        let next = null;
+        if (e.key === 'ArrowUp') next = currentPianoHeight() + RESIZE_KEY_STEP;
+        else if (e.key === 'ArrowDown') next = currentPianoHeight() - RESIZE_KEY_STEP;
+        else if (e.key === 'Home') next = maxPianoHeight();
+        else if (e.key === 'End') next = PIANO_MIN_HEIGHT;
+        if (next === null) return;
+        e.preventDefault();
+        setPianoHeight(clampPianoHeight(next));
+    }, [currentPianoHeight, maxPianoHeight, clampPianoHeight]);
+
     const pianoLabel = activeTrackName
-        ? <>ピアノロール — <strong style={{ color: 'var(--accent)' }}>{activeTrackName}</strong> <span className="area-hint">（ダブルクリックでノート追加 / ドラッグで移動 / Deleteで削除）</span></>
-        : <>ピアノロール <span className="area-hint">（トラックをクリックして選択）</span></>;
+        ? <>ピアノロール — <strong style={{ color: 'var(--accent)' }}>{activeTrackName}</strong> <span className="area-hint">（ダブルクリックでノートを追加 / ドラッグで移動・高さの変更 / Delete か Backspace で削除）</span></>
+        : <>ピアノロール <span className="area-hint">（タイムラインのトラック名をクリックすると開きます）</span></>;
 
     return (
-        <div id="center">
+        <div id="center" ref={centerRef}>
             {/* タイムライン */}
             <div id="timeline-area" ref={timelineAreaRef}>
                 {/* 見出しと小節番号の段は、スクロールしても枠の上端・左端に留める */}
                 <div id="timeline-top">
-                    <div className="area-label">タイムライン <span className="area-hint">（WAVをD&D / クリップをドラッグで移動 / 右クリックで削除）</span></div>
+                    <div className="area-label">タイムライン <span className="area-hint">（WAV ファイルをドロップして追加 / クリップをドラッグで移動 / 右クリックで削除）</span></div>
                     <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
                 </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
@@ -844,9 +909,16 @@ export default function CenterArea() {
                 <SeekBar />
             </div>
 
+            {/* タイムラインとピアノロールの境目。ドラッグか、上下の矢印キーで動かす */}
+            <div className={'resize-handle' + (resizing ? ' dragging' : '')} id="resize-piano"
+                role="separator" aria-orientation="horizontal" tabIndex={0}
+                aria-label="タイムラインとピアノロールの境目（上下の矢印キーで動かせます）"
+                aria-valuemin={PIANO_MIN_HEIGHT} aria-valuenow={pianoHeight ?? 300}
+                title="ドラッグすると、ピアノロールの高さが変わります"
+                onPointerDown={handleResizeDown} onKeyDown={handleResizeKey} />
+
             {/* ピアノロール */}
-            <div className="resize-handle" id="resize-piano" />
-            <div id="piano-roll-area">
+            <div id="piano-roll-area" ref={pianoAreaRef} style={pianoHeight === null ? undefined : { height: pianoHeight }}>
                 <div className="area-label">{pianoLabel}<MidiInputBar /><GhostBar activeTrackId={activeTrackId} /></div>
                 <div id="piano-roll-body">
                     <div ref={keysRef} id="piano-keys" />
@@ -855,13 +927,6 @@ export default function CenterArea() {
                         <div ref={noteLayerRef} id="note-layer" />
                     </div>
                 </div>
-            </div>
-
-            {/* オートメーション */}
-            <div className="resize-handle" id="resize-auto" />
-            <div id="automation-area">
-                <div className="area-label">オートメーション <span className="area-hint">（ダブルクリックでポイント追加 / ドラッグで移動 / 右クリックで削除）</span></div>
-                <canvas ref={autoCanvasRef} id="automation-canvas" />
             </div>
         </div>
     );

@@ -22,27 +22,35 @@ For the quick overview, see [README.md](../README.md).
 | Feature | Detail |
 |---|---|
 | Timeline | Place clips on tracks. Drag to move, beat-snapping, drag-and-drop WAV files |
-| Piano roll | Per-track, independent. C2–B6 range. Double-click to add note, drag to move, Delete to remove |
-| Automation | Draw and edit Bezier parameter curves |
+| Piano roll | Per-track, independent. C0–B8 range. Double-click to add a note, drag to move (horizontal = position, vertical = pitch), drag the right edge to resize, Delete / Backspace to remove. Placing a note, changing its pitch, or pressing a key on the keyboard column plays that pitch |
 | Synthesizer | 4 basic waveforms (sine / square / sawtooth / triangle), 6 instrument presets (guitar / violin / chorus / flute / bass / organ), 84 GM voices via FluidSynth (MuseScore_General.sf3) |
 | Drum machine | 4 patterns (8-beat / 4-on-the-floor / bossa nova / reggae), configurable bars and volume |
 | Effects | 3-band EQ / compressor / reverb / delay / normalize / pitch shift / time stretch |
 | Full song analysis | One click: Demucs separation → polyphonic pitch detection → track auto-generation → piano roll population |
 | Monophonic analysis | pyin pitch detection converts a single-voice WAV to piano roll notes |
-| AI assistant | Natural-language chat for note suggestions. Local (Ollama + Gemma 3) or cloud (Anthropic Claude) |
-| Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar |
+| Transport | BPM (20–300), time signature (4/4, 3/4, 6/8), play / stop / record, metronome, seekbar. Space toggles play / pause |
 | Recording | Microphone input recorded to a track |
 | Project save/load | JSON format |
 | MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
-| WAV export | Offline mixdown of all tracks to WAV |
+| WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
+
+#### Not implemented
+
+- **Automation** (parameter curves over time). An automation lane used to be shown under the piano roll, but it was
+  never connected to the playback engine: points could be drawn and saved, and had no effect on the sound. The lane
+  was removed from the screen. Projects saved by older versions may contain an `automation` field; it is ignored on
+  load and dropped on the next save.
+- **AI note generation.** The former "AI" tab (natural-language prompt → generated notes, via Ollama or Claude) was
+  removed, together with `/api/assistant/*` and `music_assistant.py`. It contradicted the product principle that the
+  LLM only explains and never outputs a note (see [reproduction-guide-design.md](reproduction-guide-design.md)).
 
 ### Tools Screen (`/tools`)
 
 | Tab | Detail |
 |---|---|
-| Full decompose | Demucs 6-stem separation → per-stem polyphonic pitch detection → instrument estimation → JSON output |
-| Source separation | Demucs 2 / 4 / 6 stems (htdemucs / htdemucs_ft / htdemucs_6s) |
+| Part separation and transcription (パート分離と採譜) | Demucs 6-stem separation → per-stem polyphonic pitch detection → instrument estimation → JSON output |
+| Part separation (パート分離) | Demucs 2 / 4 / 6 stems (htdemucs / htdemucs_ft / htdemucs_6s) |
 | Analysis | Frequency band distribution, estimated instrument composition, tempo estimation |
 | Edit | Trim / cut / range copy / silence insert / loop |
 | Effects | EQ / compressor / reverb / delay / volume / fade in-out / pan / reverse / pitch shift / time stretch / speed change |
@@ -156,23 +164,6 @@ Demucs `model` values: `htdemucs` (default, recommended), `htdemucs_ft` (slow, h
 | POST | `/api/wav/optimize` | `file`, `target_sr`, `target_bit_depth` | Polyphase resample + TPDF dither |
 | POST | `/api/convert/{target}` | `file`, `bitrate` | Convert to `wav` or `mp3` via ffmpeg |
 
-### AI Assistant
-
-| Method | Path | Form fields | Description |
-|---|---|---|---|
-| GET | `/api/assistant/status` | — | Returns availability of local (Ollama) and cloud (Claude) LLMs |
-| POST | `/api/assistant/chat` | `prompt`, `bpm`, `bars`, `mode`, `context_notes` | Generate note suggestions from a natural-language prompt |
-
-`mode`: `auto` (automatic routing), `local` (Ollama only), `cloud` (Claude only).
-
-Response schema:
-```json
-{
-  "notes": [{"note": "C", "octave": 4, "step": 0, "length": 4}],
-  "explanation": "..."
-}
-```
-
 ### Project & Download
 
 | Method | Path | Form / Path | Description |
@@ -210,15 +201,6 @@ python -m pytest test/back/ -v
 cd web-ui && npx tsc --noEmit
 ```
 
-### AI assistant environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `gemma3:4b` | Local model name |
-| `ANTHROPIC_API_KEY` | *(none)* | Claude API key |
-| `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | Cloud model name |
-
 ---
 
 ## Architecture
@@ -232,7 +214,7 @@ bunri/
 │   └── src/
 │       ├── pages/               DawPage / ToolsPage / HelpPage
 │       ├── components/          HeaderBar / LeftPanel / CenterArea / StatusBar /
-│       │                        WelcomeGuide / AssistantPanel
+│       │                        WelcomeGuide / ChartPanel / GuidePanel / CoachPanel / GridEditor
 │       ├── lib/                 engine.ts (AudioEngine) / store.tsx (Context)
 │       ├── styles/              global.css
 │       └── __tests__/           Vitest tests
@@ -244,7 +226,6 @@ bunri/
 │   ├── deep_separate.py         6-stem detailed separation (htdemucs_6s)
 │   ├── decompose.py             Separation → pitch detect → instrument estimate pipeline
 │   ├── analyze.py               pyin pitch detection → note data conversion
-│   ├── music_assistant.py       Hybrid LLM music assistant
 │   ├── synth.py                 Synth / drum machine / step sequencer / GM voices
 │   ├── edit.py                  15 audio edit operations
 │   ├── effects.py               EQ / compressor / reverb / delay
@@ -277,7 +258,7 @@ bunri/
 | Testing | Vitest + Testing Library (frontend) / pytest (backend) |
 | Linting | ESLint + typescript-eslint (frontend) / ruff (backend) |
 | CI | GitHub Actions |
-| AI assistant | Ollama (Gemma 3 4B/12B) / Anthropic Claude API (optional) |
+| Reproduction guide (LLM) | Anthropic Claude API via the official `anthropic` SDK (optional; explains the song chart, never generates notes) |
 
 ### Demucs models
 

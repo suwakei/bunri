@@ -56,11 +56,11 @@ describe('issueText', () => {
 
     it('抜け', () => expect(issueText(issue({}))).toBe('2 小節 3 拍目: E4 が抜けています'));
 
-    it('余分な音', () => {
+    it('余分なノート', () => {
         expect(issueText(issue({ kind: 'extra', expected: null, actual: note('A', 3, 24) }))).toBe('2 小節 3 拍目: A3 はお手本にありません');
     });
 
-    it('オクターブ違いと音の間違いは、打ち込んだ音とお手本を並べる', () => {
+    it('オクターブ違いと高さの違いは、打ち込んだノートとお手本を並べる', () => {
         expect(issueText(issue({ kind: 'octave', actual: note('E', 3, 24) }))).toBe('2 小節 3 拍目: E3 → お手本は E4（オクターブ違い）');
         expect(issueText(issue({ kind: 'pitch', actual: note('F', 4, 24) }))).toBe('2 小節 3 拍目: F4 → お手本は E4');
     });
@@ -150,7 +150,7 @@ describe('CoachPanel', () => {
         engine.addTrack('自分の打ち込み');
         render(<DawProvider><CoachPanel /></DawProvider>);
         const options = Array.from((screen.getByLabelText('お手本') as HTMLSelectElement).options).map((o) => o.textContent);
-        expect(options).toEqual(['ピアノ（1 音）']);
+        expect(options).toEqual(['ピアノ（1 ノート）']);
         expect((screen.getByLabelText('比べる打ち込み') as HTMLSelectElement).options).toHaveLength(2);
     });
 

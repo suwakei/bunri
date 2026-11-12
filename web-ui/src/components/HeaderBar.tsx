@@ -4,7 +4,8 @@
 import { useCallback, useState, useEffect } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { apiFetch, errorDetail } from '../lib/api';
+import { apiFetch, describeError, errorDetail } from '../lib/api';
+import { isDialogOpen, isKeyboardFocusedControl, isTypingTarget } from '../lib/keys';
 import { notesToMidi } from '../lib/midi';
 
 /**
@@ -15,7 +16,8 @@ import { notesToMidi } from '../lib/midi';
  * @property beatsPerBar - 1小節あたりの拍数
  * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
  * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
- * @property automation - オートメーションポイントのシリアライズ済みデータ
+ * @property automation - 以前の版が保存していたオートメーションのデータ。オートメーションの欄は
+ *   外したので、読み込んでも使わない（在っても無視する）
  */
 interface ProjectData {
     bpm?: number;
@@ -64,7 +66,8 @@ function TimeDisplay() {
 /**
  * ヘッダーバーコンポーネント。
  * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
- * プロジェクト操作ボタン（保存・読込・WAV書き出し・ガイド）を提供する。
+ * プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）を提供する。
+ * Space キーで、再生と一時停止を切り替えられる。
  *
  * @returns ヘッダー全体の `<div id="header">` 要素
  */
@@ -73,8 +76,8 @@ export default function HeaderBar() {
         bpm, setBpm, beatsPerBar, setBeatsPerBar,
         isPlaying, setIsPlaying, setStatus,
         metronomeEnabled, setMetronomeEnabled,
-        withProgress, bumpTracks, pianoRollRef, automationRef,
-        setHint, showGuide, setShowGuide,
+        withProgress, showProgress, bumpTracks, pianoRollRef,
+        setHint,
     } = useDaw();
 
     const handlePlay = useCallback(() => {
@@ -88,10 +91,39 @@ export default function HeaderBar() {
             if (pr) pr._saveToEngine();
             engine.play();
             setIsPlaying(true);
-            setStatus('再生中...');
+            setStatus('再生中…');
         }
         bumpTracks();
     }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks]);
+
+    // Space キーで、再生と一時停止を切り替える (▶ のボタンと同じ)。
+    // - 文字を打ち込む欄に居るとき、案内などの窓が開いているときは、切り替えない
+    // - キーボードで選んだボタンに居るときも、切り替えない (Space はそのボタンを押す操作)
+    // - マウスで押したボタンにフォーカスが残っているだけのときは、切り替える。そのままだと
+    //   ブラウザがそのボタンをもう一度押してしまうので、キーを離すところまで既定の動作を止める
+    useEffect(() => {
+        let swallowKeyUp = false;
+        const isSpace = (e: KeyboardEvent) => e.code === 'Space' || e.key === ' ';
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (!isSpace(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+            if (isTypingTarget(e.target) || isKeyboardFocusedControl(e.target) || isDialogOpen()) return;
+            e.preventDefault();
+            swallowKeyUp = true;
+            // 押しっぱなしで何度も切り替わらないようにする
+            if (!e.repeat) handlePlay();
+        };
+        const onKeyUp = (e: KeyboardEvent) => {
+            if (!isSpace(e) || !swallowKeyUp) return;
+            swallowKeyUp = false;
+            e.preventDefault();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('keyup', onKeyUp);
+        };
+    }, [handlePlay]);
 
     const handleStop = useCallback(() => {
         engine.stop();
@@ -108,9 +140,9 @@ export default function HeaderBar() {
                 if (pr) pr._saveToEngine();
                 engine.play();
                 setIsPlaying(true);
-                setStatus('録音中...');
+                setStatus('録音中…');
             } catch (_e) {
-                setStatus('マイクにアクセスできません');
+                setStatus('マイクを使えませんでした。OS の設定で、このアプリにマイクの使用を許可してください', 'error');
             }
         } else {
             const buffer = await engine.stopRecording();
@@ -137,18 +169,22 @@ export default function HeaderBar() {
         if (pr) pr._saveToEngine();
         // 書き出すのは、再生で鳴るもの (クリップと、ピアノロールのノート)。どちらも無ければ書き出さない
         if (engine.getTotalDuration() === 0) {
-            setStatus('書き出すものがありません。クリップかノートを置いてください');
+            setStatus('書き出すものがありません。クリップかノートを置いてください', 'error');
             return;
         }
-        await withProgress('ミックスダウン中...', async () => {
+        if (engine.audibleTracks().length === 0) {
+            setStatus('鳴らすトラックがありません。ミュートを外してから書き出してください', 'error');
+            return;
+        }
+        await withProgress('WAV を書き出しています…', async () => {
             const blob = await engine.exportWav();
-            if (!blob) { setStatus('書き出しに失敗しました'); return; }
+            if (!blob) { setStatus('WAV を書き出せませんでした。もう一度試してください', 'error'); return; }
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url; a.download = 'bunri_mix.wav'; a.style.display = 'none';
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('WAVファイルを書き出しました');
+            setStatus('WAV ファイルを書き出しました');
         });
     }, [withProgress, setStatus, pianoRollRef]);
 
@@ -169,18 +205,17 @@ export default function HeaderBar() {
             a.href = url; a.download = 'bunri.mid'; a.style.display = 'none';
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('MIDIファイルを書き出しました');
+            setStatus('MIDI ファイルを書き出しました');
         } catch (e) {
             setStatus((e as Error).message === '書き出せるノートがありません'
                 ? '書き出すノートがありません。ピアノロールにノートを置いてください'
-                : 'MIDIの書き出しに失敗しました: ' + (e as Error).message);
+                : 'MIDI ファイルを書き出せませんでした（' + describeError(e) + '）', 'error');
         }
     }, [setStatus, pianoRollRef]);
 
     const handleSave = useCallback(async () => {
         const pr = pianoRollRef.current;
         if (pr) pr.getNotes();
-        const auto = automationRef.current;
         const project = {
             bpm: engine.bpm, beatsPerBar: engine.beatsPerBar,
             tracks: engine.tracks.map(t => ({
@@ -189,22 +224,35 @@ export default function HeaderBar() {
                 pianoNotes: t.pianoNotes || [],
                 referenceNotes: t.referenceNotes,
             })),
-            automation: auto ? auto.toJSON() : {},
         };
         const fd = new FormData();
         fd.append('data', JSON.stringify(project));
-        const resp = await apiFetch('/api/project/save', { method: 'POST', body: fd });
-        if (!resp.ok) { setStatus('エラー: プロジェクトを保存できませんでした（' + await errorDetail(resp) + '）'); return; }
+        try {
+            const resp = await apiFetch('/api/project/save', { method: 'POST', body: fd });
+            if (!resp.ok) { setStatus('プロジェクトを保存できませんでした。' + await errorDetail(resp), 'error'); return; }
+        } catch (e) {
+            setStatus('プロジェクトを保存できませんでした。' + describeError(e), 'error');
+            return;
+        }
         setStatus('プロジェクトを保存しました');
-    }, [pianoRollRef, automationRef, setStatus]);
+    }, [pianoRollRef, setStatus]);
 
     const handleLoad = useCallback(async () => {
-        const resp = await apiFetch('/api/project/list');
-        const files = await resp.json();
-        if (files.length === 0) { setStatus('保存されたプロジェクトがありません'); return; }
-        const name = files[0];
-        const projResp = await apiFetch(`/api/project/load/${name}`);
-        const project: ProjectData = await projResp.json();
+        let name: string;
+        let project: ProjectData;
+        try {
+            const resp = await apiFetch('/api/project/list');
+            if (!resp.ok) { setStatus('プロジェクトを読み込めませんでした。' + await errorDetail(resp), 'error'); return; }
+            const files = await resp.json();
+            if (files.length === 0) { setStatus('保存したプロジェクトがまだありません。先に「保存」を押してください'); return; }
+            name = files[0];
+            const projResp = await apiFetch(`/api/project/load/${name}`);
+            if (!projResp.ok) { setStatus('プロジェクトを読み込めませんでした。' + await errorDetail(projResp), 'error'); return; }
+            project = await projResp.json();
+        } catch (e) {
+            setStatus('プロジェクトを読み込めませんでした。' + describeError(e), 'error');
+            return;
+        }
         engine.bpm = project.bpm || 120;
         engine.beatsPerBar = project.beatsPerBar || 4;
         setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
@@ -226,11 +274,10 @@ export default function HeaderBar() {
                 if (pt.referenceNotes) track.referenceNotes = pt.referenceNotes;
             });
         }
-        const auto = automationRef.current;
-        if (auto) auto.fromJSON(project.automation || {});
+        // 以前の版が保存したオートメーションのデータ (project.automation) は、在っても使わない
         bumpTracks();
-        setStatus(`プロジェクト ${name} を読み込みました（※音声データは再インポートが必要です）`);
-    }, [setBpm, setBeatsPerBar, automationRef, pianoRollRef, bumpTracks, setStatus]);
+        setStatus(`プロジェクト「${name}」を読み込みました（音声は保存されていません。音声ファイルは、もう一度追加してください）`);
+    }, [setBpm, setBeatsPerBar, pianoRollRef, bumpTracks, setStatus]);
 
     const h = (text: string) => ({
         onMouseEnter: () => setHint(text),
@@ -241,39 +288,39 @@ export default function HeaderBar() {
         <div id="header">
             <h1>bunri DAW</h1>
             <div id="transport">
-                <label>BPM</label>
-                <input type="number" value={bpm} min="20" max="300"
+                <label htmlFor="transport-bpm">BPM</label>
+                <input id="transport-bpm" type="number" value={bpm} min="20" max="300"
                     onChange={e => setBpm(e.target.value)}
                     {...h('テンポ（BPM）。曲の速さを指定します')} />
-                <label>拍子</label>
-                <select value={beatsPerBar} onChange={e => setBeatsPerBar(e.target.value)}
-                    {...h('1小節の拍数')}>
+                <label htmlFor="transport-meter">拍子</label>
+                <select id="transport-meter" value={beatsPerBar} onChange={e => setBeatsPerBar(e.target.value)}
+                    {...h('1 小節の拍の数')}>
                     <option value="4">4/4</option>
                     <option value="3">3/4</option>
                     <option value="6">6/8</option>
                 </select>
-                <button id="btn-play" title="再生/一時停止" onClick={handlePlay}
-                    {...h('再生/一時停止を切り替えます')}>
+                <button id="btn-play" title="再生/一時停止（Space）" aria-label={isPlaying ? '一時停止' : '再生'} onClick={handlePlay}
+                    {...h('再生と一時停止を切り替えます（Space キーでも切り替えられます）')}>
                     {isPlaying ? '⏸' : '▶'}
                 </button>
-                <button title="停止" onClick={handleStop} {...h('停止して先頭に戻ります')}>■</button>
-                <button title="録音" onClick={handleRecord}
+                <button title="停止" aria-label="停止" onClick={handleStop} {...h('停止して先頭に戻ります')}>■</button>
+                <button title="録音" aria-label="録音" aria-pressed={engine.isRecording} onClick={handleRecord}
                     className={engine.isRecording ? 'active' : ''}
-                    style={engine.isRecording ? { color: '#e74c3c' } : {}}
-                    {...h('マイクから録音')}>●</button>
-                <button title="メトロノーム" onClick={handleMetronome}
+                    style={engine.isRecording ? { color: 'var(--danger)' } : {}}
+                    {...h('マイクから録音します')}>●</button>
+                <button title="メトロノーム" aria-label="メトロノーム" aria-pressed={metronomeEnabled} onClick={handleMetronome}
                     className={metronomeEnabled ? 'active' : ''}
-                    {...h('メトロノームON/OFF')}>🔔</button>
+                    {...h('メトロノームを鳴らす・止める')}>🔔</button>
                 <TimeDisplay />
             </div>
             <div>
-                <button onClick={handleSave} {...h('プロジェクト保存')}>保存</button>
-                <button onClick={handleLoad} {...h('プロジェクト読込')}>読込</button>
-                <button onClick={handleExport} {...h('WAV書き出し')}>書出</button>
-                <button onClick={handleExportMidi} {...h('ピアノロールのノートを MIDI ファイルとして書き出す')}>MIDI</button>
-                <button onClick={() => setShowGuide(true)} {...h('ガイド表示')}>❓</button>
-                <a href="/tools" target="_blank" {...h('ツールを別タブで開く')}>ツール</a>
-                <a href="/help" target="_blank" {...h('使い方ガイド')}>使い方</a>
+                <button onClick={handleSave} {...h('プロジェクト（テンポ・トラック・ノート）を保存します')}>保存</button>
+                <button onClick={handleLoad} {...h('最後に保存したプロジェクトを読み込みます')}>読み込む</button>
+                <button onClick={handleExport} disabled={showProgress}
+                    {...h('再生で鳴る音を、1 つの WAV ファイルとして書き出します')}>WAV 書き出し</button>
+                <button onClick={handleExportMidi} {...h('ピアノロールのノートを、MIDI ファイルとして書き出します')}>MIDI 書き出し</button>
+                <a href="/tools" target="_blank" {...h('音声ファイルを加工するツールを、別の窓で開きます')}>ツール</a>
+                <a href="/help" target="_blank" {...h('使い方の説明を、別の窓で開きます')}>使い方</a>
             </div>
         </div>
     );

@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { errorDetail, setBackendForTest } from '../lib/api';
+import { describeError, errorDetail, setBackendForTest } from '../lib/api';
 import ToolsPage from '../pages/ToolsPage';
 
 afterEach(() => {
@@ -74,9 +74,53 @@ describe('errorDetail', () => {
         expect(await errorDetail(resp)).toBe('開始が終了以降になっています');
     });
 
-    it('その形でなければ本文をそのまま、本文も無ければ状態コードを返す', async () => {
-        expect(await errorDetail(new Response('Internal Server Error', { status: 500 }))).toBe('Internal Server Error');
-        expect(await errorDetail(new Response('', { status: 502 }))).toBe('HTTP 502');
-        expect(await errorDetail(new Response(JSON.stringify({ detail: [{ msg: 'x' }] }), { status: 422 }))).toBe('[{"msg":"x"}]');
+    it('処理の側の失敗 (5xx) は、次にどうすればよいかを添えて、理由を後ろに付ける', async () => {
+        const resp = new Response(JSON.stringify({ detail: 'カルテの生成に失敗しました: 音が短すぎます' }), { status: 500 });
+        const text = await errorDetail(resp);
+        expect(text).toContain('もう一度試してください');
+        expect(text).toContain('（理由: カルテの生成に失敗しました: 音が短すぎます）');
+    });
+
+    it('生の JSON や HTTP 500 のような番号だけの文を返さない', async () => {
+        const cases = [
+            new Response('Internal Server Error', { status: 500 }),
+            new Response('', { status: 502 }),
+            new Response('<html><body>Bad Gateway</body></html>', { status: 502 }),
+            new Response(JSON.stringify({ detail: [{ loc: ['body', 'file'], msg: 'Field required', type: 'missing' }] }), { status: 422 }),
+            new Response(JSON.stringify({ detail: { code: 'x' } }), { status: 400 }),
+            new Response(JSON.stringify({ error: 'x' }), { status: 404 }),
+        ];
+        for (const resp of cases) {
+            const text = await errorDetail(resp);
+            expect(text).not.toMatch(/[{}[\]<>]/);
+            expect(text).not.toMatch(/HTTP|Internal Server Error|Field required/);
+            // 何が起きたかと、次にどうすればよいかが入っている
+            expect(text).toMatch(/ください/);
+        }
+    });
+
+    it('入力の検査の指摘は、どの項目かを添える', async () => {
+        const resp = new Response(JSON.stringify({ detail: [{ loc: ['body', 'file'], msg: 'Field required' }] }), { status: 422 });
+        expect(await errorDetail(resp)).toContain('（項目: file）');
+    });
+
+    it('{"detail": {"message": "..."}} の形の理由も取り出す', async () => {
+        const resp = new Response(JSON.stringify({ detail: { message: 'API キーが設定されていません', code: 'no_key' } }), { status: 400 });
+        expect(await errorDetail(resp)).toBe('API キーが設定されていません');
+    });
+});
+
+describe('describeError', () => {
+    it('API に届かなかった失敗は、ブラウザの英語の文ではなく、次の手を添えた文にする', () => {
+        for (const message of ['Failed to fetch', 'Load failed', 'NetworkError when attempting to fetch resource.']) {
+            const text = describeError(new TypeError(message));
+            expect(text).toContain('接続できませんでした');
+            expect(text).not.toContain(message);
+        }
+    });
+
+    it('それ以外は、失敗に付いている文をそのまま返す', () => {
+        expect(describeError(new Error('開始が終了以降になっています'))).toBe('開始が終了以降になっています');
+        expect(describeError(new Error(''))).toMatch(/もう一度試してください/);
     });
 });

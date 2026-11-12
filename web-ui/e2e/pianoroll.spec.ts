@@ -3,7 +3,7 @@
  * 音域 (C0〜B8) の端の音も扱えること。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw } from './helpers';
+import { openDaw, recordOscillators, soundedFrequencies } from './helpers';
 
 const STEP_WIDTH = 20;
 const NOTE_HEIGHT = 14;
@@ -15,7 +15,7 @@ const rowOf = (name: string, octave: number) => (8 - octave) * 12 + NOTE_NAMES.i
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 
-/** ノート入りのプロジェクトを API で保存し、画面の「読込」で読み込む。 */
+/** ノート入りのプロジェクトを API で保存し、画面の「読み込む」で読み込む。 */
 async function loadProjectWithNotes(page: Page, request: APIRequestContext, tracks: ReturnType<typeof note>[][]) {
     const project = {
         bpm: 120, beatsPerBar: 4,
@@ -24,7 +24,7 @@ async function loadProjectWithNotes(page: Page, request: APIRequestContext, trac
     };
     expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
     await openDaw(page);
-    await page.getByRole('button', { name: '読込', exact: true }).click();
+    await page.getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(page.getByText(/を読み込みました/)).toBeVisible();
 }
 
@@ -43,6 +43,39 @@ async function openPianoRoll(page: Page) {
 
 /** 置かれたノートの説明 (例: "C4 step:8 len:4") を全部返す。 */
 const noteTitles = (page: Page) => page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
+
+/** 音名を低い順に並べたもの。 */
+const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+/** ノートの説明 (例: "C4 step:8 len:4") から、MIDI ノート番号 (C4 = 60) を出す。 */
+function midiOf(title: string): number {
+    const [, name, octave] = title.match(/^([A-G]#?)(-?\d+) /)!;
+    return (Number(octave) + 1) * 12 + CHROMATIC.indexOf(name);
+}
+/** ノートの説明から、開始のステップを出す。 */
+const stepOf = (title: string) => Number(title.match(/step:(\d+)/)![1]);
+/** MIDI ノート番号の周波数 (Hz)。 */
+const freqOf = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+/** 記録した周波数の中に、その高さの音が在るか。 */
+const sounded = (log: number[], midi: number) => log.some((f) => Math.abs(f - freqOf(midi)) < 0.05);
+
+/** 見えている範囲の (x, y) をダブルクリックして、ノートを 1 つ置く。置いたノートの説明を返す。 */
+async function placeNote(page: Page, x: number, y: number): Promise<string> {
+    const before = await page.locator('#note-layer .note-block').count();
+    const wrap = (await page.locator('#piano-grid-wrap').boundingBox())!;
+    await page.mouse.dblclick(wrap.x + x, wrap.y + y);
+    await expect(page.locator('#note-layer .note-block')).toHaveCount(before + 1);
+    return (await noteTitles(page))[before];
+}
+
+/** ノートをつかんで、(dx, dy) だけ動かす。 */
+async function dragNote(page: Page, index: number, dx: number, dy: number) {
+    const box = (await page.locator('#note-layer .note-block').nth(index).boundingBox())!;
+    const x = box.x + 10, y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx, y + dy, { steps: 6 });
+    await page.mouse.up();
+}
 
 /** ピアノロールのスクロール位置を変える。 */
 async function scrollTo(page: Page, left: number, top: number) {
@@ -220,4 +253,167 @@ test('グリッドが、スクロールした先でも描かれている', async
     // canvas は見えている範囲の大きさで、曲全体の大きさではない
     const size = await page.locator('#piano-grid-canvas').evaluate((c: HTMLCanvasElement) => ({ w: c.width, h: c.height }));
     expect(size.w).toBeLessThan(128 * STEP_WIDTH);
+});
+
+test.describe('ノートの編集', () => {
+    test('選んだノートは、Delete でも Backspace でも消せる (Mac の delete キーは Backspace)', async ({ page }) => {
+        await openPianoRoll(page);
+        await placeNote(page, 30, 60);
+        await placeNote(page, 130, 90);
+        await page.locator('#note-layer .note-block').first().click();
+        await page.keyboard.press('Backspace');
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
+        await page.locator('#note-layer .note-block').first().click();
+        await page.keyboard.press('Delete');
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
+        // トラックの見出しのノートの数も消える
+        await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveCount(0);
+    });
+
+    test('入力欄で文字を消しているときは、Backspace でノートが消えない', async ({ page }) => {
+        await openPianoRoll(page);
+        await placeNote(page, 30, 60);
+        await page.locator('#note-layer .note-block').click();
+        await expect(page.locator('#note-layer .note-block')).toHaveClass(/selected/);
+        // ノートを選んだまま、BPM の欄の数字を消して打ち直す
+        const bpm = page.getByLabel('BPM', { exact: true });
+        await bpm.click();
+        await bpm.press('Backspace');
+        await bpm.press('Backspace');
+        await bpm.press('Delete');
+        await bpm.pressSequentially('90');
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
+        // 選択欄に居るときも消えない。前のページへ戻ってしまうこともない
+        // (WebKit は、文字の欄の外の Backspace を「戻る」に割り当てている)
+        await page.getByLabel('拍子').focus();
+        await page.keyboard.press('Backspace');
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
+        // 何も選んでいないときの Backspace でも、戻らない
+        await page.locator('#tracks-container .track-name').nth(1).click();
+        await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 2');
+        await page.keyboard.press('Backspace');
+        await page.waitForTimeout(300);
+        expect(page.url()).not.toContain('about:blank');
+        await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('1');
+    });
+
+    test('ノートを縦に動かすと音の高さが、横に動かすと位置が変わる', async ({ page }) => {
+        await openPianoRoll(page);
+        const placed = await placeNote(page, 30, 100);
+        expect(stepOf(placed)).toBe(0);
+
+        // 3 行ぶん上へ → 半音 3 つ高くなる。位置は変わらない
+        await dragNote(page, 0, 0, -3 * NOTE_HEIGHT);
+        let [title] = await noteTitles(page);
+        expect(midiOf(title)).toBe(midiOf(placed) + 3);
+        expect(stepOf(title)).toBe(0);
+
+        // 斜めに動かす: 右へ 4 ステップ (1 拍)、5 行ぶん下へ
+        await dragNote(page, 0, 4 * STEP_WIDTH, 5 * NOTE_HEIGHT);
+        [title] = await noteTitles(page);
+        expect(midiOf(title)).toBe(midiOf(placed) + 3 - 5);
+        expect(stepOf(title)).toBe(4);
+
+        // 動かした結果は、トラックに保存されている (別のトラックを開いて戻っても同じ)
+        await page.locator('#tracks-container .track-name').nth(1).click();
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
+        await page.locator('#tracks-container .track-name').first().click();
+        expect(await noteTitles(page)).toEqual([title]);
+    });
+
+    test('音域の端より先へは動かない', async ({ page }) => {
+        await openPianoRoll(page);
+        await scrollTo(page, 0, 0);
+        // 一番上の行 (B8) の 1 つ下に置いて、ずっと上へ動かす
+        const placed = await placeNote(page, 30, NOTE_HEIGHT * 1.5);
+        expect(placed.startsWith('A#8 ')).toBe(true);
+        await dragNote(page, 0, 0, -10 * NOTE_HEIGHT);
+        expect((await noteTitles(page))[0].startsWith('B8 ')).toBe(true);
+    });
+
+    test('右端をつかむと長さだけが変わり、高さは変わらない', async ({ page }) => {
+        await openPianoRoll(page);
+        const placed = await placeNote(page, 30, 100);
+        const box = (await page.locator('#note-layer .note-block').boundingBox())!;
+        await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width - 3 + 4 * STEP_WIDTH, box.y + box.height / 2 + 3 * NOTE_HEIGHT, { steps: 6 });
+        await page.mouse.up();
+        const [title] = await noteTitles(page);
+        expect(title).toContain('len:8');
+        expect(midiOf(title)).toBe(midiOf(placed));
+    });
+
+    test('選んだノートは、赤ではなく明るい縁取りで示す (赤は「違っているノート」のために空けてある)', async ({ page }) => {
+        await openPianoRoll(page);
+        await placeNote(page, 30, 60);
+        const noteEl = page.locator('#note-layer .note-block');
+        const colors = () => noteEl.evaluate((el) => {
+            const style = getComputedStyle(el);
+            const root = getComputedStyle(document.documentElement);
+            return {
+                background: style.backgroundImage, border: style.borderTopColor,
+                selection: root.getPropertyValue('--selection').trim(), danger: root.getPropertyValue('--danger').trim(),
+            };
+        });
+        const before = await colors();
+        await noteEl.click();
+        await expect(noteEl).toHaveClass(/selected/);
+        const after = await colors();
+        // 塗りは変わらず、縁取りだけが選択の色になる
+        expect(after.background).toBe(before.background);
+        expect(after.border).not.toBe(before.border);
+        expect(after.selection).toBe('#f4f1ea');
+        expect(after.border).toBe('rgb(244, 241, 234)');
+        expect(after.background).not.toContain('231, 76, 60');
+    });
+});
+
+test.describe('試し聴き', () => {
+    test('ノートを置くと、その高さの音が鳴る。高さを変えると、変えた先の音が鳴る', async ({ page }) => {
+        await recordOscillators(page);
+        await openPianoRoll(page);
+        expect(await soundedFrequencies(page)).toEqual([]);
+
+        const placed = await placeNote(page, 30, 100);
+        await expect.poll(async () => sounded(await soundedFrequencies(page), midiOf(placed))).toBe(true);
+
+        // 2 行ぶん上へ動かすと、途中の高さと、動かした先の高さが鳴る
+        await dragNote(page, 0, 0, -2 * NOTE_HEIGHT);
+        const log = await soundedFrequencies(page);
+        expect(sounded(log, midiOf(placed) + 2)).toBe(true);
+        // 横に動かしただけ (高さは同じ) では鳴らない
+        const count = log.length;
+        await dragNote(page, 0, 4 * STEP_WIDTH, 0);
+        expect((await soundedFrequencies(page)).length).toBe(count);
+    });
+
+    test('鍵盤を押すと、その高さの音が鳴り、離すと止まる', async ({ page }) => {
+        await recordOscillators(page);
+        await openPianoRoll(page);
+        const key = page.locator('#piano-keys .piano-key').getByText('C4', { exact: true });
+        const box = (await key.boundingBox())!;
+        await page.mouse.move(box.x + 20, box.y + box.height / 2);
+        await page.mouse.down();
+        await expect(key).toHaveClass(/sounding/);
+        // C4 = 261.63 Hz
+        expect(sounded(await soundedFrequencies(page), 60)).toBe(true);
+        await page.mouse.up();
+        await expect(key).not.toHaveClass(/sounding/);
+        // 鍵盤を押しただけでは、ノートは入らない
+        await expect(page.locator('#note-layer .note-block')).toHaveCount(0);
+    });
+
+    test('鍵盤の音名は 10px 以上で、補足の文字は背景に対して読める明るさになっている', async ({ page }) => {
+        await openPianoRoll(page);
+        const key = await page.locator('#piano-keys .piano-key').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+        expect(key).toBeGreaterThanOrEqual(10);
+        // 見出しの補足 (.area-hint) は 11px 以上で、ほとんど見えない色 (白の 15%) ではない
+        const hint = await page.locator('#piano-roll-area .area-hint').first().evaluate((el) => {
+            const style = getComputedStyle(el);
+            return { size: parseFloat(style.fontSize), color: style.color };
+        });
+        expect(hint.size).toBeGreaterThanOrEqual(11);
+        expect(hint.color).toBe('rgb(158, 154, 146)');
+    });
 });

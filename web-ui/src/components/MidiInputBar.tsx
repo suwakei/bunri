@@ -14,13 +14,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { describeError, isDesktop } from '../lib/api';
 import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, type MidiSource, type RecordMode } from '../lib/midi-input';
 
 /** ステップ入力で選べるノートの長さ（ステップ数と呼び名）。 */
 const STEP_LENGTHS: [number, string][] = [[1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
 
 const controlStyle = {
-    fontSize: 10, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
+    fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
     background: 'var(--bg-deep)', color: 'var(--text-mid)', border: '1px solid var(--border)',
     borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
 } as const;
@@ -89,7 +90,7 @@ export default function MidiInputBar() {
             sourceRef.current = source;
             setConnected(true);
         } catch (e) {
-            setStatus('MIDI 入力を開けませんでした: ' + String((e as Error)?.message ?? e));
+            setStatus('MIDI 入力を開けませんでした。鍵盤がつながっているかを確かめて、もう一度押してください（' + describeError(e) + '）', 'error');
         }
     }, [handleMessage, setStatus]);
 
@@ -119,7 +120,10 @@ export default function MidiInputBar() {
     if (!available) {
         return (
             <span className="area-hint" style={{ marginLeft: 12 }}>
-                MIDI 入力はこのブラウザでは使えません（Chrome / Edge、またはデスクトップ版で使えます）
+                {/* 対応するブラウザの案内は、開発用のブラウザ起動のときだけ出す */}
+                {isDesktop()
+                    ? 'MIDI 入力は、この環境では使えません'
+                    : 'MIDI 入力はこのブラウザでは使えません（Chrome / Edge、またはデスクトップ版で使えます）'}
             </span>
         );
     }

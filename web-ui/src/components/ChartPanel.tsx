@@ -56,7 +56,7 @@ function ConfidenceBadge({ value }: { value: number | null }) {
             onMouseEnter={() => setHint(glossary['confidence']?.ja ?? '')}
             onMouseLeave={() => setHint('')}
             style={{
-                fontSize: 9, padding: '1px 6px', borderRadius: 8, marginLeft: 6,
+                fontSize: 11, padding: '1px 6px', borderRadius: 8, marginLeft: 6,
                 border: `1px solid ${display.color}`, color: display.color,
                 fontWeight: 600, cursor: 'help', whiteSpace: 'nowrap',
             }}
@@ -75,9 +75,9 @@ function Unavailable({ reason }: { reason?: string }) {
     if (!reason) return null;
     return (
         <div style={{
-            fontSize: 10, color: 'var(--text-mid)', padding: '6px 8px',
-            background: 'var(--danger-dim)', borderRadius: 'var(--radius-sm)',
-            borderLeft: '2px solid var(--danger)',
+            fontSize: 12, lineHeight: 1.6, color: 'var(--text-mid)', padding: '6px 8px',
+            background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
+            borderLeft: '2px solid var(--warn)',
         }}>
             {reason}
         </div>
@@ -102,7 +102,7 @@ function Block({ title, term, badge, children }: {
 /** 数値の行（ラベル + 値）。ラベルには必ずツールチップが付く */
 function Row({ term, label, children }: { term: string; label: string; children: ReactNode }) {
     return (
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' }}>
             <span style={{ color: 'var(--text-mid)' }}><Term term={term}>{label}</Term></span>
             <span style={{ color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{children}</span>
         </div>
@@ -112,6 +112,7 @@ function Row({ term, label, children }: { term: string; label: string; children:
 /**
  * 楽曲カルテパネル。
  * 解析済みのカルテが無い場合は、ファイルタブへ誘導する案内を出す。
+ * 文字の大きさは、本文 12px・補足 11px を下限にする（docs/ui-terms.md）。
  */
 export default function ChartPanel() {
     const { chart, setShowGridEditor, setHint } = useDaw();
@@ -132,16 +133,16 @@ export default function ChartPanel() {
             <div id="chart-panel" className="panel-content">
                 <h3>楽曲カルテ</h3>
                 <p className="panel-desc">
-                    取り込んだ楽曲を解析して、キー・コード進行・構成・ミックスの特性を表示します。
+                    取り込んだ原曲を解析して、キー・コード進行・構成・ミックスの特性を表示します。
                     「自分の力で再現する」ための材料です。
                 </p>
                 <div style={{
-                    fontSize: 11, color: 'var(--text-mid)', padding: 12,
-                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)',
+                    fontSize: 12, lineHeight: 1.7, color: 'var(--text-mid)', padding: 12,
+                    background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
                     border: '1px dashed var(--border-light)', textAlign: 'center',
                 }}>
                     まだ解析していません。<br />
-                    <strong style={{ color: 'var(--accent)' }}>ファイル</strong>タブで楽曲を読み込んでください。
+                    <strong style={{ color: 'var(--accent)' }}>ファイル</strong>タブで原曲を取り込んでください。
                 </div>
             </div>
         );
@@ -174,7 +175,7 @@ export default function ChartPanel() {
                     グリッドを確認・補正する
                 </button>
                 {!grid.user_confirmed && (
-                    <div style={{ fontSize: 10, color: 'var(--text-mid)', marginTop: 6, lineHeight: 1.5 }}>
+                    <div className="note-text" style={{ color: 'var(--text-mid)', marginTop: 6 }}>
                         グリッドは自動検出のままです。<strong style={{ color: 'var(--accent)' }}>ここがずれていると
                         コードも構成も全部ずれます</strong>。波形を見て確認することをおすすめします。
                     </div>
@@ -189,7 +190,7 @@ export default function ChartPanel() {
                             {key.tonic} <Term term={key.mode ?? 'major'}>{key.mode === 'minor' ? 'マイナー' : 'メジャー'}</Term>
                         </div>
                         {key.alternatives.length > 0 && (
-                            <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                            <div className="note-text">
                                 他の可能性: {key.alternatives.map(a =>
                                     `${a.tonic} ${a.mode === 'minor' ? 'マイナー' : 'メジャー'}`).join(' / ')}
                             </div>
@@ -213,21 +214,21 @@ export default function ChartPanel() {
                                     onMouseLeave={() => setHint('')}
                                     style={{
                                         padding: '5px 4px', borderRadius: 'var(--radius-sm)',
-                                        background: 'var(--bg-secondary)', textAlign: 'center', cursor: 'help',
+                                        background: 'var(--bg-deep)', textAlign: 'center', cursor: 'help',
                                         borderLeft: `2px solid ${TIER_DISPLAY[confidenceTier(chord.confidence)].color}`,
                                     }}>
-                                    <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>{bar}</div>
+                                    <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bar}</div>
                                     <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>{chord.symbol}</div>
                                     {chord.degree && (
-                                        <div style={{ fontSize: 9, color: 'var(--secondary)' }}>
+                                        <div style={{ fontSize: 11, color: 'var(--secondary)' }}>
                                             <Term term="degree">{chord.degree}</Term>
                                         </div>
                                     )}
                                 </div>
                             ))}
                         </div>
-                        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
-                            数字は小節番号。緑の <Term term="degree">ディグリー</Term> はキーから見た度数で、
+                        <div className="note-text" style={{ marginTop: 6 }}>
+                            上の数字は小節番号。コード名の下の青緑の文字は <Term term="degree">ディグリー</Term>（キーから見た度数）で、
                             キーが変わっても同じ進行なら同じ番号になります。
                         </div>
                     </>
@@ -247,24 +248,24 @@ export default function ChartPanel() {
                                 onMouseLeave={() => setHint('')}
                                 style={{
                                     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                                    fontSize: 11, padding: '5px 8px', marginBottom: 3, cursor: 'help',
-                                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)',
+                                    fontSize: 12, padding: '5px 8px', marginBottom: 3, cursor: 'help',
+                                    background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
                                     borderLeft: '3px solid var(--secondary)',
                                 }}>
                                 <span style={{ color: 'var(--text)' }}>
                                     {section.start_bar}–{section.end_bar} 小節
-                                    <span style={{ color: 'var(--text-dim)', marginLeft: 6, fontSize: 10 }}>
+                                    <span style={{ color: 'var(--text-dim)', marginLeft: 6, fontSize: 11 }}>
                                         <Term term="repeat_group">{section.repeat_group}</Term>
                                     </span>
                                 </span>
-                                <span style={{ color: 'var(--text-mid)', fontSize: 10 }}>
+                                <span style={{ color: 'var(--text-mid)', fontSize: 11 }}>
                                     {section.suggested_label
                                         ? `${SECTION_LABEL_JA[section.suggested_label] ?? section.suggested_label}？`
                                         : '—'}
                                 </span>
                             </div>
                         ))}
-                        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.5 }}>
+                        <div className="note-text" style={{ marginTop: 6 }}>
                             「イントロ？」のような名前は<strong>自動推定の提案</strong>で、確定ではありません。
                             区間の切れ目そのものは音の変化から検出したものです。
                         </div>
@@ -315,7 +316,7 @@ function SpectrumBars({ bands }: { bands: { name: string; hz: [number, number]; 
 
     return (
         <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-mid)', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-mid)', marginBottom: 4 }}>
                 <Term term="spectrum_bands">帯域バランス</Term>
             </div>
             {bands.map(band => (
@@ -323,7 +324,7 @@ function SpectrumBars({ bands }: { bands: { name: string; hz: [number, number]; 
                     onMouseEnter={() => setHint(`${band.hz[0]}〜${band.hz[1]}Hz: ${band.energy_db.toFixed(1)} dB`)}
                     onMouseLeave={() => setHint('')}
                     style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, cursor: 'help' }}>
-                    <span style={{ fontSize: 9, color: 'var(--text-dim)', width: 44, textAlign: 'right' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)', width: 48, textAlign: 'right' }}>
                         {BAND_LABEL_JA[band.name] ?? band.name}
                     </span>
                     <div style={{ flex: 1, height: 8, background: 'var(--bg-deep)', borderRadius: 2, overflow: 'hidden' }}>

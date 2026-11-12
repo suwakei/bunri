@@ -199,7 +199,7 @@ test.describe('トラックとクリップ', () => {
         await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 2');
         await page.locator('#tracks-container .btn-delete-track').nth(1).click();
         expect(await trackNames(page)).toEqual(['Track 1']);
-        await expect(page.locator('#piano-roll-area .area-label')).toContainText('トラックをクリックして選択');
+        await expect(page.locator('#piano-roll-area .area-label')).toContainText('トラック名をクリックすると開きます');
     });
 
     test('記号を含むトラック名が、そのまま文字として出る', async ({ page, request }: { page: Page; request: APIRequestContext }) => {
@@ -207,7 +207,7 @@ test.describe('トラックとクリップ', () => {
         const project = { bpm: 120, beatsPerBar: 4, automation: {}, tracks: [{ name, pianoNotes: [{ note: 'C', octave: 4, step: 0, length: 4 }] }] };
         expect((await request.post('/api/project/save', { form: { data: JSON.stringify(project) } })).ok()).toBe(true);
         await openDaw(page);
-        await page.getByRole('button', { name: '読込', exact: true }).click();
+        await page.getByRole('button', { name: '読み込む', exact: true }).click();
         await expect(statusText(page)).toContainText('を読み込みました');
         const nameEl = page.locator('#tracks-container .track-name').first();
         // 名前の後ろに、ノートの数の印が付く
@@ -244,7 +244,133 @@ test.describe('トラックとクリップ', () => {
         await expect(statusText(page)).toHaveText('LOUD.WAV を「Track 1」に追加しました');
 
         await drop('notes.txt', 100);
-        await expect(statusText(page)).toHaveText('WAV 以外のファイルは追加できません: notes.txt');
+        await expect(statusText(page)).toContainText('WAV 以外のファイルは追加できません: notes.txt');
+        // 断った理由は、失敗の知らせとして出る
+        await expect(statusText(page)).toHaveAttribute('role', 'alert');
         await expect(clips(page)).toHaveCount(1);
+    });
+});
+
+test.describe('タイムラインとピアノロールの境目', () => {
+    const pianoHeight = (page: Page) => page.locator('#piano-roll-area').evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    const timelineHeight = (page: Page) => area(page).evaluate((el) => Math.round(el.getBoundingClientRect().height));
+
+    /** 境目をつかんで、縦に dy だけ動かす。 */
+    async function dragHandle(page: Page, dy: number) {
+        const handle = await box(page, '#resize-piano');
+        const x = handle.x + handle.width / 2, y = handle.y + handle.height / 2;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x, y + dy, { steps: 8 });
+        await page.mouse.up();
+    }
+
+    test('境目をドラッグすると、ピアノロールの高さが変わる', async ({ page }) => {
+        await openDaw(page);
+        expect(await pianoHeight(page)).toBe(300);
+        const timelineBefore = await timelineHeight(page);
+
+        // 上へ 80px → ピアノロールが 80px 高くなり、タイムラインがそのぶん低くなる
+        await dragHandle(page, -80);
+        expect(await pianoHeight(page)).toBe(380);
+        expect(await timelineHeight(page)).toBe(timelineBefore - 80);
+        // 鍵盤とグリッドも、新しい高さいっぱいに広がる
+        const body = await box(page, '#piano-roll-body');
+        const pianoArea = await box(page, '#piano-roll-area');
+        expect(Math.round(body.y + body.height)).toBe(Math.round(pianoArea.y + pianoArea.height));
+        await expect.poll(() => page.locator('#piano-grid-canvas').evaluate((c: HTMLCanvasElement) => c.height))
+            .toBe(await page.locator('#piano-grid-wrap').evaluate((el) => el.clientHeight));
+
+        // 下へ 120px → 260px
+        await dragHandle(page, 120);
+        expect(await pianoHeight(page)).toBe(260);
+    });
+
+    test('動かせる範囲に下限が在る (ピアノロールは 150px、タイムラインは 200px を残す)', async ({ page }) => {
+        await openDaw(page);
+        await dragHandle(page, 400);
+        expect(await pianoHeight(page)).toBe(150);
+        await dragHandle(page, -900);
+        expect(await timelineHeight(page)).toBe(200);
+        // シークバーとステータスバーは、見えたまま
+        await expect(page.locator('#seek-bar')).toBeInViewport();
+        await expect(page.locator('#status-bar')).toBeInViewport();
+    });
+
+    test('キーボードでも動かせる (上下の矢印キー)', async ({ page }) => {
+        await openDaw(page);
+        const handle = page.getByRole('separator', { name: /タイムラインとピアノロールの境目/ });
+        await handle.focus();
+        await page.keyboard.press('ArrowUp');
+        expect(await pianoHeight(page)).toBe(324);
+        await expect(handle).toHaveAttribute('aria-valuenow', '324');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        expect(await pianoHeight(page)).toBe(276);
+        await page.keyboard.press('End');
+        expect(await pianoHeight(page)).toBe(150);
+    });
+});
+
+test.describe('トラックのボタン', () => {
+    test('M・S・✕ が何のボタンかが伝わり、押せる範囲が 24px 四方以上ある', async ({ page }) => {
+        await openDaw(page);
+        const row = page.locator('#tracks-container .track-row').first();
+        const expected: [string, string, string][] = [
+            ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけ再生'],
+            ['.btn-mute', '「Track 1」をミュート', 'ミュート（このトラックを鳴らさない）'],
+            ['.btn-solo', '「Track 1」をソロ', 'ソロ（このトラックだけ鳴らす）'],
+            ['.btn-delete-track', '「Track 1」を削除', 'トラックを削除'],
+        ];
+        for (const [selector, label, title] of expected) {
+            const button = row.locator(selector);
+            await expect(button).toHaveAttribute('aria-label', label);
+            await expect(button).toHaveAttribute('title', title);
+            const size = (await button.boundingBox())!;
+            expect(size.width, selector).toBeGreaterThanOrEqual(24);
+            expect(size.height, selector).toBeGreaterThanOrEqual(24);
+        }
+        // ボタンの名前で引ける
+        await expect(page.getByRole('button', { name: '「Track 2」をミュート' })).toBeVisible();
+        // 4 つのボタンが、トラックの見出しの中に 1 行で収まっている
+        const header = (await row.locator('.track-header').boundingBox())!;
+        const last = (await row.locator('.btn-delete-track').boundingBox())!;
+        const first = (await row.locator('.btn-track-play').boundingBox())!;
+        expect(last.x + last.width).toBeLessThanOrEqual(header.x + header.width);
+        expect(last.y).toBe(first.y);
+        expect(last.y + last.height).toBeLessThanOrEqual(header.y + header.height);
+    });
+
+    test('ミュートとソロは、押した状態が読み上げにも伝わり、キーボードで押してもフォーカスが残る', async ({ page }) => {
+        await openDaw(page);
+        const mute = page.getByRole('button', { name: '「Track 1」をミュート' });
+        await expect(mute).toHaveAttribute('aria-pressed', 'false');
+        await mute.focus();
+        await page.keyboard.press('Enter');
+        await expect(mute).toHaveAttribute('aria-pressed', 'true');
+        await expect(mute).toHaveClass(/muted/);
+        // 押すとトラックの行が描き直されるが、フォーカスは同じボタンに戻る
+        await expect(mute).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(mute).toHaveAttribute('aria-pressed', 'false');
+
+        const solo = page.getByRole('button', { name: '「Track 2」をソロ' });
+        await solo.click();
+        await expect(solo).toHaveAttribute('aria-pressed', 'true');
+        await expect(solo).toHaveClass(/soloed/);
+    });
+
+    test('シークバーをキーボードで選ぶと、縁取りが出る', async ({ page }) => {
+        await openDaw(page);
+        // キーボードで操作している状態にしてから、シークバーへ移る
+        await page.keyboard.press('Tab');
+        await page.locator('#seek-bar').focus();
+        const outline = await page.locator('#seek-bar').evaluate((el) => {
+            const style = getComputedStyle(el);
+            return { visible: el.matches(':focus-visible'), style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+        });
+        expect(outline.visible).toBe(true);
+        expect(outline.style).toBe('solid');
+        expect(outline.width).toBeGreaterThanOrEqual(2);
     });
 });

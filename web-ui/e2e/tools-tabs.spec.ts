@@ -1,7 +1,7 @@
 /**
  * ツールの画面 (/tools) の各タブ: 編集、エフェクト、一括編集、音源合成、変換、解析。
  *
- * 処理は API サーバが実際に行う。時間のかかる音源分離と完全分解は入れていない。
+ * 処理は API サーバが実際に行う。時間のかかるパート分離と採譜は入れていない。
  * 変換は ffmpeg が要る。無い環境では、その旨のエラーが画面に出ることを確かめる。
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
@@ -100,7 +100,10 @@ test.describe('編集', () => {
         await field(page, '終了位置（秒）').fill('1');
         const result = await run(page, '/api/edit/trim', '編集を実行');
         expect(result.status).toBe(400);
-        await expect(status(page)).toHaveText('エラー: 開始が終了以降になっています');
+        // 理由の文がそのまま出る (「エラー: 」を頭に付けない)。失敗は色と role で伝える
+        await expect(status(page)).toHaveText('開始が終了以降になっています');
+        await expect(status(page)).toHaveClass(/error/);
+        await expect(status(page)).toHaveAttribute('role', 'alert');
         await expect(status(page)).toHaveClass(/error/);
     });
 
@@ -131,12 +134,14 @@ test.describe('エフェクト', () => {
     test('どのエフェクトも、再生できる音声を返す', async ({ page }) => {
         await openTool(page, 'エフェクト');
         await page.locator('#fx-file').setInputFiles(wavFile('e2e-fx.wav', 2, [440, 660]));
-        // エフェクト名と、出てくる入力欄の数
-        const effects: Record<string, number> = {
-            eq: 3, compressor: 2, reverb: 2, delay: 3, normalize: 0, volume: 1, fade_in: 1, fade_out: 1,
-            pan: 1, reverse: 0, pitch_shift: 1, time_stretch: 1, speed: 1,
+        // エフェクト名と、出てくる入力欄の数、画面に出る名前
+        const effects: Record<string, [number, string]> = {
+            eq: [3, 'EQ（3 バンド）'], compressor: [2, 'コンプレッサー'], reverb: [2, 'リバーブ'], delay: [3, 'ディレイ'],
+            normalize: [0, 'ノーマライズ'], volume: [1, '音量変更'], fade_in: [1, 'フェードイン'], fade_out: [1, 'フェードアウト'],
+            pan: [1, 'パン'], reverse: [0, 'リバース'], pitch_shift: [1, 'ピッチシフト'], time_stretch: [1, 'タイムストレッチ'],
+            speed: [1, '速度変更'],
         };
-        for (const [fx, inputs] of Object.entries(effects)) {
+        for (const [fx, [inputs, label]] of Object.entries(effects)) {
             await field(page, 'エフェクト').first().selectOption(fx);
             await expect(page.locator('.tool-panel .form-row input[type="number"]'), fx).toHaveCount(inputs);
             const result = await run(page, `/api/effects/${fx}`, 'エフェクト適用');
@@ -144,7 +149,8 @@ test.describe('エフェクト', () => {
             const wav = readWav(result.body);
             expect(wav.seconds, fx).toBeGreaterThan(1.5);
             expect(wav.peak, fx).toBeGreaterThan(0.01);
-            await expect(page.locator('.result-area .result-label')).toHaveText(`${fx} 適用結果`);
+            // 結果の見出しは、識別子 (pitch_shift など) ではなく日本語の名前で出る
+            await expect(page.locator('.result-area .result-label')).toHaveText(`「${label}」をかけた結果`);
         }
         expect(await playableSeconds(page)).toBeGreaterThan(1.5);
     });
