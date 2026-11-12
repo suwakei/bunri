@@ -5,7 +5,7 @@
  * （無音の置き場所。engine.ts の `Clip.missing`）。ここで、どのクリップかを示し、「音声を読み込み直す」で
  * 手元のファイルを選び直せるようにする。読み込み直しは元に戻せる。
  */
-import { useCallback, useRef } from 'react';
+import { useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine, { type Clip, type Track } from '../lib/engine';
 import { missingClips } from '../lib/project-file';
@@ -33,7 +33,7 @@ export default function MissingAudioBar() {
     void trackVersion;
     const list = missingClips();
 
-    const replace = useCallback(async (track: Track, clip: Clip, file: File) => {
+    const replace = async (track: Track, clip: Clip, file: File) => {
         engine.init();
         try {
             const buffer = await decodeWithSource(engine.ctx!, await file.arrayBuffer(), file.name);
@@ -47,7 +47,7 @@ export default function MissingAudioBar() {
         } catch (e) {
             setStatus(`${file.name} を読み込めませんでした。` + describeError(e), 'error');
         }
-    }, [record, bumpTracks, setStatus]);
+    };
 
     if (list.length === 0) return null;
     return (

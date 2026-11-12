@@ -55,7 +55,8 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
     expect(analyzed.state).toBe('done');
     await expect(statusText(page)).toContainText('カルテを作りました');
     // 題名に、まだ名前の無いプロジェクトと、保存していない変更のしるし
-    await expect(page.locator('#project-title')).toContainText('無題のプロジェクト ●');
+    await expect(page.locator('#project-title')).toHaveText('無題のプロジェクト●');
+    await expect(page.locator('#project-title .unsaved-mark')).toHaveCount(1);
     expect(await page.title()).toBe('無題のプロジェクト ● — bunri');
 
     // ガイドを作る (Claude を 1 回呼ぶ)

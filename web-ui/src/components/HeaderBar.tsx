@@ -2,6 +2,7 @@
  * bunri DAW — ヘッダーバー（トランスポート + アクションボタン）
  */
 import { useCallback, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
 import { describeError } from '../lib/api';
@@ -234,8 +235,8 @@ export default function HeaderBar() {
             <h1>bunri DAW</h1>
             <span id="project-title" title={project.path ?? project.file ?? 'まだ保存していません'}
                 aria-label={`プロジェクト: ${project.name ?? UNTITLED}${isDirty ? '（保存していない変更があります）' : ''}`}>
-                {project.name ?? UNTITLED}{project.legacy ? '（以前の形式）' : ''}
-                {isDirty && <span className="unsaved-mark" aria-hidden="true"> ●</span>}
+                <span className="project-name">{project.name ?? UNTITLED}{project.legacy ? '（以前の形式）' : ''}</span>
+                {isDirty && <span className="unsaved-mark" aria-hidden="true">●</span>}
             </span>
             <div id="transport">
                 <label htmlFor="transport-bpm">BPM</label>
@@ -284,8 +285,9 @@ export default function HeaderBar() {
                     {...h(`保存したプロジェクトを開きます（${modKeyLabel()}O）`)}>開く</button>
                 <button id="btn-project-menu" type="button" aria-label="プロジェクトのメニュー" aria-haspopup="menu"
                     aria-expanded={projectMenu !== null} onClick={openProjectMenu}
-                    {...h('新しいプロジェクト・別名で保存・最近使ったプロジェクト')}>▾</button>
-                <PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />
+                    {...h('新しいプロジェクト・別名で保存・最近使ったプロジェクト')}>▼</button>
+                {/* ヘッダのボタンの見た目 (#header のボタンの決まり) を受けないよう、body の直下に出す */}
+                {createPortal(<PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />, document.body)}
                 <button onClick={handleExport} disabled={showProgress}
                     {...h('再生で鳴る音を、1 つの WAV ファイルとして書き出します')}>WAV 書き出し</button>
                 <button onClick={handleExportMidi} {...h('ピアノロールのノートを、MIDI ファイルとして書き出します')}>MIDI 書き出し</button>

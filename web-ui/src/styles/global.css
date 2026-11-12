@@ -2166,16 +2166,20 @@ button.link-btn:hover {
 
 /* ---- プロジェクトの保存・開く (components/ProjectDialogs.tsx ほか) ---- */
 #project-title {
-    flex: 1 1 auto;
-    min-width: 0;
-    margin: 0 16px;
+    flex: 0 1 220px;
+    min-width: 60px;
+    margin: 0 12px;
     font-size: 13px;
     color: var(--text-mid);
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
-#project-title .unsaved-mark { color: var(--warn); }
+#project-title .project-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#project-title .unsaved-mark { color: var(--warn); flex: none; }
+/* ヘッダのボタンは折り返さない (プロジェクトの名前のほうを縮める) */
+#header button, #header a { white-space: nowrap; }
 
 .project-overlay {
     position: fixed;

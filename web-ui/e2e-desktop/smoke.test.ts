@@ -8,7 +8,7 @@
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { makeWav, readWav } from '../e2e/helpers.ts';
@@ -311,7 +311,8 @@ describe('プロジェクトのファイル', () => {
         expect(await app.run(() => document.querySelector('#project-title .unsaved-mark') === null)).toBe(true);
         // 最近使ったプロジェクトは、データ置き場に書かれる (利用者のアプリのデータには書かない)
         const recent = JSON.parse(readFileSync(join(inject('dataDir'), 'recent-projects.json'), 'utf8'));
-        expect(recent.entries[0].path).toBe(target);
+        // Rust は実体のパスで覚える (mac の一時ディレクトリは /var → /private/var)
+        expect(recent.entries[0].path).toBe(realpathSync(target));
 
         // 新しいプロジェクト (保存したばかりなので確かめは出ない)
         await app.click('//button[@aria-label="プロジェクトのメニュー"]');
@@ -321,6 +322,8 @@ describe('プロジェクトのファイル', () => {
 
         // 開く: 最近使ったプロジェクトから
         await press('開く');
+        await app.waitFor('開く一覧に出る', () => [...document.querySelectorAll('[role="dialog"] .project-entry-name')]
+            .some((el) => el.textContent === 'e2e-project') ? true : document.querySelector('[role="dialog"]')?.textContent ?? '一覧が無い', []);
         await app.click('//*[@role="dialog"]//button[contains(@class,"project-entry-open")][.//*[normalize-space()="e2e-project"]]');
         await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
         expect(await app.run(() => document.querySelectorAll('#tracks-container .clip').length)).toBe(1);
@@ -328,6 +331,7 @@ describe('プロジェクトのファイル', () => {
 
         // 開く: 「ほかのファイルを選ぶ…」(テスト用のビルドでは BUNRI_E2E_OPEN_PATH が選ばれる)
         await press('開く');
+        await app.waitFor('開く一覧', () => document.querySelector('[role="dialog"]') !== null, []);
         await press('ほかのファイルを選ぶ…');
         await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
         // 開いた音声は再生できる
@@ -353,6 +357,7 @@ describe('プロジェクトのファイル', () => {
             return dialog?.textContent?.includes('窓を閉じる前に') ? true : `いま: ${dialog?.textContent ?? '無し'}`;
         }, [], 10_000);
         await app.click('//*[@role="alertdialog"]//button[normalize-space()="キャンセル"]');
+        await app.waitFor('確かめの窓が閉じる', () => document.querySelector('[role="alertdialog"]') === null, []);
         expect(await app.run(() => document.querySelector('#status-text') !== null)).toBe(true);
         // 後片付け (窓を閉じて終わる) で止まらないよう、保存しておく
         await press('保存');
