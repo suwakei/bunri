@@ -318,7 +318,8 @@ describe('プロジェクトのファイル', () => {
         await app.click('//button[@aria-label="プロジェクトのメニュー"]');
         await app.click('//button[@role="menuitem"][normalize-space()="新しいプロジェクト"]');
         await waitStatus('新しいプロジェクトにしました');
-        expect(await app.run(() => document.querySelectorAll('#tracks-container .clip').length)).toBe(0);
+        // タイムラインは描き直しのあとで消える (知らせより少し遅れることがある)
+        await app.waitFor('クリップが無くなる', () => document.querySelectorAll('#tracks-container .clip').length === 0, []);
 
         // 開く: 最近使ったプロジェクトから
         await press('開く');
@@ -326,7 +327,7 @@ describe('プロジェクトのファイル', () => {
             .some((el) => el.textContent === 'e2e-project') ? true : document.querySelector('[role="dialog"]')?.textContent ?? '一覧が無い', []);
         await app.click('//*[@role="dialog"]//button[contains(@class,"project-entry-open")][.//*[normalize-space()="e2e-project"]]');
         await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
-        expect(await app.run(() => document.querySelectorAll('#tracks-container .clip').length)).toBe(1);
+        await app.waitFor('クリップが戻る', () => document.querySelectorAll('#tracks-container .clip').length === 1, []);
         expect(await app.run(() => document.querySelector<HTMLInputElement>('#transport-bpm')!.value)).toBe('96');
 
         // 開く: 「ほかのファイルを選ぶ…」(テスト用のビルドでは BUNRI_E2E_OPEN_PATH が選ばれる)
