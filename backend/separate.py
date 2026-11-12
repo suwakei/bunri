@@ -1,9 +1,11 @@
-import subprocess
 import sys
 from pathlib import Path
 
 
 SUPPORTED_FORMATS = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
+
+# Demucs を子プロセスとして起動するスクリプト
+RUNNER = Path(__file__).parent / "_demucs_runner.py"
 
 MODELS = {
     "htdemucs":    "標準4ステム（推奨・CPU向け）",
@@ -37,6 +39,18 @@ STEM_LABELS = {
     "other_other": "その他 → 残余成分",
 }
 
+# ジョブとして動かすときのステージ（``background_jobs``）。``(キー, 表示名)`` を進む順に並べる。
+# モデルが手元に無いときは、"model" の表示名がダウンロード中のものに変わる（``demucs_progress``）
+SEPARATE_STAGES = [
+    ("model", "モデルを読み込んでいます"),
+    ("separate", "音源を分離しています"),
+]
+DEEP_SEPARATE_STAGES = [
+    ("model", "モデルを読み込んでいます"),
+    ("separate", "6 つのパートに分離しています"),
+    ("separate_other", "「その他」のパートをさらに分離しています"),
+]
+
 
 def separate_audio(
     input_path: str,
@@ -46,6 +60,9 @@ def separate_audio(
     mp3_output: bool = False,
     segment: int = 7,
     jobs: int = 1,
+    job=None,
+    stage: str = "separate",
+    model_stage: str | None = "model",
 ) -> dict[str, Path]:
     """Demucs を使って音声ファイルを各ステムに分離し、出力パスを返す。
 
@@ -68,6 +85,11 @@ def separate_audio(
         segment (int, optional): Demucs の処理セグメント長（秒）。
             小さいほどメモリ使用量を抑えられる。デフォルト 7。
         jobs (int, optional): 並列ジョブ数。CPU 負荷を抑えるなら 1。デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            進み具合の報告とキャンセルに使う。None なら報告しない。
+        stage (str, optional): 分離のステージのキー。デフォルト ``"separate"``。
+        model_stage (str | None, optional): モデルを用意するステージのキー。
+            None なら設けない（同じジョブの中で 2 回目に分離するとき）。デフォルト ``"model"``。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -80,11 +102,17 @@ def separate_audio(
         FileNotFoundError: ``input_path`` が存在しない場合。
         ValueError: ``input_path`` の拡張子が非対応フォーマットの場合。
         RuntimeError: Demucs サブプロセスが非ゼロ終了コードを返した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合（サブプロセスは kill 済み）。
 
     Note:
-        進捗ログは標準出力に直接出力される（``subprocess.run`` の
-        ``capture_output=False`` による）。
+        Demucs の出力（進捗バーを含む）は、今までどおりこのプロセスの標準出力・標準エラーに出る。
+        ジョブが失敗またはキャンセルで終わったら、このトラックの出力ディレクトリは消される。
     """
+    import background_jobs
+    import demucs_progress
+
+    if job is None:
+        job = background_jobs.detached()
     input_path = Path(input_path)
 
     if not input_path.exists():
@@ -97,9 +125,8 @@ def separate_audio(
     if model == "htdemucs_6s":
         two_stems = False
 
-    runner = str(Path(__file__).parent / "_demucs_runner.py")
     cmd = [
-        sys.executable, runner,
+        sys.executable, str(RUNNER),
         "--out", output_dir,
         "-n", model,
         "--segment", str(segment),
@@ -126,14 +153,16 @@ def separate_audio(
     print(f"[*] セグメント長: {segment}秒  ジョブ数: {jobs}")
     print(f"[*] 実行コマンド: {' '.join(cmd)}\n")
 
-    result = subprocess.run(cmd, capture_output=False, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError("Demucs の実行に失敗しました。")
-
     ext = ".mp3" if mp3_output else ".wav"
     stem_name = input_path.stem
     base = Path(output_dir) / model / stem_name
+
+    # 途中でやめたときに、書きかけのステムを残さない
+    job.remove_on_abort(base)
+    returncode = demucs_progress.run(cmd, model=model, job=job, stage=stage, model_stage=model_stage)
+
+    if returncode != 0:
+        raise RuntimeError("Demucs の実行に失敗しました。")
 
     # 存在するステムだけ返す
     paths = {}
@@ -179,6 +208,7 @@ def deep_separate(
     segment: int = 7,
     jobs: int = 1,
     recursive_depth: int = 1,
+    job=None,
 ) -> dict[str, Path]:
     """htdemucs_6s による2段階レイヤー分離を行い、有音ステムのパスを返す。
 
@@ -199,6 +229,8 @@ def deep_separate(
         jobs (int, optional): 並列ジョブ数。デフォルト 1。
         recursive_depth (int, optional): ``"other"`` ステムを再帰分離する深さ。
             ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            ステージは ``DEEP_SEPARATE_STAGES`` のキーで進む。None なら報告しない。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -207,6 +239,7 @@ def deep_separate(
 
     Raises:
         RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合。
 
     Note:
         第2段の出力は ``<output_dir>/deep_other/`` に書き出される。
@@ -224,6 +257,7 @@ def deep_separate(
         mp3_output=mp3_output,
         segment=segment,
         jobs=jobs,
+        job=job,
     )
 
     result = {}
@@ -253,6 +287,9 @@ def deep_separate(
                 mp3_output=mp3_output,
                 segment=segment,
                 jobs=jobs,
+                job=job,
+                stage="separate_other",
+                model_stage=None,
             )
 
             has_sub = False
