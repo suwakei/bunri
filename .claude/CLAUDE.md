@@ -58,6 +58,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `guide_usage.py` | 再現ガイドの使用量の記録（`results/guide/usage.jsonl`。中身とキーは残さない）、概算の費用、1 日の上限 |
 | `llm_pricing.json` | Claude の単価の表（概算の費用の計算に使う。コードに埋めず、ここと設定で持つ） |
 | `coach_diff.py` | 差分コーチ（第3層）の土台。お手本のノートと打ち込みの差分を事実として出す（LLM 不使用） |
+| `coach_explain.py` | 差分コーチ（第3層）の言語化。差分の事実を Claude に渡して「どんな傾向か・なぜと考えられるか・まず何を見直すか」にする。出力は Structured Outputs で形を固定し、事実と突き合わせて検証する。保存・使用量の記録・1 日の上限は第2層と共通 |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 
@@ -103,7 +104,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 原則: **DSPが事実を出し、LLMは言語化だけをする。LLMは音符を1つも出力しない。**
 
-3層構成（第1層と第2層を実装済み。第3層は差分を出す部分だけ。第2層・第3層の決定は暫定）:
+3層構成（第1層と第2層を実装済み。第3層は、差分を出す部分と、それを言葉にする部分のバックエンドまで。言葉にする部分の画面はまだ無い。第2層・第3層の決定は暫定）:
 1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
 2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
 3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
@@ -111,7 +112,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 グリッド推定（テンポと 1 拍目の位置）を直すときは、[docs/grid-estimation.md](../docs/grid-estimation.md) を読み、
 `uv run python test/back/bench_grid.py` で直す前と後の誤差を比べる（正解の分かっている合成音源 157 件）。
 
-詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層の土台）を参照。
+詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層。差分と、その言語化）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
 
