@@ -4,6 +4,40 @@
  */
 import { apiFetch } from './api';
 import { stepSeconds, type ProjectGrid } from './grid';
+import { beatsInSegment, clampToLoop, clipInSegment, loopLength, loopPosition, loopSegment, noteInSegment, type LoopRange, type LoopSegment } from './loop';
+
+/**
+ * 速度を変えたときに、そのトラックのクリップの代わりに鳴らす音声（練習画面の「速度」。lib/practice-audio.ts が作る）。
+ * 区間 `[start, end)` を、音の高さを変えずに `rate` 倍の速さにしたもの。
+ */
+export interface StretchedAudio {
+    trackId: number;
+    start: number;
+    end: number;
+    rate: number;
+    buffer: AudioBuffer;
+}
+
+/** 区間ループで、先に鳴らしておく長さ (秒)。画面の裏で見回りが遅れても途切れないよう、長めに取る */
+const LOOP_LOOKAHEAD = 1.5;
+/** 区間ループの見回りの間隔 (ミリ秒) */
+const LOOP_TICK_MS = 100;
+/** 区間のつなぎ目で、ぷつっと鳴らないように上げ下げする長さ (秒) */
+const LOOP_FADE = 0.004;
+
+/** 区間ループで再生しているあいだの状態。 */
+interface LoopPlayback {
+    loop: LoopRange;
+    /** 再生を始めた曲の時刻 */
+    startPos: number;
+    /** 再生を始めた時刻 (AudioContext の時計) */
+    startWhen: number;
+    rate: number;
+    /** 次に用意する周 */
+    next: number;
+    tracks: Track[];
+    timer: ReturnType<typeof setInterval> | null;
+}
 
 /**
  * ピアノロール上の1ノートを表すデータ構造。
@@ -131,6 +165,27 @@ class AudioEngine {
     activeSources: (AudioBufferSourceNode | OscillatorNode)[] = [];
     soloTrackId: number | null = null;
 
+    /**
+     * 区間ループ（曲の時刻、秒）。在るあいだ、再生はこの区間を繰り返す。練習画面だけが決める
+     * （練習画面を離れると null に戻す）。
+     */
+    loopRange: LoopRange | null = null;
+    /**
+     * 速度（練習画面。1 = そのまま）。区間ループの中でだけ効く。ノートとメトロノームは間隔を伸ばして鳴らし、
+     * クリップは `stretched`（高さを変えずに伸ばした音声）が在るトラックだけ鳴らす。
+     */
+    tempoRate = 1;
+    /** 速度を変えたときに鳴らす、伸ばした音声 */
+    stretched: StretchedAudio | null = null;
+    /**
+     * 練習画面の「聴く」。在るあいだは、ミュートとソロの代わりに、ここに在るトラックだけを鳴らす。
+     * トラックのミュート・ソロは書き換えないので、プロジェクトにも、元に戻す履歴にも残らない。
+     * 書き出し（mixdown）は従わない（書き出すのはプロジェクトのミュートとソロのとおり）。
+     */
+    listenOverride: Set<number> | null = null;
+    /** 区間ループで再生しているあいだの状態 */
+    private loopPlayback: LoopPlayback | null = null;
+
     constructor() {
         this.isPlaying = false;
         this.isRecording = false;
@@ -249,7 +304,27 @@ class AudioEngine {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.gain = db;
-        track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, db / 20);
+        this.applyTrackGain(track);
+    }
+
+    /**
+     * トラックの音量を、再生のつなぎに当てる。ミュート中は 0。
+     * 練習画面の「聴く」（`listenOverride`）が在るときは、そこに在るトラックだけを鳴らす。
+     */
+    applyTrackGain(track: Track): void {
+        const on = this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
+        track.gainNode.gain.value = on ? Math.pow(10, track.gain / 20) : 0;
+    }
+
+    /**
+     * 練習画面の「聴く」を決める（null で外す）。トラックのミュート・ソロは書き換えない。
+     * 再生中なら、いまの位置から鳴らし直す。
+     * @param trackIds - 鳴らすトラックの ID
+     */
+    setListenOverride(trackIds: number[] | null): void {
+        this.listenOverride = trackIds ? new Set(trackIds) : null;
+        for (const track of this.tracks) this.applyTrackGain(track);
+        this.restartIfPlaying();
     }
 
     /**
@@ -273,7 +348,7 @@ class AudioEngine {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.mute = !track.mute;
-        track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, track.gain / 20);
+        this.applyTrackGain(track);
         return track.mute;
     }
 
@@ -359,12 +434,18 @@ class AudioEngine {
      * 1 本でも在れば、ソロのトラックだけを鳴らす。
      *
      * 再生と書き出しの両方がこれを使う。別々に判定すると、聴いている音と書き出した音が食い違う
-     * (以前は、書き出しだけがソロを無視していた)。
+     * (以前は、書き出しだけがソロを無視していた)。練習画面の「聴く」は、再生だけに効く (`playbackTracks`)。
      * @returns 鳴らすトラックの一覧
      */
     audibleTracks(): Track[] {
         const hasSolo = this.tracks.some(t => t.solo);
         return this.tracks.filter(t => !t.mute && (!hasSolo || t.solo));
+    }
+
+    /** 再生で鳴らすトラック。練習画面の「聴く」が在ればそれに、無ければミュートとソロに従う。 */
+    playbackTracks(): Track[] {
+        const override = this.listenOverride;
+        return override ? this.tracks.filter(t => override.has(t.id)) : this.audibleTracks();
     }
 
     /**
@@ -375,15 +456,194 @@ class AudioEngine {
         this.init();
         if (this.isPlaying) this.stop();
         if (fromSec !== null) this.playOffset = fromSec;
+        if (this.loopRange && loopLength(this.loopRange) > 0.05) {
+            this._playLoop(this.loopRange);
+            return;
+        }
         this.startTime = this.ctx!.currentTime;
         this.isPlaying = true;
         this.soloTrackId = null;
         this.activeSources = [];
 
-        for (const track of this.audibleTracks()) {
+        for (const track of this.playbackTracks()) {
             this._scheduleTrack(track);
         }
         if (this.metronomeEnabled) this._startMetronome();
+    }
+
+    /** いま効いている速度。区間ループが無ければ 1（速度は区間の中でだけ効く）。 */
+    effectiveRate(): number {
+        return this.loopRange && this.tempoRate > 0 ? this.tempoRate : 1;
+    }
+
+    /**
+     * 区間ループで再生する。1 周ずつ、鳴らす時刻 (AudioContext の時計) をサンプル単位で決めて先に用意しておく
+     * (LOOP_LOOKAHEAD 秒ぶん)。周のつなぎ目に隙間ができない。用意するのは見回り (100ms ごと) のときだけで、
+     * 1 周ぶんの音源の数はクリップとノートの数だけなので、CPU はほとんど使わない。
+     *
+     * AudioBufferSourceNode の `loop` (音声そのものの繰り返し) を使わないのは、ノート (オシレータ) と
+     * メトロノームも同じ周で繰り返す必要があり、区間の途中から始まるクリップも扱うため。
+     */
+    _playLoop(loop: LoopRange): void {
+        const ctx = this.ctx!;
+        const rate = this.effectiveRate();
+        this.playOffset = clampToLoop(this.playOffset, loop);
+        // 少しだけ先から鳴らす (いまの時刻に置くと、最初の数ミリ秒が欠けて、2 周目からの時刻とずれる)
+        const startWhen = ctx.currentTime + 0.03;
+        this.startTime = startWhen;
+        this.isPlaying = true;
+        this.soloTrackId = null;
+        this.activeSources = [];
+        const playback: LoopPlayback = {
+            loop: { ...loop }, startPos: this.playOffset, startWhen, rate, next: 0, tracks: this.playbackTracks(), timer: null,
+        };
+        this.loopPlayback = playback;
+        this._fillLoop(playback);
+        playback.timer = setInterval(() => this._fillLoop(playback), LOOP_TICK_MS);
+    }
+
+    /** 区間ループの、先に鳴らしておく周を用意する (LOOP_LOOKAHEAD 秒先まで)。 */
+    _fillLoop(playback: LoopPlayback): void {
+        if (this.loopPlayback !== playback || !this.ctx) return;
+        const horizon = this.ctx.currentTime + LOOP_LOOKAHEAD;
+        // 1 回の見回りで用意する周の数に上限を置く (極端に短い区間で止まらなくならないように)
+        for (let guard = 0; guard < 64; guard++) {
+            const segment = loopSegment(playback.loop, playback.startPos, playback.startWhen, playback.rate, playback.next);
+            if (playback.next > 0 && segment.when > horizon) break;
+            this._scheduleSegment(playback, segment);
+            playback.next += 1;
+        }
+    }
+
+    /** 1 周ぶんの音 (クリップ・ノート・メトロノーム) を用意する。 */
+    _scheduleSegment(playback: LoopPlayback, segment: LoopSegment): void {
+        const { rate, loop } = playback;
+        const stepSec = stepSeconds(this);
+        for (const t of playback.tracks) {
+            if (rate === 1) {
+                for (const clip of t.clips) {
+                    const part = clipInSegment(segment, clip.offset, clip.duration);
+                    if (part) this._startLoopSource(t, clip.buffer, part.when, part.offset, part.duration);
+                }
+            } else {
+                // 速度を変えたときは、高さを変えずに伸ばした音声を鳴らす。伸ばした音声が無いトラックのクリップは鳴らさない
+                // (そのまま鳴らすと、ノートとずれる。練習画面は、用意できるまで速度を 1 にしておく)
+                const s = this.stretched;
+                if (s && s.trackId === t.id && s.rate === rate && Math.abs(s.start - loop.start) < 1e-6 && Math.abs(s.end - loop.end) < 1e-6) {
+                    this._startLoopSource(t, s.buffer, segment.when, (segment.from - loop.start) / rate, segment.duration);
+                }
+            }
+            for (const n of t.pianoNotes || []) {
+                const start = this.gridOffset + n.step * stepSec;
+                const part = noteInSegment(segment, rate, start, n.length * stepSec);
+                if (part) this._startLoopNote(t, n, part.when, part.duration, part.partial);
+            }
+        }
+        if (this.metronomeEnabled) {
+            for (const beat of beatsInSegment(segment, this.gridOffset, 60 / this.bpm, this.beatsPerBar)) {
+                this._playClick(segment.when + (beat.at - segment.from) / rate, beat.downbeat ? 1500 : 1000);
+            }
+        }
+    }
+
+    /** 区間ループの音声を 1 つ鳴らす。つなぎ目で、ぷつっと鳴らないよう、頭と終わりをごく短く上げ下げする。 */
+    _startLoopSource(track: Track, buffer: AudioBuffer, when: number, offset: number, duration: number): void {
+        const ctx = this.ctx!;
+        if (duration <= 0) return;
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        const fade = ctx.createGain();
+        const edge = Math.min(LOOP_FADE, duration / 4);
+        fade.gain.setValueAtTime(0, when);
+        fade.gain.linearRampToValueAtTime(1, when + edge);
+        fade.gain.setValueAtTime(1, when + duration - edge);
+        fade.gain.linearRampToValueAtTime(0, when + duration);
+        source.connect(fade);
+        fade.connect(track.panNode);
+        source.start(when, Math.max(0, offset), duration);
+        this._trackSource(source);
+    }
+
+    /** 区間ループのノートを 1 つ鳴らす (エンベロープは、ふだんの再生と同じ)。 */
+    _startLoopNote(track: Track, n: PianoNote, when: number, duration: number, partial: boolean): void {
+        const ctx = this.ctx!;
+        const freq = NOTE_FREQ[`${n.note}${n.octave}`];
+        if (!freq || duration <= 0) return;
+        const attack = partial ? 0 : 0.01;
+        const release = Math.min(0.15, duration * 0.3);
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(partial ? 0.25 : 0, when);
+        if (!partial) gain.gain.linearRampToValueAtTime(0.25, when + attack);
+        gain.gain.setValueAtTime(0.25, when + Math.max(attack, duration - release));
+        gain.gain.linearRampToValueAtTime(0, when + duration);
+        osc.connect(gain);
+        gain.connect(track.panNode);
+        osc.start(when);
+        osc.stop(when + duration + 0.01);
+        this._trackSource(osc);
+    }
+
+    /** 鳴らした音源を覚えておき (止めるとき用)、鳴り終わったら忘れる (長く回しても溜めない)。 */
+    _trackSource(source: AudioBufferSourceNode | OscillatorNode): void {
+        this.activeSources.push(source);
+        source.onended = () => {
+            const i = this.activeSources.indexOf(source);
+            if (i >= 0) this.activeSources.splice(i, 1);
+        };
+    }
+
+    /** 区間ループの見回りを止める。 */
+    _stopLoop(): void {
+        if (this.loopPlayback?.timer) clearInterval(this.loopPlayback.timer);
+        this.loopPlayback = null;
+    }
+
+    /**
+     * 区間ループで、いま何周目か (0 始まり)。区間ループで再生していなければ null。
+     * MIDI のリアルタイム録音が、1 周ごとに記録を分けるのに使う。
+     */
+    getLoopPass(): number | null {
+        const p = this.loopPlayback;
+        if (!this.isPlaying || !p || !this.ctx) return null;
+        return loopPosition(p.loop, p.startPos, p.rate, this.ctx.currentTime - p.startWhen).pass;
+    }
+
+    /**
+     * 再生中なら、いまの位置から鳴らし直す。区間ループ・速度・「聴く」を変えたときに使う。
+     */
+    restartIfPlaying(): void {
+        if (!this.isPlaying || this.soloTrackId !== null) return;
+        const position = this.getCurrentTime();
+        this.stop();
+        this.playOffset = position;
+        this.play();
+    }
+
+    /**
+     * 区間ループを決める (null で外す)。再生中なら、いまの位置 (区間の外なら区間の頭) から鳴らし直す。
+     * @param range - 区間 (曲の時刻、秒)
+     */
+    setLoopRange(range: LoopRange | null): void {
+        const same = (range === null && this.loopRange === null)
+            || (range !== null && this.loopRange !== null && range.start === this.loopRange.start && range.end === this.loopRange.end);
+        if (same) return;
+        this.loopRange = range ? { start: range.start, end: range.end } : null;
+        this.restartIfPlaying();
+    }
+
+    /**
+     * 速度と、伸ばした音声を決める。再生中なら、いまの位置から鳴らし直す。
+     * @param rate - 速度 (1 = そのまま)
+     * @param stretched - 速度に合わせて伸ばした音声 (無ければ null)
+     */
+    setTempo(rate: number, stretched: StretchedAudio | null): void {
+        if (rate === this.tempoRate && stretched === this.stretched) return;
+        this.tempoRate = rate;
+        this.stretched = stretched;
+        this.restartIfPlaying();
     }
 
     /**
@@ -483,6 +743,7 @@ class AudioEngine {
      * アクティブな全ソースノードを停止する。
      */
     stop(): void {
+        this._stopLoop();
         this.isPlaying = false;
         this.soloTrackId = null;
         for (const src of this.activeSources) {
@@ -499,7 +760,7 @@ class AudioEngine {
      */
     getPlayPosition(): number | null {
         if (!this.isPlaying || !this.ctx) return null;
-        return this.playOffset + (this.ctx.currentTime - this.startTime);
+        return this.getCurrentTime();
     }
 
     /**
@@ -567,7 +828,8 @@ class AudioEngine {
      */
     pause(): void {
         if (!this.isPlaying) return;
-        this.playOffset += this.ctx!.currentTime - this.startTime;
+        this.playOffset = this.getCurrentTime();
+        this._stopLoop();
         this.isPlaying = false;
         for (const src of this.activeSources) {
             try { src.stop(); } catch (_e) { /* 既に停止済み */ }
@@ -582,6 +844,9 @@ class AudioEngine {
      */
     getCurrentTime(): number {
         if (!this.isPlaying) return this.playOffset;
+        const p = this.loopPlayback;
+        // 区間ループ中は、区間の終わりで頭に戻る。速度を変えていれば、その速さで進む
+        if (p) return loopPosition(p.loop, p.startPos, p.rate, this.ctx!.currentTime - p.startWhen).position;
         return this.playOffset + (this.ctx!.currentTime - this.startTime);
     }
 
