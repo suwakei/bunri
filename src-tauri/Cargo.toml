@@ -22,6 +22,9 @@ tokio = { version = "1", features = ["sync"] }
 # 起動ごとのトークンを OS の乱数から作る
 getrandom = "0.3"
 keyring = "4.2"
+# プロジェクトの保存・開くのネイティブのダイアログ (Tauri 公式)。ダイアログは Rust から出すだけで、
+# 画面 (JS) には権限を渡さない (capabilities に dialog:* を足さない)。docs/desktop-architecture.md「プロジェクトのファイル」
+tauri-plugin-dialog = "=2.8.4"
 midir = "0.11.1"
 # テスト専用 (機能 e2e のときだけ入る)。窓を外から操作する WebDriver サーバを、アプリの中で動かす。
 # 配布物には入れない。選んだ理由と守っている約束は docs/desktop-architecture.md「窓を自動操作するテスト」
