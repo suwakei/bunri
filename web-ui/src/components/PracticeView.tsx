@@ -43,7 +43,7 @@ import {
 } from '../lib/practice';
 import { PART_LABELS } from '../lib/learn';
 import { attemptFromDiff, barRangeOf, deltaText, useMatchSummary } from '../lib/learn-history';
-import { StepLengthSelect } from './MidiInputBar';
+import { RealtimeSettings, StepLengthSelect } from './MidiInputBar';
 import { midiUnavailableText, type MidiInputController } from '../lib/useMidiInput';
 import { cursorLabel } from '../lib/midi-input';
 
@@ -324,6 +324,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
                 const pass = engine.getLoopPass() ?? 0;
                 pr._addNote(note.note, note.octave, note.step, note.length, {
                     label: `MIDI 入力の録音（${pass + 1} 周目）`, coalesceKey: `practice-take:${engine.startTime}:${pass}`, coalesceMs: 600_000,
+                    velocity: note.velocity,
                 });
                 return true;
             },
@@ -871,6 +872,9 @@ export function PracticeControls() {
                                 setStatus('ステップ入力の位置を、区間の頭に戻しました');
                             }}>区間の頭へ</button>
                         </>
+                    )}
+                    {practice.input === 'midi-realtime' && midi.connected && (
+                        <RealtimeSettings midi={midi} />
                     )}
                     {practice.input !== 'mouse' && midi.connected && (
                         <span className="area-hint">{midi.devices.length > 0 ? midi.devices.join(' / ') : '鍵盤が見つかりません'}</span>

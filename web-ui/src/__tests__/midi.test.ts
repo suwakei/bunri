@@ -183,6 +183,17 @@ describe('parseMidi', () => {
         expect(result.loss).toEqual({ rounded: 0, merged: 0, unterminated: 0, tempoChanges: 0 });
     });
 
+    it('ノートの強さを書き出し、読み戻せる。強さを持たないノートは 96', () => {
+        const notes = [
+            { note: 'C', octave: 4, step: 0, length: 4, velocity: 30 },
+            { note: 'D', octave: 4, step: 4, length: 4 },
+            { note: 'E', octave: 4, step: 8, length: 4, velocity: 127 },
+            { note: 'F', octave: 4, step: 12, length: 4, velocity: 999 },   // 範囲の外は 127 に収める
+        ];
+        const back = parseMidi(notesToMidi([{ name: 't', notes }], 120)).tracks[0].notes;
+        expect(back.map((n) => n.velocity)).toEqual([30, 96, 127, 127]);
+    });
+
     it('同じ高さの音が続いても、別のノートとして読み戻せる', () => {
         const notes = [{ note: 'C', octave: 4, step: 0, length: 4 }, { note: 'C', octave: 4, step: 4, length: 4 }];
         expect(plain(parseMidi(notesToMidi([{ name: 't', notes }], 120)).tracks[0].notes)).toEqual(notes);

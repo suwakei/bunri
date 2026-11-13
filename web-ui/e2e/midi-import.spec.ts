@@ -58,7 +58,8 @@ test('新しいトラックとして読み込むと、MIDI のトラックごと
     await expect(list.nth(0)).toContainText('4 ノート');
     await expect(modeOf(page, 'Lead')).toHaveValue('track');
     await expect(page.locator('#midi-tempo-notice')).toHaveText('テンポを、MIDI ファイルの 96 BPM に合わせます');
-    await expect(page.locator('#midi-loss-list li')).toHaveText(['音の強さ（ベロシティ）は読み込みません。どのノートも同じ強さで鳴ります']);
+    // 16 分音符に乗ったノートだけの MIDI ファイルなので、読み込みで変わることは無い
+    await expect(page.locator('#midi-loss-list')).toHaveCount(0);
     expect(await trackNames(page)).toEqual(['Track 1']);
     await expect(bpmField(page)).toHaveValue('120');
 

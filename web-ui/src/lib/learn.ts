@@ -14,7 +14,7 @@
  */
 import { useCallback } from 'react';
 import { useDaw } from './store';
-import engine, { MIDI_PART, type PianoNote, type Track } from './engine';
+import engine, { MIDI_PART, cloneNote, type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
@@ -355,7 +355,8 @@ export function useLearnActions() {
                 }
                 if (stem.notes && stem.notes.length > 0) {
                     // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
-                    track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+                    // 採譜が出した強さも残す (「お手本をノートとして取り込む」で打ち込みに写したとき、強弱が付く)
+                    track.referenceNotes = stem.notes.map(cloneNote);
                     track.pianoNotes = [];
                     withReference++;
                 }

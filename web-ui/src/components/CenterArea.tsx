@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { cloneNote } from '../lib/engine';
 import { cssVar } from '../lib/theme';
 import { hasPrimaryModifier, isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 import { sameNotes } from '../lib/project-snapshot';
@@ -367,7 +368,7 @@ class PianoRollEngine {
         const before = track.pianoNotes || [];
         // 中身が同じなら書き換えない (元に戻すための控えが、同じ並びを共有できるように)
         if (sameNotes(before, this.notes)) return;
-        track.pianoNotes = this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+        track.pianoNotes = this.notes.map(cloneNote);
         // 差分の印は、比べたときのノートに付けたもの。中身が変わったら外す (古い色を出さない)
         if (this.diffMarks) { this.diffMarks = null; this._renderNotes(); }
         this._emitNotesEdited();
@@ -720,11 +721,12 @@ class PianoRollEngine {
      * @param options.label - 記録の名前 (省略時は「ノートを追加」)
      * @param options.coalesceKey - 続けて置いたノートを 1 つの記録にまとめる鍵 (リアルタイム録音)
      * @param options.coalesceMs - まとめる間隔の上限 (ミリ秒)
+     * @param options.velocity - 強さ (1〜127)。MIDI 鍵盤で弾いたノートが持つ。省略すると、強さを持たないノートになる
      */
     _addNote(note, octave, step, length, options = {}) {
-        const { label = 'ノートを追加', ...push } = options;
+        const { label = 'ノートを追加', velocity, ...push } = options;
         this.history.record(label, () => {
-            this.notes.push({ note, octave, step, length });
+            this.notes.push(cloneNote({ note, octave, step, length, velocity }));
             this._saveToEngine();
         }, push);
         this._fitLength(); this._renderNotes();
@@ -751,7 +753,7 @@ class PianoRollEngine {
         const list = [...this.selection].sort((a, b) => a.step - b.step);
         const base = list[0].step;
         return {
-            notes: list.map(n => ({ note: n.note, octave: n.octave, step: n.step - base, length: n.length })),
+            notes: list.map(n => ({ ...cloneNote(n), step: n.step - base })),
             span: Math.max(...list.map(n => n.step + n.length)) - base,
         };
     }
@@ -780,7 +782,7 @@ class PianoRollEngine {
      */
     _placeClip(clip, at, label) {
         const start = Math.max(0, Math.min(this.maxSteps - clip.span, at));
-        const placed = clip.notes.map(n => ({ note: n.note, octave: n.octave, step: start + n.step, length: n.length }));
+        const placed = clip.notes.map(n => ({ ...cloneNote(n), step: start + n.step }));
         this.history.record(label, () => {
             this.notes = this.notes.concat(placed);
             this._saveToEngine();
@@ -881,7 +883,9 @@ class PianoRollEngine {
             el.className = 'note-block' + (this.selection.has(n) ? ' selected' : '');
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
-            el.dataset.index = i; el.title = `${n.note}${n.octave} step:${n.step} len:${n.length}`;
+            el.dataset.index = i; el.title = `${n.note}${n.octave} step:${n.step} len:${n.length}` + (typeof n.velocity === 'number' ? ` 強さ:${n.velocity}` : '');
+            // 強さを持つノートは、弱いほど薄く見せる (強さを持たないノートは、これまでどおり)
+            if (typeof n.velocity === 'number') el.style.opacity = String(0.45 + 0.55 * Math.max(1, Math.min(127, n.velocity)) / 127);
             const mark = ownMarks?.[i];
             if (mark) {
                 el.classList.add(`diff-${mark.kind}`);
@@ -906,7 +910,7 @@ class PianoRollEngine {
      *
      * @returns ノート情報の配列（`note`, `octave`, `step`, `length` を含むオブジェクト）
      */
-    getNotes() { this._saveToEngine(); return this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length })); }
+    getNotes() { this._saveToEngine(); return this.notes.map(cloneNote); }
     /**
      * ノートを一括セットしてピアノロールを再描画する (元に戻せる)。
      * 音声解析結果（`/api/analyze`）の配置などに使用する。

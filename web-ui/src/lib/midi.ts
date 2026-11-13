@@ -14,14 +14,17 @@
  * - フォーマット 0 と 1。ランニングステータス、強さ 0 のノートオン（= ノートオフ）、テンポ、拍子、トラック名を扱う
  * - 位置と長さは、ピアノロールの単位（16 分音符）に丸める。丸めで変わった数は `loss` で返す
  */
-import type { PianoNote } from './engine';
+import { DEFAULT_VELOCITY, type PianoNote } from './engine';
 
 /** 4 分音符あたりの tick 数。 */
 export const TICKS_PER_QUARTER = 480;
 /** ピアノロールの 1 ステップ（16 分音符）の tick 数。 */
 export const TICKS_PER_STEP = TICKS_PER_QUARTER / 4;
-/** ノートの強さ（ベロシティ）。ピアノロールは強弱を持たないので固定値。 */
-const VELOCITY = 96;
+/** ノートの強さ（ベロシティ）を、MIDI に書ける範囲（1〜127）にする。強さを持たないノートは既定の強さ。 */
+function velocityOf(note: PianoNote): number {
+    const v = typeof note.velocity === 'number' && Number.isFinite(note.velocity) ? Math.round(note.velocity) : DEFAULT_VELOCITY;
+    return Math.max(1, Math.min(127, v));
+}
 
 const NOTE_INDEX: Record<string, number> = {
     C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11,
@@ -91,13 +94,13 @@ function conductorTrack(bpm: number): number[] {
 
 /** ノートの在るトラック 1 本。 */
 function noteTrack(track: MidiTrackInput, channel: number): number[] {
-    const events: { tick: number; on: boolean; number: number }[] = [];
+    const events: { tick: number; on: boolean; number: number; velocity: number }[] = [];
     for (const n of track.notes) {
         const number = noteNumber(n.note, n.octave);
         if (number === null || !(n.length > 0) || !(n.step >= 0)) continue;
         const start = Math.round(n.step * TICKS_PER_STEP);
         const end = Math.round((n.step + n.length) * TICKS_PER_STEP);
-        events.push({ tick: start, on: true, number }, { tick: end, on: false, number });
+        events.push({ tick: start, on: true, number, velocity: velocityOf(n) }, { tick: end, on: false, number, velocity: 0 });
     }
     // 同じ時刻では、音を止めるほうを先に置く（同じ高さの音が続くとき、次の音まで止めないため）
     events.sort((a, b) => a.tick - b.tick || Number(a.on) - Number(b.on) || a.number - b.number);
@@ -105,7 +108,7 @@ function noteTrack(track: MidiTrackInput, channel: number): number[] {
     const data = [...meta(0x03, Array.from(new TextEncoder().encode(track.name)))];
     let last = 0;
     for (const e of events) {
-        data.push(...variableLength(e.tick - last), (e.on ? 0x90 : 0x80) | channel, e.number, e.on ? VELOCITY : 0);
+        data.push(...variableLength(e.tick - last), (e.on ? 0x90 : 0x80) | channel, e.number, e.velocity);
         last = e.tick;
     }
     data.push(...END_OF_TRACK);

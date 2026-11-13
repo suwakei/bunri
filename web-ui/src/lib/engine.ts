@@ -51,6 +51,34 @@ interface LoopPlayback {
  */
 export const MIDI_PART = 'midi';
 
+/** 強さを持たないノートの強さ。MIDI の書き出しにも、この値を使ってきた。 */
+export const DEFAULT_VELOCITY = 96;
+
+/** ノートの音量の基準（強さが `DEFAULT_VELOCITY` のときの、オシレータの山の高さ）。 */
+const NOTE_LEVEL = 0.25;
+
+/**
+ * ノートの強さを、鳴らす音量にする。強さが無ければ（または `DEFAULT_VELOCITY` なら）これまでと同じ音量。
+ * 弱すぎて聞こえないノートを作らないよう、下は基準の 2 割で止める。
+ * 再生・区間ループ・書き出し・鍵盤の試聴が、どれもこれを使う（弾いたときと、録って再生したときの音量を同じにする）。
+ * @param velocity - 強さ（1〜127）。省略すると `DEFAULT_VELOCITY`
+ * @returns オシレータの山の高さ
+ */
+export function noteLevel(velocity?: number): number {
+    const v = typeof velocity === 'number' && Number.isFinite(velocity) ? Math.max(1, Math.min(127, velocity)) : DEFAULT_VELOCITY;
+    return NOTE_LEVEL * Math.max(0.2, v / DEFAULT_VELOCITY);
+}
+
+/**
+ * ノートを写す。強さは、持っているときだけ写す（持たないノートに `velocity: undefined` を付けない。
+ * 保存したものや、元に戻すための控えと、項目の有無まで同じにするため）。
+ */
+export function cloneNote(n: PianoNote): PianoNote {
+    const copy: PianoNote = { note: n.note, octave: n.octave, step: n.step, length: n.length };
+    if (typeof n.velocity === 'number') copy.velocity = n.velocity;
+    return copy;
+}
+
 export interface PianoNote {
     /** 音名（例: "C", "C#", "D"） */
     note: string;
@@ -60,6 +88,11 @@ export interface PianoNote {
     step: number;
     /** 音長（ステップ数） */
     length: number;
+    /**
+     * 強さ（ベロシティ。1〜127）。MIDI 鍵盤で弾いたノート、MIDI ファイルから読み込んだノート、
+     * 採譜したお手本が持つ。無いノート（マウスで置いたもの、以前のプロジェクト）は `DEFAULT_VELOCITY` として扱う
+     */
+    velocity?: number;
 }
 
 /**
@@ -196,6 +229,15 @@ class AudioEngine {
      * 書き出し（mixdown）は従わない（書き出すのはプロジェクトのミュートとソロのとおり）。
      */
     listenOverride: Set<number> | null = null;
+    /**
+     * 録音前のカウントの拍数。0 なら入れない。MIDI 入力のリアルタイム録音を選んでいるあいだ、
+     * 1 小節ぶんの拍数が入る（`lib/useMidiInput.ts`）。`play()` が、曲を鳴らす前にこの数だけクリックを鳴らす
+     */
+    countInBeats = 0;
+    /** 録音前のカウントが終わる時刻（AudioContext の時計）。カウントしていなければ 0 */
+    countInUntil = 0;
+    /** 録音前のカウントのクリック（途中で止めるときに使う） */
+    countInClicks: OscillatorNode[] = [];
     /** 区間ループで再生しているあいだの状態 */
     private loopPlayback: LoopPlayback | null = null;
 
@@ -486,15 +528,17 @@ class AudioEngine {
      * 全トラックを再生する。ソロ/ミュート状態を考慮してスケジューリングする。
      * @param fromSec - 再生開始位置（秒）。null の場合は現在の playOffset を使用
      */
-    play(fromSec: number | null = null): void {
+    play(fromSec: number | null = null, options: { countIn?: boolean } = {}): void {
         this.init();
         if (this.isPlaying) this.stop();
         if (fromSec !== null) this.playOffset = fromSec;
+        // 録音前のカウント。鳴らし直し (シーク、区間や速度の変更) では入れない
+        const lead = options.countIn === false ? 0 : this._beginCountIn();
         if (this.loopRange && loopLength(this.loopRange) > 0.05) {
-            this._playLoop(this.loopRange);
+            this._playLoop(this.loopRange, lead);
             return;
         }
-        this.startTime = this.ctx!.currentTime;
+        this.startTime = this.ctx!.currentTime + lead;
         this.isPlaying = true;
         this.soloTrackId = null;
         this.activeSources = [];
@@ -518,12 +562,13 @@ class AudioEngine {
      * AudioBufferSourceNode の `loop` (音声そのものの繰り返し) を使わないのは、ノート (オシレータ) と
      * メトロノームも同じ周で繰り返す必要があり、区間の途中から始まるクリップも扱うため。
      */
-    _playLoop(loop: LoopRange): void {
+    _playLoop(loop: LoopRange, lead = 0): void {
         const ctx = this.ctx!;
         const rate = this.effectiveRate();
         this.playOffset = clampToLoop(this.playOffset, loop);
-        // 少しだけ先から鳴らす (いまの時刻に置くと、最初の数ミリ秒が欠けて、2 周目からの時刻とずれる)
-        const startWhen = ctx.currentTime + 0.03;
+        // 少しだけ先から鳴らす (いまの時刻に置くと、最初の数ミリ秒が欠けて、2 周目からの時刻とずれる)。
+        // 録音前のカウントが在るときは、カウントが終わる時刻から鳴らす
+        const startWhen = ctx.currentTime + Math.max(0.03, lead);
         this.startTime = startWhen;
         this.isPlaying = true;
         this.soloTrackId = null;
@@ -609,9 +654,10 @@ class AudioEngine {
         const gain = ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(partial ? 0.25 : 0, when);
-        if (!partial) gain.gain.linearRampToValueAtTime(0.25, when + attack);
-        gain.gain.setValueAtTime(0.25, when + Math.max(attack, duration - release));
+        const level = noteLevel(n.velocity);
+        gain.gain.setValueAtTime(partial ? level : 0, when);
+        if (!partial) gain.gain.linearRampToValueAtTime(level, when + attack);
+        gain.gain.setValueAtTime(level, when + Math.max(attack, duration - release));
         gain.gain.linearRampToValueAtTime(0, when + duration);
         osc.connect(gain);
         gain.connect(track.panNode);
@@ -642,7 +688,7 @@ class AudioEngine {
     getLoopPass(): number | null {
         const p = this.loopPlayback;
         if (!this.isPlaying || !p || !this.ctx) return null;
-        return loopPosition(p.loop, p.startPos, p.rate, this.ctx.currentTime - p.startWhen).pass;
+        return loopPosition(p.loop, p.startPos, p.rate, Math.max(0, this.ctx.currentTime - p.startWhen)).pass;
     }
 
     /**
@@ -653,7 +699,53 @@ class AudioEngine {
         const position = this.getCurrentTime();
         this.stop();
         this.playOffset = position;
-        this.play();
+        this.play(null, { countIn: false });
+    }
+
+    /**
+     * 録音前のカウントを鳴らす。`countInBeats` が 0 なら何もしない。
+     *
+     * カウントは 1 拍ごとのクリック (最初の 1 つだけ高い音)。再生そのものは、カウントが終わる時刻に
+     * 始まるよう、音の時計 (AudioContext) の上で先に予約する。タイマーで待ってから始めると、
+     * 最後のクリックから 1 拍目までの間隔が、数十ミリ秒ずれる。
+     * @returns カウントの長さ（秒）。再生の始まりを、このぶんだけ後ろにずらす
+     */
+    _beginCountIn(): number {
+        const beats = Math.max(0, Math.floor(this.countInBeats));
+        if (beats === 0 || !this.ctx) return 0;
+        const beatSec = 60 / this.bpm;
+        // いまの時刻ちょうどに置くと最初のクリックの頭が欠けるので、少しだけ先から始める
+        const first = this.ctx.currentTime + 0.03;
+        for (let i = 0; i < beats; i++) this.countInClicks.push(this._playClick(first + i * beatSec, i === 0 ? 1500 : 1000));
+        const lead = 0.03 + beats * beatSec;
+        this.countInUntil = this.ctx.currentTime + lead;
+        return lead;
+    }
+
+    /** 録音前のカウントをやめる (まだ鳴っていないクリックを止める)。 */
+    _stopCountIn(): void {
+        for (const click of this.countInClicks) {
+            try { click.stop(); } catch (_e) { /* 既に鳴り終わっている */ }
+        }
+        this.countInClicks = [];
+        this.countInUntil = 0;
+    }
+
+    /** 録音前のカウントの最中か (再生は始めたが、まだ曲は進んでいない)。 */
+    isCountingIn(): boolean {
+        return this.isPlaying && !!this.ctx && this.ctx.currentTime < this.countInUntil;
+    }
+
+    /**
+     * 音が耳に届くまでの遅れ (秒)。ブラウザが知らせる値 (出力の遅れ + 処理の遅れ)。知らせない環境では 0。
+     * MIDI 入力のリアルタイム録音が、弾いた位置を前へ戻すのに使う (聞こえた音に合わせて弾くと、
+     * そのぶんだけ再生位置より遅れて届くため)。
+     */
+    outputLatencySec(): number {
+        const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
+        if (!ctx) return 0;
+        const total = (Number(ctx.outputLatency) || 0) + (Number(ctx.baseLatency) || 0);
+        return Number.isFinite(total) && total > 0 ? total : 0;
     }
 
     /**
@@ -710,9 +802,9 @@ class AudioEngine {
             source.connect(track.panNode);
             const clipStart = clip.offset - this.playOffset;
             if (clipStart >= 0) {
-                source.start(this.ctx!.currentTime + clipStart);
+                source.start(this.startTime + clipStart);
             } else if (-clipStart < clip.duration) {
-                source.start(this.ctx!.currentTime, -clipStart);
+                source.start(this.startTime, -clipStart);
             } else {
                 continue;
             }
@@ -750,11 +842,14 @@ class AudioEngine {
             osc.connect(gain);
             gain.connect(track.panNode);
 
+            const level = noteLevel(n.velocity);
+            // 鳴らす時刻は、再生の始まり (startTime) から数える。ふだんは「いま」と同じだが、
+            // 録音前のカウントが在るときは、カウントのぶんだけ先になる
             if (relStart >= 0) {
-                const when = this.ctx!.currentTime + relStart;
+                const when = this.startTime + relStart;
                 gain.gain.setValueAtTime(0, when);
-                gain.gain.linearRampToValueAtTime(0.25, when + attack);
-                gain.gain.setValueAtTime(0.25, when + attack + sustainDur);
+                gain.gain.linearRampToValueAtTime(level, when + attack);
+                gain.gain.setValueAtTime(level, when + attack + sustainDur);
                 gain.gain.linearRampToValueAtTime(0, when + noteDur);
                 osc.start(when);
                 osc.stop(when + noteDur + 0.01);
@@ -762,9 +857,9 @@ class AudioEngine {
                 const elapsed = -relStart;
                 const remaining = noteDur - elapsed;
                 if (remaining <= 0) continue;
-                const when = this.ctx!.currentTime;
-                gain.gain.setValueAtTime(0.25, when);
-                gain.gain.setValueAtTime(0.25, when + Math.max(0, remaining - release));
+                const when = this.startTime;
+                gain.gain.setValueAtTime(level, when);
+                gain.gain.setValueAtTime(level, when + Math.max(0, remaining - release));
                 gain.gain.linearRampToValueAtTime(0, when + remaining);
                 osc.start(when);
                 osc.stop(when + remaining + 0.01);
@@ -779,6 +874,7 @@ class AudioEngine {
      */
     stop(): void {
         this._stopLoop();
+        this._stopCountIn();
         this.isPlaying = false;
         this.soloTrackId = null;
         for (const src of this.activeSources) {
@@ -795,6 +891,8 @@ class AudioEngine {
      */
     getPlayPosition(): number | null {
         if (!this.isPlaying || !this.ctx) return null;
+        // 録音前のカウントの間は、まだ録らない
+        if (this.isCountingIn()) return null;
         return this.getCurrentTime();
     }
 
@@ -810,7 +908,7 @@ class AudioEngine {
         this.playOffset = target;
         if (wasPlaying) {
             if (wasSolo != null) this.playSingleTrack(wasSolo);
-            else this.play();
+            else this.play(null, { countIn: false });
         }
     }
 
@@ -820,7 +918,7 @@ class AudioEngine {
      * @param pitch - MIDI ノート番号（60 = C4）
      * @param velocity - 強さ（1〜127）
      */
-    liveNoteOn(pitch: number, velocity = 96): void {
+    liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY): void {
         this.init();
         const ctx = this.ctx!;
         this.liveNoteOff(pitch);
@@ -828,7 +926,8 @@ class AudioEngine {
         const gain = ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
-        const level = 0.25 * Math.max(0.2, Math.min(1, velocity / 127));
+        // 録って再生したときと同じ音量で鳴らす
+        const level = noteLevel(velocity);
         gain.gain.setValueAtTime(0, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(level, ctx.currentTime + 0.005);
         osc.connect(gain);
@@ -865,6 +964,7 @@ class AudioEngine {
         if (!this.isPlaying) return;
         this.playOffset = this.getCurrentTime();
         this._stopLoop();
+        this._stopCountIn();
         this.isPlaying = false;
         for (const src of this.activeSources) {
             try { src.stop(); } catch (_e) { /* 既に停止済み */ }
@@ -881,8 +981,9 @@ class AudioEngine {
         if (!this.isPlaying) return this.playOffset;
         const p = this.loopPlayback;
         // 区間ループ中は、区間の終わりで頭に戻る。速度を変えていれば、その速さで進む
-        if (p) return loopPosition(p.loop, p.startPos, p.rate, this.ctx!.currentTime - p.startWhen).position;
-        return this.playOffset + (this.ctx!.currentTime - this.startTime);
+        // 再生の始まりより前 (録音前のカウントの間) は、始める位置のまま進めない
+        if (p) return loopPosition(p.loop, p.startPos, p.rate, Math.max(0, this.ctx!.currentTime - p.startWhen)).position;
+        return this.playOffset + Math.max(0, this.ctx!.currentTime - this.startTime);
     }
 
     /**
@@ -965,7 +1066,7 @@ class AudioEngine {
      * @param when - 再生タイミング（AudioContext の絶対時刻、秒）
      * @param freq - クリック音の周波数（Hz）。拍頭は 1500 Hz、それ以外は 1000 Hz
      */
-    _playClick(when: number, freq: number): void {
+    _playClick(when: number, freq: number): OscillatorNode {
         const osc = this.ctx!.createOscillator();
         const gain = this.ctx!.createGain();
         osc.type = 'sine';
@@ -976,6 +1077,7 @@ class AudioEngine {
         gain.connect(this.ctx!.destination);
         osc.start(when);
         osc.stop(when + 0.05);
+        return osc;
     }
 
     /**
@@ -1055,9 +1157,10 @@ class AudioEngine {
                 const g = offCtx.createGain();
                 osc.type = 'triangle';
                 osc.frequency.value = freq;
+                const level = noteLevel(n.velocity);
                 g.gain.setValueAtTime(0, noteStart);
-                g.gain.linearRampToValueAtTime(0.25, noteStart + attack);
-                g.gain.setValueAtTime(0.25, noteStart + attack + sustainDur);
+                g.gain.linearRampToValueAtTime(level, noteStart + attack);
+                g.gain.setValueAtTime(level, noteStart + attack + sustainDur);
                 g.gain.linearRampToValueAtTime(0, noteStart + noteDur);
                 osc.connect(g);
                 g.connect(panNode);

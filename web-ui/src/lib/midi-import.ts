@@ -11,7 +11,7 @@
  * - 読み込まない（`skip`）
  */
 import type { AudioEngine, PianoNote, Track } from './engine';
-import { MIDI_PART } from './engine';
+import { MIDI_PART, cloneNote } from './engine';
 import type { MidiImportResult, MidiImportTrack } from './midi';
 
 /** MIDI のトラック 1 本の読み込み方。 */
@@ -88,7 +88,6 @@ export function lossNotices(result: MidiImportResult, modes: MidiImportMode[]): 
     if (tempoChanges > 0) notices.push(`途中のテンポの変化（${tempoChanges} 回）は反映されません。最初のテンポを使います`);
     const outOfRange = chosen.reduce((count, track) => count + track.notes.filter((n) => n.octave < MIN_OCTAVE || n.octave > MAX_OCTAVE).length, 0);
     if (outOfRange > 0) notices.push(`ピアノロールに表示できる高さ（C0〜B8）の外のノートが ${outOfRange} 個あります（読み込みますが、表示されず、鳴りません）`);
-    notices.push('音の強さ（ベロシティ）は読み込みません。どのノートも同じ強さで鳴ります');
     return notices;
 }
 
@@ -104,7 +103,8 @@ export interface MidiImportOutcome {
     beatsPerBar: number | null;
 }
 
-const plain = (notes: PianoNote[]): PianoNote[] => notes.map((n) => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+/** ノートを、強さごと写す。 */
+const plain = (notes: PianoNote[]): PianoNote[] => notes.map(cloneNote);
 
 /**
  * 読み込み方に従って、トラックを作る。テンポと拍子は、プロジェクトが空のときだけ決めて返す
