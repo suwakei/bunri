@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDaw, type UndoToastState } from '../lib/store';
 import { modKeyLabel } from '../lib/keys';
+import { tip } from '../lib/tooltip';
 
 /** 知らせを出しておく長さ (ミリ秒)。 */
 const UNDO_TOAST_MS = 10_000;
@@ -34,8 +35,8 @@ function ToastBody({ toast }: { toast: UndoToastState }) {
             onBlur={(e) => { if (!rootRef.current?.contains(e.relatedTarget as Node | null)) setHeld(false); }}>
             <span className="undo-toast-text">{toast.message}</span>
             <button type="button" className="undo-toast-action" onClick={undoFromToast}
-                title={`元に戻す（${modKeyLabel()}Z）`}>元に戻す</button>
-            <button type="button" className="undo-toast-close" onClick={dismissUndoToast} aria-label="知らせを閉じる">✕</button>
+                {...tip('いま削除したものを戻します', { key: `${modKeyLabel()}Z` })}>元に戻す</button>
+            <button type="button" className="undo-toast-close" onClick={dismissUndoToast} aria-label="知らせを閉じる" {...tip('この知らせを閉じます')}>✕</button>
         </div>
     );
 }

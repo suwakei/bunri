@@ -284,7 +284,7 @@ test('再生すると、タイムラインとピアノロールの再生位置�
     await area.evaluate((el) => { el.scrollLeft = 0; });
     await page.waitForTimeout(500);
     expect(await area.evaluate((el) => el.scrollLeft)).toBe(0);
-    await page.locator('#transport button[title="停止"]').click();
+    await page.locator('#transport button[aria-label="停止"]').click();
 });
 
 test('進み具合は畳めて、畳んだことを覚えている', async ({ page }) => {
@@ -331,7 +331,7 @@ test('お手本をノートとして取り込む・練習する・パートに�
     await page.getByRole('button', { name: '「ベース」のお手本をノートとして取り込む' }).click();
     await page.getByRole('button', { name: '写す' }).click();
     await expect(badge('ベース')).toHaveText(String(BASS.length));
-    await expect(page.getByRole('button', { name: '元に戻す', exact: true })).toHaveAttribute('title', /「ベース」のお手本をノートとして取り込む/);
+    await expect(page.getByRole('button', { name: '元に戻す', exact: true })).toHaveAttribute('data-tip', /「ベース」のお手本をノートとして取り込む/);
     await page.keyboard.press('ControlOrMeta+z');
     await expect(badge('ベース')).toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+Shift+z');

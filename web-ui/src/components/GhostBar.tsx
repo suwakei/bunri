@@ -13,6 +13,7 @@
  */
 import { useEffect } from 'react';
 import { useDaw } from '../lib/store';
+import { tip } from '../lib/tooltip';
 import engine from '../lib/engine';
 import { referenceTrackFor } from '../lib/learn';
 
@@ -49,6 +50,7 @@ export default function GhostBar({ activeTrackId }: { activeTrackId: number | nu
         <span id="ghost-bar" style={{ marginLeft: 12, textTransform: 'none', letterSpacing: 0 }}>
             <label htmlFor="ghost-source" className="area-hint">お手本を重ねる</label>
             <select id="ghost-source" style={controlStyle} value={String(choice)}
+                {...tip('ピアノロールに薄く重ねるお手本を選びます。重ねて見せるだけで、打ち込みには入りません')}
                 onChange={(e) => setChoice(e.target.value === 'auto' || e.target.value === 'off' ? e.target.value : Number(e.target.value))}>
                 <option value="auto">このトラックのお手本</option>
                 <option value="off">重ねない</option>

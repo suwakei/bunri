@@ -7,6 +7,7 @@ import { useDaw } from '../lib/store';
 import { attemptsFor, deltaText, matchSummary, percentOf } from '../lib/learn-history';
 import { KIND_LABEL } from '../lib/coach';
 import { HISTORY_KINDS } from '../lib/learn-history';
+import { tip } from '../lib/tooltip';
 
 /** 一覧に出す回数。 */
 const SHOWN = 5;
@@ -41,11 +42,11 @@ export default function LearnHistory({ referenceId, attemptId }: { referenceId: 
             <Trend percents={list.slice(-10).map(a => percentOf(a.matchRate))} />
             <ol className="learn-attempts" aria-label="最近の比較">
                 {recent.map((a) => {
-                    // 種類ごとの件数は title に。一覧には合計だけ (上の差分の結果と同じ文を 2 つ並べない)
+                    // 種類ごとの件数はツールチップに。一覧には合計だけ (上の差分の結果と同じ文を 2 つ並べない)
                     const total = HISTORY_KINDS.reduce((sum, k) => sum + a.counts[k], 0);
                     const detail = HISTORY_KINDS.filter(k => a.counts[k] > 0).map(k => `${KIND_LABEL[k]}: ${a.counts[k]}`).join('、');
                     return (
-                        <li key={a.id} className="note-text" title={detail || undefined}>
+                        <li key={a.id} className="note-text" {...(detail ? tip(detail) : {})}>
                             {new Date(a.recordedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                             {' '}{a.startBar}〜{a.endBar} 小節 {percentOf(a.matchRate)}%
                             {total > 0 ? `（違い ${total} か所）` : '（違いなし）'}

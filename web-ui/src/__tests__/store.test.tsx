@@ -28,17 +28,15 @@ const { DawProvider, useDaw } = await import('../lib/store');
 
 // テスト用コンシューマーコンポーネント
 function TestConsumer() {
-    const { status, setStatus, bpm, setBpm, hint, setHint, showGuide, closeGuide, isPlaying } = useDaw();
+    const { status, setStatus, bpm, setBpm, showGuide, closeGuide, isPlaying } = useDaw();
     return (
         <div>
             <span data-testid="status">{status}</span>
             <span data-testid="bpm">{bpm}</span>
-            <span data-testid="hint">{hint}</span>
             <span data-testid="guide">{showGuide ? 'open' : 'closed'}</span>
             <span data-testid="playing">{isPlaying ? 'yes' : 'no'}</span>
             <button data-testid="set-status" onClick={() => setStatus('テスト中')}>set status</button>
             <button data-testid="set-bpm" onClick={() => setBpm(140)}>set bpm</button>
-            <button data-testid="set-hint" onClick={() => setHint('ヒント')}>set hint</button>
             <button data-testid="close-guide" onClick={closeGuide}>close guide</button>
         </div>
     );
@@ -53,7 +51,6 @@ describe('DawProvider / useDaw', () => {
         render(<DawProvider><TestConsumer /></DawProvider>);
         expect(screen.getByTestId('status').textContent).toBe('準備完了');
         expect(screen.getByTestId('bpm').textContent).toBe('120');
-        expect(screen.getByTestId('hint').textContent).toBe('');
         expect(screen.getByTestId('playing').textContent).toBe('no');
     });
 
@@ -67,12 +64,6 @@ describe('DawProvider / useDaw', () => {
         render(<DawProvider><TestConsumer /></DawProvider>);
         await userEvent.click(screen.getByTestId('set-bpm'));
         expect(screen.getByTestId('bpm').textContent).toBe('140');
-    });
-
-    it('setHint でヒント更新', async () => {
-        render(<DawProvider><TestConsumer /></DawProvider>);
-        await userEvent.click(screen.getByTestId('set-hint'));
-        expect(screen.getByTestId('hint').textContent).toBe('ヒント');
     });
 
     it('closeGuide でガイドを閉じる', async () => {

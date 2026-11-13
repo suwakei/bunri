@@ -966,7 +966,7 @@ button.link-btn:hover {
     font-size: 12px;
     color: var(--text);
     transition: color var(--transition);
-    /* 長い名前は 1 行に収めて … にする (全文は title で読める) */
+    /* 長い名前は 1 行に収めて … にする (切れているときは、マウスを載せると全文が出る) */
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -1568,7 +1568,7 @@ button.link-btn:hover {
     font-family: var(--font-ui);
 }
 
-/* 操作の結果。長い文は 1 行に収めて、はみ出すぶんを … にする (全文は title で読める) */
+/* 操作の結果。長い文は 1 行に収めて、はみ出すぶんを … にする (切れているときは、マウスを載せると全文が出る) */
 #status-text {
     flex: 1 1 auto;
     min-width: 0;
@@ -1579,17 +1579,6 @@ button.link-btn:hover {
 
 #status-text.error {
     color: var(--error);
-}
-
-#hint-text {
-    flex: 0 1 auto;
-    color: var(--accent);
-    font-size: 11px;
-    font-family: var(--font-ui);
-    max-width: 50%;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
 }
 
 /* ---- Resize handles ---- */
@@ -2614,4 +2603,62 @@ button.link-btn:hover {
 .note-block.selected[class*="diff-"] {
     border-color: var(--selection);
     box-shadow: 0 0 0 1px var(--selection), 0 1px 4px rgba(0, 0, 0, 0.3);
+/* ---- ツールチップ (マウスを載せた要素のそばに出す説明。components/Tooltip.tsx) ----
+   位置は Tooltip.tsx が決める (画面の外に出さない)。マウスの操作は受けず、下の要素はそのまま押せる */
+.tooltip {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 2000;
+    max-width: 280px;
+    padding: 6px 10px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.6;
+    letter-spacing: 0;
+    text-transform: none;
+    text-align: left;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.08s ease-out;
+}
+.tooltip[hidden] { display: none; }
+.tooltip.visible { opacity: 1; }
+.tooltip-key {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border: 1px solid var(--border-light);
+    border-radius: 3px;
+    background: var(--bg-deep);
+    color: var(--text-mid);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.tooltip-key[hidden] { display: none; }
+/* 要素を指す小さな三角。--tip-arrow は、ツールチップの端から要素の真ん中までの距離 */
+.tooltip-arrow {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    transform: rotate(45deg);
+}
+.tooltip[data-side="top"] .tooltip-arrow { bottom: -5px; left: calc(var(--tip-arrow) - 4px); border-top: none; border-left: none; }
+.tooltip[data-side="bottom"] .tooltip-arrow { top: -5px; left: calc(var(--tip-arrow) - 4px); border-bottom: none; border-right: none; }
+.tooltip[data-side="left"] .tooltip-arrow { right: -5px; top: calc(var(--tip-arrow) - 4px); border-bottom: none; border-left: none; }
+.tooltip[data-side="right"] .tooltip-arrow { left: -5px; top: calc(var(--tip-arrow) - 4px); border-top: none; border-right: none; }
+@media (prefers-reduced-motion: reduce) {
+    .tooltip { transition: none; }
 }

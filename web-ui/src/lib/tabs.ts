@@ -6,6 +6,8 @@
 export interface TabDef<K extends string> {
     key: K;
     label: string;
+    /** マウスを載せたときの説明（タブの中に何があるか） */
+    tip?: string;
 }
 
 /** タブの id。 */

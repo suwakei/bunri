@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useDaw } from '../lib/store';
+import { tip } from '../lib/tooltip';
 import { SECTION_LABEL_JA } from '../lib/chart';
 import { chartBarToSec } from '../lib/grid';
 import {
@@ -93,7 +94,7 @@ export default function GuidePanel() {
                 <p className="body-text" style={{ color: 'var(--text-mid)' }}>
                     カルテができると、ここで「こう作れば再現できる」という手順を作れます。先に曲を取り込んでください。
                 </p>
-                <button className="action-btn" onClick={() => openLearn('song')}>曲を取り込む</button>
+                <button className="action-btn" onClick={() => openLearn('song')} {...tip('曲を取り込む場所を開きます')}>曲を取り込む</button>
             </div>
         );
     }
@@ -118,7 +119,8 @@ export default function GuidePanel() {
 
             <div>
                 <label htmlFor="guide-focus">対象</label>
-                <select id="guide-focus" value={focus} onChange={(e) => setFocus(e.target.value)} disabled={busy}>
+                <select id="guide-focus" value={focus} onChange={(e) => setFocus(e.target.value)} disabled={busy}
+                    {...tip('手順を作る範囲。曲全体か、サビなどの区間を選びます')}>
                     <option value="">曲全体</option>
                     {chart.sections.map((s) => {
                         const raw = s.label ?? s.suggested_label;
@@ -127,7 +129,10 @@ export default function GuidePanel() {
                     })}
                 </select>
             </div>
-            <button className="action-btn" onClick={handleGenerate} disabled={busy}>
+            <button className="action-btn" onClick={handleGenerate} disabled={busy}
+                {...tip(busy ? '手順を作っています' : guide
+                    ? 'もう一度 Claude に頼んで、手順を作り直します。そのたびに費用がかかります'
+                    : 'カルテを Claude に渡して、似せて作るための手順を書いてもらいます。数十秒かかります')}>
                 {busy ? '作成中…（数十秒かかります）' : guide ? 'ガイドを作り直す（費用がかかります）' : 'ガイドを作る'}
             </button>
             {guide && !busy && (
@@ -161,7 +166,7 @@ export default function GuidePanel() {
                                         {step.refs.map((ref, j) => {
                                             const label = refLabel(ref, chart);
                                             return (
-                                                <button type="button" key={j} className="guide-ref" title="押すと、この場所へ移動します"
+                                                <button type="button" key={j} className="guide-ref" {...tip('この場所へ移動します')}
                                                     onClick={() => jumpToRef(ref, label)}
                                                     style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-mid)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
                                                     {label}

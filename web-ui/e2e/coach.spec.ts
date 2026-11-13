@@ -66,7 +66,7 @@ test('お手本を持たないトラックでは、お手本にするトラッ�
     const ghost = (await page.locator('#note-layer .note-ghost').first().boundingBox())!;
     await page.mouse.dblclick(ghost.x + 10, ghost.y + 6);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(1);
-    await expect(page.locator('#note-layer .note-block')).toHaveAttribute('title', /^C4 step:0 /);
+    await expect(page.locator('#note-layer .note-block')).toHaveAttribute('data-note', /^C4 step:0 /);
 });
 
 test('差分チェックで違いが出て、指摘を押すとその小節がピアノロールに出る', async ({ page, request }) => {
@@ -92,7 +92,7 @@ test('差分チェックで違いが出て、指摘を押すとその小節が�
     expect(scrollLeft).toBeGreaterThan(0);
     // 縦も、その音の高さ (F4) まで動いている
     const wrap = (await page.locator('#piano-grid-wrap').boundingBox())!;
-    const f4 = (await page.locator('#note-layer .note-block[title^="F4 "]').boundingBox())!;
+    const f4 = (await page.locator('#note-layer .note-block[data-note^="F4 "]').boundingBox())!;
     expect(f4.y).toBeGreaterThanOrEqual(wrap.y);
     expect(f4.y + f4.height).toBeLessThanOrEqual(wrap.y + wrap.height);
     // 再生位置も、その小節 (12 小節目の頭 = 22 秒) へ移る

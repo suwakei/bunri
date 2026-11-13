@@ -10,6 +10,7 @@
 import { useSyncExternalStore } from 'react';
 import { health } from '../lib/health';
 import { isDesktop } from '../lib/api';
+import { tip } from '../lib/tooltip';
 
 /** 止まったときの知らせ。応答しているあいだは何も出さない。 */
 export default function HealthBanner() {
@@ -45,8 +46,10 @@ export default function HealthBanner() {
             {failed && <p>{state.message}</p>}
             <div className="health-actions">
                 {desktop
-                    ? <button type="button" onClick={() => void health.restart()}>再起動</button>
-                    : <button type="button" onClick={() => health.checkSoon()}>もう一度確かめる</button>}
+                    ? <button type="button" onClick={() => void health.restart()}
+                        {...tip('裏で動いている解析の仕組みを起動し直します。開いているプロジェクトはそのままです')}>再起動</button>
+                    : <button type="button" onClick={() => health.checkSoon()}
+                        {...tip('API サーバが応答するか、もう一度確かめます')}>もう一度確かめる</button>}
             </div>
         </div>
     );

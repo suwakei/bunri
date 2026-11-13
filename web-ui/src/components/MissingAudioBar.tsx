@@ -11,6 +11,7 @@ import engine, { type Clip, type Track } from '../lib/engine';
 import { missingClips } from '../lib/project-file';
 import { decodeWithSource } from '../lib/audio-sources';
 import { describeError } from '../lib/api';
+import { tip } from '../lib/tooltip';
 
 /** 音声の無いクリップ 1 つの行。ファイルを選ぶ欄は行ごとに持つ（どのクリップに読み込むかを取り違えない）。 */
 function MissingRow({ track, clip, onFile }: { track: Track; clip: Clip; onFile: (file: File) => void }) {
@@ -20,7 +21,8 @@ function MissingRow({ track, clip, onFile }: { track: Track; clip: Clip; onFile:
         <li>
             {label}
             <button type="button" className="action-btn secondary" onClick={() => inputRef.current?.click()}
-                aria-label={`${label}の音声を読み込み直す`}>音声を読み込み直す</button>
+                aria-label={`${label}の音声を読み込み直す`}
+                {...tip('このクリップの音声ファイルが見つからないので、ファイルを選び直します')}>音声を読み込み直す</button>
             <input ref={inputRef} type="file" accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.aif,.aiff,audio/*" hidden
                 aria-label={`${label}に読み込む音声のファイル`}
                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f); }} />

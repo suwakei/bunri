@@ -8,6 +8,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { isDesktop } from '../lib/api';
 import { deleteApiKey, saveApiKey, saveGuideSettings, type GuideToday } from '../lib/guide';
+import { tip } from '../lib/tooltip';
 
 /** 何を Claude に送るかの説明と、「API キーと上限の設定」を開くリンク。 */
 export function ClaudeSendNote({ children, open, onToggle }: { children: ReactNode; open: boolean; onToggle: () => void }) {
@@ -16,6 +17,7 @@ export function ClaudeSendNote({ children, open, onToggle }: { children: ReactNo
             {children}
             {' '}
             <button type="button" onClick={onToggle} aria-expanded={open}
+                {...tip('Claude の API キーと、1 日に呼ぶ回数の上限を設定します')}
                 style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit', padding: 0, textDecoration: 'underline' }}>
                 API キーと上限の設定
             </button>
@@ -89,11 +91,12 @@ export function ClaudeSettings({ idPrefix, open, today, onToday, onSaved }: Clau
                     <div>
                         <label htmlFor={`${idPrefix}-api-key`}>Claude の API キー</label>
                         <input id={`${idPrefix}-api-key`} type="password" autoComplete="off" value={keyInput}
-                            placeholder="sk-ant-…" onChange={(e) => setKeyInput(e.target.value)} />
+                            placeholder="sk-ant-…" onChange={(e) => setKeyInput(e.target.value)}
+                            {...tip('Anthropic のサイトで発行した、sk-ant- で始まるキーを貼り付けます')} />
                     </div>
-                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveKey}>設定する</button>
+                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveKey} {...tip('入力したキーを保存します')}>設定する</button>
                     {' '}
-                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleDeleteKey}>設定を消す</button>
+                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleDeleteKey} {...tip('保存してあるキーを消します')}>設定を消す</button>
                     <p className="note-text" style={{ marginTop: 6 }}>
                         {/* 開発者向けの説明 (API サーバの再起動、環境変数) は、デスクトップアプリでは出さない */}
                         {isDesktop()
@@ -104,9 +107,10 @@ export function ClaudeSettings({ idPrefix, open, today, onToday, onSaved }: Clau
                         <label htmlFor={`${idPrefix}-daily-limit`}>1 日に Claude を呼ぶ回数の上限</label>
                         <input id={`${idPrefix}-daily-limit`} type="number" min={0} step={1} value={limitInput}
                             placeholder={today?.limit_calls != null ? `いまは ${today.limit_calls} 回` : 'いまは上限なし'}
-                            onChange={(e) => setLimitInput(e.target.value)} />
+                            onChange={(e) => setLimitInput(e.target.value)}
+                            {...tip('この回数に達すると、その日は Claude を呼びません。空にすると上限なし')} />
                     </div>
-                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveLimit}>上限を変える</button>
+                    <button className="action-btn" style={{ marginTop: 6 }} onClick={handleSaveLimit} {...tip('入力した回数を、1 日の上限にします')}>上限を変える</button>
                     <p className="note-text" style={{ marginTop: 6 }}>
                         上限に達すると、その日は Claude を呼ばなくなります（保存済みのガイドと説明は見られます）。
                         再現ガイドと差分の説明を合わせて数えます。空にして押すと上限なし。

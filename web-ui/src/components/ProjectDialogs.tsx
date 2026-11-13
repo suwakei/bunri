@@ -5,6 +5,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { useDialog } from '../lib/dialog';
 import { useProjectPrompt, type OpenEntry, type ProjectPrompt } from '../lib/project-prompts';
+import { tip } from '../lib/tooltip';
 
 /** 時刻を「11/12 10:05」の形にする。 */
 function shortTime(sec: number | null): string {
@@ -17,7 +18,7 @@ export function OpenEntryRow({ entry, onOpen, onRemove }: { entry: OpenEntry; on
     return (
         <li className={'project-entry' + (entry.exists ? '' : ' missing')}>
             <button type="button" className="project-entry-open" onClick={onOpen} disabled={!entry.exists}
-                title={entry.exists ? entry.detail : `見つかりません: ${entry.detail}`}>
+                {...tip(entry.exists ? `${entry.detail}\n押すと、このプロジェクトを開きます` : `ファイルが見つかりません: ${entry.detail}`)}>
                 <span className="project-entry-name">{entry.name}</span>
                 {entry.kind === 'legacy' && <span className="project-badge">以前の形式</span>}
                 {!entry.exists && <span className="project-badge warn">見つかりません</span>}
@@ -26,7 +27,7 @@ export function OpenEntryRow({ entry, onOpen, onRemove }: { entry: OpenEntry; on
             </button>
             {entry.removable && onRemove && (
                 <button type="button" className="project-entry-remove" onClick={onRemove}
-                    aria-label={`「${entry.name}」を一覧から外す`} title="一覧から外します（ファイルは消しません）">×</button>
+                    aria-label={`「${entry.name}」を一覧から外す`} {...tip('一覧から外します。ファイルそのものは消えません')}>×</button>
             )}
         </li>
     );
@@ -41,9 +42,12 @@ function UnsavedDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'uns
                 <h2 id="unsaved-title">保存していない変更があります</h2>
                 <p id="unsaved-desc">{prompt.action}前に、いまのプロジェクトを保存しますか。保存しないと、最後に保存してからの変更（トラック・ノート・学習の記録など）は消えます。</p>
                 <div className="project-actions">
-                    <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('save')}>保存</button>
-                    <button type="button" className="action-btn secondary danger" onClick={() => prompt.resolve('discard')}>保存しない</button>
-                    <button type="button" className="action-btn secondary" onClick={() => prompt.resolve('cancel')}>キャンセル</button>
+                    <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('save')}
+                        {...tip('いまのプロジェクトを保存してから進みます')}>保存</button>
+                    <button type="button" className="action-btn secondary danger" onClick={() => prompt.resolve('discard')}
+                        {...tip('保存せずに進みます。最後に保存してからの変更は消えます')}>保存しない</button>
+                    <button type="button" className="action-btn secondary" onClick={() => prompt.resolve('cancel')}
+                        {...tip('何もせずに、元の画面に戻ります')}>キャンセル</button>
                 </div>
             </div>
         </div>
@@ -94,7 +98,8 @@ function OpenDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'open' 
                     )}
                 <div className="project-actions">
                     {prompt.canBrowse && (
-                        <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('browse')}>ほかのファイルを選ぶ…</button>
+                        <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('browse')}
+                            {...tip('一覧に無いプロジェクトのファイルを、自分で探して開きます')}>ほかのファイルを選ぶ…</button>
                     )}
                     <button type="button" className="action-btn secondary" onClick={() => prompt.resolve(null)}>キャンセル</button>
                 </div>

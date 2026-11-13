@@ -13,6 +13,7 @@ import { modelDownloadNotice } from '../lib/models';
 import { JobCancelledError, jobErrorMessage, jobTracker, slotOf, type Job, type JobSlot } from '../lib/jobs';
 import { useJob, useJobs } from '../lib/useJob';
 import JobCard from '../components/JobCard';
+import { tip } from '../lib/tooltip';
 
 interface AudioResult {
     label: string;
@@ -146,11 +147,15 @@ const EDIT_HINTS: Record<string, string> = {
 const EDIT_EXTRA_DEFAULTS: Record<string, number> = { copy_range: 0, silence: 2, loop: 3 };
 
 const TABS = [
-    { key: 'decompose', label: 'パート分離と採譜' },
-    { key: 'separate', label: 'パート分離' }, { key: 'analyze', label: '解析' },
-    { key: 'edit', label: '編集' }, { key: 'effects', label: 'エフェクト' },
-    { key: 'batch', label: '一括編集' }, { key: 'overlay', label: '音源合成' },
-    { key: 'convert', label: '変換' }, { key: 'wav_optimize', label: 'WAV 最適化' },
+    { key: 'decompose', label: 'パート分離と採譜', tip: '曲をパートに分けて、パートごとのノートまで読み取ります' },
+    { key: 'separate', label: 'パート分離', tip: '曲をボーカル・ドラム・ベースなどの音声に分けます' },
+    { key: 'analyze', label: '解析', tip: '音の帯域の偏り、使われている楽器、テンポなどを調べます' },
+    { key: 'edit', label: '編集', tip: 'WAV ファイルの一部を切り出す・消す・繰り返すなどの編集をします' },
+    { key: 'effects', label: 'エフェクト', tip: 'WAV ファイルに響きや音量の整えなどの効果をかけます' },
+    { key: 'batch', label: '一括編集', tip: 'いくつものファイルに、同じ操作をまとめてかけます' },
+    { key: 'overlay', label: '音源合成', tip: '2 つの WAV ファイルを重ねて、1 つにします' },
+    { key: 'convert', label: '変換', tip: '動画や音声のファイルを、WAV か MP3 に変換します' },
+    { key: 'wav_optimize', label: 'WAV 最適化', tip: '大きな WAV ファイルを、音質を保ったまま小さくします' },
 ];
 
 // ---- パート分離パネル ----
@@ -206,16 +211,16 @@ function SeparatePanel() {
         <div className={`tool-panel active`}>
             <h2>パート分離</h2>
             <p className="desc">曲のファイルを、パート（ボーカル・ドラム・ベースなど）に分けます（Demucs による音源分離）。<br /><strong>CPU で処理するため、1 曲あたり数分〜十数分かかります。</strong></p>
-            <div className="form-group"><label>音声ファイル</label><input type="file" id="sep-file" accept=".wav,.mp3,.flac,.ogg,.m4a" /></div>
+            <div className="form-group"><label>音声ファイル</label><input type="file" id="sep-file" accept=".wav,.mp3,.flac,.ogg,.m4a" {...tip('分けたい曲のファイルを選びます')} /></div>
             <div className="form-row">
                 <div className="form-group"><label>モデル</label>
-                    <select id="sep-model"><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6 パート</option></select>
+                    <select id="sep-model" {...tip('分けるときに使う方式。迷ったら標準の htdemucs を選んでください')}><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6 パート</option></select>
                 </div>
                 <div className="form-group"><label>分け方</label>
-                    <select id="sep-mode"><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
+                    <select id="sep-mode" {...tip('いくつに分けるか。歌と伴奏を分けるだけなら「2 つに分ける」が早く済みます')}><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
                 </div>
             </div>
-            <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy}>パート分離を始める</button>
+            <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy} {...tip('パート分離を始めます。終わるまで数分〜十数分かかります')}>パート分離を始める</button>
             <ToolsJobCard slot="tools-separate" handle={separate} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && (
@@ -258,8 +263,8 @@ function AnalyzePanel() {
         <div className="tool-panel active">
             <h2>音声解析</h2>
             <p className="desc">音声ファイルの周波数帯域分布・推定楽器構成・テンポなどを解析します。</p>
-            <div className="form-group"><label>音声ファイル</label><input type="file" id="da-file" accept=".wav,.mp3,.flac,.ogg,.m4a" /></div>
-            <button className="btn" onClick={handleAnalyze} disabled={progress}>解析開始</button>
+            <div className="form-group"><label>音声ファイル</label><input type="file" id="da-file" accept=".wav,.mp3,.flac,.ogg,.m4a" {...tip('調べたい音声ファイルを選びます')} /></div>
+            <button className="btn" onClick={handleAnalyze} disabled={progress} {...tip('選んだファイルを調べて、結果を下に表示します')}>解析開始</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
             {report && <div className="result-area"><h3>解析結果</h3><div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: report }} /></div>}
@@ -302,9 +307,9 @@ function EditPanel() {
         <div className="tool-panel active">
             <h2>音声編集</h2>
             <p className="desc">WAV ファイルに、トリム・カット・コピー・無音挿入・ループなどの編集をします。</p>
-            <div className="form-group"><label>WAV ファイル</label><input type="file" id="edit-file" accept=".wav" /></div>
+            <div className="form-group"><label>WAV ファイル</label><input type="file" id="edit-file" accept=".wav" {...tip('編集する WAV ファイルを選びます')} /></div>
             <div className="form-group"><label>編集操作</label>
-                <select value={action} onChange={e => {
+                <select value={action} {...tip('行う編集の種類。下の枠に、それぞれの動きが出ます')} onChange={e => {
                     setAction(e.target.value);
                     // 追加の欄は操作ごとに意味が違うので、その操作でそのまま実行できる値にしておく
                     // (ループの回数は 2 以上でないと断られる)
@@ -316,16 +321,16 @@ function EditPanel() {
             </div>
             {action !== 'silence' && (
                 <div className="form-row">
-                    <div className="form-group"><label>開始位置（秒）</label><input type="number" value={start} min="0" step="0.1" onChange={e => setStart(+e.target.value)} /></div>
-                    <div className="form-group"><label>終了位置（秒）</label><input type="number" value={end} min="0" step="0.1" onChange={e => setEnd(+e.target.value)} /></div>
+                    <div className="form-group"><label>開始位置（秒）</label><input type="number" value={start} min="0" step="0.1" onChange={e => setStart(+e.target.value)} {...tip('編集する範囲の始まり（曲の頭から何秒目か）')} /></div>
+                    <div className="form-group"><label>終了位置（秒）</label><input type="number" value={end} min="0" step="0.1" onChange={e => setEnd(+e.target.value)} {...tip('編集する範囲の終わり（曲の頭から何秒目か）')} /></div>
                 </div>
             )}
             {action === 'silence' && (
-                <div className="form-group"><label>開始位置（秒）</label><input type="number" value={start} min="0" step="0.1" onChange={e => setStart(+e.target.value)} /></div>
+                <div className="form-group"><label>開始位置（秒）</label><input type="number" value={start} min="0" step="0.1" onChange={e => setStart(+e.target.value)} {...tip('無音を入れる位置（曲の頭から何秒目か）')} /></div>
             )}
             {showExtra && <div className="form-group"><label>{extraLabel}</label><input type="number" value={extra} step="0.1" onChange={e => setExtra(+e.target.value)} /></div>}
             <div className="hint" dangerouslySetInnerHTML={{ __html: EDIT_HINTS[action] || '' }} />
-            <button className="btn" onClick={handleEdit} disabled={statusType === 'processing'}>編集を実行</button>
+            <button className="btn" onClick={handleEdit} disabled={statusType === 'processing'} {...tip('編集した結果を、新しいファイルとして作ります。元のファイルはそのままです')}>編集を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -364,9 +369,9 @@ function EffectsPanel() {
         <div className="tool-panel active">
             <h2>エフェクト</h2>
             <p className="desc">WAV ファイルにエフェクトをかけて、新しいファイルとしてダウンロードします。</p>
-            <div className="form-group"><label>WAV ファイル</label><input type="file" id="fx-file" accept=".wav" /></div>
+            <div className="form-group"><label>WAV ファイル</label><input type="file" id="fx-file" accept=".wav" {...tip('効果をかける WAV ファイルを選びます')} /></div>
             <div className="form-group"><label>エフェクト</label>
-                <select value={fxType} onChange={e => setFxType(e.target.value)}>
+                <select value={fxType} onChange={e => setFxType(e.target.value)} {...tip('かける効果の種類')}>
                     {Object.entries(FX_TOOL_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                 </select>
             </div>
@@ -378,7 +383,7 @@ function EffectsPanel() {
                     </div>
                 ))}
             </div>
-            <button className="btn" onClick={handleApply} disabled={statusType === 'processing'}>エフェクト適用</button>
+            <button className="btn" onClick={handleApply} disabled={statusType === 'processing'} {...tip('効果をかけた新しいファイルを作ります。元のファイルはそのままです')}>エフェクト適用</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -499,16 +504,17 @@ function BatchPanel() {
         <div className="tool-panel active">
             <h2>一括編集</h2>
             <p className="desc">複数の音声ファイルに同じ操作を一括適用します。</p>
-            <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files?.length ?? 0)} /></div>
+            <div className="form-group"><label>音声ファイル（複数選択可）</label><input type="file" id="batch-files" accept=".wav,.mp3,.flac,.ogg,.m4a" multiple onChange={e => setFileCount(e.target.files?.length ?? 0)} {...tip('まとめて処理するファイルを選びます。いくつでも選べます')} /></div>
             {fileCount > 0 && <div style={{ fontSize: 12, color: 'var(--text-mid)', marginBottom: 12 }}>{fileCount}個のファイルを選択</div>}
             <div className="form-row">
                 <div className="form-group"><label>カテゴリ</label>
-                    <select value={category} onChange={e => choose(e.target.value, Object.keys(BATCH_ACTIONS[e.target.value])[0])}>
+                    <select value={category} onChange={e => choose(e.target.value, Object.keys(BATCH_ACTIONS[e.target.value])[0])}
+                        {...tip('編集とエフェクトの、どちらの操作をかけるか')}>
                         <option value="edit">編集</option><option value="effects">エフェクト</option>
                     </select>
                 </div>
                 <div className="form-group"><label>操作</label>
-                    <select value={action} onChange={e => choose(category, e.target.value)}>
+                    <select value={action} onChange={e => choose(category, e.target.value)} {...tip('かける操作')}>
                         {Object.entries(actions).map(([key, a]) => <option key={key} value={key}>{a.label}</option>)}
                     </select>
                 </div>
@@ -523,7 +529,7 @@ function BatchPanel() {
                     ))}
                 </div>
             )}
-            <button className="btn" onClick={handleBatch} disabled={progress}>一括実行</button>
+            <button className="btn" onClick={handleBatch} disabled={progress} {...tip('選んだすべてのファイルに、同じ操作をかけます')}>一括実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
             {failures.length > 0 && (
@@ -565,16 +571,16 @@ function OverlayPanel() {
         <div className="tool-panel active">
             <h2>音源合成（オーバーレイ）</h2>
             <p className="desc">2 つの WAV ファイルを重ねて、1 つのファイルにします。</p>
-            <div className="form-group"><label>ベース音源</label><input type="file" id="ovl-base" accept=".wav" /></div>
-            <div className="form-group"><label>オーバーレイ音源</label><input type="file" id="ovl-over" accept=".wav" /></div>
+            <div className="form-group"><label>ベース音源</label><input type="file" id="ovl-base" accept=".wav" {...tip('下に敷く音（伴奏など）の WAV ファイル')} /></div>
+            <div className="form-group"><label>オーバーレイ音源</label><input type="file" id="ovl-over" accept=".wav" {...tip('上に重ねる音（歌など）の WAV ファイル')} /></div>
             <div className="form-row">
-                <div className="form-group"><label>開始位置（秒）</label><input type="number" value={offset} min="0" step="0.1" onChange={e => setOffset(+e.target.value)} /></div>
+                <div className="form-group"><label>開始位置（秒）</label><input type="number" value={offset} min="0" step="0.1" onChange={e => setOffset(+e.target.value)} {...tip('重ねる音を、ベース音源の何秒目から鳴らすか')} /></div>
             </div>
             <div className="form-row">
-                <div className="form-group"><label>ベース音量 (dB)</label><input type="number" value={baseVol} min="-20" max="20" onChange={e => setBaseVol(+e.target.value)} /></div>
-                <div className="form-group"><label>オーバーレイ音量 (dB)</label><input type="number" value={overVol} min="-20" max="20" onChange={e => setOverVol(+e.target.value)} /></div>
+                <div className="form-group"><label>ベース音量 (dB)</label><input type="number" value={baseVol} min="-20" max="20" onChange={e => setBaseVol(+e.target.value)} {...tip('ベース音源の大きさの増減。0 でそのまま')} /></div>
+                <div className="form-group"><label>オーバーレイ音量 (dB)</label><input type="number" value={overVol} min="-20" max="20" onChange={e => setOverVol(+e.target.value)} {...tip('重ねる音の大きさの増減。0 でそのまま')} /></div>
             </div>
-            <button className="btn" onClick={handleOverlay} disabled={statusType === 'processing'}>合成を実行</button>
+            <button className="btn" onClick={handleOverlay} disabled={statusType === 'processing'} {...tip('2 つを重ねた新しいファイルを作ります')}>合成を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -606,20 +612,20 @@ function ConvertPanel() {
         <div className="tool-panel active">
             <h2>フォーマット変換</h2>
             <p className="desc">動画ファイル（MP4 など）や音声ファイルを、WAV か MP3 に変換します。</p>
-            <div className="form-group"><label>変換元ファイル</label><input type="file" id="conv-file" accept=".mp4,.avi,.mkv,.webm,.mov,.flv,.m4a,.aac,.ogg,.flac,.wav,.mp3" /></div>
+            <div className="form-group"><label>変換元ファイル</label><input type="file" id="conv-file" accept=".mp4,.avi,.mkv,.webm,.mov,.flv,.m4a,.aac,.ogg,.flac,.wav,.mp3" {...tip('変換するファイル。MP4 などの動画からは、音だけを取り出します')} /></div>
             <div className="form-row">
                 <div className="form-group"><label>出力フォーマット</label>
-                    <select value={target} onChange={e => setTarget(e.target.value)}><option value="wav">WAV</option><option value="mp3">MP3</option></select>
+                    <select value={target} onChange={e => setTarget(e.target.value)} {...tip('作るファイルの形式。WAV は音質そのまま、MP3 はファイルが小さくなります')}><option value="wav">WAV</option><option value="mp3">MP3</option></select>
                 </div>
                 {target === 'mp3' && (
                     <div className="form-group"><label>ビットレート</label>
-                        <select value={bitrate} onChange={e => setBitrate(e.target.value)}>
+                        <select value={bitrate} onChange={e => setBitrate(e.target.value)} {...tip('MP3 の音質。数字が大きいほど音がよく、ファイルも大きくなります')}>
                             <option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option>
                         </select>
                     </div>
                 )}
             </div>
-            <button className="btn" onClick={handleConvert} disabled={statusType === 'processing'}>変換を実行</button>
+            <button className="btn" onClick={handleConvert} disabled={statusType === 'processing'} {...tip('変換したファイルを作ります')}>変換を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -704,18 +710,19 @@ function DecomposePanel() {
             </p>
             <div className="form-group">
                 <label>曲のファイル（WAV / MP3 / FLAC）</label>
-                <input type="file" id="decompose-file" accept=".wav,.mp3,.flac,.ogg,.m4a" />
+                <input type="file" id="decompose-file" accept=".wav,.mp3,.flac,.ogg,.m4a" {...tip('分けたい曲のファイルを選びます')} />
             </div>
             <div className="form-row">
                 <div className="form-group">
                     <label>BPM（0 = 自動検出）</label>
                     <input type="number" value={bpm} min="0" max="300"
-                        onChange={e => setBpm(+e.target.value)} />
+                        onChange={e => setBpm(+e.target.value)} {...tip('曲の速さ。0 にすると自動で調べます')} />
                 </div>
                 <div className="form-group">
                     <label>採譜の感度（{sensitivity}）</label>
                     <input type="range" min="0.1" max="1" step="0.05" value={sensitivity}
                         onChange={e => setSensitivity(+e.target.value)}
+                        {...tip('上げると小さな音まで拾います。余分なノートが多いときは下げてください')}
                         style={{ width: '100%', background: 'var(--bg-panel)' }} />
                 </div>
             </div>
@@ -725,7 +732,7 @@ function DecomposePanel() {
                 そちらを使うと、分けたパートがそのままトラックになり、採譜したノートがピアノロールに並びます
                 （お手本としても残ります）。
             </div>
-            <button className="btn" onClick={handleDecompose} disabled={decompose.heavyBusy}>
+            <button className="btn" onClick={handleDecompose} disabled={decompose.heavyBusy} {...tip('パート分離と採譜を始めます。数分かかります')}>
                 パート分離と採譜を始める
             </button>
             <ToolsJobCard slot="tools-decompose" handle={decompose} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
@@ -780,7 +787,7 @@ function DecomposePanel() {
                             value={JSON.stringify(result, null, 2)}
                             style={{ width: '100%', height: 120, background: 'var(--bg-primary)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 11, fontFamily: 'var(--font-mono)', resize: 'vertical', padding: 8 }}
                         />
-                        <button className="btn" style={{ marginTop: 8 }}
+                        <button className="btn" style={{ marginTop: 8 }} {...tip('上のデータを、JSON ファイルとして保存します')}
                             onClick={() => {
                                 const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
                                 const url = URL.createObjectURL(blob);
@@ -863,7 +870,7 @@ function WavOptimizePanel() {
             </p>
             <div className="form-group">
                 <label>WAV ファイル</label>
-                <input type="file" id="opt-file" accept=".wav" onChange={handleInfo} />
+                <input type="file" id="opt-file" accept=".wav" onChange={handleInfo} {...tip('小さくしたい WAV ファイル。選ぶと、いまの形式が下に出ます')} />
             </div>
 
             {info && (
@@ -876,7 +883,7 @@ function WavOptimizePanel() {
             <div className="form-row">
                 <div className="form-group">
                     <label>目標サンプルレート</label>
-                    <select value={targetSr} onChange={e => setTargetSr(+e.target.value)}>
+                    <select value={targetSr} onChange={e => setTargetSr(+e.target.value)} {...tip('1 秒を何回に分けて記録するか。44100 Hz で十分な音質です')}>
                         <option value="44100">44100 Hz（CD品質・推奨）</option>
                         <option value="48000">48000 Hz（動画標準）</option>
                         <option value="22050">22050 Hz（軽量）</option>
@@ -884,7 +891,7 @@ function WavOptimizePanel() {
                 </div>
                 <div className="form-group">
                     <label>目標ビット深度</label>
-                    <select value={targetBit} onChange={e => setTargetBit(+e.target.value)}>
+                    <select value={targetBit} onChange={e => setTargetBit(+e.target.value)} {...tip('音の大きさを記録する細かさ。16bit で十分な音質です')}>
                         <option value="16">16bit（CD品質・推奨）</option>
                         <option value="24">24bit（高品質）</option>
                     </select>
@@ -897,7 +904,7 @@ function WavOptimizePanel() {
                 動画由来の 48kHz/32bit WAV → 44.1kHz/16bit で <strong>容量が約1/3〜1/4</strong> になります。
             </div>
 
-            <button className="btn" onClick={handleOptimize} disabled={progress}>最適化を実行</button>
+            <button className="btn" onClick={handleOptimize} disabled={progress} {...tip('形式を変えて、小さくした WAV ファイルを作ります')}>最適化を実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
 
@@ -977,17 +984,18 @@ export default function ToolsPage() {
     return (
         <div className="tools-page">
             <style>{TOOLS_CSS}</style>
-            <div className="container">
-                <div className="page-header">
+            {/* 説明は右に出す (入らなければ下か上)。欄は横いっぱいなので、多くは下に出る */}
+            <div className="container" data-tip-side="right">
+                <div className="page-header" data-tip-side="bottom">
                     <h1>bunri ツール</h1>
                     <div className="nav-links">
-                        <Link to="/">DAW に戻る</Link>
-                        <Link to="/help">使い方</Link>
+                        <Link to="/" {...tip('DAW の画面に戻ります')}>DAW に戻る</Link>
+                        <Link to="/help" {...tip('使い方の説明を開きます')}>使い方</Link>
                     </div>
                 </div>
-                <div className="tool-tabs">
+                <div className="tool-tabs" data-tip-side="bottom">
                     {TABS.map(tab => (
-                        <button key={tab.key} className={activeTab === tab.key ? 'active' : ''}
+                        <button key={tab.key} className={activeTab === tab.key ? 'active' : ''} {...tip(tab.tip)}
                             onClick={() => setActiveTab(tab.key)}>{tab.label}</button>
                     ))}
                 </div>
