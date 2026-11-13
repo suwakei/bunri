@@ -11,6 +11,11 @@ const BLOCK: usize = 256;
 
 /// テストごとの作業ディレクトリに、正弦波の素材と SFZ を作る。SFZ の仮のパスを返す。
 fn sine_instrument(name: &str) -> PathBuf {
+    sine_instrument_secs(name, 2)
+}
+
+/// `sine_instrument` の長さ (秒) を指定できる版。
+fn sine_instrument_secs(name: &str, secs: u32) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bunri-audio-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let spec = hound::WavSpec {
@@ -20,7 +25,7 @@ fn sine_instrument(name: &str) -> PathBuf {
         sample_format: hound::SampleFormat::Float,
     };
     let mut w = hound::WavWriter::create(dir.join("sine.wav"), spec).unwrap();
-    for i in 0..SR * 2 {
+    for i in 0..SR * secs {
         let t = i as f32 / SR as f32;
         w.write_sample(0.5 * (2.0 * std::f32::consts::PI * 440.0 * t).sin())
             .unwrap();
@@ -176,4 +181,34 @@ fn 長さ0のノートは鳴らさない() {
         4800,
     );
     assert!(rms(&l) < 1e-6);
+}
+
+#[test]
+fn 書き出しではサンプルの頭より後ろも欠けない() {
+    // 頭だけをメモリに置き (1024 フレーム。1 ブロックより長い必要がある)、続きはディスクから
+    // 読ませる。オフライン描画は実時間よりずっと速いので、読み込みを待たないと続きが無音になる
+    let sfz = sine_instrument_secs("stream", 20);
+    let mut s = Sampler::new(SR as f32, BLOCK);
+    s.set_preload_size(1024);
+    s.load_string(
+        &sfz,
+        "<region> sample=sine.wav pitch_keycenter=69 ampeg_release=0.005",
+    )
+    .unwrap();
+    let len = SR as u64 * 18;
+    let (l, _r) = render_notes(
+        &mut s,
+        &[Note {
+            start: 0,
+            length: len,
+            pitch: 69,
+            velocity: 100,
+        }],
+        len as usize,
+    );
+    // 1 秒ごとに区切って、どの区間も鳴っていること
+    for (i, chunk) in l[SR as usize..].chunks(SR as usize).enumerate() {
+        let level = rms(chunk);
+        assert!(level > 0.05, "{} 秒目が鳴っていない: {level:.4}", i + 1);
+    }
 }

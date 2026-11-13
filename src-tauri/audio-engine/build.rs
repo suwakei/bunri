@@ -2,23 +2,82 @@
 //!
 //! sfizz 本体だけを作る (プラグイン・JACK・SMF の描画・LTO は切る)。依存 (abseil など) も
 //! sfizz の submodule にあるものを使い、システムのライブラリには頼らない。
-use std::path::PathBuf;
+//!
+//! sfizz には bunri で直した不具合がある (下の `PATCHES`)。submodule は本家のまま置き、
+//! ビルドのたびにソースを `OUT_DIR` へ写してから直す。直す前の文字列が見つからなければ
+//! ビルドを止める (sfizz を更新したときに、直しが黙って外れないように)。
+use std::path::{Path, PathBuf};
 use std::{env, fs};
+
+/// (ファイル, 直す前, 直した後, 理由)
+const PATCHES: &[(&str, &str, &str, &str)] = &[(
+    "src/sfizz/FilePool.cpp",
+    "void sfz::FilePool::waitForBackgroundLoading() noexcept
+{
+    std::lock_guard<std::mutex> guard { loadingJobsMutex };
+
+    for (auto& job : loadingJobs)",
+    "void sfz::FilePool::waitForBackgroundLoading() noexcept
+{
+    std::lock_guard<std::mutex> guard { loadingJobsMutex };
+
+    // bunri: dispatcher がまだ取り出していない依頼も、ここでジョブにしてから待つ
+    QueuedFileData queuedData;
+    while (filesToLoad->try_pop(queuedData)) {
+        if (!queuedData.id.expired())
+            loadingJobs.push_back(
+                threadPool->enqueue([this](const QueuedFileData& data) { loadingJob(data); }, std::move(queuedData)));
+    }
+
+    for (auto& job : loadingJobs)",
+    "オフライン描画 (freewheeling) で、ノートを鳴らした直後の読み込みを待ち損ねることがある。\
+     読み込みの依頼はキューに積まれ、別スレッド (dispatcher) が取り出してからジョブになるが、\
+     待つ処理はジョブしか見ないため、取り出される前だと素通りする。\
+     データが足りなくなった声はそこで終わるので、書き出しで音の続きが無音になる。\
+     コードを読んで見つけたもので、手元では再現していない (待つ処理はブロックごとに走り、\
+     サンプルの頭を鳴らしているあいだに取り出されれば間に合うため)。\
+     dispatcher が頭の長さぶん以上遅れたときにだけ起きる、稀で追いにくい不具合なので直しておく",
+)];
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let src = manifest.join("../../third_party/sfizz");
-    if !src.join("CMakeLists.txt").exists() {
+    let upstream = manifest.join("../../third_party/sfizz");
+    if !upstream.join("CMakeLists.txt").exists() {
         panic!(
             "sfizz のソースが無い: {}\n`git submodule update --init --recursive` を実行してください",
-            src.display()
+            upstream.display()
         );
     }
     println!("cargo:rerun-if-changed=build.rs");
-    println!(
-        "cargo:rerun-if-changed={}",
-        src.join("src/sfizz.h").display()
-    );
+    for f in ["CMakeLists.txt", "src/sfizz.h"] {
+        println!("cargo:rerun-if-changed={}", upstream.join(f).display());
+    }
+    for (file, ..) in PATCHES {
+        println!("cargo:rerun-if-changed={}", upstream.join(file).display());
+    }
+
+    // このスクリプトが走り直すのは、build.rs か sfizz が変わったときだけ。そのときは cmake の
+    // 作業場所ごと作り直す (写したファイルは元の更新時刻を引き継ぐので、直しを外したときに
+    // make が古いオブジェクトを使い続けてしまう)
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let src = out.join("sfizz-src");
+    for dir in [&src, &out.join("build")] {
+        if dir.exists() {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+    copy_tree(&upstream, &src);
+    for (file, before, after, why) in PATCHES {
+        let path = src.join(file);
+        let text = fs::read_to_string(&path).unwrap();
+        if !text.contains(before) {
+            panic!(
+                "sfizz の {file} に、直す前の文字列が見つからない。sfizz を更新したなら、\
+                 直しがまだ要るか確かめて build.rs の PATCHES を合わせてください。\n理由: {why}"
+            );
+        }
+        fs::write(&path, text.replacen(before, after, 1)).unwrap();
+    }
 
     let dst = cmake::Config::new(&src)
         .profile("Release")
@@ -57,5 +116,27 @@ fn main() {
         }
     } else {
         println!("cargo:rustc-link-lib=stdc++");
+    }
+}
+
+/// `from` の中身を `to` に写す (`.git` は除く)。
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
+        let (src, dst) = (entry.path(), to.join(&name));
+        let ty = entry.file_type().unwrap();
+        if ty.is_dir() {
+            copy_tree(&src, &dst);
+        } else if ty.is_symlink() {
+            let target = fs::read_link(&src).unwrap();
+            std::os::unix::fs::symlink(target, &dst).unwrap();
+        } else {
+            fs::copy(&src, &dst).unwrap();
+        }
     }
 }

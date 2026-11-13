@@ -30,6 +30,8 @@ extern "C" {
     fn sfizz_send_note_off(synth: *mut sfizz_synth_t, delay: i32, note: i32, velocity: i32);
     fn sfizz_send_cc(synth: *mut sfizz_synth_t, delay: i32, cc: i32, value: i32);
     fn sfizz_all_sound_off(synth: *mut sfizz_synth_t);
+    fn sfizz_enable_freewheeling(synth: *mut sfizz_synth_t);
+    fn sfizz_disable_freewheeling(synth: *mut sfizz_synth_t);
     fn sfizz_render_block(
         synth: *mut sfizz_synth_t,
         channels: *mut *mut f32,
@@ -126,6 +128,10 @@ impl Sampler {
     }
 
     /// サンプルの頭をメモリに置く長さ (フレーム数)。読み込みの前に呼ぶ。
+    ///
+    /// ノートを鳴らしたブロックの中は頭だけで鳴らすので、`max_block` より十分長くする
+    /// (音を上げて鳴らすと速く読み進むので、その倍率ぶんも要る)。足りないと、声は
+    /// そこで終わる。sfizz の既定は 8192。
     pub fn set_preload_size(&mut self, frames: u32) {
         unsafe { sfizz_set_preload_size(self.raw, frames) }
     }
@@ -160,6 +166,22 @@ impl Sampler {
     /// 鳴っている音をすべて止める。
     pub fn all_sound_off(&mut self) {
         unsafe { sfizz_all_sound_off(self.raw) }
+    }
+
+    /// オフライン描画のモード (sfizz の freewheeling) を切り替える。
+    ///
+    /// 有効にすると、`render` のたびにディスクからの読み込みが終わるのを待つ
+    /// (実時間より速く描画しても、サンプルの続きが欠けない)。補間の品質も
+    /// オフライン用の高い設定になる。リアルタイムの再生では無効にしておく
+    /// (待つと音が途切れる)。
+    pub fn set_offline(&mut self, offline: bool) {
+        unsafe {
+            if offline {
+                sfizz_enable_freewheeling(self.raw)
+            } else {
+                sfizz_disable_freewheeling(self.raw)
+            }
+        }
     }
 
     /// 次のブロックの音を作る。`left` と `right` は同じ長さで、`max_block` 以下。

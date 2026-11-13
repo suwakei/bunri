@@ -29,6 +29,10 @@ enum Kind {
 ///
 /// `total_frames` を超える位置のノートは鳴らない。ノートが終わったあとの余韻も
 /// `total_frames` の中に収まるぶんだけが入る。
+///
+/// 描画のあいだはサンプラーをオフラインのモードにする (ディスクからの読み込みを待つ)。
+/// 待たないと、実時間より速く回すので、サンプルの頭 (メモリに置いた部分) より後ろが
+/// 無音になる。終わったらリアルタイムのモードに戻す。
 pub fn render_notes(
     sampler: &mut Sampler,
     notes: &[Note],
@@ -41,6 +45,7 @@ pub fn render_notes(
     }
     events.sort_by_key(|&(frame, kind, _)| (frame, matches!(kind, Kind::On(_))));
 
+    sampler.set_offline(true);
     let block = sampler.max_block();
     let mut left = vec![0f32; total_frames];
     let mut right = vec![0f32; total_frames];
@@ -61,5 +66,6 @@ pub fn render_notes(
         sampler.render(&mut left[pos..pos + len], &mut right[pos..pos + len]);
         pos += len;
     }
+    sampler.set_offline(false);
     (left, right)
 }
