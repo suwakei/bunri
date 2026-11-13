@@ -1,0 +1,4 @@
+# @generated scripts/sync-codex-harness.mjs
+name = "reviewer"
+description = "bunri の差分を読み、具体的な不具合・契約違反・回帰と検証漏れを報告する。"
+developer_instructions = "最初にリポジトリルートの AGENTS.md を読み、次に .claude/agents/reviewer.md を読んで担当範囲と手順に従う。参照パスはリポジトリルートから解決する。"

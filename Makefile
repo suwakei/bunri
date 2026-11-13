@@ -1,7 +1,7 @@
 # bunri DAW — コマンド集
 # 使い方: make <コマンド>
 
-.PHONY: help install install-frontend install-desktop desktop desktop-build dev-web e2e e2e-desktop test lint clean
+.PHONY: help install install-frontend install-desktop desktop desktop-build dev-web e2e e2e-desktop test lint clean check check-all check-plan check-harness harness-sync harness-setup
 
 help: ## コマンド一覧を表示
 	@echo ""
@@ -17,6 +17,12 @@ help: ## コマンド一覧を表示
 	@echo "  make e2e-desktop       本物の窓（デスクトップアプリ）を自動操作するテスト（mac のみ）"
 	@echo "  make test              全テストを実行（フロント + バック + Rust）"
 	@echo "  make lint              リント実行（ESLint + ruff + cargo fmt / clippy）"
+	@echo "  make check             変更した領域を検証（UI / API 変更は E2E も含む）"
+	@echo "  make check-plan        検証対象とコマンドを表示（実行しない）"
+	@echo "  make check-all         全領域の検証とブラウザ / 本物の窓の E2E"
+	@echo "  make check-harness     Codex 設定の同期とハーネスのテスト"
+	@echo "  make harness-sync      共通ルール・MCP から Codex 用ファイルを生成"
+	@echo "  make harness-setup     Codex ハーネスを同期し、この clone の Git hook を有効化"
 	@echo "  make clean             生成ファイルとキャッシュを削除"
 	@echo ""
 
@@ -57,7 +63,25 @@ lint: ## リント実行
 	@# 窓を自動操作する WebDriver サーバ (機能 e2e) が、既定のビルドに入っていないこと
 	cd src-tauri && ! cargo tree -e normal --prefix none | grep -q '^tauri-plugin-wdio-webdriver '
 
-clean: ## 生成ファイルとキャッシュを削除
+check: ## 変更した領域を検証する（生成物・ユーザーデータ・別 worktree は除外）
+	node scripts/check.mjs
+
+check-all: ## 全領域とブラウザ / 本物の窓を検証する
+	node scripts/check.mjs --scope all --e2e
+
+check-plan: ## 変更した領域の検証プランを表示する
+	node scripts/check.mjs --list
+
+check-harness: ## Codex 設定の同期とハーネス自体を検証する
+	node scripts/check.mjs --scope harness
+
+harness-sync: ## Claude / Codex 共通文書と MCP から Codex 用ファイルを生成する
+	node scripts/sync-codex-harness.mjs
+
+harness-setup: ## この clone のハーネスと Git hook を用意する（依存のインストールはしない）
+	node scripts/setup-harness.mjs
+
+clean: ## 生成ファイルとキャッシュを削除（注意: uploads / results / projects のデータも消す）
 	rm -rf results uploads projects
 	rm -rf web-ui/dist
 	rm -rf web-ui/node_modules

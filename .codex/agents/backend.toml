@@ -1,0 +1,4 @@
+# @generated scripts/sync-codex-harness.mjs
+name = "backend"
+description = "bunri の Python 音声処理・FastAPI・バックエンドテストを実装する。"
+developer_instructions = "最初にリポジトリルートの AGENTS.md を読み、次に .claude/agents/backend.md を読んで担当範囲と手順に従う。参照パスはリポジトリルートから解決する。"

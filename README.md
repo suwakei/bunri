@@ -59,6 +59,8 @@ blocks it the first time:
 
 To work on the app, run it in development mode: `make install`, `make install-frontend` and `make install-desktop` once, then `make desktop`.
 
+For development with Codex, run `make harness-setup`; see the [Codex harness guide](docs/codex-harness.md) for shared agent rules, skills and verification commands.
+
 ## How It Works
 
 ```mermaid
