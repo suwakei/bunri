@@ -464,3 +464,33 @@ test.describe('ピアノロールの表示の大きさ', () => {
         await check(5, 17);
     });
 });
+
+test.describe('ノートの強さを元に戻す', () => {
+    const velocities = (page: Page) => noteTitles(page).then((titles) => titles.map((t) => t.match(/強さ:(\d+)$/)?.[1] ?? null));
+
+    test('強さの変更は元に戻せ、やり直せる。続けて押した Option+↑ は 1 つの記録にまとまる', async ({ page }) => {
+        await openPianoRoll(page);
+        await placeNote(page, 30, 60);
+        await placeNote(page, 110, 60);
+        await page.keyboard.press('ControlOrMeta+a');
+        await expect(selected(page)).toHaveCount(2);
+
+        await page.locator('#velocity-input').fill('50');
+        await page.locator('#velocity-input').press('Enter');
+        expect(await velocities(page)).toEqual(['50', '50']);
+        await expect(undoButton(page)).toHaveAttribute('title', /2 ノートの強さを変更/);
+
+        await page.locator('#piano-grid-wrap').focus();
+        for (let i = 0; i < 3; i++) await page.keyboard.press('Alt+ArrowUp');
+        expect(await velocities(page)).toEqual(['80', '80']);
+
+        // 続けて押したぶんが 1 つ戻り、次で、強さを持たない元の状態に戻る
+        await page.keyboard.press('ControlOrMeta+z');
+        expect(await velocities(page)).toEqual(['50', '50']);
+        await page.keyboard.press('ControlOrMeta+z');
+        expect(await velocities(page)).toEqual([null, null]);
+
+        await redoButton(page).click();
+        expect(await velocities(page)).toEqual(['50', '50']);
+    });
+});

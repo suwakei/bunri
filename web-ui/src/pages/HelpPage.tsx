@@ -179,6 +179,7 @@ export default function HelpPage() {
                         <li><strong>ノートの削除:</strong> ノートをクリックして選び、<span className="kbd">Delete</span> か <span className="kbd">Backspace</span> キー</li>
                         <li><strong>まとめて選ぶ:</strong> 何も無いところからドラッグして囲む、<span className="kbd">Shift</span> を押しながらクリックで足す・外す、<span className="kbd">⌘A</span> で全部。選んだノートは、まとめて動かす・消すことができます</li>
                         <li><strong>矢印キー:</strong> 選んだノートを、<span className="kbd">←</span> <span className="kbd">→</span> でグリッドの刻み（1 拍）、<span className="kbd">↑</span> <span className="kbd">↓</span> で半音、<span className="kbd">Shift</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> で 1 オクターブ動かします</li>
+                        <li><strong>ノートの強さ:</strong> ノートを選ぶと、見出しの「強さ」の欄に今の値（1〜127）が出ます。数値を入れて <span className="kbd">Enter</span> で、選んだノートが全部その強さになります。− / ＋ と、<span className="kbd">Option</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> は、選んだノートの強さを差を保ったまま 10 ずつ上下させます（<span className="kbd">Shift</span> も押すと 1 ずつ）。マウスで置いたノートは 96 で鳴ります</li>
                         <li><strong>コピーと貼り付け:</strong> <span className="kbd">⌘C</span> でコピー、<span className="kbd">⌘X</span> で切り取り、<span className="kbd">⌘V</span> で再生位置に貼り付け、<span className="kbd">⌘D</span> で選んだノートのすぐ後ろに複製します。別のトラックにも貼り付けられます</li>
                         <li><strong>表示の大きさ:</strong> 見出しの「横」「縦」の − / ＋。<span className="kbd">⌘</span> を押しながらホイール（トラックパッドならピンチ）でも横の大きさが変わります</li>
                         <li><strong>音を確かめる:</strong> 左の鍵盤を押すと、その高さの音が鳴ります</li>
@@ -258,6 +259,7 @@ export default function HelpPage() {
                         <li><span className="kbd">Delete</span> / <span className="kbd">Backspace</span> — 選んでいるノートを削除（クリップを選んでいるときは、そのクリップを削除）</li>
                         <li><span className="kbd">⌘A</span> / <span className="kbd">⌘C</span> / <span className="kbd">⌘X</span> / <span className="kbd">⌘V</span> / <span className="kbd">⌘D</span> — ピアノロールで、全部選ぶ / コピー / 切り取り / 再生位置に貼り付け / すぐ後ろに複製</li>
                         <li><span className="kbd">←</span> <span className="kbd">→</span> <span className="kbd">↑</span> <span className="kbd">↓</span>（ピアノロール） — 選んだノートを動かす（<span className="kbd">Shift</span> + <span className="kbd">↑</span> <span className="kbd">↓</span> で 1 オクターブ）</li>
+                        <li><span className="kbd">Option</span> + <span className="kbd">↑</span> <span className="kbd">↓</span>（ピアノロール） — 選んだノートの強さを 10 ずつ上下（<span className="kbd">Shift</span> も押すと 1 ずつ）</li>
                         <li><span className="kbd">Esc</span>（ピアノロール） — ノートの選択を外す</li>
                         <li><span className="kbd">Esc</span> — 案内やグリッドの補正の窓を閉じる。練習画面では、アレンジに戻る</li>
                         <li><span className="kbd">L</span>（練習画面） — 区間ループを入れる / 止める</li>

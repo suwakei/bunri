@@ -3,7 +3,7 @@
  * 音域 (C0〜B8) の端の音も扱えること。
  */
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { openDaw, startFree, recordOscillators, soundedFrequencies, openNewestLegacy } from './helpers';
+import { openDaw, startFree, recordOscillators, soundedFrequencies, openNewestLegacy, openProject, saveProject } from './helpers';
 
 const STEP_WIDTH = 20;
 const NOTE_HEIGHT = 14;
@@ -416,5 +416,78 @@ test.describe('試し聴き', () => {
         });
         expect(hint.size).toBeGreaterThanOrEqual(11);
         expect(hint.color).toBe('rgb(158, 154, 146)');
+    });
+});
+
+test.describe('ノートの強さ', () => {
+    const notes = (page: Page) => page.locator('#note-layer .note-block');
+    const bar = (page: Page) => page.locator('.piano-velocity');
+    const input = (page: Page) => page.locator('#velocity-input');
+    /** ノートの強さ (説明の「強さ:N」)。強さを持たないノートは null。 */
+    const velocities = (page: Page) => noteTitles(page).then((titles) => titles.map((t) => {
+        const m = t.match(/強さ:(\d+)$/);
+        return m ? Number(m[1]) : null;
+    }));
+
+    test('選んだノートの強さを、数値・−/＋・Option+↑↓ で変えられる。触っていないノートは強さを持たないまま保存される', async ({ page }) => {
+        await openPianoRoll(page);
+        for (const x of [30, 110, 190, 270]) await placeNote(page, x, 60);
+        // 何も選んでいなければ、欄は押せない (場所は取っておく。選んだときに見出しの高さが変わらないように)
+        await expect(input(page)).toBeDisabled();
+        const gridTop = (await page.locator('#piano-grid-wrap').boundingBox())!.y;
+
+        // マウスで置いたノートは強さを持たない。96 として出し、「既定」と添える
+        await notes(page).nth(0).click();
+        await expect(input(page)).toHaveValue('96');
+        expect((await page.locator('#piano-grid-wrap').boundingBox())!.y).toBe(gridTop);
+        await expect(bar(page)).toContainText('既定');
+        await input(page).fill('40');
+        await input(page).press('Enter');
+        expect(await velocities(page)).toEqual([40, null, null, null]);
+        await expect(input(page)).toHaveValue('40');
+
+        // 3 つ選ぶと、ばらばらなので「混在」。＋ は差を保ったまま上げる (強さを持たないノートは 96 から)
+        await notes(page).nth(1).click({ modifiers: ['Shift'] });
+        await notes(page).nth(2).click({ modifiers: ['Shift'] });
+        await expect(input(page)).toHaveValue('');
+        await expect(bar(page)).toContainText('混在');
+        await expect(bar(page)).toContainText('3 ノート');
+        await bar(page).getByRole('button', { name: '強さを 10 上げる' }).click();
+        expect(await velocities(page)).toEqual([50, 106, 106, null]);
+
+        // ピアノロールにフォーカスを戻して、Option+↓ で 10、Shift も押すと 1 ずつ
+        await page.locator('#piano-grid-wrap').focus();
+        await page.keyboard.press('Alt+ArrowDown');
+        expect(await velocities(page)).toEqual([40, 96, 96, null]);
+        await page.keyboard.press('Alt+Shift+ArrowUp');
+        expect(await velocities(page)).toEqual([41, 97, 97, null]);
+        // 端では 1〜127 で止まる
+        for (let i = 0; i < 4; i++) await page.keyboard.press('Alt+ArrowUp');
+        expect(await velocities(page)).toEqual([81, 127, 127, null]);
+
+        // 数値を入れると、全部その値になる。範囲の外は受け付けず、元の表示に戻す
+        await input(page).fill('64');
+        await input(page).press('Enter');
+        expect(await velocities(page)).toEqual([64, 64, 64, null]);
+        await expect(input(page)).toHaveValue('64');
+        await input(page).fill('200');
+        await input(page).press('Enter');
+        await expect(input(page)).toHaveValue('64');
+        expect(await velocities(page)).toEqual([64, 64, 64, null]);
+        // 文字を消しても、ノートは消えない (欄の中の Backspace はピアノロールの操作にしない)
+        await input(page).press('Backspace');
+        await input(page).press('Backspace');
+        await expect(notes(page)).toHaveCount(4);
+        await input(page).press('Escape');
+        await expect(input(page)).toHaveValue('64');
+
+        // 保存して開き直しても残る。触っていないノートは強さを持たないまま
+        const name = await saveProject(page, `e2e-velocity-edit-${Date.now()}`);
+        await page.reload();
+        await page.getByText('準備完了').waitFor();
+        await openProject(page, name);
+        await page.locator('#tracks-container .track-name').first().click();
+        await expect(notes(page)).toHaveCount(4);
+        expect(await velocities(page)).toEqual([64, 64, 64, null]);
     });
 });
