@@ -418,7 +418,7 @@ test.describe('単音メロディ解析', () => {
             () => page.getByRole('button', { name: '解析してピアノロールに配置' }).click(), 80_000);
         expect(analyzed.state).toBe('done');
         await expect(statusText(page)).toHaveText('4個のノートを検出しました');
-        const titles = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
+        const titles = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.note ?? ''));
         expect(titles.map((t) => t.split(' ')[0])).toEqual(['C4', 'E4', 'G4', 'C5']);
         expect(titles.map((t) => Number(t.match(/step:(\d+)/)![1]))).toEqual([0, 8, 16, 24]);
         // トラックの見出しにノートの数が出る

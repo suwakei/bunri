@@ -121,10 +121,10 @@ test('スクロールした先でクリップを動かしても、押した分�
     };
     // 拍 (0.5 秒 = 40px) にそろう。205px → 200px = 2.5 秒
     await drag(205);
-    await expect(clips(page).first()).toHaveAttribute('title', /開始: 2\.5s/);
+    await expect(clips(page).first()).toHaveAttribute('data-tip', /（2\.5 秒から/);
     await scrollTimeline(page, 120);
     await drag(120);
-    await expect(clips(page).first()).toHaveAttribute('title', /開始: 4\.0s/);
+    await expect(clips(page).first()).toHaveAttribute('data-tip', /（4\.0 秒から/);
     // 小節番号の段と合っている: 4.0 秒 = 3 小節目の頭
     const ruler = await box(page, '#timeline-header-canvas');
     const clip = await box(page, '#tracks-container .clip');
@@ -165,7 +165,7 @@ test.describe('シークバー', () => {
         // 再生すると、つまみが動き出す (以前は、キーで動かした後は止まったままだった)
         await page.locator('#btn-play').click();
         await expect.poll(async () => Number(await page.locator('#seek-bar').inputValue())).toBeGreaterThan(10);
-        await page.locator('#transport button[title="停止"]').click();
+        await page.locator('#transport button[aria-label="停止"]').click();
     });
 
     test('押した位置へ移動する (続けて押しても、1 つ前の位置にならない)', async ({ page }) => {
@@ -251,7 +251,7 @@ test.describe('トラックとクリップ', () => {
         await expect(toast).toContainText('クリップ「two-sec.wav」を「Track 1」から削除しました');
         await toast.getByRole('button', { name: '元に戻す' }).click();
         await expect(clips(page)).toHaveCount(1);
-        await expect(clips(page).first()).toHaveAttribute('title', /開始: 0\.0s/);
+        await expect(clips(page).first()).toHaveAttribute('data-tip', /（0\.0 秒から/);
         await expect(toast).not.toContainText('削除しました');
     });
 
@@ -263,7 +263,7 @@ test.describe('トラックとクリップ', () => {
         await page.mouse.click(clip.x + 10, clip.y + 10, { button: 'right' });
         await page.getByRole('menuitem', { name: '複製' }).click();
         await expect(clips(page)).toHaveCount(2);
-        await expect(clips(page).nth(1)).toHaveAttribute('title', /開始: 2\.0s/);
+        await expect(clips(page).nth(1)).toHaveAttribute('data-tip', /（2\.0 秒から/);
         await page.getByRole('button', { name: '元に戻す', exact: true }).click();
         await expect(clips(page)).toHaveCount(1);
     });
@@ -292,12 +292,12 @@ test.describe('トラックとクリップ', () => {
         await page.mouse.down();
         await page.mouse.move(clip.x + 20 + 160, clip.y + 20, { steps: 5 });
         await page.mouse.up();
-        await expect(clips(page).first()).toHaveAttribute('title', /開始: 2\.0s/);
-        await expect(page.locator('#btn-undo')).toHaveAttribute('title', /クリップを移動/);
+        await expect(clips(page).first()).toHaveAttribute('data-tip', /（2\.0 秒から/);
+        await expect(page.locator('#btn-undo')).toHaveAttribute('data-tip', /クリップを移動/);
         await page.keyboard.press('ControlOrMeta+z');
-        await expect(clips(page).first()).toHaveAttribute('title', /開始: 0\.0s/);
+        await expect(clips(page).first()).toHaveAttribute('data-tip', /（0\.0 秒から/);
         await page.keyboard.press('ControlOrMeta+Shift+z');
-        await expect(clips(page).first()).toHaveAttribute('title', /開始: 2\.0s/);
+        await expect(clips(page).first()).toHaveAttribute('data-tip', /（2\.0 秒から/);
     });
 
     test('音声ファイルをドロップすると、落とした位置にクリップが入る。音声でないファイルは断る', async ({ page }) => {
@@ -317,7 +317,7 @@ test.describe('トラックとクリップ', () => {
         // 拡張子が大文字でも受ける。240px = 3 秒の位置
         await drop('LOUD.WAV', 240);
         await expect(clips(page)).toHaveCount(1);
-        await expect(clips(page).first()).toHaveAttribute('title', /開始: 3\.0s/);
+        await expect(clips(page).first()).toHaveAttribute('data-tip', /（3\.0 秒から/);
         await expect(statusText(page)).toHaveText('LOUD.WAV を「Track 1」に追加しました');
 
         await drop('notes.txt', 100);
@@ -408,15 +408,16 @@ test.describe('トラックのボタン', () => {
         await startFree(page);
         const row = page.locator('#tracks-container .track-row').first();
         const expected: [string, string, string][] = [
-            ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけ再生'],
-            ['.btn-mute', '「Track 1」をミュート', 'ミュート（このトラックを鳴らさない）'],
-            ['.btn-solo', '「Track 1」をソロ', 'ソロ（このトラックだけ鳴らす）'],
-            ['.btn-track-menu', '「Track 1」のメニュー', 'メニュー（名前の変更・並びの変更・削除）'],
+            ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけを、いまの位置から鳴らします'],
+            ['.btn-mute', '「Track 1」をミュート', 'このトラックの音を消します（ミュート）'],
+            ['.btn-solo', '「Track 1」をソロ', '再生したとき、このトラックだけが聞こえるようにします（ソロ）'],
+            ['.btn-track-menu', '「Track 1」のメニュー', '名前の変更、並べ替え、削除'],
         ];
-        for (const [selector, label, title] of expected) {
+        for (const [selector, label, tipText] of expected) {
             const button = row.locator(selector);
             await expect(button).toHaveAttribute('aria-label', label);
-            await expect(button).toHaveAttribute('title', title);
+            // 何をするボタンかは、マウスを載せたときの説明 (ツールチップ) にも出る
+            await expect(button).toHaveAttribute('data-tip', tipText);
             const size = (await button.boundingBox())!;
             expect(size.width, selector).toBeGreaterThanOrEqual(24);
             expect(size.height, selector).toBeGreaterThanOrEqual(24);

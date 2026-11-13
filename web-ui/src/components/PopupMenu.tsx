@@ -6,6 +6,7 @@
  * - 画面の端からはみ出さないよう、位置を内側に寄せる
  */
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { tip } from '../lib/tooltip';
 
 /** メニューの 1 項目。 */
 export interface MenuItem {
@@ -87,13 +88,13 @@ export default function PopupMenu({ request, onClose }: { request: MenuRequest |
     };
 
     return (
-        <div className="popup-menu" role="menu" aria-label={request.label} ref={menuRef} onKeyDown={onKeyDown}
+        <div className="popup-menu" data-tip-side="right" role="menu" aria-label={request.label} ref={menuRef} onKeyDown={onKeyDown}
             style={{ left: request.x, top: request.y, visibility: 'hidden' }}
             onContextMenu={(e) => e.preventDefault()}>
             {request.items.map((item) => (
                 <button key={item.label} type="button" role="menuitem" tabIndex={-1}
                     className={'popup-menu-item' + (item.danger ? ' danger' : '')}
-                    aria-disabled={item.disabled ? 'true' : undefined} title={item.title}
+                    aria-disabled={item.disabled ? 'true' : undefined} {...(item.title ? tip(item.title) : {})}
                     onClick={() => {
                         if (item.disabled) return;
                         close(item.restoreFocus !== false);

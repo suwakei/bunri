@@ -60,7 +60,7 @@ describe('StatusBar', () => {
         expect(alert).toHaveTextContent('保存できませんでした');
         expect(alert).toHaveClass('error');
         // 長くて末尾が切れても、全文を読める
-        expect(alert).toHaveAttribute('title', '保存できませんでした');
+        expect(alert).toHaveAttribute('data-tip', '保存できませんでした');
         // 次の知らせが失敗でなければ、元に戻る
         fireEvent.click(screen.getByText('成功'));
         expect(screen.queryByRole('alert')).not.toBeInTheDocument();

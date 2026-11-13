@@ -16,7 +16,7 @@ const trackNames = async (page: Page) => page.locator('#tracks-container .track-
     rows.map((row) => (row.querySelector('.track-name')?.firstChild?.textContent ?? '').trim()));
 
 /** 置かれたノートの説明 (例: "C4 step:8 len:4") を全部返す。 */
-const noteTitles = (page: Page) => notes(page).evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
+const noteTitles = (page: Page) => notes(page).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.note ?? ''));
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 function midiOf(title: string): number {
     const [, name, octave] = title.match(/^([A-G]#?)(-?\d+) /)!;
@@ -83,15 +83,15 @@ test.describe('元に戻す / やり直す', () => {
 
         await placeNote(page, 30, 100);
         await expect(undoButton(page)).toBeEnabled();
-        await expect(undoButton(page)).toHaveAttribute('title', /元に戻す: ノートを追加/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /（ノートを追加）を取り消します/);
         const placed = (await noteTitles(page))[0];
         await dragNote(page, 0, 4 * STEP_WIDTH, 0);
         expect(stepOf((await noteTitles(page))[0])).toBe(4);
-        await expect(undoButton(page)).toHaveAttribute('title', /ノートを移動/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /ノートを移動/);
         await notes(page).first().click();
         await page.keyboard.press('Delete');
         await expect(notes(page)).toHaveCount(0);
-        await expect(undoButton(page)).toHaveAttribute('title', /ノートを削除/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /ノートを削除/);
 
         // 1 つずつ戻る
         await page.keyboard.press('ControlOrMeta+z');
@@ -106,7 +106,7 @@ test.describe('元に戻す / やり直す', () => {
         await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveCount(0);
 
         // やり直す (ボタンとキー)
-        await expect(redoButton(page)).toHaveAttribute('title', /やり直す: ノートを追加/);
+        await expect(redoButton(page)).toHaveAttribute('data-tip', /（ノートを追加）をもう一度行います/);
         await redoButton(page).click();
         expect(await noteTitles(page)).toEqual([placed]);
         await page.keyboard.press('ControlOrMeta+Shift+z');
@@ -116,7 +116,7 @@ test.describe('元に戻す / やり直す', () => {
         await page.keyboard.press('ControlOrMeta+z');
         await placeNote(page, 130, 60);
         await expect(redoButton(page)).toBeDisabled();
-        await expect(redoButton(page)).toHaveAttribute('title', 'やり直せる操作はありません');
+        await expect(redoButton(page)).toHaveAttribute('data-tip', 'やり直せる操作はありません');
     });
 
     test('文字を打ち込む欄の中の Cmd+Z は、その欄の文字を戻すだけで、アプリの「元に戻す」は動かない', async ({ page }) => {
@@ -127,7 +127,7 @@ test.describe('元に戻す / やり直す', () => {
         await bpm.press('ControlOrMeta+z');
         await bpm.press('ControlOrMeta+Shift+z');
         await expect(notes(page)).toHaveCount(1);
-        await expect(undoButton(page)).toHaveAttribute('title', /ノートを追加/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /ノートを追加/);
 
         // トラック名の入力欄でも同じ
         await page.getByRole('button', { name: '「Track 1」のメニュー' }).click();
@@ -160,7 +160,7 @@ test.describe('元に戻す / やり直す', () => {
         await expect(page.getByRole('button', { name: '「Track 2」のメニュー' })).toBeFocused();
         await page.getByRole('button', { name: '「Track 1」をミュート' }).click();
         await page.getByRole('button', { name: '「Track 2」をソロ' }).click();
-        await expect(undoButton(page)).toHaveAttribute('title', /「Track 2」をソロ/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /「Track 2」をソロ/);
         await undoButton(page).click();
         await expect(page.getByRole('button', { name: '「Track 2」をソロ' })).toHaveAttribute('aria-pressed', 'false');
         await undoButton(page).click();
@@ -478,7 +478,7 @@ test.describe('ノートの強さを元に戻す', () => {
         await page.locator('#velocity-input').fill('50');
         await page.locator('#velocity-input').press('Enter');
         expect(await velocities(page)).toEqual(['50', '50']);
-        await expect(undoButton(page)).toHaveAttribute('title', /2 ノートの強さを変更/);
+        await expect(undoButton(page)).toHaveAttribute('data-tip', /2 ノートの強さを変更/);
 
         await page.locator('#piano-grid-wrap').focus();
         for (let i = 0; i < 3; i++) await page.keyboard.press('Alt+ArrowUp');

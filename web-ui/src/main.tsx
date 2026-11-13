@@ -21,6 +21,7 @@ import { health } from './lib/health';
 import { jobTracker } from './lib/jobs';
 import BootMessage from './components/BootMessage';
 import HealthBanner from './components/HealthBanner';
+import TooltipLayer from './components/Tooltip';
 import DawPage from './pages/DawPage';
 import ToolsPage from './pages/ToolsPage';
 import HelpPage from './pages/HelpPage';
@@ -37,6 +38,7 @@ function renderApp() {
           <Route path="/tools" element={<ToolsPage />} />
           <Route path="/help" element={<HelpPage />} />
         </Routes>
+        <TooltipLayer />
       </BrowserRouter>
       <HealthBanner />
     </StrictMode>

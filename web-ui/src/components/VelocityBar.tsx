@@ -15,6 +15,7 @@
 import { useState } from 'react';
 import { VELOCITY_MAX, VELOCITY_MIN, VELOCITY_STEP } from '../lib/velocity';
 import type { VelocitySummary } from '../lib/velocity';
+import { tip } from '../lib/tooltip';
 
 interface Props {
     /** 選んでいるノートの強さのまとめ */
@@ -57,25 +58,30 @@ export default function VelocityBar({ summary, open, onSet, onNudge }: Props) {
         if (v !== null && draft.trim() !== shown) onSet(v);
     };
     const allUnset = summary.unset === summary.count;
-    const title = (none ? 'ノートを選ぶと、強さを変えられます' : `選んだ ${summary.count} ノートの強さ`) + `（${VELOCITY_MIN}〜${VELOCITY_MAX}）。`
-        + '強さを持たないノートは 96 で鳴ります。ピアノロールでは Option（Alt）+ ↑↓ でも変えられます（Shift も押すと 1 ずつ）';
+    // 押せないあいだは、どうすれば押せるようになるかを書く
+    const inputTip = none
+        ? 'ピアノロールでノートを選ぶと、そのノートを弾く強さをここで変えられます'
+        : `選んだノートを弾く強さ（${VELOCITY_MIN}〜${VELOCITY_MAX}）。大きいほど強く鳴ります。数字を入れて Enter を押すと、選んだノートが全部その強さになります`;
+    const nudgeTip = (dir: '上げ' | '下げ') => none
+        ? 'ピアノロールでノートを選ぶと押せます'
+        : `選んだノートの強さを ${VELOCITY_STEP} ずつ${dir}ます。ノートどうしの強さの差は変わりません`;
 
     return (
         <span className="piano-velocity" role="group" aria-label="選んだノートの強さ">
             <label htmlFor="velocity-input" className="area-hint">強さ</label>
             <input id="velocity-input" type="text" inputMode="numeric" value={draft ?? shown} size={3} maxLength={3}
                 disabled={none}
-                aria-describedby="velocity-note" title={title}
+                aria-describedby="velocity-note" {...tip(inputTip)}
                 onChange={(e) => setDraft(e.target.value)}
                 onBlur={commit}
                 onKeyDown={(e) => {
                     if (e.key === 'Enter') { e.preventDefault(); commit(); }
                     else if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
                 }} />
-            <button type="button" aria-label={`強さを ${VELOCITY_STEP} 下げる`} title={`選んだノートの強さを ${VELOCITY_STEP} 下げる（差は保つ）`} disabled={none}
-                onClick={() => onNudge(-VELOCITY_STEP)}>−</button>
-            <button type="button" aria-label={`強さを ${VELOCITY_STEP} 上げる`} title={`選んだノートの強さを ${VELOCITY_STEP} 上げる（差は保つ）`} disabled={none}
-                onClick={() => onNudge(VELOCITY_STEP)}>＋</button>
+            <button type="button" aria-label={`強さを ${VELOCITY_STEP} 下げる`} disabled={none}
+                {...tip(nudgeTip('下げ'), { key: 'Option + ↓' })} onClick={() => onNudge(-VELOCITY_STEP)}>−</button>
+            <button type="button" aria-label={`強さを ${VELOCITY_STEP} 上げる`} disabled={none}
+                {...tip(nudgeTip('上げ'), { key: 'Option + ↑' })} onClick={() => onNudge(VELOCITY_STEP)}>＋</button>
             <span id="velocity-note" className="area-hint">
                 {none ? '' : summary.value === null ? '混在' : allUnset ? '既定' : ''}
                 {summary.count > 1 ? `（${summary.count} ノート）` : ''}

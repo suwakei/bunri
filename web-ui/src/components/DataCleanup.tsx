@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useDaw } from '../lib/store';
 import { apiFetch, describeError, errorDetail } from '../lib/api';
 import { formatBytes } from '../lib/project-actions';
+import { tip } from '../lib/tooltip';
 
 interface Usage {
     data_dir: string;
@@ -74,7 +75,8 @@ export default function DataCleanup() {
                     </tbody>
                 </table>
             )}
-            <button type="button" className="action-btn" onClick={cleanup} disabled={busy}>
+            <button type="button" className="action-btn" onClick={cleanup} disabled={busy}
+                {...tip('たまった一時ファイルを消して、空きを増やします。保存したプロジェクトは消えません')}>
                 {busy ? '整理しています…' : '一時ファイルを整理する'}
             </button>
             {message && <p className="note-text" role="status">{message}</p>}

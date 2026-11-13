@@ -43,7 +43,7 @@ async function openPianoRoll(page: Page) {
 }
 
 /** 置かれたノートの説明 (例: "C4 step:8 len:4") を全部返す。 */
-const noteTitles = (page: Page) => page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
+const noteTitles = (page: Page) => page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.note ?? ''));
 
 /** 音名を低い順に並べたもの。 */
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -154,7 +154,7 @@ test('低い音だけのトラックを開くと、ノートの在る高さへ�
     // 別のトラックへ移ると、そのトラックのノートの在る高さへ移動する (真ん中の値の C4)
     await page.locator('#tracks-container .track-name').nth(1).click();
     await expect(page.locator('#note-layer .note-block')).toHaveCount(2);
-    expect(await isInView(page, '#note-layer .note-block[title^="C4 "]')).toBe(true);
+    expect(await isInView(page, '#note-layer .note-block[data-note^="C4 "]')).toBe(true);
 
     // ノートが 1 つでも見えていれば、見ている場所は動かさない (同じトラックを開き直す)
     await scrollTo(page, 0, rowOf('C', 4) * NOTE_HEIGHT - 40);
@@ -423,7 +423,7 @@ test.describe('ノートの強さ', () => {
     const notes = (page: Page) => page.locator('#note-layer .note-block');
     const bar = (page: Page) => page.locator('.piano-velocity');
     const input = (page: Page) => page.locator('#velocity-input');
-    /** ノートの強さ (説明の「強さ:N」)。強さを持たないノートは null。 */
+    /** ノートの強さ (data-note の「強さ:N」)。強さを持たないノートは null。 */
     const velocities = (page: Page) => noteTitles(page).then((titles) => titles.map((t) => {
         const m = t.match(/強さ:(\d+)$/);
         return m ? Number(m[1]) : null;

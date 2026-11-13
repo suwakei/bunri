@@ -40,8 +40,8 @@ test('弾いた強さがノートに残り、保存して開き直しても、MI
     await press(page, 60, 30);
     await press(page, 64, 120);
     await expect(notes(page)).toHaveCount(2);
-    await expect(notes(page).nth(0)).toHaveAttribute('title', /^C4 step:0 len:4 強さ:30$/);
-    await expect(notes(page).nth(1)).toHaveAttribute('title', /^E4 step:4 len:4 強さ:120$/);
+    await expect(notes(page).nth(0)).toHaveAttribute('data-note', /^C4 step:0 len:4 強さ:30$/);
+    await expect(notes(page).nth(1)).toHaveAttribute('data-note', /^E4 step:4 len:4 強さ:120$/);
     // 弱いノートのほうが薄く見える
     const opacity = (index: number) => notes(page).nth(index).evaluate((el) => Number(getComputedStyle(el).opacity));
     expect(await opacity(0)).toBeLessThan(await opacity(1));
@@ -49,7 +49,7 @@ test('弾いた強さがノートに残り、保存して開き直しても、MI
     // マウスで置いたノートは、強さを持たない (これまでどおりの見え方)
     await page.locator('#note-layer').dblclick({ position: { x: 330, y: 700 } });
     await expect(notes(page)).toHaveCount(3);
-    await expect(notes(page).nth(2)).not.toHaveAttribute('title', /強さ/);
+    await expect(notes(page).nth(2)).not.toHaveAttribute('data-note', /強さ/);
 
     // MIDI に書き出すと、強さが入る。強さを持たないノートは 96
     const download = page.waitForEvent('download');
@@ -67,9 +67,9 @@ test('弾いた強さがノートに残り、保存して開き直しても、MI
     await openProject(page, name);
     await page.locator('#tracks-container .track-name').first().click();
     await expect(notes(page)).toHaveCount(3);
-    await expect(notes(page).nth(0)).toHaveAttribute('title', /強さ:30$/);
-    await expect(notes(page).nth(1)).toHaveAttribute('title', /強さ:120$/);
-    await expect(notes(page).nth(2)).not.toHaveAttribute('title', /強さ/);
+    await expect(notes(page).nth(0)).toHaveAttribute('data-note', /強さ:30$/);
+    await expect(notes(page).nth(1)).toHaveAttribute('data-note', /強さ:120$/);
+    await expect(notes(page).nth(2)).not.toHaveAttribute('data-note', /強さ/);
 });
 
 test('リアルタイム録音は、1 小節ぶんのカウントのあとから録る。カウントの間に弾いた音は録らない', async ({ page }) => {
@@ -97,8 +97,8 @@ test('リアルタイム録音は、1 小節ぶんのカウントのあとから
     await page.waitForTimeout(300);
     await send(page, [0x80, 62, 0]);
     await expect(notes(page)).toHaveCount(1);
-    await expect(notes(page).first()).toHaveAttribute('title', /^D4 step:\d+ len:\d+ 強さ:77$/);
-    await page.locator('#transport button[title="停止"]').click();
+    await expect(notes(page).first()).toHaveAttribute('data-note', /^D4 step:\d+ len:\d+ 強さ:77$/);
+    await page.getByRole('button', { name: '停止', exact: true }).click();
 
     // カウントを外すと、すぐに曲が進む
     await page.getByLabel('録音前にカウント').uncheck();
@@ -108,5 +108,5 @@ test('リアルタイム録音は、1 小節ぶんのカウントのあとから
     // 置いたノート (D4) は鳴るが、カウントのクリック (1500 / 1000 Hz) は鳴らない
     const after = (await soundedFrequencies(page)).slice(before);
     expect(after.filter((f) => f === 1500 || f === 1000)).toEqual([]);
-    await page.locator('#transport button[title="停止"]').click();
+    await page.getByRole('button', { name: '停止', exact: true }).click();
 });

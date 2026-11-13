@@ -115,7 +115,7 @@ test('お手本として読み込むと、パートの一覧に出て、「こ�
     // 再生すると、お手本のノートが鳴る (MIDI のお手本には音声が無いので、ノートを鳴らす)。C4 = 261.63 Hz
     await page.locator('#btn-play').click();
     await expect.poll(() => soundedFrequencies(page)).toContain(261.63);
-    await page.locator('#transport button[title="停止"]').click();
+    await page.getByRole('button', { name: '停止', exact: true }).click();
 
     // 「学ぶ」のパートの一覧に出る
     await openTab(page, '学ぶ');

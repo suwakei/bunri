@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDaw } from '../lib/store';
+import { tip } from '../lib/tooltip';
 import engine, { type PianoNote } from '../lib/engine';
 import { describeError } from '../lib/api';
 import { chartIdOfParts, practiceTrackOf } from '../lib/learn';
@@ -54,7 +55,7 @@ const RULE_NOTE: Record<string, string> = {
 /** 説明の参照の、押せる小さな札。 */
 function RefChip({ label, onClick }: { label: string; onClick: () => void }) {
     return (
-        <button type="button" className="guide-ref" title="押すと、この場所へ移動し、指摘の一覧で示します" onClick={onClick}
+        <button type="button" className="guide-ref" {...tip('この場所へ移動して、指摘の一覧で示します')} onClick={onClick}
             style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-mid)', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
             {label}
         </button>
@@ -243,7 +244,7 @@ export default function CoachPanel() {
                 <p className="body-text" style={{ color: 'var(--text-mid)' }}>
                     お手本になるトラックがまだありません。「曲とパート」で原曲をパートに分けると、採譜したノートがお手本になります。
                 </p>
-                <button className="action-btn" onClick={() => openLearn('song')}>曲とパートを開く</button>
+                <button className="action-btn" onClick={() => openLearn('song')} {...tip('パートに分ける場所を開きます')}>曲とパートを開く</button>
             </div>
         );
     }
@@ -264,6 +265,7 @@ export default function CoachPanel() {
             <div>
                 <label htmlFor="coach-reference">お手本</label>
                 <select id="coach-reference" value={reference.id} disabled={busy}
+                    {...tip('比べる相手にするお手本（パート）')}
                     onChange={(e) => setCoachPair({ referenceId: Number(e.target.value), attemptId: null })}>
                     {withReference.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.referenceNotes!.length} ノート）</option>)}
                 </select>
@@ -271,11 +273,13 @@ export default function CoachPanel() {
             <div>
                 <label htmlFor="coach-attempt">比べる打ち込み</label>
                 <select id="coach-attempt" value={attempt?.id ?? reference.id} disabled={busy}
+                    {...tip('お手本と比べる、自分の打ち込みが入ったトラック')}
                     onChange={(e) => setCoachPair({ referenceId: reference.id, attemptId: Number(e.target.value) })}>
                     {engine.tracks.map((t) => <option key={t.id} value={t.id}>{t.name}（{(t.pianoNotes || []).length} ノート）</option>)}
                 </select>
             </div>
-            <button className="action-btn" onClick={handleCompare} disabled={busy}>
+            <button className="action-btn" onClick={handleCompare} disabled={busy}
+                {...tip('打ち込みをお手本と比べて、違うところを小節ごとに挙げます')}>
                 {busy ? '比べています…' : 'お手本と比べる'}
             </button>
 
@@ -319,7 +323,7 @@ export default function CoachPanel() {
                                         <li key={`${bar.bar}-${i}`} data-issue-id={ids.idOf.get(issue)}
                                             className={`body-text coach-issue${highlightId && ids.idOf.get(issue) === highlightId ? ' highlighted' : ''}`}
                                             aria-current={highlightId && ids.idOf.get(issue) === highlightId ? 'true' : undefined}>
-                                            <button type="button" title="ピアノロールでこの場所を開く"
+                                            <button type="button" {...tip('ピアノロールでこの場所を開きます')}
                                                 onClick={() => handleJump(issue)}
                                                 style={{ display: 'block', width: '100%', background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer', textDecoration: 'underline dotted' }}>
                                                 {issueText(issue)}
@@ -382,7 +386,10 @@ function ExplanationSection({
     const fromClaude = explain?.source === 'claude' && body;
     return (
         <section className="coach-explain" aria-label="差分の説明">
-            <button className="action-btn" onClick={onExplain} disabled={explaining}>
+            <button className="action-btn" onClick={onExplain} disabled={explaining}
+                {...tip(fromClaude
+                    ? 'もう一度 Claude に頼んで、説明を作り直します。そのたびに費用がかかります'
+                    : '差分の一覧を Claude に渡して、どこをどう直すとよいかを文章にしてもらいます')}>
                 {explaining ? '説明を作っています…（数十秒かかります）' : fromClaude ? '説明を作り直す（費用がかかります）' : 'Claude に説明してもらう'}
             </button>
             {fromClaude && !explaining && (

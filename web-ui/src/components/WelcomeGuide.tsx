@@ -51,7 +51,7 @@ export default function WelcomeGuide(): React.ReactElement | null {
                         </div>
                     ))}
                 </div>
-                <p className="guide-tip">いまどの段階かは、画面の上の「進み具合」に出ます。曲を使わずに作るときは「自由に作る」を押します。ボタンにマウスを載せると、画面の下端に説明が出ます。</p>
+                <p className="guide-tip">いまどの段階かは、画面の上の「進み具合」に出ます。曲を使わずに作るときは「自由に作る」を押します。ボタンにマウスを載せると、そばに説明が出ます。</p>
                 <button className="action-btn" data-autofocus onClick={closeGuide}>はじめる</button>
             </div>
         </div>

@@ -25,6 +25,7 @@ import MidiImport from './MidiImport';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
 import DataCleanup from './DataCleanup';
+import { tip } from '../lib/tooltip';
 
 /**
  * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
@@ -44,7 +45,7 @@ interface GmInstrument {
  *
  * @property id - API に送信するパラメータキー（例: `"threshold"`）
  * @property label - UI 上に表示するラベル文字列（例: `"しきい値 (dB)"`）
- * @property hint - マウスを載せたときに画面の下端に出す説明
+ * @property hint - つまみにマウスを載せたときに出す説明（ツールチップ）
  * @property min - スライダーの最小値
  * @property max - スライダーの最大値
  * @property step - スライダーのステップ幅
@@ -129,6 +130,17 @@ const FX_LABELS: Record<string, string> = {
 };
 
 /** マイクを使えなかったときの知らせ。 */
+/** エフェクトの種類を選んだときに出す説明 */
+const FX_TIPS: Record<string, string> = {
+    eq: '低い音・真ん中の音・高い音の大きさを、それぞれ上げ下げします',
+    compressor: '大きすぎる音を抑えて、音量のばらつきを小さくします',
+    reverb: '部屋で鳴らしたような響きを足します',
+    delay: 'やまびこのように、少し遅れて同じ音を繰り返します',
+    normalize: '音が割れない範囲で、全体の音量をいっぱいまで上げます',
+    pitch_shift: '速さを変えずに、音の高さを上げ下げします',
+    time_stretch: '音の高さを変えずに、速さを変えます',
+};
+
 const MIC_DENIED = 'マイクを使えませんでした。OS の設定で、このアプリにマイクの使用を許可してください';
 
 /**
@@ -140,7 +152,7 @@ const MIC_DENIED = 'マイクを使えませんでした。OS の設定で、こ
  */
 // ---- シンセパネル ----
 function SynthPanel() {
-    const { bpm, setStatus, withProgress, showProgress, bumpTracks, pianoRollRef, setHint, recordAsync } = useDaw();
+    const { bpm, setStatus, withProgress, showProgress, bumpTracks, pianoRollRef, recordAsync } = useDaw();
     const [gmProgram, setGmProgram] = useState('none');
     const [instrument, setInstrument] = useState('');
     const [wave, setWave] = useState('sine');
@@ -204,15 +216,13 @@ function SynthPanel() {
     const instMap: Record<number, string> = {};
     gmInstruments.forEach(i => { instMap[i.program] = i.name; });
 
-    /** マウスを載せたときに、画面の下端に説明を出す。 */
-    const h = (text: string) => ({ onMouseEnter: () => setHint(text), onMouseLeave: () => setHint('') });
-
     return (
         <div id="synth-panel" className="panel-content active">
             <h3>シンセサイザー</h3>
             <p className="panel-desc">下のピアノロールにノートを置いてから「シーケンスをレンダリング」を押すと、ノートが音声のクリップになってトラックに入ります。</p>
             <label htmlFor="synth-gm">楽器（GM 音源）</label>
-            <select id="synth-gm" value={gmProgram} onChange={e => setGmProgram(e.target.value)}>
+            <select id="synth-gm" value={gmProgram} onChange={e => setGmProgram(e.target.value)}
+                {...tip('鳴らす楽器を選びます。ピアノやギターなど、実際の楽器に近い音です')}>
                 <option value="none">カスタム波形（下で選択）</option>
                 {Object.entries(GM_CATEGORIES).map(([cat, programs]) => {
                     const opts = programs.filter(p => instMap[p]);
@@ -225,9 +235,10 @@ function SynthPanel() {
                 })}
             </select>
             <details style={{ marginTop: 4 }}>
-                <summary>カスタム波形の設定（GM 音源を選んでいないとき）</summary>
+                <summary {...tip('楽器を選ばずに、電子音の形を自分で決めるときに開きます')}>カスタム波形の設定（GM 音源を選んでいないとき）</summary>
                 <label htmlFor="synth-instrument">簡易楽器</label>
-                <select id="synth-instrument" value={instrument} onChange={e => setInstrument(e.target.value)}>
+                <select id="synth-instrument" value={instrument} onChange={e => setInstrument(e.target.value)}
+                    {...tip('電子音で、楽器の雰囲気をまねます。上で楽器を選んでいるときは使われません')}>
                     <option value="">基本波形（下で選択）</option>
                     <option value="guitar">ギター</option>
                     <option value="violin">バイオリン</option>
@@ -237,7 +248,8 @@ function SynthPanel() {
                     <option value="organ">オルガン</option>
                 </select>
                 <label htmlFor="synth-wave">波形</label>
-                <select id="synth-wave" value={wave} onChange={e => setWave(e.target.value)}>
+                <select id="synth-wave" value={wave} onChange={e => setWave(e.target.value)}
+                    {...tip('電子音の形。サイン波はまろやかに、のこぎり波は鋭く聞こえます')}>
                     <option value="sine">サイン波（まろやか）</option>
                     <option value="square">矩形波（ファミコン風）</option>
                     <option value="sawtooth">のこぎり波（鋭い）</option>
@@ -245,30 +257,37 @@ function SynthPanel() {
                 </select>
             </details>
             <div className="param-row">
-                <div {...h('アタック: 音が鳴り始めてから、いちばん大きくなるまでの時間')}>
+                <div>
                     <label htmlFor="synth-attack">アタック</label>
-                    <input id="synth-attack" type="range" min="0.001" max="1" step="0.001" value={a} onChange={e => setA(+e.target.value)} />
+                    <input id="synth-attack" type="range" min="0.001" max="1" step="0.001" value={a} onChange={e => setA(+e.target.value)}
+                        {...tip('鳴り始めてから、いちばん大きくなるまでの時間。短いと歯切れよく、長いとふわっと始まります')} />
                 </div>
-                <div {...h('ディケイ: いちばん大きくなってから、伸ばしているあいだの大きさに落ち着くまでの時間')}>
+                <div>
                     <label htmlFor="synth-decay">ディケイ</label>
-                    <input id="synth-decay" type="range" min="0.001" max="1" step="0.001" value={d} onChange={e => setD(+e.target.value)} />
+                    <input id="synth-decay" type="range" min="0.001" max="1" step="0.001" value={d} onChange={e => setD(+e.target.value)}
+                        {...tip('いちばん大きくなってから、伸ばしているときの大きさに落ち着くまでの時間')} />
                 </div>
             </div>
             <div className="param-row">
-                <div {...h('サステイン: 音を伸ばしているあいだの大きさ')}>
+                <div>
                     <label htmlFor="synth-sustain">サステイン</label>
-                    <input id="synth-sustain" type="range" min="0" max="1" step="0.05" value={s} onChange={e => setS(+e.target.value)} />
+                    <input id="synth-sustain" type="range" min="0" max="1" step="0.05" value={s} onChange={e => setS(+e.target.value)}
+                        {...tip('ノートを伸ばしているあいだの音の大きさ')} />
                 </div>
-                <div {...h('リリース: ノートが終わってから、音が消えるまでの時間')}>
+                <div>
                     <label htmlFor="synth-release">リリース</label>
-                    <input id="synth-release" type="range" min="0.001" max="2" step="0.001" value={r} onChange={e => setR(+e.target.value)} />
+                    <input id="synth-release" type="range" min="0.001" max="2" step="0.001" value={r} onChange={e => setR(+e.target.value)}
+                        {...tip('ノートが終わってから、音が消えきるまでの時間。長いと余韻が残ります')} />
                 </div>
             </div>
             <label htmlFor="synth-volume">音量</label>
-            <input id="synth-volume" type="range" min="0" max="1" step="0.05" value={vol} onChange={e => setVol(+e.target.value)} />
+            <input id="synth-volume" type="range" min="0" max="1" step="0.05" value={vol} onChange={e => setVol(+e.target.value)}
+                {...tip('作る音の大きさ')} />
             <label htmlFor="synth-track">追加先トラック</label>
-            <TrackSelector id="synth-track" value={synthTrack} onChange={setSynthTrack} emptyLabel="ピアノロールで開いているトラック" />
-            <button className="action-btn" onClick={handleRender} disabled={showProgress}>シーケンスをレンダリング</button>
+            <TrackSelector id="synth-track" value={synthTrack} onChange={setSynthTrack} emptyLabel="ピアノロールで開いているトラック"
+                tipText="できた音を置くトラック" />
+            <button className="action-btn" onClick={handleRender} disabled={showProgress}
+                {...tip('ピアノロールのノートを音声にして、トラックにクリップとして置きます')}>シーケンスをレンダリング</button>
         </div>
     );
 }
@@ -326,19 +345,24 @@ function DrumPanel() {
             <h3>ドラムマシン</h3>
             <p className="panel-desc">決まったパターンから、ドラムの音声のクリップを作ってトラックに追加します。</p>
             <label htmlFor="drum-pattern">パターン</label>
-            <select id="drum-pattern" value={pattern} onChange={e => setPattern(e.target.value)}>
+            <select id="drum-pattern" value={pattern} onChange={e => setPattern(e.target.value)}
+                {...tip('叩き方の型。8ビートはポップスやロックでよく使われます')}>
                 <option value="8ビート">8ビート（ポップス/ロック定番）</option>
                 <option value="4つ打ち">4つ打ち（ダンス/テクノ）</option>
                 <option value="ボサノバ">ボサノバ</option>
                 <option value="レゲエ">レゲエ</option>
             </select>
             <label htmlFor="drum-bars">小節数</label>
-            <input id="drum-bars" type="number" value={bars} min="1" max="32" onChange={e => setBars(+e.target.value)} />
+            <input id="drum-bars" type="number" value={bars} min="1" max="32" onChange={e => setBars(+e.target.value)}
+                {...tip('作るドラムの長さ（小節の数）')} />
             <label htmlFor="drum-volume">音量</label>
-            <input id="drum-volume" type="range" min="0" max="1" step="0.05" value={vol} onChange={e => setVol(+e.target.value)} />
+            <input id="drum-volume" type="range" min="0" max="1" step="0.05" value={vol} onChange={e => setVol(+e.target.value)}
+                {...tip('ドラムの音の大きさ')} />
             <label htmlFor="drum-track">追加先トラック</label>
-            <TrackSelector id="drum-track" value={drumTrack} onChange={setDrumTrack} includeNew />
-            <button className="action-btn" onClick={handleGenerate} disabled={showProgress}>ドラム生成 → トラックに追加</button>
+            <TrackSelector id="drum-track" value={drumTrack} onChange={setDrumTrack} includeNew
+                tipText="ドラムを置くトラック。「新規作成」なら、新しいトラックを作ります" />
+            <button className="action-btn" onClick={handleGenerate} disabled={showProgress}
+                {...tip('選んだパターンでドラムの音声を作り、1 小節目から置きます')}>ドラム生成 → トラックに追加</button>
         </div>
     );
 }
@@ -352,7 +376,7 @@ function DrumPanel() {
  */
 // ---- FXパネル ----
 function FxPanel() {
-    const { setStatus, withProgress, showProgress, bumpTracks, setHint, record } = useDaw();
+    const { setStatus, withProgress, showProgress, bumpTracks, record } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
     const defaultParams = useCallback(() => {
@@ -401,22 +425,25 @@ function FxPanel() {
             <h3>エフェクト</h3>
             <p className="panel-desc">トラックの最初のクリップにエフェクトをかけて、かけた後の音声に置き換えます。</p>
             <label htmlFor="fx-track">対象トラック</label>
-            <TrackSelector id="fx-track" value={fxTrack} onChange={setFxTrack} />
+            <TrackSelector id="fx-track" value={fxTrack} onChange={setFxTrack}
+                tipText="効果をかけるトラック。そのトラックの最初のクリップにかかります" />
             <label htmlFor="fx-type">エフェクト</label>
-            <select id="fx-type" value={fxType} onChange={e => setFxType(e.target.value)}>
+            <select id="fx-type" value={fxType} onChange={e => setFxType(e.target.value)} {...tip(FX_TIPS[fxType] ?? '')}>
                 {Object.entries(FX_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
             <div id="fx-params">
                 {(FX_PARAMS[fxType] || []).map(p => (
-                    <div key={p.id} onMouseEnter={() => setHint(p.hint)} onMouseLeave={() => setHint('')}>
+                    <div key={p.id}>
                         <label htmlFor={`fx-param-${p.id}`}>{p.label}（{params[p.id] ?? p.def}）</label>
                         <input id={`fx-param-${p.id}`} type="range" min={p.min} max={p.max} step={p.step}
                             value={params[p.id] ?? p.def}
-                            onChange={e => setParams(prev => ({ ...prev, [p.id]: +e.target.value }))} />
+                            onChange={e => setParams(prev => ({ ...prev, [p.id]: +e.target.value }))}
+                            {...tip(p.hint)} />
                     </div>
                 ))}
             </div>
-            <button className="action-btn" onClick={handleApply} disabled={showProgress}>エフェクト適用</button>
+            <button className="action-btn" onClick={handleApply} disabled={showProgress}
+                {...tip('効果をかけて、クリップをかけた後の音に置き換えます。元に戻すで戻せます')}>エフェクト適用</button>
         </div>
     );
 }
@@ -523,29 +550,33 @@ function FilePanel() {
                 曲を教材にして学ぶときは、「学ぶ」タブで曲を取り込んでください。
             </p>
             <label htmlFor="file-import">音声ファイル</label>
-            <input id="file-import" type="file" ref={fileInputRef} accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.aif,.aiff,audio/*" multiple />
+            <input id="file-import" type="file" ref={fileInputRef} accept=".wav,.mp3,.flac,.ogg,.m4a,.aac,.aif,.aiff,audio/*" multiple
+                {...tip('トラックに置く音声ファイルを選びます。いくつかまとめて選べます')} />
             <label htmlFor="file-track">追加先トラック</label>
-            <TrackSelector id="file-track" value={fileTrack} onChange={setFileTrack} />
-            <button className="action-btn" onClick={handleImport}>選択したトラックに追加</button>
+            <TrackSelector id="file-track" value={fileTrack} onChange={setFileTrack} tipText="音声を置くトラック" />
+            <button className="action-btn" onClick={handleImport} {...tip('選んだファイルを、指定したトラックに置きます')}>選択したトラックに追加</button>
             <hr />
             <MidiImport />
             <hr />
             <h3>単音メロディ解析</h3>
             <p className="panel-desc">単音の WAV ファイル（ボーカルやメロディ）から音の高さを読み取って、開いているピアノロールにノートを並べます。</p>
             <label htmlFor="file-melody">単音の WAV ファイル</label>
-            <input id="file-melody" type="file" ref={analyzeFileRef} accept=".wav" />
+            <input id="file-melody" type="file" ref={analyzeFileRef} accept=".wav"
+                {...tip('歌や楽器 1 本だけのメロディが入った WAV ファイル。伴奏が混ざっていると、うまく読み取れません')} />
             <label htmlFor="file-melody-sensitivity">感度（{sensitivity}）</label>
             <input id="file-melody-sensitivity" type="range" min="0.1" max="1" step="0.05" value={sensitivity}
-                onChange={e => setSensitivity(+e.target.value)} />
-            <button className="action-btn" onClick={handleAnalyze} disabled={showProgress || analyzeJob.heavyBusy}>解析してピアノロールに配置</button>
+                onChange={e => setSensitivity(+e.target.value)}
+                {...tip('上げると小さな音まで拾います。余分なノートが多いときは下げてください')} />
+            <button className="action-btn" onClick={handleAnalyze} disabled={showProgress || analyzeJob.heavyBusy}
+                {...tip('音の高さを読み取って、開いているピアノロールにノートを並べます')}>解析してピアノロールに配置</button>
             <JobCard slot="file-analyze" job={analyzeJob.job} busyJob={analyzeJob.busyJob} onCancel={() => void analyzeJob.cancel()}
                 onShowBusy={showJob} hint="解析は途中では止められません。中止すると、終わったあとに結果を捨てます。" />
             <hr />
             <h3>録音</h3>
             <p className="panel-desc">マイクから音声を録音してトラックに追加します。</p>
             {!isRecording
-                ? <button className="action-btn" onClick={handleMicRecord}>マイク録音開始</button>
-                : <button className="action-btn" onClick={handleMicStop}>録音停止</button>
+                ? <button className="action-btn" onClick={handleMicRecord} {...tip('マイクの音を録ります。止めると「Rec」のトラックに入ります')}>マイク録音開始</button>
+                : <button className="action-btn" onClick={handleMicStop} {...tip('録音を止めて、トラックに置きます')}>録音停止</button>
             }
             <hr />
             <DataCleanup />
@@ -569,6 +600,8 @@ interface TrackSelectorProps {
     includeNew?: boolean;
     emptyLabel?: string;
     id?: string;
+    /** マウスを載せたときの説明 */
+    tipText?: string;
 }
 
 /**
@@ -596,7 +629,7 @@ function resolveTrackId(value: string): string {
  * @param id - `<select>` の id（見出しと結び付ける）
  * @returns エンジントラック一覧を選択肢として持つ `<select>` 要素
  */
-function TrackSelector({ value, onChange, includeNew, emptyLabel, id }: TrackSelectorProps) {
+function TrackSelector({ value, onChange, includeNew, emptyLabel, id, tipText }: TrackSelectorProps) {
     // trackVersion を読んでおくと、トラックが増減するたびに描き直されて、選択肢に反映される
     const { trackVersion } = useDaw();
     void trackVersion;
@@ -606,7 +639,7 @@ function TrackSelector({ value, onChange, includeNew, emptyLabel, id }: TrackSel
         ? (value === '__new__' || engine.tracks.some(t => String(t.id) === value) ? value : (includeNew ? '__new__' : ''))
         : resolveTrackId(value);
     return (
-        <select id={id} value={shown} onChange={e => onChange(e.target.value)}>
+        <select id={id} value={shown} onChange={e => onChange(e.target.value)} {...(tipText ? tip(tipText) : {})}>
             {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
             {includeNew && <option value="__new__">新規作成（Drum）</option>}
             {engine.tracks.map(t => (
@@ -619,16 +652,16 @@ function TrackSelector({ value, onChange, includeNew, emptyLabel, id }: TrackSel
 /** 左パネルの上の段のタブ。 */
 // ---- メインの LeftPanel ----
 const TABS: TabDef<LeftTab>[] = [
-    { key: 'learn', label: '学ぶ' },
-    { key: 'sound', label: '音作り' },
-    { key: 'file', label: 'ファイル' },
+    { key: 'learn', label: '学ぶ', tip: '曲を取り込んで、カルテを見たり、パートを打ち込んで練習したりします' },
+    { key: 'sound', label: '音作り', tip: 'シンセやドラムで音を作り、エフェクトをかけます' },
+    { key: 'file', label: 'ファイル', tip: '音声ファイルの追加、メロディの読み取り、マイク録音' },
 ];
 
 /** 「音作り」タブの中の段。 */
 const SOUND_TABS: TabDef<SoundTab>[] = [
-    { key: 'synth', label: 'シンセ' },
-    { key: 'drum', label: 'ドラム' },
-    { key: 'fx', label: 'FX' },
+    { key: 'synth', label: 'シンセ', tip: 'ピアノロールのノートを、選んだ楽器の音にします' },
+    { key: 'drum', label: 'ドラム', tip: '決まったリズムのドラムを作って、トラックに置きます' },
+    { key: 'fx', label: 'FX', tip: 'トラックの音に、響きや音の高さの変更などの効果をかけます' },
 ];
 
 /** 境目をキーボードで動かすときの 1 回ぶん (px)。 */
@@ -706,7 +739,8 @@ export default function LeftPanel() {
 
     return (
         <>
-            <div id="left-panel" style={{ width: leftWidth, minWidth: leftWidth }}>
+            {/* 説明はパネルの外（右、中央の側）に出す。左パネルの中の、次に触る欄を隠さないため */}
+            <div id="left-panel" style={{ width: leftWidth, minWidth: leftWidth }} data-tip-side="right" data-tip-box="">
                 <SubTabs idPrefix="" label="左パネルのタブ" tabs={TABS} active={leftTab} onSelect={setLeftTab} id="panel-tabs" />
                 <div {...tabPanelProps('', 'learn', leftTab)}><LearnPanel /></div>
                 <div {...tabPanelProps('', 'sound', leftTab)}><SoundPanel /></div>
@@ -717,7 +751,7 @@ export default function LeftPanel() {
                 role="separator" aria-orientation="vertical" tabIndex={0}
                 aria-label="左パネルの幅（左右の矢印キーで変えられます）"
                 aria-valuemin={LEFT_WIDTH_MIN} aria-valuemax={LEFT_WIDTH_MAX} aria-valuenow={leftWidth}
-                title="ドラッグすると、左パネルの幅が変わります"
+                data-tip-side="right" {...tip('左右にドラッグすると、左パネルの幅が変わります')}
                 onPointerDown={handleResizeDown} onKeyDown={handleResizeKey} />
         </>
     );

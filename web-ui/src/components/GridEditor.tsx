@@ -17,6 +17,7 @@ import { useDialog } from '../lib/dialog';
 import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
 import { useJob } from '../lib/useJob';
 import JobCard from './JobCard';
+import { tip } from '../lib/tooltip';
 import { cssVar } from '../lib/theme';
 import { formatTime, isChartResponse, type ChartResponse } from '../lib/chart';
 
@@ -256,11 +257,13 @@ export default function GridEditor() {
                         <label htmlFor="grid-view-start">表示位置 — {formatTime(viewStart)} / {formatTime(duration)}</label>
                         <input id="grid-view-start" type="range" min={0} max={maxViewStart} step={0.05}
                             value={Math.min(viewStart, maxViewStart)}
-                            onChange={e => setViewStart(+e.target.value)} />
+                            onChange={e => setViewStart(+e.target.value)}
+                            {...tip('波形の、曲のどのあたりを見るかを動かします')} />
                     </div>
                     <div>
                         <label htmlFor="grid-window">表示範囲</label>
-                        <select id="grid-window" value={windowSec} onChange={e => setWindowSec(+e.target.value)}>
+                        <select id="grid-window" value={windowSec} onChange={e => setWindowSec(+e.target.value)}
+                            {...tip('一度に見える長さ。短くすると、線と音の始まりのずれが見やすくなります')}>
                             {WINDOW_OPTIONS.map(sec => <option key={sec} value={sec}>{sec} 秒</option>)}
                         </select>
                     </div>
@@ -270,12 +273,15 @@ export default function GridEditor() {
                 <label htmlFor="grid-bpm">BPM</label>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10 }}>
                     <button type="button" onClick={() => setLocalBpm(v => Math.max(20, v / 2))}
-                        style={secondaryButton}>÷2（遅く）</button>
+                        style={secondaryButton}
+                        {...tip('BPM を半分にします。音が鳴っていないところにも線が来ているときに押します')}>÷2（遅く）</button>
                     <input id="grid-bpm" type="number" step="0.1" value={localBpm.toFixed(1)}
                         onChange={e => setLocalBpm(Math.max(20, +e.target.value || 120))}
-                        style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600 }} />
+                        style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600 }}
+                        {...tip('曲の速さ（1 分間に刻む拍の数）。線の間隔が、音の始まりの間隔と合うように直します')} />
                     <button type="button" onClick={() => setLocalBpm(v => Math.min(400, v * 2))}
-                        style={secondaryButton}>×2（速く）</button>
+                        style={secondaryButton}
+                        {...tip('BPM を 2 倍にします。線が音の 2 回に 1 回しか来ていないときに押します')}>×2（速く）</button>
                 </div>
                 <div className="note-text" style={{ marginBottom: 12 }}>
                     線が音の2回に1回しか来ていなければ <strong>×2</strong>、
@@ -288,17 +294,19 @@ export default function GridEditor() {
                         <label htmlFor="grid-offset">小節の先頭（秒）</label>
                         <div style={{ display: 'flex', gap: 4 }}>
                             <button type="button" onClick={() => setLocalOffset(v => Math.max(0, v - 60 / localBpm))}
-                                style={secondaryButton}>◀ 1拍</button>
+                                style={secondaryButton} {...tip('小節の先頭を、1 拍ぶん前へずらします')}>◀ 1拍</button>
                             <input id="grid-offset" type="number" step="0.001" value={localOffset.toFixed(3)}
                                 onChange={e => setLocalOffset(Math.max(0, +e.target.value || 0))}
-                                style={{ flex: 1, textAlign: 'center' }} />
+                                style={{ flex: 1, textAlign: 'center' }}
+                                {...tip('最初の小節が始まる位置（曲の頭からの秒数）。太い線がここに来ます')} />
                             <button type="button" onClick={() => setLocalOffset(v => v + 60 / localBpm)}
-                                style={secondaryButton}>1拍 ▶</button>
+                                style={secondaryButton} {...tip('小節の先頭を、1 拍ぶん後ろへずらします')}>1拍 ▶</button>
                         </div>
                     </div>
                     <div>
                         <label htmlFor="grid-beats">拍子</label>
-                        <select id="grid-beats" value={localBeats} onChange={e => setLocalBeats(+e.target.value)}>
+                        <select id="grid-beats" value={localBeats} onChange={e => setLocalBeats(+e.target.value)}
+                            {...tip('1 小節に入る拍の数。多くの曲は 4/4 です')}>
                             {TIME_SIGNATURES.map(ts => (
                                 <option key={ts.beats} value={ts.beats}>{ts.label}</option>
                             ))}
@@ -310,11 +318,12 @@ export default function GridEditor() {
                     hint="数秒〜十数秒かかります。中止すると、カルテは前のままです。" />
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                     <button className="action-btn" data-autofocus style={{ flex: 2, marginTop: 0 }}
-                        disabled={applying || showProgress || regrid.heavyBusy} onClick={handleApply}>
+                        disabled={applying || showProgress || regrid.heavyBusy} onClick={handleApply}
+                        {...tip('この BPM・小節の先頭・拍子で、コード進行と構成を調べ直します。数秒〜十数秒かかります')}>
                         {applying ? '再計算中…' : 'この設定で確定して再計算'}
                     </button>
                     <button type="button" style={{ ...secondaryButton, flex: 1 }} disabled={applying}
-                        onClick={close}>
+                        onClick={close} {...tip('何も変えずに閉じます。カルテは前のままです')}>
                         キャンセル
                     </button>
                 </div>

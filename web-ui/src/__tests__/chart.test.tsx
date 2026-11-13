@@ -256,18 +256,10 @@ describe('ChartPanel', () => {
         expect(screen.queryByText(/コードも構成も全部ずれます/)).not.toBeInTheDocument();
     });
 
-    it('用語にホバーするとヒントが出る（ツールチップ義務化）', () => {
+    it('用語には、辞書の解説をツールチップとして付ける（ツールチップ義務化）', () => {
         renderChart(makeChart(), true);
-        fireEvent.mouseEnter(screen.getByText('BPM'));
-        expect(screen.getByText(/1分間に刻まれる拍の数/)).toBeInTheDocument();
-    });
-
-    it('ホバーを外すとヒントが消える', () => {
-        renderChart(makeChart(), true);
-        const term = screen.getByText('BPM');
-        fireEvent.mouseEnter(term);
-        fireEvent.mouseLeave(term);
-        expect(screen.queryByText(/1分間に刻まれる拍の数/)).not.toBeInTheDocument();
+        // 表示そのものは components/Tooltip.tsx (画面全体で 1 つ) が受け持つ。ここでは説明が付いていることを見る
+        expect(screen.getByText('BPM').closest('[data-tip]')?.getAttribute('data-tip')).toMatch(/1分間に刻まれる拍の数/);
     });
 
     it('モノラル音源ではステレオ項目を出さない', () => {

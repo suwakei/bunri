@@ -9,6 +9,7 @@
 import { useEffect, useRef } from 'react';
 import { busyMessage, isModelDownload, jobTracker, stageCount, stageText, type Job, type JobSlot } from '../lib/jobs';
 import { formatElapsed } from '../lib/time';
+import { tip } from '../lib/tooltip';
 
 interface JobCardProps {
     /** カードを出す場所（ステータスバーからの「カードを見る」で、ここへスクロールする）。 */
@@ -43,7 +44,8 @@ export default function JobCard({ slot, job, busyJob, onCancel, onShowBusy, hint
             <div className="job-busy" role="alert">
                 <span>{busyMessage(busyJob)}</span>
                 {onShowBusy && (
-                    <button type="button" className="link-btn" onClick={() => onShowBusy(busyJob)}>実行中の処理を見る</button>
+                    <button type="button" className="link-btn" onClick={() => onShowBusy(busyJob)}
+                        {...tip('いま動いている処理の進み具合を開きます。終わるまで、次の処理は始められません')}>実行中の処理を見る</button>
                 )}
             </div>
         );
@@ -56,7 +58,7 @@ export default function JobCard({ slot, job, busyJob, onCancel, onShowBusy, hint
             data-slot={slot}>
             <div className="job-card-title">
                 <strong>{job.title}</strong>
-                {job.filename && <span className="job-card-file" title={job.filename}>{job.filename}</span>}
+                {job.filename && <span className="job-card-file" {...tip(job.filename, { overflow: true })}>{job.filename}</span>}
             </div>
             <div className="job-card-stage" aria-live="polite">
                 <span>{stageText(job)}</span>
@@ -74,7 +76,8 @@ export default function JobCard({ slot, job, busyJob, onCancel, onShowBusy, hint
             )}
             <div className="job-card-foot">
                 <span className="job-card-elapsed">経過 {formatElapsed(job.elapsed_sec)}{percent !== null ? ` ・ ${percent}%` : ''}</span>
-                <button type="button" className="job-cancel" onClick={onCancel} disabled={job.cancel_requested}>
+                <button type="button" className="job-cancel" onClick={onCancel} disabled={job.cancel_requested}
+                    {...tip('この処理を途中でやめます')}>
                     {job.cancel_requested ? 'キャンセル中…' : '中止'}
                 </button>
             </div>

@@ -20,9 +20,17 @@
 import { useDaw } from '../lib/store';
 import { cursorLabel, type RecordMode } from '../lib/midi-input';
 import { MAX_LATENCY_MS, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
+import { tip } from '../lib/tooltip';
 
 /** ステップ入力で選べるノートの長さ（ステップ数と呼び名）。 */
 const STEP_LENGTHS: [number, string][] = [[1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
+
+/** 録り方に載せたときの説明 */
+const MODE_TIPS: Record<RecordMode, string> = {
+    off: '鍵盤を弾くと音が鳴るだけで、ノートは置きません',
+    step: '弾くたびに、決めた長さのノートを順に置いていきます。同時に押すと和音になります',
+    realtime: '再生しているあいだ、弾いたとおりのタイミングと長さでノートを置きます',
+};
 
 const controlStyle = {
     fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
@@ -45,18 +53,21 @@ export function RealtimeSettings({ midi, style }: { midi: MidiInputController; s
         <>
             <label style={labelStyle}>
                 <input type="checkbox" checked={midi.countIn} onChange={(e) => midi.setCountIn(e.target.checked)}
-                    style={{ width: 'auto', marginRight: 4, verticalAlign: 'middle' }} />
+                    style={{ width: 'auto', marginRight: 4, verticalAlign: 'middle' }}
+                    {...tip('再生を押すと、曲が始まる前に 1 小節ぶんのクリックが鳴ります。そのあいだは、弾いても録りません')} />
                 録音前にカウント
             </label>
             <label style={labelStyle}>
                 遅れの補正
                 <input type="number" aria-label="遅れの補正（ミリ秒）" min={0} max={MAX_LATENCY_MS} step={5} value={midi.latencyMs}
                     onChange={(e) => midi.setLatencyMs(e.target.value === '' ? null : Number(e.target.value))}
-                    style={{ ...control, width: 56, cursor: 'text' }} />
+                    style={{ ...control, width: 56, cursor: 'text' }}
+                    {...tip('弾いた位置を、この時間だけ前へ戻して置きます。ノートが後ろにずれて入るなら増やし、前にずれるなら減らしてください')} />
                 ミリ秒
             </label>
             {!midi.latencyAuto && (
-                <button type="button" style={control} onClick={() => midi.setLatencyMs(null)}>おまかせに戻す</button>
+                <button type="button" style={control} onClick={() => midi.setLatencyMs(null)}
+                    {...tip('遅れの補正を、音が出るまでの遅れから自動で決めた値に戻します')}>おまかせに戻す</button>
             )}
         </>
     );
@@ -66,6 +77,7 @@ export function RealtimeSettings({ midi, style }: { midi: MidiInputController; s
 export function StepLengthSelect({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
     return (
         <select aria-label="ノートの長さ" style={style ?? controlStyle} value={midi.stepLength}
+            {...tip('ステップ入力で置くノートの長さ')}
             onChange={(e) => midi.setStepLength(Number(e.target.value))}>
             {STEP_LENGTHS.map(([steps, label]) => <option key={steps} value={steps}>{label}</option>)}
         </select>
@@ -89,13 +101,17 @@ export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
     return (
         <span id="midi-input-bar" style={{ marginLeft: 12, textTransform: 'none', letterSpacing: 0 }}>
             <button type="button" style={controlStyle} aria-pressed={c.connected}
+                {...tip(c.connected
+                    ? 'MIDI 鍵盤からの入力を止めます'
+                    : 'つないだ MIDI 鍵盤で音を鳴らしたり、ノートを置いたりできるようにします')}
                 onClick={c.connected ? () => void c.disconnect() : () => void c.connect()}>
                 {c.connected ? 'MIDI 入力を止める' : 'MIDI 入力'}
             </button>
             {c.connected && (
                 <>
-                    <button type="button" style={controlStyle} onClick={() => void c.connect()} title="機器を挿し直したときに押す">再検出</button>
-                    <select aria-label="録り方" style={controlStyle} value={c.mode} onChange={(e) => c.setMode(e.target.value as RecordMode)}>
+                    <button type="button" style={controlStyle} onClick={() => void c.connect()} {...tip('鍵盤をつなぎ直したときに押します')}>再検出</button>
+                    <select aria-label="録り方" style={controlStyle} value={c.mode} onChange={(e) => c.setMode(e.target.value as RecordMode)}
+                        {...tip(MODE_TIPS[c.mode])}>
                         <option value="off">録らない（音だけ）</option>
                         <option value="step">ステップ入力</option>
                         <option value="realtime">リアルタイム録音</option>
@@ -104,7 +120,8 @@ export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
                         <>
                             <StepLengthSelect midi={c} />
                             <span className="area-hint" style={{ marginLeft: 6 }}>次の位置: {cursorLabel(c.cursor, beatsPerBar)}</span>
-                            <button type="button" style={controlStyle} onClick={() => c.setCursor(0)}>
+                            <button type="button" style={controlStyle} onClick={() => c.setCursor(0)}
+                                {...tip('次にノートを置く位置を、曲の頭に戻します')}>
                                 先頭へ
                             </button>
                         </>

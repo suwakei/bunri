@@ -12,7 +12,7 @@ import { BASS, fakePracticeBackend, openBassPractice } from './practice-fixtures
 const region = (page: Page) => page.getByRole('region', { name: '練習画面' });
 const startBar = (page: Page) => page.getByLabel('区間の始まりの小節');
 const endBar = (page: Page) => page.getByLabel('区間の終わりの小節');
-const undoTitle = (page: Page) => page.locator('#btn-undo').getAttribute('title');
+const undoTitle = (page: Page) => page.locator('#btn-undo').getAttribute('data-tip');
 
 /** ピアノロールの 1 ステップの幅と、横のスクロール位置。 */
 const pianoView = (page: Page) => page.locator('#piano-grid-wrap').evaluate((el) => ({

@@ -7,6 +7,7 @@
  */
 import { useCallback, useRef, type KeyboardEvent } from 'react';
 import { panelId, tabId, type TabDef } from '../lib/tabs';
+import { tip } from '../lib/tooltip';
 
 /**
  * タブの段。
@@ -40,7 +41,8 @@ export default function SubTabs<K extends string>({ idPrefix, label, tabs, activ
     }, [tabs, active, onSelect]);
 
     return (
-        <div id={id} className={className} role="tablist" aria-label={label} onKeyDown={handleKey}>
+        // タブの説明は下に出す (横に出すと、隣のタブに重なる)
+        <div id={id} className={className} role="tablist" aria-label={label} onKeyDown={handleKey} data-tip-side="bottom">
             {tabs.map(tab => (
                 <button key={tab.key} type="button" role="tab"
                     id={tabId(idPrefix, tab.key)}
@@ -49,6 +51,7 @@ export default function SubTabs<K extends string>({ idPrefix, label, tabs, activ
                     aria-controls={panelId(idPrefix, tab.key)}
                     tabIndex={active === tab.key ? 0 : -1}
                     className={active === tab.key ? 'active' : ''}
+                    {...(tab.tip ? tip(tab.tip) : {})}
                     onClick={() => onSelect(tab.key)}>
                     {tab.label}
                 </button>

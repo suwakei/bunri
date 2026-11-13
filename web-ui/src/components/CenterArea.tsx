@@ -21,6 +21,8 @@ import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
 import PopupMenu from './PopupMenu';
 import RecentProjects from './RecentProjects';
+import { cursorLabel } from '../lib/midi-input';
+import { tip } from '../lib/tooltip';
 
 /** 音名を低い順に並べたもの (MIDI ノート番号を出すのに使う)。 */
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -395,7 +397,7 @@ class PianoRollEngine {
                 div.textContent = `${name}${oct}`;
                 div.style.height = this.noteHeight + 'px';
                 div.dataset.pitch = String(this._pitchOf(name, oct));
-                div.title = `${name}${oct}（押すと鳴ります）`;
+                div.dataset.tip = `${name}${oct}。押すと、この高さの音が鳴ります`;
                 this.keysDiv.appendChild(div);
             }
         }
@@ -916,12 +918,12 @@ class PianoRollEngine {
             el.dataset.index = String(i);
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
-            el.title = `お手本 ${n.note}${n.octave}`;
+            el.dataset.tip = `お手本 ${n.note}${n.octave}`;
             const mark = ghostMarks?.[i];
             if (mark) {
                 el.classList.add(`ghost-${mark.kind}`);
-                const label = marks.label ? marks.label(n, mark, true) : el.title;
-                el.title = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
+                const label = marks.label ? marks.label(n, mark, true) : el.dataset.tip;
+                el.dataset.tip = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
             }
             this.noteLayer.appendChild(el);
         });
@@ -934,17 +936,21 @@ class PianoRollEngine {
             el.className = 'note-block' + (this.selection.has(n) ? ' selected' : '');
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
-            el.dataset.index = i; el.title = `${n.note}${n.octave} step:${n.step} len:${n.length}` + (typeof n.velocity === 'number' ? ` 強さ:${n.velocity}` : '');
+            el.dataset.index = i;
+            const hasVelocity = typeof n.velocity === 'number';
+            // data-note は機械が読む形 (テストが音の高さ・位置・強さを読む)。説明 (data-tip) は人が読む形
+            el.dataset.note = `${n.note}${n.octave} step:${n.step} len:${n.length}` + (hasVelocity ? ` 強さ:${n.velocity}` : '');
+            el.dataset.tip = `${n.note}${n.octave}（${cursorLabel(n.step, engine.beatsPerBar || 4)}${hasVelocity ? `、強さ ${n.velocity}` : ''}）`;
             // 強さを持つノートは、弱いほど薄く見せる (強さを持たないノートは、これまでどおり)
-            if (typeof n.velocity === 'number') el.style.opacity = String(0.45 + 0.55 * Math.max(1, Math.min(127, n.velocity)) / 127);
+            if (hasVelocity) el.style.opacity = String(0.45 + 0.55 * Math.max(1, Math.min(127, n.velocity)) / 127);
             const mark = ownMarks?.[i];
             if (mark) {
                 el.classList.add(`diff-${mark.kind}`);
                 // 位置のずれは、ずれの向きも印で見せる (遅い ›、早い ‹)
                 const timing = mark.issues.find(x => x.kind === 'timing');
                 if (timing) el.dataset.shift = (timing.offset_steps ?? 0) > 0 ? 'late' : 'early';
-                const label = marks.label ? marks.label(n, mark, false) : el.title;
-                el.title = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
+                const label = marks.label ? marks.label(n, mark, false) : el.dataset.tip;
+                el.dataset.tip = label; el.setAttribute('role', 'img'); el.setAttribute('aria-label', label);
             }
             this.noteLayer.appendChild(el);
         });
@@ -1227,6 +1233,9 @@ class TimelineEngine {
             const header = document.createElement('div');
             header.className = 'track-header' + (isActive ? ' active-track' : '');
             header.dataset.trackId = track.id;
+            // 見出しの中の説明は、見出しの外 (右、クリップの側) に出す。隣のボタンを隠さないため
+            header.dataset.tipSide = 'right';
+            header.dataset.tipBox = '';
             const isTrackPlaying = engine.isPlaying && engine.soloTrackId === track.id;
             // 1 行目: 名前・「練習する」・メニュー (…)。2 行目: ▶ M S とパン。3 行目: 音量。
             // トラックを消す操作はメニューの中に置く (S のすぐ隣に ✕ が在ると、押し間違えて消してしまう)
@@ -1247,18 +1256,21 @@ class TimelineEngine {
                     <input type="range" class="gain-slider" data-track="${track.id}" min="${GAIN_MIN_DB}" max="${GAIN_MAX_DB}" step="${GAIN_STEP_DB}">
                     <span class="mix-readout gain-readout" aria-hidden="true"></span>
                 </div>`;
-            // 1 文字のボタンが何をするかを、読み上げ (aria-label) とマウスを載せたときの説明 (title) で伝える。
+            // 1 文字のボタンが何をするかを、読み上げ (aria-label) とマウスを載せたときの説明 (data-tip、ツールチップ) で伝える。
             // トラック名を含むので、HTML に埋め込まず属性として入れる
-            const describe = (selector, label, title) => {
+            const describe = (selector, label, tipText) => {
                 const el = header.querySelector(selector);
-                el.setAttribute('aria-label', label); el.title = title;
+                el.setAttribute('aria-label', label); el.dataset.tip = tipText;
             };
-            describe('.btn-track-play', isTrackPlaying ? `「${track.name}」の再生を一時停止` : `「${track.name}」だけを再生`, isTrackPlaying ? '一時停止' : 'このトラックだけ再生');
-            describe('.btn-mute', `「${track.name}」をミュート`, track.mute ? 'ミュート中（押すと鳴るように戻す）' : 'ミュート（このトラックを鳴らさない）');
-            describe('.btn-solo', `「${track.name}」をソロ`, track.solo ? 'ソロ中（押すと解除）' : 'ソロ（このトラックだけ鳴らす）');
-            describe('.btn-track-menu', `「${track.name}」のメニュー`, 'メニュー（名前の変更・並びの変更・削除）');
-            describe('.gain-slider', `「${track.name}」の音量`, '音量（ダブルクリックで 0 dB に戻す）');
-            describe('.pan-slider', `「${track.name}」のパン`, 'パン・左右の位置（ダブルクリックで中央に戻す）');
+            describe('.btn-track-play', isTrackPlaying ? `「${track.name}」の再生を一時停止` : `「${track.name}」だけを再生`,
+                isTrackPlaying ? '一時停止します' : 'このトラックだけを、いまの位置から鳴らします');
+            describe('.btn-mute', `「${track.name}」をミュート`,
+                track.mute ? 'ミュート中です。押すと、また鳴るようになります' : 'このトラックの音を消します（ミュート）');
+            describe('.btn-solo', `「${track.name}」をソロ`,
+                track.solo ? 'ソロ中です。押すと、ほかのトラックも鳴るように戻ります' : '再生したとき、このトラックだけが聞こえるようにします（ソロ）');
+            describe('.btn-track-menu', `「${track.name}」のメニュー`, '名前の変更、並べ替え、削除');
+            describe('.gain-slider', `「${track.name}」の音量`, 'このトラックの音量。ダブルクリックで 0 dB に戻ります');
+            describe('.pan-slider', `「${track.name}」のパン`, '音を左右のどちらから鳴らすか。ダブルクリックで中央に戻ります');
             this._showMix(header, track);
             // トラック名は文字として入れる。HTML に埋め込むと、名前に < や & が在るときに崩れ、
             // 読み込んだプロジェクトの名前がタグとして解釈されてしまう
@@ -1282,10 +1294,10 @@ class TimelineEngine {
                 nameEl.replaceWith(input);
             } else {
                 nameEl.textContent = track.name + ' ';
-                nameEl.title = track.name;
+                nameEl.dataset.tip = `${track.name}\nクリックすると、このトラックのノートをピアノロールで開きます`;
                 if (noteCount > 0) {
                     const badge = document.createElement('span');
-                    badge.className = 'notes-badge'; badge.title = `${noteCount}ノート`; badge.textContent = String(noteCount);
+                    badge.className = 'notes-badge'; badge.dataset.tip = `ノートが ${noteCount} 個あります`; badge.textContent = String(noteCount);
                     nameEl.appendChild(badge);
                 }
             }
@@ -1295,7 +1307,7 @@ class TimelineEngine {
                 practice.type = 'button'; practice.className = 'btn-practice'; practice.dataset.track = track.id;
                 practice.textContent = '練習する';
                 practice.setAttribute('aria-label', `「${track.name}」を練習する`);
-                practice.title = 'このパートを練習する（お手本を重ねたピアノロールを開きます）';
+                practice.dataset.tip = 'お手本を薄く重ねたピアノロールを開いて、このパートを練習します';
                 practice.addEventListener('click', (e) => { e.stopPropagation(); this.onPractice(track.id); });
                 header.querySelector('.btn-track-menu').before(practice);
             } else if (track.role === 'practice') {
@@ -1306,7 +1318,7 @@ class TimelineEngine {
                     open.type = 'button'; open.className = 'btn-practice'; open.dataset.track = track.id;
                     open.textContent = '練習画面';
                     open.setAttribute('aria-label', `「${track.name}」を練習画面で開く`);
-                    open.title = '練習画面で開く（区間ループ・速度・比べる）';
+                    open.dataset.tip = '練習画面を開きます。区間をくり返したり、速度を落としたり、お手本と比べたりできます';
                     open.addEventListener('click', (e) => { e.stopPropagation(); this.onOpenPractice(track.id); });
                     header.querySelector('.btn-track-menu').before(open);
                 }
@@ -1320,7 +1332,7 @@ class TimelineEngine {
                 clipEl.style.left = (clip.offset * this.pixelsPerSecond) + 'px';
                 clipEl.style.width = (clip.duration * this.pixelsPerSecond) + 'px';
                 clipEl.textContent = clip.name; clipEl.dataset.trackId = track.id; clipEl.dataset.clipIndex = ci;
-                clipEl.title = `${clip.name}\n開始: ${clip.offset.toFixed(1)}s\n長さ: ${clip.duration.toFixed(1)}s\n右クリックでメニュー（複製・削除）`;
+                clipEl.dataset.tip = `${clip.name}（${clip.offset.toFixed(1)} 秒から、長さ ${clip.duration.toFixed(1)} 秒）\nドラッグで移動、右クリックで複製・削除`;
                 // キーボードでも選べる。Delete で削除、Shift+F10 かメニューキーでメニュー
                 clipEl.tabIndex = 0;
                 clipEl.setAttribute('role', 'button');
@@ -1622,7 +1634,7 @@ class TimelineEngine {
  */
 // ---- SeekBar コンポーネント ----
 function SeekBar() {
-    const { followPlayhead, setFollowPlayhead, setHint } = useDaw();
+    const { followPlayhead, setFollowPlayhead } = useDaw();
     const [seekVal, setSeekVal] = useState(0);
     const [curTime, setCurTime] = useState('0:00.0');
     const [totalTime, setTotalTime] = useState('0:00.0');
@@ -1650,18 +1662,19 @@ function SeekBar() {
     };
 
     return (
-        <div id="seek-bar-area">
+        <div id="seek-bar-area" data-tip-side="top">
             <span id="seek-time-current">{curTime}</span>
             <input type="range" id="seek-bar" aria-label="再生位置" min="0" max="100" step="0.1" value={seekVal}
+                {...tip('ドラッグすると、再生する位置が変わります')}
                 onMouseDown={() => { isSeeking.current = true; }} onTouchStart={() => { isSeeking.current = true; }}
                 onInput={handleInput} onMouseUp={finishSeek} onTouchEnd={finishSeek}
                 // 矢印キーでも動かせる。キーを離したときと、欄を離れたときにも確定する
                 // (確定しないと、移動されないうえに、以後つまみが再生位置を追わなくなる)
                 onKeyUp={finishSeek} onBlur={finishSeek} />
             <span id="seek-time-total">{totalTime}</span>
-            <label id="follow-playhead" onMouseEnter={() => setHint('再生中に、再生位置が見えるようにタイムラインとピアノロールを自動でスクロールします')}
-                onMouseLeave={() => setHint('')}>
-                <input type="checkbox" checked={followPlayhead} onChange={(e) => setFollowPlayhead(e.target.checked)} />
+            <label id="follow-playhead">
+                <input type="checkbox" checked={followPlayhead} onChange={(e) => setFollowPlayhead(e.target.checked)}
+                    {...tip('再生中、鳴っている場所が見えるように、タイムラインとピアノロールを自動でスクロールします')} />
                 再生位置を追う
             </label>
         </div>
@@ -1683,10 +1696,12 @@ function EmptyState() {
                 最後に差分チェックで、お手本との違いを確かめます。
             </p>
             <div className="empty-actions">
-                <button type="button" className="action-btn primary" onClick={() => { openLearn('song'); openSongPicker(); }}>
+                <button type="button" className="action-btn primary" onClick={() => { openLearn('song'); openSongPicker(); }}
+                    {...tip('教材にする曲のファイルを選びます。取り込むと、カルテを自動で作ります')}>
                     曲を取り込んで始める
                 </button>
-                <button type="button" className="action-btn secondary" onClick={startFree}>自由に作る</button>
+                <button type="button" className="action-btn secondary" onClick={startFree}
+                    {...tip('曲を使わずに、空のトラックを 1 本作って始めます')}>自由に作る</button>
             </div>
             <p className="empty-note">MP3・WAV・FLAC・M4A などの曲のファイルを選びます。「自由に作る」は、空のトラックを 1 本作ります。</p>
             <RecentProjects />
@@ -1925,7 +1940,8 @@ export default function CenterArea() {
                 </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
                 {engine.tracks.length === 0 && <EmptyState />}
-                <button id="btn-add-track" onClick={handleAddTrack} hidden={engine.tracks.length === 0}>+ トラック追加</button>
+                <button id="btn-add-track" onClick={handleAddTrack} hidden={engine.tracks.length === 0}
+                    {...tip('空のトラックを 1 本、いちばん下に足します')}>+ トラック追加</button>
                 <SeekBar />
             </div>
 
@@ -1934,12 +1950,13 @@ export default function CenterArea() {
                 role="separator" aria-orientation="horizontal" tabIndex={0}
                 aria-label="タイムラインとピアノロールの境目（上下の矢印キーで動かせます）"
                 aria-valuemin={PIANO_MIN_HEIGHT} aria-valuenow={pianoHeight ?? 300}
-                title="ドラッグすると、ピアノロールの高さが変わります"
+                {...tip('上下にドラッグすると、ピアノロールの高さが変わります')}
                 onPointerDown={handleResizeDown} onKeyDown={handleResizeKey} />
 
             {/* ピアノロール */}
             <div id="piano-roll-area" ref={pianoAreaRef} style={pianoHeight === null || practiceOpen ? undefined : { height: pianoHeight }}>
-                <div className="area-label">
+                {/* 説明は上に出す。下のノートを隠さないため */}
+                <div className="area-label" data-tip-side="top">
                     {/* 練習画面では、MIDI 入力とお手本の切り替えは下の操作に出す (お手本の重ね方を決める GhostBar は隠して残す) */}
                     {pianoLabel}{!practiceOpen && <MidiInputBar midi={midi} />}<GhostBar activeTrackId={activeTrackId} />
                     <VelocityBar summary={velocity} open={activeTrackId !== null}
@@ -1948,18 +1965,18 @@ export default function CenterArea() {
                     {/* 表示の大きさ。Cmd (Ctrl) + ホイールか、トラックパッドのピンチでも横の大きさを変えられる */}
                     <span className="piano-zoom" role="group" aria-label="ピアノロールの表示の大きさ">
                         <span className="area-hint" aria-hidden="true">横</span>
-                        <button type="button" aria-label="横に縮める" title="横に縮める（Cmd か Ctrl を押しながらホイールでも変えられます）"
+                        <button type="button" aria-label="横に縮める" {...tip('横に縮めて、広い範囲を見渡します\nCmd か Ctrl を押しながらホイールでも変わります')}
                             disabled={!zoom.canZoomOutX} onClick={() => zoomBy('x', -1)}>−</button>
-                        <button type="button" aria-label="横に広げる" title="横に広げる（Cmd か Ctrl を押しながらホイールでも変えられます）"
+                        <button type="button" aria-label="横に広げる" {...tip('横に広げて、細かいタイミングを見やすくします\nCmd か Ctrl を押しながらホイールでも変わります')}
                             disabled={!zoom.canZoomInX} onClick={() => zoomBy('x', 1)}>＋</button>
                         <span className="area-hint" aria-hidden="true">縦</span>
-                        <button type="button" aria-label="縦に縮める" title="縦に縮める" disabled={!zoom.canZoomOutY} onClick={() => zoomBy('y', -1)}>−</button>
-                        <button type="button" aria-label="縦に広げる" title="縦に広げる" disabled={!zoom.canZoomInY} onClick={() => zoomBy('y', 1)}>＋</button>
+                        <button type="button" aria-label="縦に縮める" {...tip('縦に縮めて、広い音域を見渡します')} disabled={!zoom.canZoomOutY} onClick={() => zoomBy('y', -1)}>−</button>
+                        <button type="button" aria-label="縦に広げる" {...tip('縦に広げて、ノートを押しやすくします')} disabled={!zoom.canZoomInY} onClick={() => zoomBy('y', 1)}>＋</button>
                     </span>
                 </div>
                 {practiceOpen && <PracticeBands />}
                 <div id="piano-roll-body">
-                    <div ref={keysRef} id="piano-keys" />
+                    <div ref={keysRef} id="piano-keys" data-tip-side="right" data-tip-box="" />
                     {/* フォーカスを受けて、キーの操作 (矢印・Cmd+A/C/X/V/D・Delete) を受ける */}
                     <div ref={pianoWrapRef} id="piano-grid-wrap" tabIndex={0} role="group"
                         aria-label="ピアノロールのノート（矢印キーで選んだノートを動かす。Option + ↑↓ で強さを変える。Cmd か Ctrl + A で全部選ぶ）">

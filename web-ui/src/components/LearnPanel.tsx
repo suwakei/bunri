@@ -23,14 +23,15 @@ import JobCard from './JobCard';
 import { useJob } from '../lib/useJob';
 import { useShowJob } from '../lib/job-focus';
 import { jobErrorMessage, type Job } from '../lib/jobs';
+import { tip } from '../lib/tooltip';
 import GuidePanel from './GuidePanel';
 import CoachPanel from './CoachPanel';
 
 const LEARN_TABS: TabDef<LearnTab>[] = [
-    { key: 'song', label: '曲とパート' },
-    { key: 'chart', label: 'カルテ' },
-    { key: 'guide', label: 'ガイド' },
-    { key: 'coach', label: '差分' },
+    { key: 'song', label: '曲とパート', tip: '曲を取り込み、パートに分けます' },
+    { key: 'chart', label: 'カルテ', tip: '曲のキー・コード進行・構成・音の作りを見ます' },
+    { key: 'guide', label: 'ガイド', tip: 'カルテをもとに、似せて作るための手順を書き出します' },
+    { key: 'coach', label: '差分', tip: '打ち込みをお手本と比べて、違うところを見つけます' },
 ];
 
 /**
@@ -92,12 +93,16 @@ function SongPanel() {
                     {chart ? '（カルテあり）' : ''}
                 </p>
             )}
-            <button className="action-btn" id="btn-import-song" onClick={openSongPicker} disabled={blocked}>
+            <button className="action-btn" id="btn-import-song" onClick={openSongPicker} disabled={blocked}
+                {...tip(songFile
+                    ? '別の曲のファイルを選んで、取り込み直します'
+                    : '教材にする曲のファイル（MP3・WAV など）を選びます。取り込むと、カルテを自動で作ります')}>
                 {songFile ? '別の曲を取り込む' : '曲を取り込む'}
             </button>
             <label htmlFor="file-auto-bpm" style={{ marginTop: 8 }}>
                 <input id="file-auto-bpm" type="checkbox" checked={autoBpm}
-                    onChange={e => setAutoBpm(e.target.checked)} style={{ marginRight: 4 }} />
+                    onChange={e => setAutoBpm(e.target.checked)} style={{ marginRight: 4 }}
+                    {...tip('取り込んだ曲の速さを調べて、BPM に入れます。外すと、いまの BPM のままです')} />
                 BPM を自動で検出する
             </label>
             <JobCard slot="learn-song" job={songJob.job} busyJob={songJob.busyJob} onCancel={() => void songJob.cancel()}
@@ -112,8 +117,16 @@ function SongPanel() {
                 </p>
                 <label htmlFor="file-transcribe-sensitivity">採譜の感度（{sensitivity}）</label>
                 <input id="file-transcribe-sensitivity" type="range" min="0.1" max="1" step="0.05"
-                    value={sensitivity} onChange={e => setSensitivity(+e.target.value)} />
-                <button className="action-btn" onClick={() => void separateParts(sensitivity)} disabled={blocked || !songFile}>
+                    value={sensitivity} onChange={e => setSensitivity(+e.target.value)}
+                    {...tip('上げると小さな音まで拾ってお手本にします。余分なノートが多いときは下げてください')} />
+                <button className="action-btn" onClick={() => void separateParts(sensitivity)} disabled={blocked || !songFile}
+                    {...tip(!songFile
+                        ? '先に曲を取り込んでください'
+                        : separated.length > 0
+                            ? (fromMidi > 0
+                                ? 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります。MIDI ファイルから読み込んだお手本は残ります'
+                                : 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります')
+                            : '原曲をボーカル・ドラム・ベースなどに分けて、パートごとにお手本を作ります')}>
                     {separated.length > 0 ? 'パートに分け直す（数分かかります）' : 'パートに分けて採譜する（数分かかります）'}
                 </button>
                 <JobCard slot="learn-parts" job={partsJob.job} busyJob={partsJob.busyJob} onCancel={() => void partsJob.cancel()}
@@ -143,6 +156,7 @@ function SongPanel() {
                                         <div className="part-actions">
                                             <button type="button" className="action-btn primary" disabled={showProgress || partsJob.job !== null}
                                                 aria-label={`「${part.name}」を練習する`}
+                                                {...tip('お手本を薄く重ねたピアノロールを開きます。お手本を見ながら、自分でノートを置いていきます')}
                                                 onClick={() => practicePart(part.id)}>
                                                 このパートを練習する
                                             </button>
@@ -151,11 +165,14 @@ function SongPanel() {
                                                     <p className="note-text">
                                                         お手本のノートを「{part.name}」の打ち込みに写します。写すと、差分チェックは 100% から始まります。
                                                     </p>
-                                                    <button type="button" className="link-btn" onClick={() => { adoptReference(part.id); setConfirming(null); }}>写す</button>
-                                                    <button type="button" className="link-btn" onClick={() => setConfirming(null)}>やめる</button>
+                                                    <button type="button" className="link-btn" onClick={() => { adoptReference(part.id); setConfirming(null); }}
+                                                        {...tip('お手本を打ち込みに写します。元に戻すで戻せます')}>写す</button>
+                                                    <button type="button" className="link-btn" onClick={() => setConfirming(null)}
+                                                        {...tip('写さずに閉じます')}>やめる</button>
                                                 </div>
                                             ) : (
                                                 <button type="button" className="link-btn" onClick={() => setConfirming(part.id)}
+                                                    {...tip('お手本のノートを、そのまま自分の打ち込みに写します。写したものを手で直していくときに使います')}
                                                     aria-label={`「${part.name}」のお手本をノートとして取り込む`}>
                                                     お手本をノートとして取り込む
                                                 </button>

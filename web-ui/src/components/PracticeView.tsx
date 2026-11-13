@@ -28,6 +28,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
+import { tip } from '../lib/tooltip';
 import engine, { type PianoNote, type Track } from '../lib/engine';
 import { describeError } from '../lib/api';
 import { KIND_LABEL, issueText, requestDiff, type DiffIssue, type DiffResult } from '../lib/coach';
@@ -494,16 +495,16 @@ export function PracticeHeader() {
     const previous = compare && summary ? summary.deltaPercent : null;
     const mark = deltaMark(previous);
     return (
-        <div id="practice-header" role="region" aria-label="練習画面">
+        <div id="practice-header" role="region" aria-label="練習画面" data-tip-side="bottom">
             <button type="button" className="practice-back" onClick={() => { closePractice(); setStatus('アレンジに戻りました'); }}
-                title="ふだんの画面（タイムライン・左パネル）に戻る（Esc）" aria-keyshortcuts="Escape">
+                {...tip('タイムラインと左パネルのある、ふだんの画面に戻ります', { key: 'Esc' })} aria-keyshortcuts="Escape">
                 ← アレンジに戻る
             </button>
             <h2 className="practice-title">
                 練習: {partName}{songFile ? <span className="practice-song">（{songFile.name}）</span> : null}
             </h2>
             <div className={'practice-match' + (stale ? ' stale' : '')} aria-live="polite"
-                title="比べた範囲のお手本のうち、高さが同じで、位置が 16 分音符 2 個以内だったノートの割合">
+                {...tip('比べた範囲のお手本のうち、高さが同じで、位置のずれが 16 分音符 2 つぶん以内だったノートの割合')}>
                 {rate === null ? (
                     <span className="area-hint">
                         一致 —（まだ比べていません{summary ? `。${practice?.loop.enabled ? 'この区間の' : ''}前回の記録は ${summary.percent}%` : ''}）
@@ -611,7 +612,7 @@ export function PracticeBands() {
     const inner = (children: ReactNode) => <div className="band-inner" style={{ width }}>{children}</div>;
 
     return (
-        <div id="practice-bands" ref={bandsRef}>
+        <div id="practice-bands" ref={bandsRef} data-tip-side="top">
             <div className="band-row" data-band="section">
                 <div className="band-label" style={labelStyle}>構成</div>
                 <div className="band-track" style={trackStyle}>
@@ -622,7 +623,7 @@ export function PracticeBands() {
                             <button key={s.id} type="button" className="band-cell band-section"
                                 style={{ left: x(s.start_sec), width: Math.max(2, x(s.end_sec) - x(s.start_sec)) }}
                                 aria-label={`「${name}」（${loopOf.startBar}〜${loopOf.endBar} 小節）を区間にする`}
-                                title={`${name}（${loopOf.startBar}〜${loopOf.endBar} 小節）。押すと、この区間を区間ループにします`}
+                                {...tip(`${name}（${loopOf.startBar}〜${loopOf.endBar} 小節）\n押すと、この区間をくり返し練習できるようにします`)}
                                 onClick={() => { setLoop(loopOf); setStatus(`区間: 「${name}」（${loopOf.startBar}〜${loopOf.endBar} 小節）`); }}>
                                 {name}<span className="band-sub">（{loopOf.startBar}–{loopOf.endBar}）</span>
                             </button>
@@ -637,7 +638,7 @@ export function PracticeBands() {
                     {inner(chart ? chart.chords.map((c, i) => (
                         <div key={i} className="band-cell band-chord" data-bar={c.bar} data-beat={c.beat}
                             style={{ left: x(c.start_sec), width: Math.max(2, x(c.end_sec) - x(c.start_sec)) }}
-                            title={`${c.bar} 小節 ${c.beat} 拍目: ${c.symbol}`}>
+                            {...tip(`${c.bar} 小節 ${c.beat} 拍目: ${c.symbol}`)}>
                             {c.symbol}
                         </div>
                     )) : null)}
@@ -647,7 +648,7 @@ export function PracticeBands() {
                 <div className="band-label" style={labelStyle}>小節</div>
                 <div className="band-track bar-track" style={trackStyle} role="group"
                     aria-label="小節（ドラッグすると、その範囲が区間ループになります）"
-                    title="ドラッグすると、その範囲が区間ループになります"
+                    {...tip('ドラッグした範囲を、くり返し練習する区間にします')}
                     onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarUp}>
                     {inner(
                         <>
@@ -703,14 +704,16 @@ export function PracticeSide() {
     }, [selectedIssue]);
 
     const where = practice?.loop.enabled ? `${practice.loop.startBar}〜${practice.loop.endBar} 小節` : '曲全体';
+    // 説明は、この欄の外 (左、ピアノロールの側) に出す。指摘の一覧を隠さないため
     return (
-        <aside id="practice-side" aria-label="この区間の指摘">
+        <aside id="practice-side" aria-label="この区間の指摘" data-tip-side="left" data-tip-box="">
             <h3>{compare?.range ? 'この区間の指摘' : '指摘'}<span className="area-hint">（{where}）</span></h3>
             {error && <p role="alert" className="error-text">{error}</p>}
             {stale && (
                 <div className="practice-stale" role="status">
                     <p>{stale === 'notes' ? 'ノートを変えたので、もう一度比べてください' : '区間を変えたので、もう一度比べてください'}</p>
-                    <button type="button" className="action-btn" onClick={() => void runCompare()} disabled={busy}>もう一度比べる</button>
+                    <button type="button" className="action-btn" onClick={() => void runCompare()} disabled={busy}
+                        {...tip('いまのノートで、もう一度お手本と比べます')}>もう一度比べる</button>
                 </div>
             )}
             {!compare && !error && (
@@ -731,7 +734,7 @@ export function PracticeSide() {
                         {issues.map((issue, i) => (
                             <li key={i}>
                                 <button type="button" className={`issue-btn issue-${issue.kind}`} aria-current={issue === selectedIssue ? 'true' : undefined}
-                                    onClick={() => selectIssue(issue)} title="ピアノロールで、このノートを選んで光らせる">
+                                    onClick={() => selectIssue(issue)} {...tip('ピアノロールで、このノートを選んで光らせます')}>
                                     {issueText(issue)}
                                 </button>
                             </li>
@@ -742,7 +745,7 @@ export function PracticeSide() {
             <Legend />
             <button type="button" className="action-btn secondary practice-guide"
                 onClick={() => { closePractice(); openLearn('guide'); setStatus('アレンジに戻って、再現ガイドを開きました'); }}
-                title="アレンジに戻って、左パネルの「ガイド」を開きます">
+                {...tip('ふだんの画面に戻って、左パネルの「ガイド」を開きます')}>
                 ガイドを読む
             </button>
         </aside>
@@ -763,6 +766,7 @@ function BarInput({ label, value, onCommit }: { label: string; value: number; on
     };
     return (
         <input type="number" min={1} className="bar-input" aria-label={label} value={draft ?? String(value)}
+            {...tip(`${label}。数字を入れて Enter で決まります`)}
             onChange={(e) => setDraft(e.target.value)} onBlur={commit}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
     );
@@ -790,14 +794,14 @@ export function PracticeControls() {
         }
     })();
     return (
-        <div id="practice-controls" role="toolbar" aria-label="練習の操作">
+        <div id="practice-controls" role="toolbar" aria-label="練習の操作" data-tip-side="top">
             <div className="practice-row">
                 <button type="button" className="practice-transport" onClick={togglePlay} aria-label={playing ? '一時停止' : '再生'}
-                    title={`${playing ? '一時停止' : '再生'}（Space）`} aria-keyshortcuts="Space">{playing ? '⏸' : '▶'}</button>
-                <button type="button" className="practice-transport" onClick={stopPlay} aria-label="停止" title="停止して区間の頭へ">■</button>
+                    {...tip(playing ? '一時停止します' : '区間の頭から鳴らします。区間ループ中は、くり返し鳴ります', { key: 'Space' })} aria-keyshortcuts="Space">{playing ? '⏸' : '▶'}</button>
+                <button type="button" className="practice-transport" onClick={stopPlay} aria-label="停止" {...tip('止めて、区間の頭に戻ります')}>■</button>
 
                 <span className="practice-group" role="group" aria-label="区間ループ">
-                    <label className="practice-check" title="区間ループ（L）">
+                    <label className="practice-check" {...tip('決めた区間だけを、くり返し鳴らします', { key: 'L' })}>
                         <input type="checkbox" checked={loop.enabled} aria-keyshortcuts="L"
                             onChange={(e) => setLoop({ ...loop, enabled: e.target.checked })} />
                         区間ループ
@@ -808,15 +812,16 @@ export function PracticeControls() {
                     <BarInput label="区間の終わりの小節" value={loop.endBar}
                         onCommit={(v) => setLoop({ ...loop, endBar: Math.max(loop.startBar, v) })} />
                     <span className="area-hint">小節</span>
-                    <button type="button" className="practice-mini" aria-label="区間を 1 小節前へ" title="区間を 1 小節前へ（[）" aria-keyshortcuts="["
+                    <button type="button" className="practice-mini" aria-label="区間を 1 小節前へ" {...tip('区間を 1 小節前へずらします', { key: '[' })} aria-keyshortcuts="["
                         onClick={() => setLoop(shiftLoop(loop, -1))} disabled={loop.startBar <= 1}>‹</button>
-                    <button type="button" className="practice-mini" aria-label="区間を 1 小節後ろへ" title="区間を 1 小節後ろへ（]）" aria-keyshortcuts="]"
+                    <button type="button" className="practice-mini" aria-label="区間を 1 小節後ろへ" {...tip('区間を 1 小節後ろへずらします', { key: ']' })} aria-keyshortcuts="]"
                         onClick={() => setLoop(shiftLoop(loop, 1))}>›</button>
                 </span>
 
                 <span className="practice-group">
                     <label htmlFor="practice-speed">速度</label>
                     <select id="practice-speed" value={practice.speed}
+                        {...tip('ゆっくり鳴らして聴き取りやすくします。音の高さは変わりません。区間ループの中で効きます')}
                         onChange={(e) => updatePractice({ speed: Number(e.target.value) })}
                         data-stretched-sec={speedStatus.kind === 'ready' && speedStatus.seconds !== null ? speedStatus.seconds.toFixed(3) : undefined}>
                         {SPEEDS.map((s) => <option key={s} value={s}>{speedLabel(s)}</option>)}
@@ -829,7 +834,7 @@ export function PracticeControls() {
                     <span className="practice-group-label" aria-hidden="true">聴く</span>
                     {listen.map((l) => (
                         <label key={l.key} className="practice-radio"
-                            title={l.key === 'part' ? 'パートの音声だけを鳴らす' : l.key === 'self' ? '自分のノートだけを鳴らす' : 'パートの音声と自分のノートを鳴らす'}>
+                            {...tip(l.key === 'part' ? '原曲のこのパートの音だけを鳴らします' : l.key === 'self' ? '自分が置いたノートだけを鳴らします' : 'パートの音と自分のノートを重ねて鳴らします')}>
                             <input type="radio" name="practice-listen" checked={practice.listen === l.key}
                                 onChange={() => updatePractice({ listen: l.key })} />
                             {l.label}
@@ -841,7 +846,8 @@ export function PracticeControls() {
                 <span className="practice-group" role="radiogroup" aria-label="お手本">
                     <span className="practice-group-label" aria-hidden="true">お手本</span>
                     {[true, false].map((v) => (
-                        <label key={String(v)} className="practice-radio">
+                        <label key={String(v)} className="practice-radio"
+                            {...tip(v ? 'お手本を水色で薄く重ねて見せます' : 'お手本を隠して、耳だけを頼りに打ち込みます')}>
                             <input type="radio" name="practice-ghost" checked={practice.showGhost === v}
                                 onChange={() => updatePractice({ showGhost: v })} />
                             {v ? '見せる' : '隠す'}
@@ -853,10 +859,10 @@ export function PracticeControls() {
                     <span className="practice-group-label" aria-hidden="true">入力</span>
                     {inputs.map((it) => (
                         <label key={it.key} className="practice-radio"
-                            title={it.key === 'mouse' ? 'ピアノロールをダブルクリックして置く'
+                            {...tip(it.key === 'mouse' ? 'ピアノロールをダブルクリックして、ノートを置きます'
                                 : !midi.available ? midiUnavailableText()
-                                    : it.key === 'midi-step' ? '鍵盤を弾くたびに、区間の頭から 1 つずつ置く'
-                                        : '再生しながら弾く。区間ループ中は 1 周ごとに重ねて録る（元に戻すと最後の 1 周ぶんが消える）'}>
+                                    : it.key === 'midi-step' ? '鍵盤を弾くたびに、区間の頭から 1 つずつノートを置きます'
+                                        : '再生しながら弾いたとおりに置きます。区間ループ中は 1 周ごとに重ねて録り、元に戻すと最後の 1 周ぶんが消えます')}>
                             <input type="radio" name="practice-input" checked={practice.input === it.key}
                                 disabled={it.key !== 'mouse' && !midi.available}
                                 onChange={() => updatePractice({ input: it.key })} />
@@ -867,7 +873,7 @@ export function PracticeControls() {
                         <>
                             <StepLengthSelect midi={midi} />
                             <span className="area-hint">次の位置: {cursorLabel(midi.cursor, beatsPerBar)}</span>
-                            <button type="button" className="practice-mini" onClick={() => {
+                            <button type="button" className="practice-mini" {...tip('次にノートを置く位置を、区間の頭に戻します')} onClick={() => {
                                 midi.setCursor(loop.enabled ? loopSteps(loop, { beatsPerBar }).start : 0);
                                 setStatus('ステップ入力の位置を、区間の頭に戻しました');
                             }}>区間の頭へ</button>
@@ -882,7 +888,7 @@ export function PracticeControls() {
                 </span>
 
                 <button type="button" className="action-btn primary practice-compare" onClick={() => void runCompare()} disabled={busy || !part}
-                    title={loop.enabled ? '区間ループの中のノートを、お手本と比べます' : '曲全体のノートを、お手本と比べます'}>
+                    {...tip(loop.enabled ? '区間の中のノートをお手本と比べて、違うところに色を付けます' : '曲全体のノートをお手本と比べて、違うところに色を付けます')}>
                     {busy ? '比べています…' : '比べる'}
                 </button>
             </div>

@@ -42,14 +42,6 @@ test('ステータスバーが画面の中に見えていて、画面全体が�
     await expect(statusText(page)).toContainText('書き出すノートがありません');
 });
 
-test('ボタンにマウスを載せると、ステータスバーの右に説明が出る', async ({ page }) => {
-    await openDaw(page);
-    await startFree(page);
-    await page.getByRole('button', { name: '保存', exact: true }).hover();
-    await expect(page.locator('#hint-text')).toHaveText(/^プロジェクト（トラック・ノート・音声・カルテ・学習の記録）を 1 つのファイルに保存します（(⌘|Ctrl\+)S）$/);
-    await expect(page.locator('#hint-text')).toBeInViewport();
-});
-
 test('保存して開き直し、開くと、テンポ・トラック・ノートが戻る', async ({ page }) => {
     await openDaw(page);
     await startFree(page);
@@ -80,7 +72,7 @@ test('保存して開き直し、開くと、テンポ・トラック・ノー�
     await expect(page.locator('#tracks-container .track-row').nth(2).locator('.notes-badge')).toHaveText('1');
     // トラックを開くと、ノートがピアノロールに出る
     await page.locator('#tracks-container .track-name').first().click();
-    const titles = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).title));
+    const titles = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.note ?? ''));
     expect(titles.map((t) => t.match(/step:(\d+)/)![1])).toEqual(['0', '8']);
 });
 
@@ -182,7 +174,7 @@ test.describe('再生', () => {
         await placeNotes(page);
         await page.locator('#btn-play').click();
         await expect(timeDisplay(page)).not.toHaveText('0:00.0');
-        await page.getByTitle('停止', { exact: true }).click();
+        await page.getByRole('button', { name: '停止', exact: true }).click();
         await expect(statusText(page)).toHaveText('停止');
         await expect(page.locator('#btn-play')).toHaveText('▶');
         await expect(timeDisplay(page)).toHaveText('0:00.0');
@@ -192,7 +184,7 @@ test.describe('再生', () => {
     test('メトロノームを入れると、ボタンが点いた状態になる', async ({ page }) => {
         await openDaw(page);
         await startFree(page);
-        const button = page.getByTitle('メトロノーム', { exact: true });
+        const button = page.getByRole('button', { name: 'メトロノーム', exact: true });
         await button.click();
         await expect(statusText(page)).toHaveText('メトロノーム ON');
         await expect(button).toHaveClass(/active/);
@@ -244,7 +236,7 @@ test.describe('Space キー', () => {
         await expect(page.locator('#btn-play')).toHaveText('▶');
 
         // メトロノームをマウスで押した後の Space も、メトロノームではなく再生に効く
-        const metronome = page.getByTitle('メトロノーム', { exact: true });
+        const metronome = page.getByRole('button', { name: 'メトロノーム', exact: true });
         await metronome.click();
         await expect(metronome).toHaveClass(/active/);
         await page.keyboard.press('Space');
@@ -258,7 +250,7 @@ test.describe('Space キー', () => {
         await placeNotes(page);
         // Tab キーで操作している状態にしてから、メトロノームのボタンへ移る
         await page.keyboard.press('Tab');
-        const metronome = page.getByTitle('メトロノーム', { exact: true });
+        const metronome = page.getByRole('button', { name: 'メトロノーム', exact: true });
         await metronome.focus();
         await page.keyboard.press('Space');
         await expect(metronome).toHaveClass(/active/);
@@ -286,14 +278,14 @@ test.describe('ステータスバーの知らせ', () => {
         await expect(statusText(page)).not.toHaveClass(/error/);
     });
 
-    test('長い知らせは 1 行に収まり、はみ出すぶんは … になる (全文は title で読める)', async ({ page, request }) => {
+    test('長い知らせは 1 行に収まり、はみ出すぶんは … になる (全文はマウスを載せると出る)', async ({ page, request }) => {
         await page.setViewportSize({ width: 700, height: 720 });
         // 以前の形式のプロジェクト (音声の無いクリップを含む) を開いたときの知らせは長い
         const legacy = { bpm: 120, tracks: [{ name: 'Track 1', pianoNotes: [], clips: [{ name: 'long-status.wav', offset: 0, duration: 1 }] }] };
         expect((await request.post('/api/project/save', { form: { data: JSON.stringify(legacy) } })).ok()).toBe(true);
         await openDaw(page);
         await openNewestLegacy(page);
-        // マウスを載せたままだと右側に説明が出るので、ボタンから外す
+        // ボタンの説明が出ないように、マウスをボタンから外す
         await page.mouse.move(350, 400);
         const layout = await statusText(page).evaluate((el) => {
             const style = getComputedStyle(el);
@@ -302,7 +294,7 @@ test.describe('ステータスバーの知らせ', () => {
             return {
                 cut: el.scrollWidth > el.clientWidth, overflow: style.textOverflow, wrap: style.whiteSpace,
                 barHeight: bar.height, inside: rect.right <= bar.right && rect.left >= bar.left,
-                title: el.getAttribute('title'), text: el.textContent,
+                tip: el.getAttribute('data-tip'), text: el.textContent,
             };
         });
         expect(layout.cut).toBe(true);
@@ -310,7 +302,11 @@ test.describe('ステータスバーの知らせ', () => {
         expect(layout.wrap).toBe('nowrap');
         expect(layout.barHeight).toBe(28);
         expect(layout.inside).toBe(true);
-        expect(layout.title).toBe(layout.text);
+        expect(layout.tip).toBe(layout.text);
+        // 切れているので、載せると全文がツールチップで出る
+        await statusText(page).hover();
+        await expect(page.locator('#bunri-tooltip')).toBeVisible();
+        await expect(page.locator('#bunri-tooltip .tooltip-text')).toHaveText(layout.text!);
     });
 });
 

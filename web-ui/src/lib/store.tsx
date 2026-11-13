@@ -110,10 +110,6 @@ export interface DawContextType {
      * @param kind - 失敗の知らせなら `'error'`（省略時は `'info'`）
      */
     setStatus: (msg: string, kind?: StatusKind) => void;
-    /** ヒントテキスト */
-    hint: string;
-    /** @param msg - 表示するヒントメッセージ */
-    setHint: (msg: string) => void;
     /**
      * 時間のかかる処理が走っているか（プログレスバーの表示フラグ）。
      * 処理を始めるボタンは、これが true のあいだ押せなくする（二重に始めないため）。
@@ -353,7 +349,6 @@ const DawContext = createContext<DawContextType | null>(null);
  */
 export function DawProvider({ children }: { children: ReactNode }) {
     const [statusState, setStatusState] = useState<{ text: string; kind: StatusKind }>({ text: '準備完了', kind: 'info' });
-    const [hint, setHint] = useState('');
     // 走っている処理の数。0 より大きいあいだ、プログレスバーを出す
     // (フラグ 1 つだと、2 つの処理が重なったときに、先に終わったほうがバーを消してしまう)
     const [progressCount, setProgressCount] = useState(0);
@@ -745,7 +740,6 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const value: DawContextType = {
         engine,
         status: statusState.text, statusKind: statusState.kind, setStatus,
-        hint, setHint,
         showProgress: progressCount > 0, withProgress,
         showGuide, setShowGuide, closeGuide,
         bpm, setBpm,
