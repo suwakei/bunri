@@ -6,6 +6,10 @@ license = "Apache-2.0"
 edition = "2021"
 publish = false
 
+# 音のエンジンは Tauri 抜きでテストできるよう別の crate に分けている
+[workspace]
+members = ["audio-engine"]
+
 [lib]
 name = "bunri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

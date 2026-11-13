@@ -61,7 +61,10 @@ jobs:
   desktop:
     runs-on: macos-latest
     steps:
+      # 音のエンジンが使う sfizz (third_party/sfizz) とその依存は submodule
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -73,8 +76,13 @@ jobs:
 
       - name: Format (cargo fmt)
         working-directory: src-tauri
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Lint (cargo clippy)
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 音のエンジン (sfizz を cmake でビルドする。cmake は macOS のランナーに入っている)
+      - name: Test (audio engine)
+        working-directory: src-tauri
+        run: cargo test -p bunri-audio

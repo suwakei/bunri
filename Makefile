@@ -47,12 +47,12 @@ e2e-desktop: ## 本物の窓を自動操作するテスト（テスト用にビ�
 test: ## 全テストを実行
 	cd web-ui && npm test
 	uv run python -m pytest test/back/ -v
-	cd src-tauri && cargo test
+	cd src-tauri && cargo test --workspace
 
 lint: ## リント実行
 	cd web-ui && npx eslint .
 	uv run ruff check .
-	cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
+	cd src-tauri && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 	cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings
 	@# 窓を自動操作する WebDriver サーバ (機能 e2e) が、既定のビルドに入っていないこと
 	cd src-tauri && ! cargo tree -e normal --prefix none | grep -q '^tauri-plugin-wdio-webdriver '
