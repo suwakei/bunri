@@ -92,6 +92,50 @@ class TestGridOnKnownMaterials:
         assert grid["bpm_confidence"] < 0.7
 
 
+class TestAutoMeter:
+    """拍子を渡さなければ、3 拍子か 4 拍子かを自動で決める"""
+
+    @pytest.mark.parametrize("kind, kwargs", _pick(grid_materials.design_cases(), [
+        "meter3 band 120",
+        "meter3 piano_chords 90",
+    ]) + _pick(grid_materials.holdout_cases(), ["waltz 133 lead0.27 rev0.25"]))
+    def test_detects_triple_meter(self, tmp_path, kind, kwargs):
+        """小節ごとの強弱が 3 拍で繰り返す材料は 3 拍子になり、テンポと 1 拍目も合う"""
+        truth = grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"))
+        assert truth["beats_per_bar"] == 3
+        assert grid["time_signature"] == [3, 4]
+        tempo, _, downbeat_ok = grid_materials.judge(grid_materials.grid_errors(grid, truth))
+        assert tempo == "ok" and downbeat_ok
+
+    @pytest.mark.parametrize("kind, kwargs", _pick(grid_materials.design_cases(), [
+        "tempo band 128",
+        "style band_backbeat 120",
+        # 1 小節に 1 回しか音が立ち上がらない。「3/4 倍のテンポで 3 拍」も小節の長さが同じになるので、
+        # 3 拍子を先に検討すると取り違える材料
+        "style pad_chords 100",
+        "report2 sine_notes 120 4bars",
+    ]))
+    def test_keeps_common_time(self, tmp_path, kind, kwargs):
+        """4 拍子の材料を 3 拍子と取らない（決め手が無ければ 4 拍子のまま）"""
+        grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"))
+        assert grid["time_signature"] == [4, 4]
+
+    def test_given_meter_is_trusted(self, tmp_path):
+        """拍子を渡せば、自動では決めない（3 拍子の材料でも 4 と言われれば 4）"""
+        kind, kwargs = _pick(grid_materials.design_cases(), ["meter3 band 120"])[0].values
+        grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"), beats_per_bar=4)
+        assert grid["time_signature"] == [4, 4]
+
+    def test_user_bpm_without_meter_is_common_time(self, chord_song):
+        """BPM を指定した経路で拍子を渡さなければ 4 拍子"""
+        path, _ = chord_song
+        grid = structure.estimate_grid(path, bpm=120.0, downbeat_offset=0.0)
+        assert grid["time_signature"] == [4, 4]
+
+
 class TestGridConfidence:
     """決め手が無いときは、値は出すが確信度を下げる"""
 

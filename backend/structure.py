@@ -88,8 +88,22 @@ _GRID_START_TOLERANCE_SEC = 0.05
 # 無音とみなす音量（いちばん大きいフレームに対する比。-50 dB）
 _SILENCE_RATIO = 10 ** (-50 / 20)
 
+# 拍子を自動で決めるときの候補。4 拍子を既定とし、3 拍子ははっきり示されたときだけ選ぶ
+# （ほとんどの曲は 4 拍子なので、4 拍子の曲を 3 拍子と取る誤りのほうが被害が大きい）。
+# 2/4 は 4/4 と、6/8 は（付点 4 分を 1 拍と数えれば）2 拍子と、小節の区切りが重なるので候補に入れない。
+# 5 拍子などは自動では判定しない（グリッド補正で利用者が指定する）
+_DEFAULT_BEATS_PER_BAR = 4
+_METER_CANDIDATES = (3, 4)
 
-def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
+# 3 拍子を選ぶ条件。拍ごとの手がかりの強弱が、3 拍周期でどれだけ説明できるか（``_meter_evidence``）が
+# この値以上で、かつ 4 拍周期の値のこの倍以上のとき。
+# 実測（2026-11-13）: 3 拍子の実曲（ジムノペディ 1〜3 番）で 0.72〜0.96、4 拍周期は 0。
+# 4 拍子（2/4 を含む）の実曲 14 曲（クラシック・ポップ・チップチューン）では 3 拍周期の値が最大 0.04
+_METER3_MIN_EVIDENCE = 0.3
+_METER3_MIN_RATIO = 2.0
+
+
+def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=None):
     """音声ファイルからビートグリッド（BPM・ダウンビート・実測ビート列）を推定する。
 
     ``bpm`` と ``downbeat_offset`` を指定すると自動検出を行わず、その値で
@@ -101,8 +115,9 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
         bpm (float | None, optional): BPM の上書き値。None なら自動検出。
         downbeat_offset (float | None, optional): 1拍目の位置（秒）の上書き値。
             None なら自動推定。
-        beats_per_bar (int, optional): 1小節あたりの拍数。デフォルト 4。
-            拍子は自動検出せず、ユーザーの指定を信頼する。
+        beats_per_bar (int | None, optional): 1小節あたりの拍数。指定すればそれを信頼する。
+            None（または 0）なら、自動で 3 拍子か 4 拍子かを決める（``_estimate_meter``）。
+            ``bpm`` を指定した経路で None なら 4 拍子とする。
 
     Returns:
         dict: 以下のキーを持つ辞書。
@@ -136,9 +151,10 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
 
     y, sr = librosa.load(file_path, sr=ANALYSIS_SR, mono=True)
     duration_sec = len(y) / sr if sr else 0.0
-    per_bar = max(1, int(beats_per_bar))
+    per_bar = max(1, int(beats_per_bar)) if beats_per_bar else None
 
     if bpm:
+        per_bar = per_bar or _DEFAULT_BEATS_PER_BAR
         # ユーザー指定の BPM。等間隔でビート列を組み立てる
         offset = float(downbeat_offset) if downbeat_offset is not None else 0.0
         beat_times = _build_uniform_beats(float(bpm), offset, duration_sec) if len(y) else []
@@ -147,8 +163,9 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
 
     analysis = _analyze_grid(y, sr, per_bar) if len(y) else None
     if analysis is None:
-        return _grid_dict(120.0, 0.0, "auto", 0.0, per_bar, [])
+        return _grid_dict(120.0, 0.0, "auto", 0.0, per_bar or _DEFAULT_BEATS_PER_BAR, [])
 
+    per_bar = analysis["beats_per_bar"]
     beat_times = analysis["beat_times"]
     offset = analysis["downbeat_offset_sec"]
     if downbeat_offset is not None:
@@ -190,7 +207,7 @@ def _analyze_grid(y, sr, per_bar):
     Args:
         y (numpy.ndarray): モノラル波形（空でないこと）。
         sr (int): サンプルレート（Hz）。
-        per_bar (int): 1小節あたりの拍数。
+        per_bar (int | None): 1小節あたりの拍数。None なら拍子も自動で決める。
 
     Returns:
         dict | None: ビートを追跡できなければ None。できれば以下の辞書。
@@ -199,6 +216,7 @@ def _analyze_grid(y, sr, per_bar):
 
             {
                 "bpm":                  float,
+                "beats_per_bar":        int,          # 使った拍子（自動で決めたならその結果）
                 "confidence":           float,        # テンポと小節頭を合わせた確信度
                 "tempo_confidence":     float,        # テンポだけの確信度
                 "downbeat_confidence":  float,        # 小節頭だけの確信度
@@ -210,7 +228,10 @@ def _analyze_grid(y, sr, per_bar):
     import numpy as np
 
     features = _analysis_features(y, sr)
-    candidates = _score_tempo_candidates(features, sr, per_bar)
+    if per_bar is None:
+        per_bar, candidates = _estimate_meter(features, sr)
+    else:
+        candidates = _score_tempo_candidates(features, sr, per_bar)
     if not candidates:
         return None
 
@@ -235,6 +256,7 @@ def _analyze_grid(y, sr, per_bar):
 
     return {
         "bpm": best["bpm"],
+        "beats_per_bar": int(per_bar),
         "confidence": float(max(0.0, min(1.0, confidence))),
         "tempo_confidence": tempo_confidence,
         "downbeat_confidence": downbeat_confidence,
@@ -245,6 +267,66 @@ def _analyze_grid(y, sr, per_bar):
             for c in candidates
         ],
     }
+
+
+def _estimate_meter(features, sr):
+    """3 拍子か 4 拍子かを決め、その拍子で採点したテンポ候補と一緒に返す。
+
+    まず 4 拍子としてテンポを決め、その拍の列で 3 拍子と 4 拍子の証拠（``_meter_evidence``）を比べる。
+    3 拍子がはっきり勝ったときだけ、3 拍子でテンポを採点し直す。採点し直した拍の列でも
+    3 拍子が勝つことを確かめ、勝たなければ 4 拍子に戻す（拍の列が変わると証拠も変わるため）。
+
+    Args:
+        features (dict): ``_analysis_features`` の返り値。
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        tuple[int, list[dict]]: ``(拍子, テンポ候補)``。候補は ``_score_tempo_candidates`` と同じ形。
+    """
+    default = _DEFAULT_BEATS_PER_BAR
+    candidates = _score_tempo_candidates(features, sr, default)
+    # 4 拍子として取った拍の列が 3 拍子を示すときだけ、3 拍子を検討する。先に 3 拍子でテンポを
+    # 採点すると、1 小節に 1 回しか音の立ち上がらない 4 拍子の曲（伸ばしたコードだけ、など）で、
+    # 「3/4 倍のテンポの 3 拍」が「4 拍」と同じ小節の長さになって区別が付かず、3 拍子を選んでしまう
+    # （合成音源 142 件で 4 拍子の誤判定 9 件。この順なら 0 件）
+    if not candidates or not _prefers_triple(candidates[0]["beat_frames"], features):
+        return default, candidates
+    triple = _score_tempo_candidates(features, sr, 3)
+    if triple and _prefers_triple(triple[0]["beat_frames"], features):
+        return 3, triple
+    return default, candidates
+
+
+def _prefers_triple(beat_frames, features):
+    """拍の列が、4 拍子より 3 拍子をはっきり示しているか。"""
+    evidence = {per_bar: _meter_evidence(beat_frames, features, per_bar) for per_bar in _METER_CANDIDATES}
+    return (evidence[3] >= _METER3_MIN_EVIDENCE
+            and evidence[3] >= _METER3_MIN_RATIO * evidence[_DEFAULT_BEATS_PER_BAR])
+
+
+def _meter_evidence(beat_frames, features, per_bar):
+    """拍ごとの手がかりの強弱が、``per_bar`` 拍の周期でどれだけ繰り返しているか。
+
+    小節頭の推定と同じ 3 つの手がかり（コードの変わり目・低音・全帯域の音）について、
+    小節内の位置で説明できる割合（``_phase_profile`` の ``explained``。自由度調整済みなので、
+    拍数の違う周期どうしでも比べられる）を出し、``_CUE_WEIGHTS`` で重み付けして足す。
+
+    3 拍子の曲を 4 拍周期で見ると、強い拍が小節ごとに 1 つずつずれていくので、どの位置も同じ
+    平均になり 0 に近づく。4 拍子の曲を 3 拍周期で見たときも同じ。
+
+    Args:
+        beat_frames (numpy.ndarray): 拍の位置（フレーム番号、昇順）。
+        features (dict): ``_analysis_features`` の返り値。
+        per_bar (int): 調べる周期（拍数）。
+
+    Returns:
+        float: 0 以上。大きいほど、その周期で繰り返している。
+    """
+    weights = dict(_CUE_WEIGHTS)
+    return float(sum(
+        weights[name] * _phase_profile(values, per_bar)[1]
+        for name, values in _beat_cues(beat_frames, features, per_bar).items()
+    ))
 
 
 def _analysis_features(y, sr):

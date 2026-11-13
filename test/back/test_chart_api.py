@@ -107,6 +107,21 @@ async def test_グリッドを指定して生成できる(client, song_upload):
 
 
 @pytest.mark.asyncio
+async def test_拍子を送らなければ自動で決める(client, waltz_song):
+    """拍子を省くか 0 を送ると、3 拍子の曲は 3 拍子になる。数を送ればその拍子を使う"""
+    path, _ = waltz_song
+    data = Path(path).read_bytes()
+    async with client:
+        omitted = (await _post_chart(client, data, filename="waltz_a.wav")).json()["chart"]["grid"]
+        auto = (await _post_chart(client, data, filename="waltz_b.wav", beats_per_bar=0)).json()["chart"]["grid"]
+        given = (await _post_chart(client, data, filename="waltz_c.wav", beats_per_bar=4)).json()["chart"]["grid"]
+
+    assert omitted["time_signature"] == [3, 4]
+    assert auto["time_signature"] == [3, 4]
+    assert given["time_signature"] == [4, 4]
+
+
+@pytest.mark.asyncio
 async def test_カルテを読み戻せる(client, song_upload):
     """生成したカルテを chart_id で読み出せる（バイト一致）"""
     import song_chart
