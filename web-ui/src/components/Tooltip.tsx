@@ -76,7 +76,10 @@ export default function TooltipLayer() {
         let pending: Target | null = null;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let watch: ReturnType<typeof setInterval> | undefined;
-        let lastHidden = 0;
+        // まだ一度も消していない (画面を開いた直後を「消えた直後」と取り違えないよう、0 にしない)
+        let lastHidden = -Infinity;
+        // 出したときの要素の位置。スクロールで要素が動いたかを、これと比べて決める
+        let shownAt: DOMRect | null = null;
         // 押した場所。マウスがここから出るまで出し直さない (押すと描き直される要素もあるので、要素ではなく場所で覚える)
         let pressedRect: DOMRect | null = null;
         let observer: MutationObserver | null = null;
@@ -117,6 +120,7 @@ export default function TooltipLayer() {
             else shown.source.setAttribute('aria-describedby', prevDescribedBy);
             shown = null;
             shownBy = null;
+            shownAt = null;
             box.classList.remove('visible');
             box.hidden = true;
             lastHidden = performance.now();
@@ -136,6 +140,7 @@ export default function TooltipLayer() {
             box.style.left = '0px';
             box.style.top = '0px';
             place();
+            shownAt = target.rectEl.getBoundingClientRect();
             box.classList.add('visible');
             // 読み上げでも、説明として読まれるようにする
             prevDescribedBy = target.source.getAttribute('aria-describedby');
@@ -211,11 +216,15 @@ export default function TooltipLayer() {
 
         const onFocusOut = () => { if (shownBy === 'focus') hide(); };
         const onLeaveWindow = (e: MouseEvent) => { if (!e.relatedTarget) hide(); };
-        // 説明している要素が動くスクロールのときだけ消す (再生中に別の場所が自動でスクロールしても消さない)
+        // 説明している要素が動いたスクロールのときだけ消す (再生中に別の場所が自動でスクロールしても消さない)。
+        // スクロールの知らせは、動いた後に遅れて届く。出す直前のスクロールの知らせが、出した直後に届くことがあるので、
+        // 「どこがスクロールしたか」だけで決めず、出したときの位置から実際に動いたかを見る
         const onScroll = (e: Event) => {
-            if (!shown) return;
+            if (!shown || !shownAt) return;
             const scrolled = e.target;
-            if (scrolled === document || (scrolled instanceof Node && scrolled.contains(shown.rectEl))) hide();
+            if (scrolled !== document && !(scrolled instanceof Node && scrolled.contains(shown.rectEl))) return;
+            const now = shown.rectEl.getBoundingClientRect();
+            if (Math.abs(now.left - shownAt.left) >= 1 || Math.abs(now.top - shownAt.top) >= 1) hide();
         };
 
         document.addEventListener('pointermove', onPointerMove, { passive: true });

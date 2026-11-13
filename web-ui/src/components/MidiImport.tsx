@@ -15,6 +15,14 @@ import {
     MIDI_MODE_LABEL, allowedModes, applyMidiImport, defaultModes, importedMessage, isEmptyProject, lossNotices, tempoNotice,
     type MidiImportMode,
 } from '../lib/midi-import';
+import { tip } from '../lib/tooltip';
+
+/** 読み込み方に載せたときの説明 */
+const MODE_TIPS: Record<MidiImportMode, string> = {
+    track: '新しいトラックを作って、このノートを自分の打ち込みとして置きます',
+    reference: 'このノートをお手本にします。パートの一覧に出て、「このパートを練習する」で水色に重ねて練習できます',
+    skip: 'この MIDI のトラックは読み込みません',
+};
 
 /** 読んだファイルと、トラックごとの読み込み方。 */
 interface Loaded {
@@ -75,7 +83,8 @@ export default function MidiImport() {
             </p>
             <label htmlFor="file-midi">MIDI ファイル</label>
             <input id="file-midi" type="file" ref={inputRef} accept=".mid,.midi,audio/midi,audio/x-midi"
-                onChange={(e) => void handleFile(e.target.files?.[0])} />
+                onChange={(e) => void handleFile(e.target.files?.[0])}
+                {...tip('MIDI ファイル（.mid）を選びます。選んだだけでは、まだ何も変わりません。中身を見てから「読み込む」を押します')} />
             {loaded && (
                 <div id="midi-import-plan">
                     <ul id="midi-track-list" aria-label="MIDI ファイルのトラック">
@@ -86,7 +95,8 @@ export default function MidiImport() {
                                     <span className="note-text">{track.notes.length} ノート{track.isDrum ? '（ドラム）' : ''}</span>
                                 </div>
                                 <select aria-label={`「${track.name}」の読み込み方`} value={loaded.modes[i]}
-                                    onChange={(e) => setMode(i, e.target.value as MidiImportMode)}>
+                                    onChange={(e) => setMode(i, e.target.value as MidiImportMode)}
+                                    {...tip(MODE_TIPS[loaded.modes[i]])}>
                                     {allowedModes(track).map((mode) => <option key={mode} value={mode}>{MIDI_MODE_LABEL[mode]}</option>)}
                                 </select>
                                 {track.isDrum && (
@@ -101,7 +111,10 @@ export default function MidiImport() {
                             {lossNotices(loaded.result, loaded.modes).map((text) => <li key={text}>{text}</li>)}
                         </ul>
                     )}
-                    <button className="action-btn" onClick={handleImport} disabled={chosen === 0}>読み込む</button>
+                    <button className="action-btn" onClick={handleImport} disabled={chosen === 0}
+                        {...tip(chosen === 0
+                            ? '読み込む MIDI のトラックがありません。どれかの読み込み方を「読み込まない」以外にしてください'
+                            : '選んだ読み込み方で、ノートをプロジェクトに入れます。元に戻すで戻せます')}>読み込む</button>
                 </div>
             )}
         </div>

@@ -66,11 +66,13 @@ function NameDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'name' 
                 <form onSubmit={submit}>
                     <label htmlFor="project-name">プロジェクトの名前</label>
                     <input id="project-name" type="text" value={name} data-autofocus maxLength={80}
-                        onChange={(e) => setName(e.target.value)} onFocus={(e) => e.target.select()} />
+                        onChange={(e) => setName(e.target.value)} onFocus={(e) => e.target.select()}
+                        {...tip('保存するプロジェクトの名前。あとで開くときの一覧に、この名前で出ます')} />
                     <p className="note-text">開発用のブラウザ起動では、アプリのデータの置き場（projects/）に保存します。</p>
                     <div className="project-actions">
-                        <button type="submit" className="action-btn primary">保存</button>
-                        <button type="button" className="action-btn secondary" onClick={() => prompt.resolve(null)}>キャンセル</button>
+                        <button type="submit" className="action-btn primary" {...tip('この名前でプロジェクトを保存します')}>保存</button>
+                        <button type="button" className="action-btn secondary" onClick={() => prompt.resolve(null)}
+                            {...tip('保存せずに、元の画面に戻ります')}>キャンセル</button>
                     </div>
                 </form>
             </div>
@@ -101,7 +103,8 @@ function OpenDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'open' 
                         <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('browse')}
                             {...tip('一覧に無いプロジェクトのファイルを、自分で探して開きます')}>ほかのファイルを選ぶ…</button>
                     )}
-                    <button type="button" className="action-btn secondary" onClick={() => prompt.resolve(null)}>キャンセル</button>
+                    <button type="button" className="action-btn secondary" onClick={() => prompt.resolve(null)}
+                        {...tip('何も開かずに、元の画面に戻ります')}>キャンセル</button>
                 </div>
             </div>
         </div>
