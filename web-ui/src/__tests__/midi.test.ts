@@ -265,6 +265,8 @@ describe('parseMidi', () => {
             { note: 'E', octave: 4, step: 3, length: 1 },   // 長さは最短 1 ステップ
         ]);
         expect(result.loss.rounded).toBe(2);
+        // トラックごとの数も持つ（読み込むトラックのぶんだけを画面で伝えるため）
+        expect(result.tracks[0]).toMatchObject({ rounded: 2, merged: 0, unterminated: 0 });
     });
 
     it('丸めた結果、同じ高さ・同じ位置に重なったノートは 1 つにまとめる', () => {

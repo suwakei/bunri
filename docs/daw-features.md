@@ -60,6 +60,7 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 | データの整理 | In the ファイル tab: disk usage of the data dir by category and a cleanup of temporary files (uploads, generated audio, chart work files, project working copies older than 5 minutes; never the open project, cached guides/explanations, `projects/`, or files outside the data dir) |
 | MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
 | MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
+| MIDI import | Notes of a standard MIDI file (format 0 or 1) as new tracks, or as a reference to practise against. Positions and lengths are rounded to 16th notes; velocity is not imported |
 | WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
 
 #### Undo history

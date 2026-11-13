@@ -26,7 +26,7 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const engine = (await import('../lib/engine')).default;
+const { default: engine, MIDI_PART } = await import('../lib/engine');
 const { progressFacts, stepStates, referenceTrackFor, useLearnActions, isDecomposeResult, CHART_RESULT_INVALID } = await import('../lib/learn');
 const { jobTracker } = await import('../lib/jobs');
 const { DawProvider, useDaw } = await import('../lib/store');
@@ -281,5 +281,25 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(engine.tracks.map(t => t.name)).toEqual(['原曲']);
         expect(latest.daw!.statusKind).toBe('error');
         expect(latest.daw!.status).toContain('結果にパートが入っていませんでした');
+    });
+
+    it('パートを分け直しても、MIDI ファイルから読み込んだお手本と、その練習のトラックは残る', async () => {
+        const note = { note: 'C', octave: 4, step: 0, length: 4 };
+        const song = engine.addTrack('原曲'); song.role = 'song';
+        // 前に分けたパートと、その練習のトラック (入れ替わる)
+        const oldPart = engine.addTrack('ベース'); oldPart.role = 'part'; oldPart.part = 'bass'; oldPart.referenceNotes = [note];
+        const oldPractice = engine.addTrack('ベースの練習'); oldPractice.role = 'practice'; oldPractice.practiceOf = oldPart.id;
+        // MIDI から読み込んだお手本と、その練習のトラック (残る)
+        const midiPart = engine.addTrack('Lead'); midiPart.role = 'part'; midiPart.part = MIDI_PART; midiPart.referenceNotes = [note];
+        const midiPractice = engine.addTrack('Lead の練習'); midiPractice.role = 'practice'; midiPractice.practiceOf = midiPart.id;
+        midiPractice.pianoNotes = [note];
+        render(<DawProvider><Harness /></DawProvider>);
+
+        const stem = { gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [note], drum_events: [] };
+        await act(async () => { await latest.actions!.applyParts({ bpm: 120, stems: { vocals: stem } }); });
+
+        expect(engine.tracks.map(t => t.name)).toEqual(['原曲', 'Lead', 'Lead の練習', 'ボーカル']);
+        expect(engine.getTrack(midiPractice.id)?.practiceOf).toBe(midiPart.id);
+        expect(engine.getTrack(midiPractice.id)?.pianoNotes).toEqual([note]);
     });
 });

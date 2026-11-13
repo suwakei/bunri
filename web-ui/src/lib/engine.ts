@@ -44,6 +44,13 @@ interface LoopPlayback {
  * ピアノロール上の1ノートを表すデータ構造。
  * ステップ単位（16分音符基準）で位置と長さを保持する。
  */
+/**
+ * MIDI ファイルからお手本として読み込んだトラックの、パートの名前（`Track.part`）。
+ * パート分離で作ったパート（`bass` など）と区別する。パートを分け直しても消さず、
+ * 音声が無いので、お手本のノートを鳴らす（`soundingNotes`）。
+ */
+export const MIDI_PART = 'midi';
+
 export interface PianoNote {
     /** 音名（例: "C", "C#", "D"） */
     note: string;
@@ -441,6 +448,22 @@ class AudioEngine {
     }
 
     /**
+     * そのトラックで鳴らすノートを返す。ふつうは打ち込み（`pianoNotes`）。
+     *
+     * MIDI ファイルからお手本として読み込んだトラック（`MIDI_PART`）は、打ち込みが空のあいだ、
+     * お手本のノートを鳴らす。パート分離で作ったパートは、パートの音声（クリップ）がお手本の音になるが、
+     * MIDI のお手本には音声が無いので、鳴らさないと、お手本を耳で確かめられない。
+     * 再生・区間ループ・書き出し・曲の長さの計算が、どれもこれを使う（聴く音と書き出す音を食い違わせない）。
+     * @param track - 対象のトラック
+     * @returns 鳴らすノート
+     */
+    soundingNotes(track: Track): PianoNote[] {
+        if (track.pianoNotes && track.pianoNotes.length > 0) return track.pianoNotes;
+        if (track.role === 'part' && track.part === MIDI_PART && track.referenceNotes) return track.referenceNotes;
+        return track.pianoNotes || [];
+    }
+
+    /**
      * いま鳴らすトラックを返す。ミュートしたトラックは鳴らさず、ソロにしたトラックが
      * 1 本でも在れば、ソロのトラックだけを鳴らす。
      *
@@ -544,7 +567,7 @@ class AudioEngine {
                     this._startLoopSource(t, s.buffer, segment.when, (segment.from - loop.start) / rate, segment.duration);
                 }
             }
-            for (const n of t.pianoNotes || []) {
+            for (const n of this.soundingNotes(t)) {
                 const start = this.gridOffset + n.step * stepSec;
                 const part = noteInSegment(segment, rate, start, n.length * stepSec);
                 if (part) this._startLoopNote(t, n, part.when, part.duration, part.partial);
@@ -704,9 +727,10 @@ class AudioEngine {
      * @param track - ノートをスケジュールするトラック
      */
     _scheduleTrackNotes(track: Track): void {
-        if (!track.pianoNotes || track.pianoNotes.length === 0) return;
+        const notes = this.soundingNotes(track);
+        if (notes.length === 0) return;
         const stepSec = stepSeconds(this);
-        for (const n of track.pianoNotes) {
+        for (const n of notes) {
             const freq = NOTE_FREQ[`${n.note}${n.octave}`];
             if (!freq) continue;
             const noteStart = this.gridOffset + n.step * stepSec;
@@ -897,7 +921,7 @@ class AudioEngine {
         for (const clip of track.clips) {
             maxEnd = Math.max(maxEnd, clip.offset + clip.duration);
         }
-        for (const n of (track.pianoNotes || [])) {
+        for (const n of this.soundingNotes(track)) {
             maxEnd = Math.max(maxEnd, this.gridOffset + (n.step + n.length) * stepSec);
         }
         return maxEnd;
@@ -1019,7 +1043,7 @@ class AudioEngine {
                 src.start(clip.offset);
             }
 
-            for (const n of (track.pianoNotes || [])) {
+            for (const n of this.soundingNotes(track)) {
                 const freq = NOTE_FREQ[`${n.note}${n.octave}`];
                 if (!freq) continue;
                 const noteStart = this.gridOffset + n.step * stepSec;
@@ -1102,4 +1126,5 @@ class AudioEngine {
 // シングルトンインスタンス
 const engine = new AudioEngine();
 export default engine;
+export type { AudioEngine };
 export { NOTE_FREQ };

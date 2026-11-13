@@ -101,7 +101,7 @@ graph LR
 - [x] Desktop app (macOS, Apple Silicon)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
 - [x] MIDI keyboard input (step input and real-time recording)
-- [ ] MIDI import
+- [x] MIDI import (as new tracks, or as a reference to practise against)
 - [ ] VST plugin support
 - [ ] Real-time collaboration
 - [ ] Windows / Linux builds
