@@ -1151,7 +1151,7 @@ async def api_chart(
     file: UploadFile = File(...),
     bpm: float = Form(0),
     downbeat_offset: float = Form(-1),
-    beats_per_bar: int = Form(4),
+    beats_per_bar: int = Form(0),
     run_async: bool = Query(False, alias="async"),
 ):
     """音声ファイルから楽曲カルテ（速報）を生成する。
@@ -1166,7 +1166,7 @@ async def api_chart(
         file: 解析する音声ファイル（マルチパートアップロード）。
         bpm: BPM の上書き値。``0`` なら自動検出。
         downbeat_offset: 1拍目の位置（秒）の上書き値。負値なら自動推定。
-        beats_per_bar: 1小節あたりの拍数。拍子は自動検出せずユーザー指定を信頼する。
+        beats_per_bar: 1小節あたりの拍数。``0`` なら 3 拍子か 4 拍子かを自動で決める。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
@@ -1189,7 +1189,7 @@ async def api_chart(
                 filename=filename,
                 bpm=bpm if bpm > 0 else None,
                 downbeat_offset=downbeat_offset if downbeat_offset >= 0 else None,
-                beats_per_bar=beats_per_bar,
+                beats_per_bar=beats_per_bar if beats_per_bar > 0 else None,
                 job=job,
             )
             job.enter_stage("save")

@@ -245,6 +245,25 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(latest.daw!.bpm).toBe(before);
     });
 
+    it('テンポを自動で取るときは拍子も自動 (0) で頼み、いまの BPM で取るときは、いまの拍子を送る', async () => {
+        stubJobApi({ ok: true, kind: 'chart', filename: 'song.wav' });
+        render(<DawProvider><Harness /></DawProvider>);
+        act(() => { latest.daw!.setBeatsPerBar('3'); });
+        const sent = () => {
+            const calls = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+            const [, init] = calls.filter(([url]) => url.startsWith('/api/chart?async=1')).slice(-1)[0];
+            const body = init.body as FormData;
+            return { bpm: body.get('bpm'), beats: body.get('beats_per_bar') };
+        };
+        const file = () => new File([new Uint8Array(16)], 'song.wav', { type: 'audio/wav' });
+
+        await act(async () => { await latest.actions!.importSong(file()); });
+        expect(sent()).toEqual({ bpm: '0', beats: '0' });
+
+        await act(async () => { await latest.actions!.importSong(file(), { autoBpm: false }); });
+        expect(sent()).toEqual({ bpm: String(latest.daw!.bpm), beats: '3' });
+    });
+
     it('つなぎ直したジョブの結果も同じ。finishChart は当てなかったら false を返す', () => {
         render(<DawProvider><Harness /></DawProvider>);
         let applied = true;

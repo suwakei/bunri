@@ -258,14 +258,16 @@ export function useLearnActions() {
      * ほかの重い処理が動いていて始められなかったときは、トラックには何もしない（断られた旨を出す）。
      *
      * @param file - 曲のファイル（mp3 / flac / m4a / wav など）
-     * @param options.autoBpm - true ならテンポを自動で検出する（false なら、いまの BPM で解析する）
+     * @param options.autoBpm - true ならテンポと拍子（3 拍子か 4 拍子か）を自動で検出する
+     *   （false なら、いまの BPM と拍子で解析する）
      */
     const importSong = useCallback(async (file: File, options: { autoBpm?: boolean } = {}) => {
         const autoBpm = options.autoBpm ?? true;
         const fd = new FormData();
         fd.append('file', file);
         fd.append('bpm', autoBpm ? '0' : String(bpm));
-        fd.append('beats_per_bar', String(beatsPerBar));
+        // 0 は「自動で決める」。テンポを自動で取るなら、拍子もいまの設定 (既定の 4/4) を押し付けない
+        fd.append('beats_per_bar', autoBpm ? '0' : String(beatsPerBar));
         let job: Job;
         try {
             job = await jobTracker.start('learn-song', '/api/chart', fd);

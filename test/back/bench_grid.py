@@ -9,6 +9,7 @@
     uv run python test/back/bench_grid.py --set final     # 1 組だけ
     uv run python test/back/bench_grid.py --verbose       # 1 件ごとの結果も出す
     uv run python test/back/bench_grid.py --structure 別の/structure.py   # 別の実装で測る（直す前との比較）
+    uv run python test/back/bench_grid.py --auto-meter    # 拍子も自動で決めさせる（拍子の正解率も出す）
 
 組の意味は ``grid_materials.py`` の ``design_cases`` / ``holdout_cases`` / ``final_cases`` を参照。
 """
@@ -42,24 +43,26 @@ def load_structure(path):
     return module
 
 
-def run_set(structure, name, verbose=False):
-    """1 組を測り、行のリストを返す。"""
+def run_set(structure, name, verbose=False, auto_meter=False):
+    """1 組を測り、行のリストを返す。``auto_meter`` なら拍子を渡さず、自動で決めさせる。"""
     rows = []
     with tempfile.TemporaryDirectory() as tmp:
         for index, (label, kind, kwargs) in enumerate(SETS[name]()):
             path = Path(tmp) / f"{index}.wav"
             truth = grid_materials.write_song(path, kind, **kwargs)
-            grid = structure.estimate_grid(str(path), beats_per_bar=truth["beats_per_bar"])
+            grid = structure.estimate_grid(
+                str(path), beats_per_bar=None if auto_meter else truth["beats_per_bar"])
             errors = grid_materials.grid_errors(grid, truth)
             tempo, beats_ok, downbeat_ok = grid_materials.judge(errors)
             rows.append({
                 "label": label, "tempo": tempo, "beats_ok": beats_ok, "downbeat_ok": downbeat_ok,
                 "confidence": grid["bpm_confidence"], "bpm": grid["bpm"], "true_bpm": truth["bpm"],
-                "offset": grid["downbeat_offset_sec"], "true_downbeat": truth["downbeat"], **errors,
+                "offset": grid["downbeat_offset_sec"], "true_downbeat": truth["downbeat"],
+                "meter": grid["time_signature"][0], "true_meter": truth["beats_per_bar"], **errors,
             })
             if verbose:
                 row = rows[-1]
-                print(f"  {'OK' if downbeat_ok else 'NG'} {label:58s} bpm {row['bpm']:7.2f} ({tempo:5s}) "
+                print(f"  {'OK' if downbeat_ok else 'NG'} {label:58s} 拍子 {row['meter']}/{row['true_meter']} bpm {row['bpm']:7.2f} ({tempo:5s}) "
                       f"確信度 {row['confidence']:.2f} 拍 {row['beat_err_ms']:6.1f}ms "
                       f"1拍目 {row['offset']:6.3f}s (正解 {row['true_downbeat']:.3f}) "
                       f"ずれ {row['downbeat_err_beats']}拍 {row['downbeat_err_ms']:+7.1f}ms", flush=True)
@@ -78,6 +81,10 @@ def summarize(name, rows):
           f"その他 {tempo['other']:2d} | 1 拍目の位置が正解 {sum(row['downbeat_ok'] for row in rows):3d} | "
           f"拍の位置の誤差の中央値 {np.median(aligned) if aligned else float('nan'):5.1f}ms | "
           f"外れているのに「確実」 {sure_but_wrong}")
+    meters = sorted({row["true_meter"] for row in rows})
+    print("         拍子（自動で決めたときの当たり / 件数）: " + ", ".join(
+        f"{m} 拍子 {sum(r['meter'] == m for r in rows if r['true_meter'] == m)}/"
+        f"{sum(r['true_meter'] == m for r in rows)}" for m in meters))
 
 
 def main():
@@ -85,13 +92,14 @@ def main():
     parser.add_argument("--set", choices=list(SETS), help="測る組（省略すると 3 組すべて）")
     parser.add_argument("--structure", help="測る実装（structure.py のパス。省略すると backend/structure.py）")
     parser.add_argument("--verbose", action="store_true", help="1 件ごとの結果も出す")
+    parser.add_argument("--auto-meter", action="store_true", help="拍子を渡さず、自動で決めさせる")
     args = parser.parse_args()
 
     structure = load_structure(args.structure)
     for name in ([args.set] if args.set else list(SETS)):
         if args.verbose:
             print(f"== {name}")
-        summarize(name, run_set(structure, name, args.verbose))
+        summarize(name, run_set(structure, name, args.verbose, args.auto_meter))
 
 
 if __name__ == "__main__":

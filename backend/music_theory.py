@@ -58,12 +58,32 @@ _MARGIN_BASE_WEIGHT = 0.7
 # 程度の大きさに取る。
 _BASS_ROOT_BONUS = 0.05
 
+# 出にくいコードの種類に課す減点（コントラストから引く）。実際の曲では sus4・aug・dim は
+# 長三和音・短三和音よりずっと少ないので、点差がわずかなら、よくあるほうを選ぶ（事前分布の代わり）。
+#
+# sus4 を強めに減点する理由: 倍音で 5 度上の音が混ざる（C の和音に G の第 3 倍音の D が乗る）ので、
+# クロマは 4 度・5 度の積み重ね（= sus4 の型）に寄りやすい。減点なしでは、実曲 9 曲で拍の
+# 19〜60% が sus4 になった（2026-11-13）。0.07 でそれが 0〜9% に下がる。構成音だけが鳴る本物の
+# sus4 は、長三和音との点差が 0.3 近くあるので、減点しても選ばれる
+_QUALITY_PENALTY = {"sus4": 0.07, "aug": 0.05, "dim": 0.03}
+
 # ベース音を取り出す低域の範囲（オクターブ数）。C1 から2オクターブ＝C1〜C3。
 _BASS_OCTAVES = 2
 
 # キー判定に必要なクロマの起伏（変動係数 = 標準偏差 / 平均）。
-# これを下回るとどの音も同程度に鳴っている＝調性が無いとみなす。
-_KEY_FLATNESS_MIN = 0.25
+# _KEY_FLATNESS_MIN を下回るとどの音も同程度に鳴っている＝調性が無いとみなす。
+# _KEY_FLATNESS_CLEAR 以上なら起伏だけで調性ありとみなす。その間（起伏の弱い帯）は、
+# キーのプロファイルとの相関が _KEY_WEAK_MIN_CORR 以上のときだけキーを出し、確信度は
+# _KEY_WEAK_MAX_CONFIDENCE（「たぶん」）で頭打ちにする。
+#
+# 帯を設けた理由（2026-11-13 の実測）: 矩形波のチップチューンは倍音が多く、ノイズ系の打楽器も
+# 混ざるので、はっきり調のある曲でも起伏が 0.13〜0.15 に留まる（KS の相関は 0.6〜0.7）。
+# 一方、ホワイトノイズは起伏 0.02〜0.04（相関は偶然 0.62 まで出る）、ピンクノイズは 0.08〜0.10
+# （相関 0.41 以下）、打楽器だけの音源は起伏 0.32〜0.36 でも相関 0.28 以下
+_KEY_FLATNESS_MIN = 0.11
+_KEY_FLATNESS_CLEAR = 0.25
+_KEY_WEAK_MIN_CORR = 0.55
+_KEY_WEAK_MAX_CONFIDENCE = 0.69
 
 # ディグリーのローマ数字。長調・短調それぞれ、主音からの半音数 -> 表記
 _DEGREE_MAJOR = ["I", "bII", "II", "bIII", "III", "IV", "#IV", "V", "bVI", "VI", "bVII", "VII"]
@@ -141,6 +161,7 @@ def estimate_key(chroma_mean):
     flatness = float(np.std(chroma)) / mean if mean > 0 else 0.0
     if flatness < _KEY_FLATNESS_MIN:
         return {"tonic": None, "mode": None, "confidence": 0.0, "alternatives": []}
+    weak_contrast = flatness < _KEY_FLATNESS_CLEAR
 
     candidates = []
     for mode, profile in (("major", KS_MAJOR_PROFILE), ("minor", KS_MINOR_PROFILE)):
@@ -167,6 +188,11 @@ def estimate_key(chroma_mean):
     # 相関自体が低い（無調・ノイズ）場合は確信度を引き下げる
     if best["score"] < 0.3:
         confidence *= max(0.0, best["score"] / 0.3)
+    # 起伏の弱い帯では、プロファイルとはっきり合うときだけ出し、「確実」とは言わない
+    if weak_contrast:
+        if best["score"] < _KEY_WEAK_MIN_CORR:
+            return {"tonic": None, "mode": None, "confidence": 0.0, "alternatives": []}
+        confidence = min(confidence, _KEY_WEAK_MAX_CONFIDENCE)
 
     return {
         "tonic": best["tonic"],
@@ -222,6 +248,9 @@ def _match_chord(chroma_vec, bass_pc=None):
     区別できないため。低音がどの音かは実際に鳴っているルートを強く示唆する
     ので、この手がかりが誤検出をほぼ解消する。
 
+    出にくい種類（sus4・aug・dim）には ``_QUALITY_PENALTY`` の減点を課す。点差がわずかなら、
+    よくある種類を選ぶ。
+
     確信度はコントラスト値を実測に基づいて 0.0〜1.0 に写したもの。正解時の
     コントラストは概ね 0.37〜0.42 に収まるため、その帯が高確信度になるよう
     較正してある。2位との差（margin）はコード同士がもともと構成音を共有する
@@ -251,7 +280,7 @@ def _match_chord(chroma_vec, bass_pc=None):
     second_score = -1.0
     for quality, intervals in CHORD_TEMPLATES.items():
         for root_pc in range(12):
-            score = _chord_contrast(vec, root_pc, intervals)
+            score = _chord_contrast(vec, root_pc, intervals) - _QUALITY_PENALTY.get(quality, 0.0)
             if bass_pc is not None and root_pc == bass_pc:
                 score += _BASS_ROOT_BONUS
             if best is None or score > best[2]:
