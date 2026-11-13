@@ -1,71 +1,70 @@
-//! ノートの並びを、オフラインで音にする (書き出しとテスト用)。
+//! engine をオフラインで回して音声にする (書き出しとテスト用)。
 //!
-//! ノートの開始・終了はフレーム単位で、ブロックの中の位置まで正確に sfizz に渡す
-//! (ブロックの頭に丸めない)。リアルタイムの再生も同じ送り方をする予定。
+//! 再生と同じ [`Engine::process`] を回すので、聞いた音と書き出した音が食い違わない。
+//! WAV にするには、結果の [`AudioData::write_wav_file`] を使う。
 
-use crate::sampler::Sampler;
+use crate::audio::AudioData;
+use crate::engine::Engine;
 
-/// 鳴らすノート 1 つ。位置と長さはフレーム数 (サンプリング周波数の単位)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Note {
-    /// 鳴り始めのフレーム
+/// 一度に `process` へ渡す長さ (フレーム)。engine が中でさらに区切る
+const CHUNK: usize = 4096;
+
+/// 描画する範囲。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderOptions {
+    /// 範囲の頭 (フレーム)
     pub start: u64,
-    /// 長さ (フレーム)。0 のノートは鳴らさない
-    pub length: u64,
-    /// MIDI ノート番号 (60 = C4)
-    pub pitch: u8,
-    /// 強さ (1〜127)
-    pub velocity: u8,
+    /// 範囲の終わり (フレーム)。`None` は曲の終わりまで
+    pub end: Option<u64>,
+    /// 曲の終わりまで描画するとき、そのあとの余韻 (離したあとの響き) を、音が消えるまで
+    /// 続ける長さの上限 (秒)。0 なら曲の終わりちょうどで切る。`end` を指定したときは
+    /// 使わない (範囲ちょうどで切る)
+    pub max_tail_secs: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Kind {
-    // 同じフレームでは、離す方を先に送る (同じ高さの連打で、次の音を止めてしまわないように)
-    Off,
-    On(u8),
-}
-
-/// `notes` を鳴らし、`total_frames` フレームぶんの左右の音を返す。
-///
-/// `total_frames` を超える位置のノートは鳴らない。ノートが終わったあとの余韻も
-/// `total_frames` の中に収まるぶんだけが入る。
-///
-/// 描画のあいだはサンプラーをオフラインのモードにする (ディスクからの読み込みを待つ)。
-/// 待たないと、実時間より速く回すので、サンプルの頭 (メモリに置いた部分) より後ろが
-/// 無音になる。終わったらリアルタイムのモードに戻す。
-pub fn render_notes(
-    sampler: &mut Sampler,
-    notes: &[Note],
-    total_frames: usize,
-) -> (Vec<f32>, Vec<f32>) {
-    let mut events: Vec<(u64, Kind, u8)> = Vec::with_capacity(notes.len() * 2);
-    for n in notes.iter().filter(|n| n.length > 0) {
-        events.push((n.start, Kind::On(n.velocity), n.pitch));
-        events.push((n.start + n.length, Kind::Off, n.pitch));
-    }
-    events.sort_by_key(|&(frame, kind, _)| (frame, matches!(kind, Kind::On(_))));
-
-    sampler.set_offline(true);
-    let block = sampler.max_block();
-    let mut left = vec![0f32; total_frames];
-    let mut right = vec![0f32; total_frames];
-    let mut next = 0usize;
-    let mut pos = 0usize;
-    while pos < total_frames {
-        let len = block.min(total_frames - pos);
-        let end = (pos + len) as u64;
-        while next < events.len() && events[next].0 < end {
-            let (frame, kind, pitch) = events[next];
-            let delay = frame.saturating_sub(pos as u64) as usize;
-            match kind {
-                Kind::On(vel) => sampler.note_on(delay, pitch, vel),
-                Kind::Off => sampler.note_off(delay, pitch),
-            }
-            next += 1;
+impl Default for RenderOptions {
+    /// 曲の頭から終わりまで。余韻は 10 秒まで。
+    fn default() -> Self {
+        RenderOptions {
+            start: 0,
+            end: None,
+            max_tail_secs: 10.0,
         }
-        sampler.render(&mut left[pos..pos + len], &mut right[pos..pos + len]);
-        pos += len;
     }
-    sampler.set_offline(false);
-    (left, right)
+}
+
+/// engine をオフラインで回し、`options` の範囲の音声 (ステレオ) を返す。
+///
+/// 描画のあいだは engine をオフラインのモードにする (ディスクからの読み込みを待つ)。
+/// 待たないと、実時間より速く回すので、サンプルの頭 (メモリに置いた部分) より後ろが
+/// 無音になる。終わったらリアルタイムのモードに戻す。engine の位置は、描画した範囲の
+/// 終わりに進む。
+pub fn render(engine: &mut Engine, options: &RenderOptions) -> AudioData {
+    let end = options.end.unwrap_or(engine.length_frames());
+    let frames = end.saturating_sub(options.start) as usize;
+    let mut left = vec![0f32; frames];
+    let mut right = vec![0f32; frames];
+
+    engine.set_offline(true);
+    engine.seek(options.start);
+    for (l, r) in left.chunks_mut(CHUNK).zip(right.chunks_mut(CHUNK)) {
+        engine.process(l, r);
+    }
+
+    if options.end.is_none() && frames > 0 {
+        let max_tail = (options.max_tail_secs.max(0.0) * engine.sample_rate() as f64) as usize;
+        let mut tail = 0;
+        while tail < max_tail && engine.is_sounding() {
+            let len = CHUNK.min(max_tail - tail);
+            let at = left.len();
+            left.resize(at + len, 0.0);
+            right.resize(at + len, 0.0);
+            engine.process(&mut left[at..], &mut right[at..]);
+            tail += len;
+        }
+    }
+    engine.set_offline(false);
+
+    AudioData::new(engine.sample_rate(), vec![left, right])
+        .expect("engine の周波数は組み立てのときに確かめてある")
 }
