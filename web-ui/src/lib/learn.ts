@@ -14,7 +14,7 @@
  */
 import { useCallback } from 'react';
 import { useDaw } from './store';
-import engine, { type PianoNote, type Track } from './engine';
+import engine, { MIDI_PART, type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
@@ -324,8 +324,12 @@ export function useLearnActions() {
             if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
             if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
 
-            // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
-            for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
+            // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)。
+            // MIDI ファイルから読み込んだお手本と、その練習のトラックは、原曲から作ったものではないので残す
+            const fromMidi = new Set(engine.tracks.filter(t => t.role === 'part' && t.part === MIDI_PART).map(t => t.id));
+            const replaced = (t: Track) => (t.role === 'part' && !fromMidi.has(t.id))
+                || (t.role === 'practice' && !(t.practiceOf !== undefined && fromMidi.has(t.practiceOf)));
+            for (const old of engine.tracks.filter(replaced)) {
                 if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
                 engine.removeTrack(old.id);
             }

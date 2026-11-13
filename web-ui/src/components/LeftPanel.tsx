@@ -21,6 +21,7 @@ import { useJob } from '../lib/useJob';
 import { useShowJob } from '../lib/job-focus';
 import JobCard from './JobCard';
 import SubTabs from './SubTabs';
+import MidiImport from './MidiImport';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
 import DataCleanup from './DataCleanup';
@@ -423,6 +424,7 @@ function FxPanel() {
 /**
  * ファイルパネルコンポーネント。曲を使わずに自由に作るときの読み込みをまとめる:
  * - 音声ファイル（WAV・MP3・FLAC など）をトラックに読み込む
+ * - MIDI ファイルのノートを、新しいトラックかお手本として読み込む（`MidiImport`）
  * - 単音メロディの解析（`/api/analyze`）によるピアノロール自動配置
  * - マイク録音の開始・停止とトラックへの追加
  *
@@ -525,6 +527,8 @@ function FilePanel() {
             <label htmlFor="file-track">追加先トラック</label>
             <TrackSelector id="file-track" value={fileTrack} onChange={setFileTrack} />
             <button className="action-btn" onClick={handleImport}>選択したトラックに追加</button>
+            <hr />
+            <MidiImport />
             <hr />
             <h3>単音メロディ解析</h3>
             <p className="panel-desc">単音の WAV ファイル（ボーカルやメロディ）から音の高さを読み取って、開いているピアノロールにノートを並べます。</p>

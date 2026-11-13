@@ -160,9 +160,15 @@ export interface MidiImportTrack {
     notes: ImportedNote[];
     /** ドラム用のチャンネルのノートか。ノートの高さは打楽器の種類なので、音程としては読めない。 */
     isDrum: boolean;
+    /** このトラックで、位置か長さを 16 分音符に丸めたノートの数。 */
+    rounded: number;
+    /** このトラックで、丸めた結果重なったので 1 つにまとめたノートの数。 */
+    merged: number;
+    /** このトラックで、止める合図が無くトラックの終わりで止めたノートの数。 */
+    unterminated: number;
 }
 
-/** 読み込みで、元のファイルから変わったこと・落ちたことの数。画面で伝えるためのもの。 */
+/** 読み込みで、元のファイルから変わったこと・落ちたことの数（ファイル全体）。トラックごとの数は、各トラックが持つ。 */
 export interface MidiImportLoss {
     /** 位置か長さが 16 分音符の格子に乗っておらず、丸めたノートの数（3 連符、32 分音符、人の演奏の揺れなど）。 */
     rounded: number;
@@ -348,16 +354,17 @@ export function parseMidi(bytes: Uint8Array): MidiImportResult {
         for (const [key, raw] of [...groups].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) {
             const isDrum = raw[0].channel === DRUM_CHANNEL;
             const placed = new Map<string, ImportedNote>();
+            const counts = { rounded: 0, merged: 0, unterminated: 0 };
             for (const note of raw.sort((a, b) => a.start - b.start || a.pitch - b.pitch)) {
-                if (!note.closed) loss.unterminated += 1;
+                if (!note.closed) counts.unterminated += 1;
                 const step = Math.round(note.start / ticksPerStep);
                 const length = Math.max(1, Math.round(note.end / ticksPerStep) - step);
-                if (step * ticksPerStep !== note.start || (step + length) * ticksPerStep !== note.end) loss.rounded += 1;
+                if (step * ticksPerStep !== note.start || (step + length) * ticksPerStep !== note.end) counts.rounded += 1;
                 const slot = `${note.pitch}:${step}`;
                 const existing = placed.get(slot);
                 if (existing) {
                     // 丸めたら同じ高さ・同じ位置に重なった。長いほうを残して 1 つにする
-                    loss.merged += 1;
+                    counts.merged += 1;
                     existing.length = Math.max(existing.length, length);
                     existing.velocity = Math.max(existing.velocity, note.velocity);
                     continue;
@@ -368,7 +375,10 @@ export function parseMidi(bytes: Uint8Array): MidiImportResult {
             }
             const base = chunk.name || `MIDI ${tracks.length + 1}`;
             const suffix = format === 0 && groups.size > 1 ? `（チャンネル ${raw[0].channel + 1}）` : isDrum && key === 'drum' && groups.size > 1 ? '（ドラム）' : '';
-            tracks.push({ name: base + suffix, notes: [...placed.values()], isDrum });
+            tracks.push({ name: base + suffix, notes: [...placed.values()], isDrum, ...counts });
+            loss.rounded += counts.rounded;
+            loss.merged += counts.merged;
+            loss.unterminated += counts.unterminated;
         }
     }
 
