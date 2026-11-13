@@ -1,7 +1,9 @@
 # bunri DAW
 
 ## 概要
-Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。FastAPI + HTML/CSS/JS の Web UI で操作。
+Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。
+React / Vite / TypeScript の画面、FastAPI / Python 3.11 の音声処理、Tauri v2 / Rust のデスクトップアプリ。
+この文書を Claude Code と Codex の共通規約とし、Codex の入口はルートの `AGENTS.md`。
 
 ## 起動
 デスクトップアプリ（Tauri v2）。開発モード（Rust と uv が要る）:
@@ -17,13 +19,22 @@ make desktop           # = npm run tauri dev
 
 ## テスト
 ```bash
+make check-plan   # 変更した領域に必要な検証を表示（実行しない）
+make check        # 変更した領域の lint・型・単体テスト・build。UI 変更は E2E も含む
+make check-all    # 全領域の検証 + E2E
 make test    # 単体テスト（フロント + バック + Rust）
 make lint
 make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
 ```
+通常の開発では `make check` を使う。Python のテスト出力は毎回新しい一時 `BUNRI_DATA_DIR` に隔離する。
+ブランチ全体の差分を確かめるときは `node scripts/check.mjs --base main`。
+隠しファイル込みの探索や lint で `.claude/worktrees/` の別チェックアウトを巻き込まない。
+`make clean` はユーザーの `uploads/`・`results/`・`projects/` を削除するので、通常の検証では使わない。
 画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
 不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
-Claude Code が画面をその場で操作して確かめるときは、Playwright MCP（`.mcp.json`）と `make dev-web` を使う。
+エージェントが画面をその場で操作して確かめるときは、Playwright MCP と `make dev-web` を使う。
+MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync` で生成する `.codex/config.toml`。
+実 LLM API を使うテストは通常の検証に含めず、ユーザーが明示したときだけ実行する。
 
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。

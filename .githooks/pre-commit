@@ -1,0 +1,5 @@
+#!/bin/sh
+# 自動修正・git add は行わず、stage 済みの変更に必要な軽い検査だけを行う。
+set -eu
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/check.mjs" --staged

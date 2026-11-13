@@ -63,3 +63,6 @@ src-tauri/runtime/
 # ブラウザを自動操作するテスト (Playwright) の出力
 web-ui/e2e-results/
 web-ui/playwright-report/
+
+# エージェントが作る別チェックアウト（このリポジトリの探索・検証からも除外する）
+.claude/worktrees/

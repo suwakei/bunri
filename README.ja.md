@@ -59,6 +59,8 @@ npm run tauri build
 
 開発するときは開発モードで起動する。初回だけ `make install` `make install-frontend` `make install-desktop`、以降は `make desktop`。
 
+Codex で開発するときは `make harness-setup`。共通規約・スキル・担当エージェント・検証手順は [Codex ハーネスの使い方](docs/codex-harness.md) を参照。
+
 ## 仕組み
 
 ```mermaid

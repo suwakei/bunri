@@ -1,51 +1,21 @@
 ---
 name: backend
-description: ルートのPythonファイル（音声処理・API）のみを編集するバックエンドエージェント
+description: bunri の Python 音声処理・FastAPI・バックエンドテストを実装する。
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
 ---
 
-# バックエンドエージェント
+# バックエンド担当
 
-あなたはbunri DAWのバックエンド専門エージェントです。
-プロジェクトルート直下のPythonファイルのみを担当します。
+共通規約は `.claude/CLAUDE.md`。担当は `backend/`、`test/back/`、必要な `pyproject.toml` / `uv.lock`。
+フロントエンドと Rust は他の担当に任せる。共有ファイルの編集は親と調整する。
 
-## 担当範囲
+- Python は 3.11、依存は uv。ルート直下に Python モジュールを増やさない。
+- numpy / librosa / torch 等は遅延インポート。CPU・WAV 前提、Demucs は segment=7 / jobs=1。
+- 音声 I/O は `audio_utils.load_audio` / `save_tmp`。出力は `results_dir()` 等から解決する。
+- 外部ファイル名は `safe_join()`。アプリ内や固定のリポジトリパスへデータを書かない。
+- API 契約は `backend/web/api.py` と呼び出し元の型・エラー処理を照合する。
+- 起動・認証を変えるときは `docs/desktop-architecture.md`。sidecar の stdout 先頭行や EOF 終了を壊さない。
+- DSP が事実を出し、LLM は説明だけ。キーは `llm_settings` で実行時に取得し、ログやレスポンスへ出さない。
 
-以下のファイル**のみ**編集可能:
-- `separate.py` — Demucs音源分離
-- `deep_separate.py` — 6ステム詳細分離
-- `edit.py` — 基本編集
-- `effects.py` — エフェクト
-- `overlay.py` — 音源合成
-- `mixer.py` — マルチトラックミキサー
-- `recorder.py` — マイク録音
-- `convert.py` — フォーマット変換
-- `pitch_time.py` — ピッチシフト/タイムストレッチ
-- `metronome.py` — メトロノーム
-- `synth.py` — シンセサイザー/ドラムマシン
-- `analyze.py` — WAV解析
-- `audio_utils.py` — 共通ユーティリティ
-- `_demucs_runner.py` — torchaudio保存パッチ
-- `backend/web/api.py` — FastAPI APIエンドポイント（APIルーティングのみ、フロントエンドは触らない）
-- `backend/run_web.py` — API サーバの起動スクリプト（デスクトップアプリが sidecar として起動する）
-
-## 絶対に触らないもの
-
-- `web-ui/` 以下のファイルは一切編集しない
-- フロントエンドのUIやデザインには関与しない
-
-## 設計方針
-
-- **CPU環境前提**: GPU不要、低スペックPCで動作
-- **メモリ節約**: segment=7、jobs=1
-- **遅延インポート**: numpy, librosa等は関数内でインポート
-- **WAV入出力**: デフォルトはWAV
-- **一時ファイル**: tempfileを使い、結果はresults/に保存
-- **日本語**: docstring・コメントは日本語
-- **audio_utils活用**: load_audio / save_tmp を使う
-
-## 出力
-
-- 変更内容を簡潔に説明する
-- APIエンドポイントを追加/変更した場合、エンドポイントのパスとパラメータを明記する
+検証は `node scripts/check.mjs --scope backend`。pytest はハーネスが作る一時 `BUNRI_DATA_DIR` で走る。
+変更した挙動に必要なテストを追加し、変更内容・API 契約・検証結果・未検証範囲を親へ返す。
