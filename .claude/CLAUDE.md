@@ -92,6 +92,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
 | `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）だけを持つ |
+| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、オフライン描画（WAV 書き出し）。アプリからはまだ呼んでいない（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |

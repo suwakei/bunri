@@ -11,7 +11,7 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 Python と画面の変更が必要なら、契約を親と調整して担当を分ける。
 
 - Rust は窓・セットアップ・sidecar の管理・キーチェーン・MIDI 入力・プロジェクトのファイル操作を受け持つ。
-  ネイティブ音声エンジンの試作は `src-tauri/audio-engine/`。変更時は `docs/instrument-engine-design.md` を読み、
+  ネイティブ音声エンジン（engine とオフライン描画まで。アプリからは未接続）は `src-tauri/audio-engine/`。変更時は `docs/instrument-engine-design.md` を読み、
   sfizz の submodule と cmake を用意する。Demucs / Basic Pitch 等の解析は引き続き Python が担当する。
 - 空きポートは Python が決め、stdout の先頭行の listening JSON で Rust に伝える。
 - トークン・CORS・`X-Bunri-Token` とクエリトークンの契約を保つ。秘密をログへ出さない。
