@@ -87,7 +87,8 @@ export function sameNotes(a: readonly PianoNote[] | undefined, b: readonly Piano
     if (!a || !b || a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i], y = b[i];
-        if (x !== y && (x.note !== y.note || x.octave !== y.octave || x.step !== y.step || x.length !== y.length)) return false;
+        if (x !== y && (x.note !== y.note || x.octave !== y.octave || x.step !== y.step || x.length !== y.length
+            || x.velocity !== y.velocity)) return false;
     }
     return true;
 }

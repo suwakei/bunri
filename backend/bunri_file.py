@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS project_notes (
     octave         INTEGER,
     step           INTEGER,
     length         INTEGER,
+    velocity       INTEGER,
     PRIMARY KEY (track_position, kind, position)
 );
 
@@ -973,6 +974,14 @@ def _read_blob(conn, hash_):
     return decode_audio(row["codec"], row["data"], row["filename"], row["subtype"])
 
 
+def _velocity(value):
+    """ノートの強さを、保存する値にする。1〜127 の整数ならその値、それ以外（無い・形が違う）は None。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = int(round(value))
+    return number if 1 <= number <= 127 else None
+
+
 def _table_columns(conn, table):
     """表の列名の集合を返す（表が無ければ空）。"""
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -983,6 +992,9 @@ def _ensure_schema(conn):
     conn.executescript(_SCHEMA)
     if "audio_hash" not in _table_columns(conn, "chart_audio"):
         conn.execute("ALTER TABLE chart_audio ADD COLUMN audio_hash TEXT")
+    # ノートの強さ (velocity) は後から足した列。持たないノートは NULL のまま (読む側が既定の強さとして扱う)
+    if "velocity" not in _table_columns(conn, "project_notes"):
+        conn.execute("ALTER TABLE project_notes ADD COLUMN velocity INTEGER")
 
 
 def migrate(path):
@@ -1207,11 +1219,11 @@ def _write_tracks(conn, tracks):
         )
         for kind, notes in (("notes", track.get("notes")), ("reference", reference)):
             conn.executemany(
-                """INSERT INTO project_notes (track_position, kind, position, note, octave, step, length)
-                   VALUES (?,?,?,?,?,?,?)""",
+                """INSERT INTO project_notes (track_position, kind, position, note, octave, step, length, velocity)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 [
                     (pos, kind, i, _text(n.get("note"), "C"), _int(n.get("octave"), 4),
-                     _int(n.get("step")), max(1, _int(n.get("length"), 1)))
+                     _int(n.get("step")), max(1, _int(n.get("length"), 1)), _velocity(n.get("velocity")))
                     for i, n in enumerate(notes or []) if isinstance(n, dict)
                 ],
             )
@@ -1462,12 +1474,17 @@ def _read_tracks(conn):
     import json
 
     notes = {}
+    # 強さの列は後から足した。それより前に保存したファイルには無いので、在るときだけ読む
+    has_velocity = "velocity" in _table_columns(conn, "project_notes")
     for row in conn.execute(
-        "SELECT track_position, kind, note, octave, step, length FROM project_notes "
+        f"SELECT track_position, kind, note, octave, step, length{', velocity' if has_velocity else ''} FROM project_notes "
         "ORDER BY track_position, kind, position"
     ).fetchall():
-        notes.setdefault((row["track_position"], row["kind"]), []).append(
-            {"note": row["note"], "octave": row["octave"], "step": row["step"], "length": row["length"]})
+        note = {"note": row["note"], "octave": row["octave"], "step": row["step"], "length": row["length"]}
+        # 強さを持たないノートには、項目そのものを付けない (画面の側が、既定の強さとして扱う)
+        if has_velocity and row["velocity"] is not None:
+            note["velocity"] = row["velocity"]
+        notes.setdefault((row["track_position"], row["kind"]), []).append(note)
     clips = {}
     for row in conn.execute(
         "SELECT track_position, name, offset_sec, duration_sec, audio_hash FROM project_clips "

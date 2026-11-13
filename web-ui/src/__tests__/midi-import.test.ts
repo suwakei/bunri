@@ -53,12 +53,12 @@ describe('読み込み方', () => {
 });
 
 describe('applyMidiImport', () => {
-    it('新しいトラック: ノートが打ち込みになる（強さは持たない）', () => {
+    it('新しいトラック: ノートが、強さごと打ち込みになる', () => {
         const outcome = applyMidiImport(engine, sample(), ['track', 'skip', 'skip']);
 
         expect(outcome.created.map((t) => t.name)).toEqual(['Lead']);
         expect(engine.tracks).toHaveLength(1);
-        expect(engine.tracks[0].pianoNotes).toEqual([note('C', 4, 0), note('E', 4, 4)]);
+        expect(engine.tracks[0].pianoNotes).toEqual(withVelocity([note('C', 4, 0), note('E', 4, 4)]));
         expect(engine.tracks[0].role).toBeUndefined();
         expect(outcome.references).toBe(0);
     });
@@ -69,9 +69,9 @@ describe('applyMidiImport', () => {
 
         expect(lead.role).toBe('part');
         expect(lead.part).toBe(MIDI_PART);
-        expect(lead.referenceNotes).toEqual([note('C', 4, 0), note('E', 4, 4)]);
+        expect(lead.referenceNotes).toEqual(withVelocity([note('C', 4, 0), note('E', 4, 4)]));
         expect(lead.pianoNotes).toEqual([]);
-        expect(bass.pianoNotes).toEqual([note('E', 1, 0, 8)]);
+        expect(bass.pianoNotes).toEqual(withVelocity([note('E', 1, 0, 8)]));
         expect(outcome.references).toBe(1);
     });
 
@@ -103,7 +103,8 @@ describe('applyMidiImport', () => {
 
         expect(outcome.bpm).toBe(132);
         expect(engine.tracks[0].name).toBe('メロディ');
-        expect(engine.tracks[0].pianoNotes).toEqual([note('G', 4, 0), note('A', 4, 4, 2)]);
+        // 書き出すときに付いた既定の強さ (96) が、読み込んだノートに入る
+        expect(engine.tracks[0].pianoNotes).toEqual(withVelocity([note('G', 4, 0), note('A', 4, 4, 2)]));
     });
 });
 
@@ -146,8 +147,8 @@ describe('画面の文', () => {
         expect(tempoNotice(sample({ bpm: null }), 120, true)).toContain('テンポが書かれていません');
     });
 
-    it('丸めなどで変わることを伝える。何も無くても、強さを読み込まないことは伝える', () => {
-        expect(lossNotices(sample(), ['track', 'track', 'skip'])).toEqual(['音の強さ（ベロシティ）は読み込みません。どのノートも同じ強さで鳴ります']);
+    it('丸めなどで変わることを伝える。変わることが無ければ、何も出さない', () => {
+        expect(lossNotices(sample(), ['track', 'track', 'skip'])).toEqual([]);
 
         const lossy = sample({ loss: { rounded: 8, merged: 1, unterminated: 2, tempoChanges: 4 } });
         Object.assign(lossy.tracks[0], { rounded: 2, merged: 1, unterminated: 0 });
@@ -167,7 +168,7 @@ describe('画面の文', () => {
         const high = sample();
         high.tracks[0].notes = withVelocity([note('C', 9, 0), note('C', -1, 4), note('C', 4, 8)]);
         expect(lossNotices(high, ['track', 'track', 'skip'])[0]).toContain('外のノートが 2 個');
-        expect(lossNotices(high, ['skip', 'track', 'skip'])[0]).not.toContain('外のノート');
+        expect(lossNotices(high, ['skip', 'track', 'skip'])).toEqual([]);
     });
 
     it('読み込んだ後の知らせ', () => {

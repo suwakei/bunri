@@ -41,13 +41,38 @@ export interface MidiInputController {
     disconnect: () => Promise<void>;
     /** 練習画面の口を付ける（null で外す） */
     setPracticeHooks: (hooks: MidiPracticeHooks | null) => void;
+    /** リアルタイム録音の前に、1 小節ぶんのカウントを入れるか */
+    countIn: boolean;
+    setCountIn: (on: boolean) => void;
+    /** リアルタイム録音で、弾いた位置を前へ戻す量（ミリ秒）。自分で決めていなければ、音の出力の遅れから決めた値 */
+    latencyMs: number;
+    /** 遅れの補正を、自分で決めずに任せているか */
+    latencyAuto: boolean;
+    /** 遅れの補正を決める（null で、任せる） */
+    setLatencyMs: (ms: number | null) => void;
+}
+
+/** 設定の置き場（ブラウザの保存領域）。 */
+const COUNT_IN_KEY = 'bunri-midi-count-in';
+const LATENCY_KEY = 'bunri-midi-latency-ms';
+/** 遅れの補正の上限（ミリ秒）。 */
+export const MAX_LATENCY_MS = 500;
+
+function readSetting(key: string): string | null {
+    try { return globalThis.localStorage?.getItem(key) ?? null; } catch { return null; }
+}
+function writeSetting(key: string, value: string | null): void {
+    try {
+        if (value === null) globalThis.localStorage?.removeItem(key);
+        else globalThis.localStorage?.setItem(key, value);
+    } catch { /* 保存できない環境では、その場かぎりの設定にする */ }
 }
 
 /**
  * MIDI キーボード入力の仕組み（つなぐ・鳴らす・録る）。中央エリアが 1 つだけ持つ。
  */
 export function useMidiInput(): MidiInputController {
-    const { pianoRollRef, setStatus, bumpTracks } = useDaw();
+    const { pianoRollRef, setStatus, bumpTracks, beatsPerBar } = useDaw();
     const [available] = useState(() => pickMidiSource() !== null);
     const [connected, setConnected] = useState(false);
     const [devices, setDevices] = useState<string[]>([]);
@@ -57,22 +82,37 @@ export function useMidiInput(): MidiInputController {
     const sourceRef = useRef<MidiSource | null>(null);
     const recorderRef = useRef<MidiNoteRecorder | null>(null);
     const hooksRef = useRef<MidiPracticeHooks | null>(null);
+    const [countIn, setCountInState] = useState(() => readSetting(COUNT_IN_KEY) !== '0');
+    // 遅れの補正。null は「任せる」(音の出力の遅れから決める)
+    const [manualLatency, setManualLatency] = useState<number | null>(() => {
+        const saved = Number(readSetting(LATENCY_KEY));
+        return readSetting(LATENCY_KEY) !== null && Number.isFinite(saved) ? Math.max(0, Math.min(MAX_LATENCY_MS, saved)) : null;
+    });
+    const [autoLatency, setAutoLatency] = useState(0);
+    /** いま効いている遅れの補正（秒）と、処理中のメッセージが届いてから経った時間（秒）。録る部品が見にいく */
+    const latencyRef = useRef(0);
+    const messageAgeRef = useRef(0);
+    latencyRef.current = (manualLatency ?? autoLatency) / 1000;
 
     // 録り方を決める部品。ピアノロールと再生位置を、呼ばれたときに見にいく
     if (recorderRef.current === null) {
         recorderRef.current = new MidiNoteRecorder({
             position: () => {
                 const sec = engine.getPlayPosition();
+                if (sec === null) return null;
+                // 弾いた位置を、遅れのぶんだけ前へ戻す。聞こえた音に合わせて弾くと、音が耳に届くまでの遅れと、
+                // 鍵盤からここに届くまでの遅れのぶんだけ、再生位置は先へ進んでいる
+                const played = sec - latencyRef.current - messageAgeRef.current;
                 // ステップ 0 は 1 小節目の位置 (engine.gridOffset)。それより前 (弱起) は 1 小節目の頭にする
-                return sec === null ? null : Math.max(0, secToStep(sec, engine.grid));
+                return Math.max(0, secToStep(played, engine.grid));
             },
             // 元に戻せる。リアルタイム録音は、弾き続けているあいだのノートを 1 つの記録にまとめる
             addNote: (n) => {
                 const recordMode = recorderRef.current?.mode ?? 'off';
                 if (hooksRef.current?.addNote(n, recordMode)) return;
                 pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length, recordMode === 'realtime'
-                    ? { label: 'MIDI 入力の録音', coalesceKey: 'midi-realtime', coalesceMs: 4000 }
-                    : { label: 'MIDI 入力でノートを追加' });
+                    ? { label: 'MIDI 入力の録音', coalesceKey: 'midi-realtime', coalesceMs: 4000, velocity: n.velocity }
+                    : { label: 'MIDI 入力でノートを追加', velocity: n.velocity });
             },
             // ピアノロールは打ち込むと伸びるので、末尾の制限は「伸ばせる上限」にする
             get totalSteps() { return pianoRollRef.current?.maxSteps ?? pianoRollRef.current?.totalSteps ?? 128; },
@@ -82,10 +122,13 @@ export function useMidiInput(): MidiInputController {
         });
     }
 
-    const handleMessage = useCallback((bytes: ArrayLike<number>) => {
+    const handleMessage = useCallback((bytes: ArrayLike<number>, receivedAt?: number) => {
         const event = parseMidiMessage(bytes);
         const recorder = recorderRef.current;
         if (!event || !recorder) return;
+        // 機器から届いた時刻が分かれば、ここで処理するまでの待ちも、遅れとして差し引く (長すぎる値は信用しない)
+        const age = typeof receivedAt === 'number' ? (performance.now() - receivedAt) / 1000 : 0;
+        messageAgeRef.current = age > 0 && age < 0.5 ? age : 0;
 
         // 弾いた音は、録るかどうかに関係なく鳴らす
         if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity);
@@ -99,6 +142,8 @@ export function useMidiInput(): MidiInputController {
         const result = recorder.handle(event);
         if (result.kind === 'added') {
             bumpTracks();
+        } else if (result.kind === 'skipped' && result.reason === 'stopped' && engine.isCountingIn()) {
+            // 録音前のカウントの間に弾いた音は、録らない (知らせも出さない。カウントが終われば録り始める)
         } else if (result.kind === 'skipped') {
             const inLoop = hooksRef.current?.bounds() != null;
             setStatus({
@@ -117,6 +162,9 @@ export function useMidiInput(): MidiInputController {
             await source.start(handleMessage, setDevices);
             sourceRef.current = source;
             setConnected(true);
+            // 音の出力の遅れは、音を出す準備ができてから分かる
+            engine.init();
+            setAutoLatency(Math.min(MAX_LATENCY_MS, Math.round(engine.outputLatencySec() * 1000)));
             return true;
         } catch (e) {
             setStatus('MIDI 入力を開けませんでした。鍵盤がつながっているかを確かめて、もう一度押してください（' + describeError(e) + '）', 'error');
@@ -156,10 +204,30 @@ export function useMidiInput(): MidiInputController {
 
     const setPracticeHooks = useCallback((hooks: MidiPracticeHooks | null) => { hooksRef.current = hooks; }, []);
 
+    const setCountIn = useCallback((on: boolean) => {
+        setCountInState(on);
+        writeSetting(COUNT_IN_KEY, on ? '1' : '0');
+    }, []);
+
+    const setLatencyMs = useCallback((ms: number | null) => {
+        const value = ms === null || !Number.isFinite(ms) ? null : Math.max(0, Math.min(MAX_LATENCY_MS, Math.round(ms)));
+        setManualLatency(value);
+        writeSetting(LATENCY_KEY, value === null ? null : String(value));
+    }, []);
+
+    // リアルタイム録音を選んでいるあいだは、再生の前に 1 小節ぶんのカウントを入れる (再生エンジンが鳴らす)
+    useEffect(() => {
+        engine.countInBeats = connected && mode === 'realtime' && countIn ? Math.max(1, Number(beatsPerBar) || 4) : 0;
+        return () => { engine.countInBeats = 0; };
+    }, [connected, mode, countIn, beatsPerBar]);
+
     // 最初の録り方を、録る部品にも伝えておく
     useEffect(() => { recorderRef.current?.setMode(mode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    return { available, connected, devices, mode, setMode, stepLength, setStepLength, cursor, setCursor, connect, disconnect, setPracticeHooks };
+    return {
+        available, connected, devices, mode, setMode, stepLength, setStepLength, cursor, setCursor, connect, disconnect, setPracticeHooks,
+        countIn, setCountIn, latencyMs: manualLatency ?? autoLatency, latencyAuto: manualLatency === null, setLatencyMs,
+    };
 }
 
 /** MIDI 入力が使えない環境で出す文。 */

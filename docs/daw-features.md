@@ -58,9 +58,9 @@ Layout: header / learning-flow progress bar / left panel (resizable, 280–520 p
 | Legacy projects (以前の形式) | Old `projects/*.json` appear in the open list with a 「以前の形式」 badge. Clips have no audio: they are placeholders listed in a bar with 「音声を読み込み直す」. Saving converts to `.bunri`; the JSON file is kept |
 | Learning history (学習の記録) | Every 「お手本と比べる」 records time, bar range, match rate (= the diff's `accuracy`), issue counts by kind and the explanation key. The 差分 tab shows 「一致 67% 前回より +34%」, a trend and the last 5 attempts. Saved in the project |
 | データの整理 | In the ファイル tab: disk usage of the data dir by category and a cleanup of temporary files (uploads, generated audio, chart work files, project working copies older than 5 minutes; never the open project, cached guides/explanations, `projects/`, or files outside the data dir) |
-| MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
-| MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track) |
-| MIDI import | Notes of a standard MIDI file (format 0 or 1) as new tracks, or as a reference to practise against. Positions and lengths are rounded to 16th notes; velocity is not imported |
+| MIDI keyboard input | Play a connected keyboard into the piano roll: step input (advance one note at a time) or real-time recording while the transport runs (optional one-bar count-in; a latency offset moves played notes earlier, defaulting to the audio output latency). Note velocity is recorded. Web MIDI in Chrome / Edge; the desktop app receives MIDI natively |
+| MIDI export | Piano-roll notes of every track as a standard MIDI file (format 1, one MIDI track per track). Notes carry their velocity (96 when a note has none) |
+| MIDI import | Notes of a standard MIDI file (format 0 or 1) as new tracks, or as a reference to practise against. Positions and lengths are rounded to 16th notes; velocity is kept |
 | WAV export | Offline mixdown to WAV. Follows mute and solo, the same as playback |
 
 #### Undo history

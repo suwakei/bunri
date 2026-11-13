@@ -96,9 +96,11 @@ export default function MidiImport() {
                         ))}
                     </ul>
                     <p className="note-text" id="midi-tempo-notice">{tempoNotice(loaded.result, bpm, isEmptyProject(engine))}</p>
-                    <ul className="note-text" id="midi-loss-list" aria-label="読み込みで変わること">
-                        {lossNotices(loaded.result, loaded.modes).map((text) => <li key={text}>{text}</li>)}
-                    </ul>
+                    {lossNotices(loaded.result, loaded.modes).length > 0 && (
+                        <ul className="note-text" id="midi-loss-list" aria-label="読み込みで変わること">
+                            {lossNotices(loaded.result, loaded.modes).map((text) => <li key={text}>{text}</li>)}
+                        </ul>
+                    )}
                     <button className="action-btn" onClick={handleImport} disabled={chosen === 0}>読み込む</button>
                 </div>
             )}
