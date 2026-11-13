@@ -178,8 +178,8 @@ make e2e-desktop     # = cd web-ui && npm run e2e:desktop
   配布物と同じに動く (窓を閉じる要求は WebDriver の「窓を閉じる」で送る)
 - 画面の細かな操作。タブの並びなどの画面の構造には深く依存させていない (ブラウザのテストの役目)
 
-CI では、main への push と手での起動のときだけ、mac のランナーで走る (`.github/workflows/desktop-e2e.yml`。
-mac のランナーは高いので PR のたびには走らせない。このテストの仕組み自体を変える PR では走る)。
+CI では自動で走らない (CI はビルドの確認だけにしている)。Actions の画面から手で起動したときだけ、
+mac のランナーで走る (`.github/workflows/desktop-e2e.yml`)。ふだんは手元で `make e2e-desktop` を回す。
 依存は `uv sync --frozen` で全部入れる (sidecar の起動に使う `uv run` が、抜いた依存を入れ直すため)。
 あわせて、配布物の設定に WebDriver サーバが入らないことも確かめる (docs/desktop-architecture.md「窓を自動操作するテスト」)。
 
