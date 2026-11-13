@@ -108,6 +108,14 @@ graph LR
 
 ## Development
 
+The audio engine (`src-tauri/audio-engine`) builds [sfizz](https://github.com/sfztools/sfizz) from a git submodule,
+so `make test` / `make lint` also need the submodules and CMake:
+
+```bash
+git submodule update --init --recursive
+brew install cmake
+```
+
 ```bash
 make install           # Backend dependencies (uv sync)
 make test              # Run all tests (frontend + backend + Rust)

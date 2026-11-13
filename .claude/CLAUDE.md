@@ -16,6 +16,8 @@ make desktop           # = npm run tauri dev
 （Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
 
 ## テスト
+音のエンジン（`src-tauri/audio-engine`）は sfizz を submodule からビルドするので、`make test` / `make lint` には
+submodule と cmake が要る（`git submodule update --init --recursive`、`brew install cmake`）。設計は [docs/instrument-engine-design.md](../docs/instrument-engine-design.md)。
 ```bash
 make test    # 単体テスト（フロント + バック + Rust）
 make lint
