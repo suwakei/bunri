@@ -180,6 +180,64 @@ class TestGridConfidence:
         assert grid_materials.grid_errors(grid, truth)["downbeat_err_beats"] == 0
 
 
+class TestRecallFactor:
+    """拍と音の対応が、テンポの採点を動かす幅"""
+
+    def test_recall_moves_score_only_within_weight(self):
+        """対応が無くても点は ``1 - _RECALL_WEIGHT`` 倍までしか下がらず、半分乗っていれば満点
+
+        実際の曲では、正しいテンポでも強い音の多くが裏拍や 16 分に在り、対応は 0 近くまで下がる。
+        対応をそのまま掛けると、細かい刻みまで拾える倍のテンポが勝ってしまう。
+        """
+        floor = 1.0 - structure._RECALL_WEIGHT
+        assert structure._recall_factor(0.0) == pytest.approx(floor)
+        assert structure._recall_factor(-0.3) == pytest.approx(floor)
+        assert structure._recall_factor(structure._ENOUGH_RECALL) == pytest.approx(1.0)
+        assert structure._recall_factor(1.0) == pytest.approx(1.0)
+        assert floor < structure._recall_factor(structure._ENOUGH_RECALL / 2) < 1.0
+
+    def test_melody_alone_is_not_doubled(self, tmp_path):
+        """伴奏の無い単旋律（97 BPM）を、倍のテンポに取らない
+
+        対応をそのまま掛けていた版は 194 BPM と出し、しかも「確実」だった。
+        """
+        kind, kwargs = _pick(grid_materials.holdout_cases(), ["melody 97 lead0.0 rev0.0"])[0].values
+        grid, truth = _estimate(tmp_path, kind, kwargs)
+        assert grid_materials.judge(grid_materials.grid_errors(grid, truth))[0] == "ok"
+
+
+class TestTempoConfidence:
+    """テンポの確信度は、周期の強さと、次点の候補との差で決まる"""
+
+    @staticmethod
+    def _candidate(score, periodicity, recall=0.5):
+        return {"score": score, "prior": 1.0, "periodicity": periodicity, "recall": recall}
+
+    def test_low_recall_does_not_lower_confidence(self):
+        """拍と音の対応が低くても、周期がはっきりして次点を引き離していれば確信度は下がらない
+
+        実際の曲では、対応は合っている曲と外れた曲を分けなかった（どちらも 0〜0.5 に広がる）。
+        """
+        rival = self._candidate(0.1, 0.3)
+        on_beat = structure._tempo_confidence([self._candidate(0.4, 0.6, recall=0.5), rival])
+        off_beat = structure._tempo_confidence([self._candidate(0.4, 0.6, recall=0.0), rival])
+        assert off_beat == pytest.approx(on_beat)
+        assert off_beat == pytest.approx(1.0)
+
+    def test_close_rival_lowers_confidence(self):
+        """次点の候補が僅差なら、周期がはっきりしていても確信度は低い"""
+        confidence = structure._tempo_confidence([self._candidate(0.4, 0.6), self._candidate(0.38, 0.6)])
+        assert confidence < 0.4
+
+    def test_weak_periodicity_lowers_confidence(self):
+        """拍の繰り返しが弱ければ、次点を引き離していても確信度は低い"""
+        weak = self._candidate(0.4, structure._CLEAR_PERIODICITY / 4)
+        assert structure._tempo_confidence([weak, self._candidate(0.1, 0.05)]) == pytest.approx(0.25)
+
+    def test_no_candidates_is_zero(self):
+        assert structure._tempo_confidence([]) == 0.0
+
+
 class TestTempoPrior:
     def test_peaks_at_center_and_is_symmetric_in_octaves(self):
         """120 BPM が頂点で、倍と半分は同じ重みになる"""

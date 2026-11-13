@@ -43,10 +43,11 @@ _TEMPO_PRIOR_OCTAVES = 1.0
 # 拍と音の立ち上がりが「同じ位置」とみなす幅（フレーム数。1 フレーム = 約 23ms）
 _BEAT_TOLERANCE_FRAMES = 2
 
-# 確信度の物差し（暫定）。周期の強さがこれ以上なら「拍がはっきり繰り返している」、
+# 確信度の物差し。周期の強さがこれ以上なら「拍がはっきり繰り返している」、
 # 次点の候補との点差（割合）がこれ以上なら「引き離している」とみなす。
-# 合成音源と、正解の注釈が無い実曲 8 曲から決めた値で、実曲での合わせ込みは済んでいない
-# （docs/grid-estimation.md の「実際の曲では確かめきれていない」）
+# 合成音源で決めた値。テンポの分かっている実曲 58 曲でも、この値のままで「確実」「たぶん」の
+# 外れは 1 曲だった（docs/grid-estimation.md の「実際の曲で測った結果」）。小節頭の正解が付いた
+# 実曲は無いので、小節頭の側（_DOWNBEAT_CLEAR_MARGIN）は実曲で確かめられていない
 _CLEAR_PERIODICITY = 0.4
 _CLEAR_SEPARATION = 0.35
 
@@ -55,10 +56,14 @@ _CLEAR_SEPARATION = 0.35
 # 立ち上がりの遅い音（パッド、弦）では 3〜4 フレーム（約 80ms）遅れる
 _ACCENT_LAG_FRAMES = 4
 
-# 確信度と採点で、拍と音の対応がこれ以上なら「十分」とみなす（これより上は区別しない）。
+# 採点で、拍と音の対応がこれ以上なら「十分」とみなす（これより上は区別しない）。
 # 強い音の半分が拍に乗っていれば、拍として成り立つ。それ以上を求めると、8 分や 16 分の刻みまで
 # 拾える「倍のテンポ」が必ず有利になってしまう（拍の間に細かい音が在るのは普通のこと）
 _ENOUGH_RECALL = 0.5
+
+# 拍と音の対応が、採点を動かす幅。実曲 58 曲（テンポが公開されている CC-BY の曲）のうち半分で決め、
+# 残りの半分と合成音源で確かめた（docs/grid-estimation.md の「実際の曲で測った結果」）
+_RECALL_WEIGHT = 0.25
 
 # これ未満の山は、音の立ち上がりとして数えない（雑音）
 _PEAK_FLOOR = 0.05
@@ -455,7 +460,8 @@ def _score_tempo_candidates(features, sr, per_bar):
     - **拍と音の対応**（``recall``）: 強い音の立ち上がりのうち、追跡した拍の位置に在るものの割合
       （偶然に重なる分を引いたもの）。遅すぎる候補や、拍が音からずれた候補で下がる。
       ``_ENOUGH_RECALL`` で頭打ちにする（半分が拍に乗っていれば十分。それ以上を点にすると、
-      細かい刻みまで拾える倍のテンポが必ず有利になる）。
+      細かい刻みまで拾える倍のテンポが必ず有利になる）。点を動かす幅も ``_RECALL_WEIGHT`` に
+      抑える（``_recall_factor``。実際の曲では、頭打ちにしても倍のテンポを有利にしていた）。
       逆の「拍のうち音が在るものの割合」は点に入れない。伸ばした音の上では、
       正しいテンポでも音の無い拍が普通に在るため
     - **小節の繰り返し**（``meter``）: 拍ごとの強弱が、小節内の位置でどれだけ説明できるか。
@@ -514,7 +520,7 @@ def _score_tempo_candidates(features, sr, per_bar):
         prior = _tempo_prior(bpm)
         scored.append({
             "bpm": float(bpm), "beat_frames": beat_frames,
-            "score": float(periodicity * min(1.0, recall / _ENOUGH_RECALL) * (1.0 + meter) / 2.0 * prior),
+            "score": float(periodicity * _recall_factor(recall) * (1.0 + meter) / 2.0 * prior),
             "periodicity": float(periodicity), "recall": float(recall),
             "meter": float(meter), "prior": float(prior),
         })
@@ -526,6 +532,17 @@ def _score_tempo_candidates(features, sr, per_bar):
         if all(abs(candidate["bpm"] / kept["bpm"] - 1.0) > 0.04 for kept in distinct):
             distinct.append(candidate)
     return distinct
+
+
+def _recall_factor(recall):
+    """拍と音の対応（``recall``）を、採点に掛ける重みにする（``1 - _RECALL_WEIGHT`` 〜 1.0）。
+
+    対応が点を動かすのは ``_RECALL_WEIGHT`` の幅まで。実際の曲では、正しいテンポでも強い音の 3〜5 割しか
+    拍の上に無く（裏拍に 3 割前後、残りはもっと細かい位置）、対応の値は「細かい拍ほど大きい」という
+    偏りを強く持つ。これをそのまま点に掛けると、倍のテンポが選ばれる（実曲 58 曲で、倍が 8 曲）。
+    一方、合成音源では、拍が音からずれた候補を落とすのに効いているので、無くしはしない。
+    """
+    return (1.0 - _RECALL_WEIGHT) + _RECALL_WEIGHT * min(1.0, max(0.0, recall) / _ENOUGH_RECALL)
 
 
 def _onset_autocorrelation(accent_env, frame_rate, window_sec=12.0):
@@ -639,9 +656,12 @@ def _tempo_prior(bpm):
 def _tempo_confidence(candidates):
     """テンポの確信度を、選んだ候補の質と、次点との差から出す。
 
-    拍がはっきり繰り返していて（``periodicity``）、強い音が拍に乗っていて（``recall``）、
-    ほかのテンポの候補を引き離しているほど高い。音の立ち上がりがまばらな曲や、
-    倍・半分のどちらとも取れる曲（次点が僅差）では低くなる。
+    拍がはっきり繰り返していて（``periodicity``）、ほかのテンポの候補を引き離しているほど高い。
+    音の立ち上がりがまばらな曲や、倍・半分のどちらとも取れる曲（次点が僅差）では低くなる。
+
+    拍と音の対応（``recall``）は入れない。実際の曲では、正しいテンポでも強い音の 3〜5 割しか拍に
+    乗らず（残りは裏拍や 16 分）、対応を掛けると合っている曲までほとんど「自信なし」になった
+    （実曲 58 曲で「確実」「たぶん」が 9 曲 → 外すと 22 曲、そのうち外れは 1 曲のまま）。
 
     次点との差は、テンポの事前分布を弱めた点（事前分布の平方根を掛けた点）で比べる。
     「120 BPM 前後が自然」という好みだけで勝った候補を、確実とは言わないため。
@@ -666,7 +686,7 @@ def _tempo_confidence(candidates):
     rival = max((cautious(c) for c in candidates[1:]), default=0.0) / cautious(best)
     # 次点が ``1 - _CLEAR_SEPARATION`` 倍以下の点なら、取り違えの心配は無いとみなす
     separation = max(0.0, min(1.0, (1.0 - rival) / _CLEAR_SEPARATION))
-    quality = min(1.0, best["periodicity"] / _CLEAR_PERIODICITY) * min(1.0, best["recall"] / _ENOUGH_RECALL)
+    quality = min(1.0, best["periodicity"] / _CLEAR_PERIODICITY)
     return float(max(0.0, min(1.0, quality * separation)))
 
 
