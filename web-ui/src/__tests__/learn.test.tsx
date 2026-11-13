@@ -26,7 +26,7 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const engine = (await import('../lib/engine')).default;
+const { default: engine, MIDI_PART } = await import('../lib/engine');
 const { progressFacts, stepStates, referenceTrackFor, useLearnActions, isDecomposeResult, CHART_RESULT_INVALID } = await import('../lib/learn');
 const { jobTracker } = await import('../lib/jobs');
 const { DawProvider, useDaw } = await import('../lib/store');
@@ -245,6 +245,25 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(latest.daw!.bpm).toBe(before);
     });
 
+    it('テンポを自動で取るときは拍子も自動 (0) で頼み、いまの BPM で取るときは、いまの拍子を送る', async () => {
+        stubJobApi({ ok: true, kind: 'chart', filename: 'song.wav' });
+        render(<DawProvider><Harness /></DawProvider>);
+        act(() => { latest.daw!.setBeatsPerBar('3'); });
+        const sent = () => {
+            const calls = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+            const [, init] = calls.filter(([url]) => url.startsWith('/api/chart?async=1')).slice(-1)[0];
+            const body = init.body as FormData;
+            return { bpm: body.get('bpm'), beats: body.get('beats_per_bar') };
+        };
+        const file = () => new File([new Uint8Array(16)], 'song.wav', { type: 'audio/wav' });
+
+        await act(async () => { await latest.actions!.importSong(file()); });
+        expect(sent()).toEqual({ bpm: '0', beats: '0' });
+
+        await act(async () => { await latest.actions!.importSong(file(), { autoBpm: false }); });
+        expect(sent()).toEqual({ bpm: String(latest.daw!.bpm), beats: '3' });
+    });
+
     it('つなぎ直したジョブの結果も同じ。finishChart は当てなかったら false を返す', () => {
         render(<DawProvider><Harness /></DawProvider>);
         let applied = true;
@@ -262,5 +281,25 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(engine.tracks.map(t => t.name)).toEqual(['原曲']);
         expect(latest.daw!.statusKind).toBe('error');
         expect(latest.daw!.status).toContain('結果にパートが入っていませんでした');
+    });
+
+    it('パートを分け直しても、MIDI ファイルから読み込んだお手本と、その練習のトラックは残る', async () => {
+        const note = { note: 'C', octave: 4, step: 0, length: 4 };
+        const song = engine.addTrack('原曲'); song.role = 'song';
+        // 前に分けたパートと、その練習のトラック (入れ替わる)
+        const oldPart = engine.addTrack('ベース'); oldPart.role = 'part'; oldPart.part = 'bass'; oldPart.referenceNotes = [note];
+        const oldPractice = engine.addTrack('ベースの練習'); oldPractice.role = 'practice'; oldPractice.practiceOf = oldPart.id;
+        // MIDI から読み込んだお手本と、その練習のトラック (残る)
+        const midiPart = engine.addTrack('Lead'); midiPart.role = 'part'; midiPart.part = MIDI_PART; midiPart.referenceNotes = [note];
+        const midiPractice = engine.addTrack('Lead の練習'); midiPractice.role = 'practice'; midiPractice.practiceOf = midiPart.id;
+        midiPractice.pianoNotes = [note];
+        render(<DawProvider><Harness /></DawProvider>);
+
+        const stem = { gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [note], drum_events: [] };
+        await act(async () => { await latest.actions!.applyParts({ bpm: 120, stems: { vocals: stem } }); });
+
+        expect(engine.tracks.map(t => t.name)).toEqual(['原曲', 'Lead', 'Lead の練習', 'ボーカル']);
+        expect(engine.getTrack(midiPractice.id)?.practiceOf).toBe(midiPart.id);
+        expect(engine.getTrack(midiPractice.id)?.pianoNotes).toEqual([note]);
     });
 });

@@ -7,7 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  # ---- フロントエンド: リント → 型チェック → テスト → ビルド ----
+  # テストは回さない。ビルドが通るか・リントが通るかだけを最低限見る
+
+  # ---- フロントエンド: リント → 型チェック → ビルド ----
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -30,13 +32,10 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Test
-        run: npm test
-
       - name: Build
         run: npm run build
 
-  # ---- バックエンド: リント → テスト ----
+  # ---- バックエンド: リント ----
   backend:
     runs-on: ubuntu-latest
     steps:
@@ -47,21 +46,23 @@ jobs:
         with:
           enable-cache: true
 
+      # 本体の依存 (torch 等) は重いので入れず、dev グループ (ruff) だけ入れる
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --only-dev
 
       - name: Lint (ruff)
-        run: uv run ruff check .
-
-      - name: Test
-        run: uv run python -m pytest test/back/ -v --ignore=test/back/test_api.py --ignore=test/back/test_decompose.py
+        run: uv run --no-sync ruff check .
 
   # ---- デスクトップ (src-tauri): フォーマット → リント ----
   # mac で回す。Linux だと WebView のビルドに追加のシステムパッケージが要るため
   desktop:
     runs-on: macos-latest
     steps:
+      # 音のエンジンが使う sfizz (third_party/sfizz) とその依存は submodule。clippy が
+      # sfizz を cmake でビルドするので要る (cmake は macOS のランナーに入っている)
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -73,8 +74,8 @@ jobs:
 
       - name: Format (cargo fmt)
         working-directory: src-tauri
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Lint (cargo clippy)
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings

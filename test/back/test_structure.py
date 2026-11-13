@@ -92,6 +92,50 @@ class TestGridOnKnownMaterials:
         assert grid["bpm_confidence"] < 0.7
 
 
+class TestAutoMeter:
+    """拍子を渡さなければ、3 拍子か 4 拍子かを自動で決める"""
+
+    @pytest.mark.parametrize("kind, kwargs", _pick(grid_materials.design_cases(), [
+        "meter3 band 120",
+        "meter3 piano_chords 90",
+    ]) + _pick(grid_materials.holdout_cases(), ["waltz 133 lead0.27 rev0.25"]))
+    def test_detects_triple_meter(self, tmp_path, kind, kwargs):
+        """小節ごとの強弱が 3 拍で繰り返す材料は 3 拍子になり、テンポと 1 拍目も合う"""
+        truth = grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"))
+        assert truth["beats_per_bar"] == 3
+        assert grid["time_signature"] == [3, 4]
+        tempo, _, downbeat_ok = grid_materials.judge(grid_materials.grid_errors(grid, truth))
+        assert tempo == "ok" and downbeat_ok
+
+    @pytest.mark.parametrize("kind, kwargs", _pick(grid_materials.design_cases(), [
+        "tempo band 128",
+        "style band_backbeat 120",
+        # 1 小節に 1 回しか音が立ち上がらない。「3/4 倍のテンポで 3 拍」も小節の長さが同じになるので、
+        # 3 拍子を先に検討すると取り違える材料
+        "style pad_chords 100",
+        "report2 sine_notes 120 4bars",
+    ]))
+    def test_keeps_common_time(self, tmp_path, kind, kwargs):
+        """4 拍子の材料を 3 拍子と取らない（決め手が無ければ 4 拍子のまま）"""
+        grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"))
+        assert grid["time_signature"] == [4, 4]
+
+    def test_given_meter_is_trusted(self, tmp_path):
+        """拍子を渡せば、自動では決めない（3 拍子の材料でも 4 と言われれば 4）"""
+        kind, kwargs = _pick(grid_materials.design_cases(), ["meter3 band 120"])[0].values
+        grid_materials.write_song(tmp_path / "song.wav", kind, **kwargs)
+        grid = structure.estimate_grid(str(tmp_path / "song.wav"), beats_per_bar=4)
+        assert grid["time_signature"] == [4, 4]
+
+    def test_user_bpm_without_meter_is_common_time(self, chord_song):
+        """BPM を指定した経路で拍子を渡さなければ 4 拍子"""
+        path, _ = chord_song
+        grid = structure.estimate_grid(path, bpm=120.0, downbeat_offset=0.0)
+        assert grid["time_signature"] == [4, 4]
+
+
 class TestGridConfidence:
     """決め手が無いときは、値は出すが確信度を下げる"""
 
@@ -134,6 +178,64 @@ class TestGridConfidence:
         kind, kwargs = _pick(grid_materials.holdout_cases(), ["shuffle 111 lead0.0 rev0.0"])[0].values
         grid, truth = _estimate(tmp_path, kind, kwargs)
         assert grid_materials.grid_errors(grid, truth)["downbeat_err_beats"] == 0
+
+
+class TestRecallFactor:
+    """拍と音の対応が、テンポの採点を動かす幅"""
+
+    def test_recall_moves_score_only_within_weight(self):
+        """対応が無くても点は ``1 - _RECALL_WEIGHT`` 倍までしか下がらず、半分乗っていれば満点
+
+        実際の曲では、正しいテンポでも強い音の多くが裏拍や 16 分に在り、対応は 0 近くまで下がる。
+        対応をそのまま掛けると、細かい刻みまで拾える倍のテンポが勝ってしまう。
+        """
+        floor = 1.0 - structure._RECALL_WEIGHT
+        assert structure._recall_factor(0.0) == pytest.approx(floor)
+        assert structure._recall_factor(-0.3) == pytest.approx(floor)
+        assert structure._recall_factor(structure._ENOUGH_RECALL) == pytest.approx(1.0)
+        assert structure._recall_factor(1.0) == pytest.approx(1.0)
+        assert floor < structure._recall_factor(structure._ENOUGH_RECALL / 2) < 1.0
+
+    def test_melody_alone_is_not_doubled(self, tmp_path):
+        """伴奏の無い単旋律（97 BPM）を、倍のテンポに取らない
+
+        対応をそのまま掛けていた版は 194 BPM と出し、しかも「確実」だった。
+        """
+        kind, kwargs = _pick(grid_materials.holdout_cases(), ["melody 97 lead0.0 rev0.0"])[0].values
+        grid, truth = _estimate(tmp_path, kind, kwargs)
+        assert grid_materials.judge(grid_materials.grid_errors(grid, truth))[0] == "ok"
+
+
+class TestTempoConfidence:
+    """テンポの確信度は、周期の強さと、次点の候補との差で決まる"""
+
+    @staticmethod
+    def _candidate(score, periodicity, recall=0.5):
+        return {"score": score, "prior": 1.0, "periodicity": periodicity, "recall": recall}
+
+    def test_low_recall_does_not_lower_confidence(self):
+        """拍と音の対応が低くても、周期がはっきりして次点を引き離していれば確信度は下がらない
+
+        実際の曲では、対応は合っている曲と外れた曲を分けなかった（どちらも 0〜0.5 に広がる）。
+        """
+        rival = self._candidate(0.1, 0.3)
+        on_beat = structure._tempo_confidence([self._candidate(0.4, 0.6, recall=0.5), rival])
+        off_beat = structure._tempo_confidence([self._candidate(0.4, 0.6, recall=0.0), rival])
+        assert off_beat == pytest.approx(on_beat)
+        assert off_beat == pytest.approx(1.0)
+
+    def test_close_rival_lowers_confidence(self):
+        """次点の候補が僅差なら、周期がはっきりしていても確信度は低い"""
+        confidence = structure._tempo_confidence([self._candidate(0.4, 0.6), self._candidate(0.38, 0.6)])
+        assert confidence < 0.4
+
+    def test_weak_periodicity_lowers_confidence(self):
+        """拍の繰り返しが弱ければ、次点を引き離していても確信度は低い"""
+        weak = self._candidate(0.4, structure._CLEAR_PERIODICITY / 4)
+        assert structure._tempo_confidence([weak, self._candidate(0.1, 0.05)]) == pytest.approx(0.25)
+
+    def test_no_candidates_is_zero(self):
+        assert structure._tempo_confidence([]) == 0.0
 
 
 class TestTempoPrior:

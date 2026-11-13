@@ -16,7 +16,7 @@
  * 登録していない節（新しい版の bunri が書いたもの）は、開いて保存し直しても消さずに残す。
  * 状態を変えたら `useDaw().touchProject()` を呼ぶと、「保存していない変更」の印が付く。
  */
-import engine, { type Clip, type PianoNote, type Track } from './engine';
+import engine, { cloneNote, type Clip, type PianoNote, type Track } from './engine';
 import { apiFetch, errorDetail } from './api';
 import { audioBufferToFloatWav, decodeWithSource, rememberSource, sha256Hex, sourceOf } from './audio-sources';
 import { captureProject } from './project-snapshot';
@@ -220,8 +220,8 @@ export async function buildDocument(input: BuildInput): Promise<{ doc: ProjectDo
         tracks.push({
             name: t.name, role: t.role ?? null, part: t.part ?? null, practiceOf: idx(t.practiceOf),
             gain: t.gain, pan: t.pan, mute: t.mute, solo: t.solo,
-            notes: t.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length })),
-            referenceNotes: t.reference ? t.reference.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length })) : null,
+            notes: t.notes.map(cloneNote),
+            referenceNotes: t.reference ? t.reference.map(cloneNote) : null,
             clips,
         });
     }

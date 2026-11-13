@@ -1,7 +1,9 @@
 # bunri DAW
 
 ## 概要
-Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。FastAPI + HTML/CSS/JS の Web UI で操作。
+Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。
+React / Vite / TypeScript の画面、FastAPI / Python 3.11 の音声処理、Tauri v2 / Rust のデスクトップアプリ。
+この文書を Claude Code と Codex の共通規約とし、Codex の入口はルートの `AGENTS.md`。
 
 ## 起動
 デスクトップアプリ（Tauri v2）。開発モード（Rust と uv が要る）:
@@ -16,12 +18,21 @@ make desktop           # = npm run tauri dev
 （Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
 
 ## テスト
+音のエンジン（`src-tauri/audio-engine`）は sfizz を submodule からビルドするので、`make test` / `make lint` / `make check` の desktop 検証には
+submodule と cmake が要る（`git submodule update --init --recursive`、`brew install cmake`）。設計は [docs/instrument-engine-design.md](../docs/instrument-engine-design.md)。
 ```bash
+make check-plan   # 変更した領域に必要な検証を表示（実行しない）
+make check        # 変更した領域の lint・型・単体テスト・build。UI 変更は E2E も含む
+make check-all    # 全領域の検証 + ブラウザ / 本物の窓の E2E
 make test    # 単体テスト（フロント + バック + Rust）
 make lint
 make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
 make e2e-desktop  # 本物の窓（テスト用にビルドしたデスクトップアプリ）を自動操作するテスト（mac のみ）
 ```
+通常の開発では `make check` を使う。Python のテスト出力は毎回新しい一時 `BUNRI_DATA_DIR` に隔離する。
+ブランチ全体の差分を確かめるときは `node scripts/check.mjs --base main`。
+隠しファイル込みの探索や lint で `.claude/worktrees/` の別チェックアウトを巻き込まない。
+`make clean` はユーザーの `uploads/`・`results/`・`projects/` を削除するので、通常の検証では使わない。
 画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
 不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
 `make e2e` の画面にはデスクトップ版と同じ CSP が掛かっていて、違反があれば失敗する。
@@ -29,7 +40,9 @@ make e2e-desktop  # 本物の窓（テスト用にビルドしたデスクトッ
 CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の起動や鍵・書き出しを変えたら、`make e2e-desktop` も回す
 （初回はビルドで数分、2 回目からは 20 秒ほど）。テスト用のビルドはアプリの中で WebDriver サーバを動かすので、
 機能 `e2e` は配布物に入れない（[docs/desktop-architecture.md](../docs/desktop-architecture.md)「窓を自動操作するテスト」）。
-Claude Code が画面をその場で操作して確かめるときは、Playwright MCP（`.mcp.json`）と `make dev-web` を使う。
+エージェントが画面をその場で操作して確かめるときは、Playwright MCP と `make dev-web` を使う。
+MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync` で生成する `.codex/config.toml`。
+実 LLM API を使うテストは通常の検証に含めず、ユーザーが明示したときだけ実行する。
 
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。

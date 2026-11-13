@@ -43,10 +43,11 @@ _TEMPO_PRIOR_OCTAVES = 1.0
 # 拍と音の立ち上がりが「同じ位置」とみなす幅（フレーム数。1 フレーム = 約 23ms）
 _BEAT_TOLERANCE_FRAMES = 2
 
-# 確信度の物差し（暫定）。周期の強さがこれ以上なら「拍がはっきり繰り返している」、
+# 確信度の物差し。周期の強さがこれ以上なら「拍がはっきり繰り返している」、
 # 次点の候補との点差（割合）がこれ以上なら「引き離している」とみなす。
-# 合成音源と、正解の注釈が無い実曲 8 曲から決めた値で、実曲での合わせ込みは済んでいない
-# （docs/grid-estimation.md の「実際の曲では確かめきれていない」）
+# 合成音源で決めた値。テンポの分かっている実曲 58 曲でも、この値のままで「確実」「たぶん」の
+# 外れは 1 曲だった（docs/grid-estimation.md の「実際の曲で測った結果」）。小節頭の正解が付いた
+# 実曲は無いので、小節頭の側（_DOWNBEAT_CLEAR_MARGIN）は実曲で確かめられていない
 _CLEAR_PERIODICITY = 0.4
 _CLEAR_SEPARATION = 0.35
 
@@ -55,10 +56,14 @@ _CLEAR_SEPARATION = 0.35
 # 立ち上がりの遅い音（パッド、弦）では 3〜4 フレーム（約 80ms）遅れる
 _ACCENT_LAG_FRAMES = 4
 
-# 確信度と採点で、拍と音の対応がこれ以上なら「十分」とみなす（これより上は区別しない）。
+# 採点で、拍と音の対応がこれ以上なら「十分」とみなす（これより上は区別しない）。
 # 強い音の半分が拍に乗っていれば、拍として成り立つ。それ以上を求めると、8 分や 16 分の刻みまで
 # 拾える「倍のテンポ」が必ず有利になってしまう（拍の間に細かい音が在るのは普通のこと）
 _ENOUGH_RECALL = 0.5
+
+# 拍と音の対応が、採点を動かす幅。実曲 58 曲（テンポが公開されている CC-BY の曲）のうち半分で決め、
+# 残りの半分と合成音源で確かめた（docs/grid-estimation.md の「実際の曲で測った結果」）
+_RECALL_WEIGHT = 0.25
 
 # これ未満の山は、音の立ち上がりとして数えない（雑音）
 _PEAK_FLOOR = 0.05
@@ -88,8 +93,22 @@ _GRID_START_TOLERANCE_SEC = 0.05
 # 無音とみなす音量（いちばん大きいフレームに対する比。-50 dB）
 _SILENCE_RATIO = 10 ** (-50 / 20)
 
+# 拍子を自動で決めるときの候補。4 拍子を既定とし、3 拍子ははっきり示されたときだけ選ぶ
+# （ほとんどの曲は 4 拍子なので、4 拍子の曲を 3 拍子と取る誤りのほうが被害が大きい）。
+# 2/4 は 4/4 と、6/8 は（付点 4 分を 1 拍と数えれば）2 拍子と、小節の区切りが重なるので候補に入れない。
+# 5 拍子などは自動では判定しない（グリッド補正で利用者が指定する）
+_DEFAULT_BEATS_PER_BAR = 4
+_METER_CANDIDATES = (3, 4)
 
-def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
+# 3 拍子を選ぶ条件。拍ごとの手がかりの強弱が、3 拍周期でどれだけ説明できるか（``_meter_evidence``）が
+# この値以上で、かつ 4 拍周期の値のこの倍以上のとき。
+# 実測（2026-11-13）: 3 拍子の実曲（ジムノペディ 1〜3 番）で 0.72〜0.96、4 拍周期は 0。
+# 4 拍子（2/4 を含む）の実曲 14 曲（クラシック・ポップ・チップチューン）では 3 拍周期の値が最大 0.04
+_METER3_MIN_EVIDENCE = 0.3
+_METER3_MIN_RATIO = 2.0
+
+
+def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=None):
     """音声ファイルからビートグリッド（BPM・ダウンビート・実測ビート列）を推定する。
 
     ``bpm`` と ``downbeat_offset`` を指定すると自動検出を行わず、その値で
@@ -101,8 +120,9 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
         bpm (float | None, optional): BPM の上書き値。None なら自動検出。
         downbeat_offset (float | None, optional): 1拍目の位置（秒）の上書き値。
             None なら自動推定。
-        beats_per_bar (int, optional): 1小節あたりの拍数。デフォルト 4。
-            拍子は自動検出せず、ユーザーの指定を信頼する。
+        beats_per_bar (int | None, optional): 1小節あたりの拍数。指定すればそれを信頼する。
+            None（または 0）なら、自動で 3 拍子か 4 拍子かを決める（``_estimate_meter``）。
+            ``bpm`` を指定した経路で None なら 4 拍子とする。
 
     Returns:
         dict: 以下のキーを持つ辞書。
@@ -136,9 +156,10 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
 
     y, sr = librosa.load(file_path, sr=ANALYSIS_SR, mono=True)
     duration_sec = len(y) / sr if sr else 0.0
-    per_bar = max(1, int(beats_per_bar))
+    per_bar = max(1, int(beats_per_bar)) if beats_per_bar else None
 
     if bpm:
+        per_bar = per_bar or _DEFAULT_BEATS_PER_BAR
         # ユーザー指定の BPM。等間隔でビート列を組み立てる
         offset = float(downbeat_offset) if downbeat_offset is not None else 0.0
         beat_times = _build_uniform_beats(float(bpm), offset, duration_sec) if len(y) else []
@@ -147,8 +168,9 @@ def estimate_grid(file_path, bpm=None, downbeat_offset=None, beats_per_bar=4):
 
     analysis = _analyze_grid(y, sr, per_bar) if len(y) else None
     if analysis is None:
-        return _grid_dict(120.0, 0.0, "auto", 0.0, per_bar, [])
+        return _grid_dict(120.0, 0.0, "auto", 0.0, per_bar or _DEFAULT_BEATS_PER_BAR, [])
 
+    per_bar = analysis["beats_per_bar"]
     beat_times = analysis["beat_times"]
     offset = analysis["downbeat_offset_sec"]
     if downbeat_offset is not None:
@@ -190,7 +212,7 @@ def _analyze_grid(y, sr, per_bar):
     Args:
         y (numpy.ndarray): モノラル波形（空でないこと）。
         sr (int): サンプルレート（Hz）。
-        per_bar (int): 1小節あたりの拍数。
+        per_bar (int | None): 1小節あたりの拍数。None なら拍子も自動で決める。
 
     Returns:
         dict | None: ビートを追跡できなければ None。できれば以下の辞書。
@@ -199,6 +221,7 @@ def _analyze_grid(y, sr, per_bar):
 
             {
                 "bpm":                  float,
+                "beats_per_bar":        int,          # 使った拍子（自動で決めたならその結果）
                 "confidence":           float,        # テンポと小節頭を合わせた確信度
                 "tempo_confidence":     float,        # テンポだけの確信度
                 "downbeat_confidence":  float,        # 小節頭だけの確信度
@@ -210,7 +233,10 @@ def _analyze_grid(y, sr, per_bar):
     import numpy as np
 
     features = _analysis_features(y, sr)
-    candidates = _score_tempo_candidates(features, sr, per_bar)
+    if per_bar is None:
+        per_bar, candidates = _estimate_meter(features, sr)
+    else:
+        candidates = _score_tempo_candidates(features, sr, per_bar)
     if not candidates:
         return None
 
@@ -235,6 +261,7 @@ def _analyze_grid(y, sr, per_bar):
 
     return {
         "bpm": best["bpm"],
+        "beats_per_bar": int(per_bar),
         "confidence": float(max(0.0, min(1.0, confidence))),
         "tempo_confidence": tempo_confidence,
         "downbeat_confidence": downbeat_confidence,
@@ -245,6 +272,66 @@ def _analyze_grid(y, sr, per_bar):
             for c in candidates
         ],
     }
+
+
+def _estimate_meter(features, sr):
+    """3 拍子か 4 拍子かを決め、その拍子で採点したテンポ候補と一緒に返す。
+
+    まず 4 拍子としてテンポを決め、その拍の列で 3 拍子と 4 拍子の証拠（``_meter_evidence``）を比べる。
+    3 拍子がはっきり勝ったときだけ、3 拍子でテンポを採点し直す。採点し直した拍の列でも
+    3 拍子が勝つことを確かめ、勝たなければ 4 拍子に戻す（拍の列が変わると証拠も変わるため）。
+
+    Args:
+        features (dict): ``_analysis_features`` の返り値。
+        sr (int): サンプルレート（Hz）。
+
+    Returns:
+        tuple[int, list[dict]]: ``(拍子, テンポ候補)``。候補は ``_score_tempo_candidates`` と同じ形。
+    """
+    default = _DEFAULT_BEATS_PER_BAR
+    candidates = _score_tempo_candidates(features, sr, default)
+    # 4 拍子として取った拍の列が 3 拍子を示すときだけ、3 拍子を検討する。先に 3 拍子でテンポを
+    # 採点すると、1 小節に 1 回しか音の立ち上がらない 4 拍子の曲（伸ばしたコードだけ、など）で、
+    # 「3/4 倍のテンポの 3 拍」が「4 拍」と同じ小節の長さになって区別が付かず、3 拍子を選んでしまう
+    # （合成音源 142 件で 4 拍子の誤判定 9 件。この順なら 0 件）
+    if not candidates or not _prefers_triple(candidates[0]["beat_frames"], features):
+        return default, candidates
+    triple = _score_tempo_candidates(features, sr, 3)
+    if triple and _prefers_triple(triple[0]["beat_frames"], features):
+        return 3, triple
+    return default, candidates
+
+
+def _prefers_triple(beat_frames, features):
+    """拍の列が、4 拍子より 3 拍子をはっきり示しているか。"""
+    evidence = {per_bar: _meter_evidence(beat_frames, features, per_bar) for per_bar in _METER_CANDIDATES}
+    return (evidence[3] >= _METER3_MIN_EVIDENCE
+            and evidence[3] >= _METER3_MIN_RATIO * evidence[_DEFAULT_BEATS_PER_BAR])
+
+
+def _meter_evidence(beat_frames, features, per_bar):
+    """拍ごとの手がかりの強弱が、``per_bar`` 拍の周期でどれだけ繰り返しているか。
+
+    小節頭の推定と同じ 3 つの手がかり（コードの変わり目・低音・全帯域の音）について、
+    小節内の位置で説明できる割合（``_phase_profile`` の ``explained``。自由度調整済みなので、
+    拍数の違う周期どうしでも比べられる）を出し、``_CUE_WEIGHTS`` で重み付けして足す。
+
+    3 拍子の曲を 4 拍周期で見ると、強い拍が小節ごとに 1 つずつずれていくので、どの位置も同じ
+    平均になり 0 に近づく。4 拍子の曲を 3 拍周期で見たときも同じ。
+
+    Args:
+        beat_frames (numpy.ndarray): 拍の位置（フレーム番号、昇順）。
+        features (dict): ``_analysis_features`` の返り値。
+        per_bar (int): 調べる周期（拍数）。
+
+    Returns:
+        float: 0 以上。大きいほど、その周期で繰り返している。
+    """
+    weights = dict(_CUE_WEIGHTS)
+    return float(sum(
+        weights[name] * _phase_profile(values, per_bar)[1]
+        for name, values in _beat_cues(beat_frames, features, per_bar).items()
+    ))
 
 
 def _analysis_features(y, sr):
@@ -373,7 +460,8 @@ def _score_tempo_candidates(features, sr, per_bar):
     - **拍と音の対応**（``recall``）: 強い音の立ち上がりのうち、追跡した拍の位置に在るものの割合
       （偶然に重なる分を引いたもの）。遅すぎる候補や、拍が音からずれた候補で下がる。
       ``_ENOUGH_RECALL`` で頭打ちにする（半分が拍に乗っていれば十分。それ以上を点にすると、
-      細かい刻みまで拾える倍のテンポが必ず有利になる）。
+      細かい刻みまで拾える倍のテンポが必ず有利になる）。点を動かす幅も ``_RECALL_WEIGHT`` に
+      抑える（``_recall_factor``。実際の曲では、頭打ちにしても倍のテンポを有利にしていた）。
       逆の「拍のうち音が在るものの割合」は点に入れない。伸ばした音の上では、
       正しいテンポでも音の無い拍が普通に在るため
     - **小節の繰り返し**（``meter``）: 拍ごとの強弱が、小節内の位置でどれだけ説明できるか。
@@ -432,7 +520,7 @@ def _score_tempo_candidates(features, sr, per_bar):
         prior = _tempo_prior(bpm)
         scored.append({
             "bpm": float(bpm), "beat_frames": beat_frames,
-            "score": float(periodicity * min(1.0, recall / _ENOUGH_RECALL) * (1.0 + meter) / 2.0 * prior),
+            "score": float(periodicity * _recall_factor(recall) * (1.0 + meter) / 2.0 * prior),
             "periodicity": float(periodicity), "recall": float(recall),
             "meter": float(meter), "prior": float(prior),
         })
@@ -444,6 +532,17 @@ def _score_tempo_candidates(features, sr, per_bar):
         if all(abs(candidate["bpm"] / kept["bpm"] - 1.0) > 0.04 for kept in distinct):
             distinct.append(candidate)
     return distinct
+
+
+def _recall_factor(recall):
+    """拍と音の対応（``recall``）を、採点に掛ける重みにする（``1 - _RECALL_WEIGHT`` 〜 1.0）。
+
+    対応が点を動かすのは ``_RECALL_WEIGHT`` の幅まで。実際の曲では、正しいテンポでも強い音の 3〜5 割しか
+    拍の上に無く（裏拍に 3 割前後、残りはもっと細かい位置）、対応の値は「細かい拍ほど大きい」という
+    偏りを強く持つ。これをそのまま点に掛けると、倍のテンポが選ばれる（実曲 58 曲で、倍が 8 曲）。
+    一方、合成音源では、拍が音からずれた候補を落とすのに効いているので、無くしはしない。
+    """
+    return (1.0 - _RECALL_WEIGHT) + _RECALL_WEIGHT * min(1.0, max(0.0, recall) / _ENOUGH_RECALL)
 
 
 def _onset_autocorrelation(accent_env, frame_rate, window_sec=12.0):
@@ -557,9 +656,12 @@ def _tempo_prior(bpm):
 def _tempo_confidence(candidates):
     """テンポの確信度を、選んだ候補の質と、次点との差から出す。
 
-    拍がはっきり繰り返していて（``periodicity``）、強い音が拍に乗っていて（``recall``）、
-    ほかのテンポの候補を引き離しているほど高い。音の立ち上がりがまばらな曲や、
-    倍・半分のどちらとも取れる曲（次点が僅差）では低くなる。
+    拍がはっきり繰り返していて（``periodicity``）、ほかのテンポの候補を引き離しているほど高い。
+    音の立ち上がりがまばらな曲や、倍・半分のどちらとも取れる曲（次点が僅差）では低くなる。
+
+    拍と音の対応（``recall``）は入れない。実際の曲では、正しいテンポでも強い音の 3〜5 割しか拍に
+    乗らず（残りは裏拍や 16 分）、対応を掛けると合っている曲までほとんど「自信なし」になった
+    （実曲 58 曲で「確実」「たぶん」が 9 曲 → 外すと 22 曲、そのうち外れは 1 曲のまま）。
 
     次点との差は、テンポの事前分布を弱めた点（事前分布の平方根を掛けた点）で比べる。
     「120 BPM 前後が自然」という好みだけで勝った候補を、確実とは言わないため。
@@ -584,7 +686,7 @@ def _tempo_confidence(candidates):
     rival = max((cautious(c) for c in candidates[1:]), default=0.0) / cautious(best)
     # 次点が ``1 - _CLEAR_SEPARATION`` 倍以下の点なら、取り違えの心配は無いとみなす
     separation = max(0.0, min(1.0, (1.0 - rival) / _CLEAR_SEPARATION))
-    quality = min(1.0, best["periodicity"] / _CLEAR_PERIODICITY) * min(1.0, best["recall"] / _ENOUGH_RECALL)
+    quality = min(1.0, best["periodicity"] / _CLEAR_PERIODICITY)
     return float(max(0.0, min(1.0, quality * separation)))
 
 

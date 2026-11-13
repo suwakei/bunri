@@ -765,6 +765,28 @@ button.link-btn:hover {
     gap: 8px;
 }
 
+/* MIDI ファイルのトラックの一覧 (「ファイル」の「MIDI ファイルを読み込む」)。パートの一覧と同じ見た目 */
+#midi-track-list {
+    list-style: none;
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#midi-track-list select {
+    margin-top: 6px;
+}
+
+/* 読み込みで変わることの一覧 */
+#midi-loss-list {
+    margin: 6px 0 10px 16px;
+}
+
+#midi-tempo-notice {
+    margin-top: 10px;
+}
+
 .part-item {
     padding: 8px 10px;
     background: var(--bg-deep);
@@ -1530,6 +1552,64 @@ button.link-btn:hover {
 
 .piano-zoom .area-hint {
     margin-left: 4px;
+}
+
+/* 選んだノートの強さ (VelocityBar)。ノートを選んでいるときだけ出る */
+.piano-velocity {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.piano-velocity input {
+    width: 3.2em;
+    min-height: 20px;
+    padding: 0 4px;
+    font-size: 11px;
+    font-family: inherit;
+    text-align: right;
+    background: var(--bg-deep);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+}
+
+.piano-velocity input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.piano-velocity button {
+    min-width: 22px;
+    min-height: 20px;
+    padding: 0 4px;
+    font-size: 12px;
+    line-height: 1;
+    background: var(--bg-deep);
+    color: var(--text-mid);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.piano-velocity button:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--border-light);
+}
+
+.piano-velocity input:disabled,
+.piano-velocity button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+/* 「混在（3 ノート）」の幅が変わっても、隣の操作が動かないように場所を取っておく */
+#velocity-note {
+    display: inline-block;
+    min-width: 7.5em;
 }
 
 /* ---- Area labels ---- */
@@ -2603,6 +2683,8 @@ button.link-btn:hover {
 .note-block.selected[class*="diff-"] {
     border-color: var(--selection);
     box-shadow: 0 0 0 1px var(--selection), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
 /* ---- ツールチップ (マウスを載せた要素のそばに出す説明。components/Tooltip.tsx) ----
    位置は Tooltip.tsx が決める (画面の外に出さない)。マウスの操作は受けず、下の要素はそのまま押せる */
 .tooltip {

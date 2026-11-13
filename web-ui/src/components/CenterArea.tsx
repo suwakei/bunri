@@ -6,12 +6,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
+import { cloneNote } from '../lib/engine';
 import { cssVar } from '../lib/theme';
 import { hasPrimaryModifier, isDialogOpen, isTextEntry, isTypingTarget } from '../lib/keys';
 import { sameNotes } from '../lib/project-snapshot';
 import MidiInputBar from './MidiInputBar';
 import { useMidiInput } from '../lib/useMidiInput';
 import GhostBar from './GhostBar';
+import VelocityBar from './VelocityBar';
+import { VELOCITY_STEP, applyVelocity, sameSummary, summarizeVelocity } from '../lib/velocity';
 import { PracticeBands, PracticeControls, PracticeHeader, PracticeProvider, PracticeSide } from './PracticeView';
 import { secToStep, stepSeconds } from '../lib/grid';
 import { isAudioFileName, useLearnActions } from '../lib/learn';
@@ -127,6 +130,9 @@ class PianoRollEngine {
         this.loopRange = null;
         // ノートを押したとき (練習画面が、そのノートの指摘を見せる)
         this.onNotePressed = null;
+        // 選択か、選んだノートの強さが変わったとき (CenterArea が渡す。見出しの「強さ」の欄に出す)
+        this.onSelection = null;
+        this._lastSummary = null;
     }
     /**
      * 見えている範囲が変わったときに呼ばれる関数を足す。
@@ -369,7 +375,7 @@ class PianoRollEngine {
         const before = track.pianoNotes || [];
         // 中身が同じなら書き換えない (元に戻すための控えが、同じ並びを共有できるように)
         if (sameNotes(before, this.notes)) return;
-        track.pianoNotes = this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+        track.pianoNotes = this.notes.map(cloneNote);
         // 差分の印は、比べたときのノートに付けたもの。中身が変わったら外す (古い色を出さない)
         if (this.diffMarks) { this.diffMarks = null; this._renderNotes(); }
         this._emitNotesEdited();
@@ -675,6 +681,13 @@ class PianoRollEngine {
             return;
         }
         if (e.key === 'Escape' && this.selection.size > 0) { e.preventDefault(); this.selection = new Set(); this._refreshSelection(); return; }
+        // Option (Alt) + ↑↓ で、選んでいるノートの強さを上下させる (Shift も押すと 1 ずつ)
+        if (e.altKey && !mod && this.selection.size > 0 && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault();
+            const amount = e.shiftKey ? 1 : VELOCITY_STEP;
+            this.nudgeSelectionVelocity(e.key === 'ArrowUp' ? amount : -amount);
+            return;
+        }
         if (this.selection.size === 0 || e.altKey || mod) return;
         const moves = {
             ArrowLeft: [-this.gridSize, 0], ArrowRight: [this.gridSize, 0],
@@ -722,11 +735,12 @@ class PianoRollEngine {
      * @param options.label - 記録の名前 (省略時は「ノートを追加」)
      * @param options.coalesceKey - 続けて置いたノートを 1 つの記録にまとめる鍵 (リアルタイム録音)
      * @param options.coalesceMs - まとめる間隔の上限 (ミリ秒)
+     * @param options.velocity - 強さ (1〜127)。MIDI 鍵盤で弾いたノートが持つ。省略すると、強さを持たないノートになる
      */
     _addNote(note, octave, step, length, options = {}) {
-        const { label = 'ノートを追加', ...push } = options;
+        const { label = 'ノートを追加', velocity, ...push } = options;
         this.history.record(label, () => {
-            this.notes.push({ note, octave, step, length });
+            this.notes.push(cloneNote({ note, octave, step, length, velocity }));
             this._saveToEngine();
         }, push);
         this._fitLength(); this._renderNotes();
@@ -753,7 +767,7 @@ class PianoRollEngine {
         const list = [...this.selection].sort((a, b) => a.step - b.step);
         const base = list[0].step;
         return {
-            notes: list.map(n => ({ note: n.note, octave: n.octave, step: n.step - base, length: n.length })),
+            notes: list.map(n => ({ ...cloneNote(n), step: n.step - base })),
             span: Math.max(...list.map(n => n.step + n.length)) - base,
         };
     }
@@ -782,7 +796,7 @@ class PianoRollEngine {
      */
     _placeClip(clip, at, label) {
         const start = Math.max(0, Math.min(this.maxSteps - clip.span, at));
-        const placed = clip.notes.map(n => ({ note: n.note, octave: n.octave, step: start + n.step, length: n.length }));
+        const placed = clip.notes.map(n => ({ ...cloneNote(n), step: start + n.step }));
         this.history.record(label, () => {
             this.notes = this.notes.concat(placed);
             this._saveToEngine();
@@ -837,15 +851,54 @@ class PianoRollEngine {
         }
         this._fitLength(); this._renderNotes();
     }
+    /** 選んでいるノートの強さのまとめ (見出しの「強さ」の欄に出す)。 */
+    velocitySummary() {
+        return this.activeTrackId === null ? { count: 0, value: null, unset: 0 } : summarizeVelocity(this.selection);
+    }
+    /** 選択か、選んだノートの強さが変わったら知らせる (中身が前と同じなら知らせない)。 */
+    _emitSelection() {
+        if (!this.onSelection) return;
+        const next = this.velocitySummary();
+        if (this._lastSummary && sameSummary(this._lastSummary, next)) return;
+        this._lastSummary = next;
+        this.onSelection(next);
+    }
+    /**
+     * 選んでいるノートの強さを変える (元に戻せる)。
+     * 強さを持たないノートは 96 として扱い、値が変わったノートにだけ強さを書き込む。
+     *
+     * @param next - 今の強さから新しい強さを出す関数 (結果は 1〜127 に収める)
+     * @param options.coalesceKey - 続けて押したぶんを 1 つの記録にまとめる鍵 (−/＋ と Option+↑↓)
+     */
+    _changeSelectionVelocity(next, options = {}) {
+        const list = [...this.selection];
+        if (list.length === 0) return;
+        let changed = 0;
+        this.history.record(list.length > 1 ? `${list.length} ノートの強さを変更` : 'ノートの強さを変更', () => {
+            changed = applyVelocity(list, next);
+            this._saveToEngine();
+        }, options);
+        if (changed === 0) return;
+        this._renderNotes();
+        const s = summarizeVelocity(list);
+        if (this.onStatus) this.onStatus(s.value !== null ? `強さを ${s.value} にしました` : `${changed} ノートの強さを変えました`);
+    }
+    /** 選んでいるノートの強さを、全部同じ値にする。 */
+    setSelectionVelocity(value) { this._changeSelectionVelocity(() => value); }
+    /** 選んでいるノートの強さを、差を保ったまま上下させる (端では 1〜127 で止まる)。 */
+    nudgeSelectionVelocity(delta) { this._changeSelectionVelocity(v => v + delta, { coalesceKey: 'nudge-velocity' }); }
     /** 選択の縁取りだけを描き直す (ノートを作り直さない。囲んで選ぶあいだは毎回呼ぶので軽くする)。 */
     _refreshSelection() {
         if (!this.noteLayer) return;
         for (const el of this.noteLayer.querySelectorAll('.note-block')) {
             el.classList.toggle('selected', this.selection.has(this.notes[Number(el.dataset.index)]));
         }
+        this._emitSelection();
     }
     _renderNotes() {
         if (!this.noteLayer) return; this.noteLayer.innerHTML = '';
+        // 描き直すのは、選択かノートの中身が変わったとき。見出しの「強さ」の欄も合わせる
+        this._emitSelection();
         if (this.activeTrackId === null) {
             const msg = document.createElement('div');
             msg.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--text-dim);font-size:13px;pointer-events:none;';
@@ -884,9 +937,12 @@ class PianoRollEngine {
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
             el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.dataset.index = i;
-            // data-note は機械が読む形 (テストが音の高さと位置を読む)。説明 (data-tip) は人が読む形
-            el.dataset.note = `${n.note}${n.octave} step:${n.step} len:${n.length}`;
-            el.dataset.tip = `${n.note}${n.octave}（${cursorLabel(n.step, engine.beatsPerBar || 4)}）`;
+            const hasVelocity = typeof n.velocity === 'number';
+            // data-note は機械が読む形 (テストが音の高さ・位置・強さを読む)。説明 (data-tip) は人が読む形
+            el.dataset.note = `${n.note}${n.octave} step:${n.step} len:${n.length}` + (hasVelocity ? ` 強さ:${n.velocity}` : '');
+            el.dataset.tip = `${n.note}${n.octave}（${cursorLabel(n.step, engine.beatsPerBar || 4)}${hasVelocity ? `、強さ ${n.velocity}` : ''}）`;
+            // 強さを持つノートは、弱いほど薄く見せる (強さを持たないノートは、これまでどおり)
+            if (hasVelocity) el.style.opacity = String(0.45 + 0.55 * Math.max(1, Math.min(127, n.velocity)) / 127);
             const mark = ownMarks?.[i];
             if (mark) {
                 el.classList.add(`diff-${mark.kind}`);
@@ -911,7 +967,7 @@ class PianoRollEngine {
      *
      * @returns ノート情報の配列（`note`, `octave`, `step`, `length` を含むオブジェクト）
      */
-    getNotes() { this._saveToEngine(); return this.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length })); }
+    getNotes() { this._saveToEngine(); return this.notes.map(cloneNote); }
     /**
      * ノートを一括セットしてピアノロールを再描画する (元に戻せる)。
      * 音声解析結果（`/api/analyze`）の配置などに使用する。
@@ -1682,6 +1738,8 @@ export default function CenterArea() {
     const [menu, setMenu] = useState(null);
     // ピアノロールの表示の大きさ (+/- のボタンの押せる・押せない)
     const [zoom, setZoom] = useState({ canZoomInX: true, canZoomOutX: true, canZoomInY: true, canZoomOutY: true });
+    // 選んでいるノートの強さ (見出しの「強さ」の欄)
+    const [velocity, setVelocity] = useState({ count: 0, value: null, unset: 0 });
     // タイムラインの「練習する」は、初期化のときに 1 回だけ渡すので、最新の関数を ref で引く
     const practiceRef = useRef(practicePart);
     const followRef = useRef(followPlayhead);
@@ -1720,6 +1778,7 @@ export default function CenterArea() {
         pr.onNotesChanged = bumpTracks;
         pr.onStatus = setStatus;
         pr.onZoom = setZoom;
+        pr.onSelection = setVelocity;
         // record / beginEdit はストアの中で同じ関数のまま (useCallback) なので、ここで 1 回渡せばよい
         const history = { record, begin: beginEdit };
         pr.history = history;
@@ -1900,6 +1959,9 @@ export default function CenterArea() {
                 <div className="area-label" data-tip-side="top">
                     {/* 練習画面では、MIDI 入力とお手本の切り替えは下の操作に出す (お手本の重ね方を決める GhostBar は隠して残す) */}
                     {pianoLabel}{!practiceOpen && <MidiInputBar midi={midi} />}<GhostBar activeTrackId={activeTrackId} />
+                    <VelocityBar summary={velocity} open={activeTrackId !== null}
+                        onSet={(v) => pianoRollRef.current?.setSelectionVelocity(v)}
+                        onNudge={(d) => pianoRollRef.current?.nudgeSelectionVelocity(d)} />
                     {/* 表示の大きさ。Cmd (Ctrl) + ホイールか、トラックパッドのピンチでも横の大きさを変えられる */}
                     <span className="piano-zoom" role="group" aria-label="ピアノロールの表示の大きさ">
                         <span className="area-hint" aria-hidden="true">横</span>
@@ -1917,7 +1979,7 @@ export default function CenterArea() {
                     <div ref={keysRef} id="piano-keys" data-tip-side="right" data-tip-box="" />
                     {/* フォーカスを受けて、キーの操作 (矢印・Cmd+A/C/X/V/D・Delete) を受ける */}
                     <div ref={pianoWrapRef} id="piano-grid-wrap" tabIndex={0} role="group"
-                        aria-label="ピアノロールのノート（矢印キーで選んだノートを動かす。Cmd か Ctrl + A で全部選ぶ）">
+                        aria-label="ピアノロールのノート（矢印キーで選んだノートを動かす。Option + ↑↓ で強さを変える。Cmd か Ctrl + A で全部選ぶ）">
                         <canvas ref={pianoCanvasRef} id="piano-grid-canvas" />
                         <div ref={noteLayerRef} id="note-layer" />
                     </div>

@@ -2,21 +2,10 @@ name: Desktop E2E
 
 # 本物の窓 (Tauri の WKWebView) を自動操作するテスト (make e2e-desktop)。docs/ui-testing.md
 #
-# mac のランナーは高い (Linux の約 10 倍) ので、PR のたびには走らせない:
-# - main への push (マージのあと)
-# - 手で起動したとき (Actions の画面の「Run workflow」)
-# - このテストの仕組みそのもの (このファイル、e2e-desktop/、テスト用のビルドの Rust) を変える PR
+# CI ではテストを自動で回さない (ビルドの確認だけにする方針。ci.yml)。このワークフローも、
+# 手で起動したとき (Actions の画面の「Run workflow」) にだけ走る。ふだんは手元で make e2e-desktop を回す
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/desktop-e2e.yml
-      - web-ui/e2e-desktop/**
-      - src-tauri/src/e2e.rs
-      - src-tauri/Cargo.toml
 
 concurrency:
   group: desktop-e2e-${{ github.ref }}

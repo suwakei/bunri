@@ -59,6 +59,8 @@ blocks it the first time:
 
 To work on the app, run it in development mode: `make install`, `make install-frontend` and `make install-desktop` once, then `make desktop`.
 
+For development with Codex, run `make harness-setup`; see the [Codex harness guide](docs/codex-harness.md) for shared agent rules, skills and verification commands.
+
 ## How It Works
 
 ```mermaid
@@ -101,12 +103,20 @@ graph LR
 - [x] Desktop app (macOS, Apple Silicon)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
 - [x] MIDI keyboard input (step input and real-time recording)
-- [ ] MIDI import
+- [x] MIDI import (as new tracks, or as a reference to practise against)
 - [ ] VST plugin support
 - [ ] Real-time collaboration
 - [ ] Windows / Linux builds
 
 ## Development
+
+The audio engine (`src-tauri/audio-engine`) builds [sfizz](https://github.com/sfztools/sfizz) from a git submodule,
+so `make test` / `make lint` also need the submodules and CMake:
+
+```bash
+git submodule update --init --recursive
+brew install cmake
+```
 
 ```bash
 make install           # Backend dependencies (uv sync)

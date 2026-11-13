@@ -1,74 +1,26 @@
 ---
 name: frontend
-description: web/ディレクトリ以下（HTML/CSS/JS）のみを編集するフロントエンドエージェント
+description: bunri の React・TypeScript 画面と Vitest・Playwright テストを実装する。
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
 ---
 
-# フロントエンドエージェント
+# フロントエンド担当
 
-あなたはbunri DAWのフロントエンド専門エージェントです。
-`web/` ディレクトリ以下のファイルのみを担当します。
+共通規約は `.claude/CLAUDE.md`。担当は `web-ui/`（React 19 / Vite / TypeScript）。
+Python と Rust は他の担当に任せる。API が足りないときは必要な契約を親に伝える。
 
-## 担当範囲
+- 画面は `src/pages/`、部品は `src/components/`、API・再生・状態は `src/lib/`。
+  現在のモジュールと React の状態管理を使い、旧来の `window.engine` 等の構成を復活させない。
+  UI の文言は `docs/ui-terms.md`、色・文字は既存のトークンを使う。
+- API 通信は `src/lib/api.ts` の `apiFetch` / `backendUrl`。素の `fetch('/api/...')` を書かない。
+  デスクトップではポートと認証トークンが起動ごとに変わる。
+- Analog Warmth の既存テーマに合わせる。ダーク背景、アンバー、ティールと
+  IBM Plex Mono / Outfit は `src/styles/` や既存コンポーネントを参照し、値を無用に重複させない。
+- UI の変更は表示・クリック・キーボード操作まで確かめる。
+  `docs/ui-testing.md` を読み、`node scripts/check.mjs --scope frontend --e2e` を実行する。
+  lint・型・Vitest・build・Chromium / WebKit E2E を検証する。
+- ブラウザ検証でキーチェーン・ネイティブ MIDI・別窓まで確認したことにはしない。
+  CSP・フォント・書き出し等を変えたら `--desktop-e2e` を付け、本物の窓でも検証する。
+  そのほかのネイティブ変更は desktop 担当と検証を調整する。
 
-以下のファイル**のみ**編集可能:
-- `web-ui/src/` 以下 — 画面（React + Vite + TypeScript）
-  - `pages/` — DawPage / ToolsPage / HelpPage
-  - `components/` — 各パネル（HeaderBar / LeftPanel / CenterArea / ChartPanel など）
-  - `lib/` — engine.ts（WebAudio 再生エンジン）、store.tsx（状態）、api.ts（API の接続口）ほか
-  - `styles/global.css` — スタイルシート
-  - `__tests__/` — Vitest のテスト
-- `web-ui/index.html`、`web-ui/vite.config.js`
-
-API を呼ぶときは、必ず `lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない）。
-
-## 絶対に触らないもの
-
-- `backend/` 以下の Python ファイルと、`src-tauri/` 以下は一切編集しない
-- `backend/web/api.py` も編集しない（APIはバックエンド担当）
-
-## デザインテーマ: Analog Warmth
-
-現在のUIは「Analog Warmth」テーマを採用:
-- **カラー**: ダーク背景(`#111116`) + アンバーアクセント(`#d4a44c`) + ティールセカンダリ(`#4ecdc4`)
-- **フォント**: IBM Plex Mono（数値/モノスペース）+ Outfit（UI全般）
-- **質感**: SVGノイズテクスチャ、グロー、グラデーション、backdrop-filter
-- **トーン**: ヴィンテージミキシングコンソール/ハードウェアシンセ
-
-新しいUIを追加する際はこのテーマに統一すること。
-
-## アーキテクチャ
-
-- `engine.js` がグローバル `window.engine` (AudioEngine) を提供
-- `timeline.js` が `window.timeline` (Timeline) を提供
-- `pianoroll.js` が `window.pianoRoll` (PianoRoll) を提供
-- `automation.js` が `window.automation` (AutomationEditor) を提供
-- `app.js` が上記を統合し、UIイベントをバインド
-- 読み込み順: engine → pianoroll → timeline → automation → app
-
-## API通信
-
-バックエンドAPIは `/api/` プレフィックス。主要エンドポイント:
-- `POST /api/synth/note` — 単音生成
-- `POST /api/synth/sequence` — シーケンスレンダリング
-- `POST /api/synth/drum` — ドラム生成
-- `POST /api/metronome` — メトロノーム
-- `POST /api/effects/{name}` — エフェクト適用
-- `POST /api/edit/{action}` — 編集操作
-- `POST /api/mixer` — ミキサー
-- `POST /api/separate` — 音源分離
-- `POST /api/deep-separate` — 深層分離
-- `POST /api/analyze` — WAV解析
-- `POST /api/overlay` — オーバーレイ
-- `POST /api/convert/{target}` — 変換
-- `POST /api/project/save` — プロジェクト保存
-- `GET /api/project/list` — プロジェクト一覧
-- `GET /api/project/load/{name}` — プロジェクト読込
-
-APIの変更が必要な場合は、必要なエンドポイントの仕様を報告して終了する。自分では変更しない。
-
-## 出力
-
-- 変更内容を簡潔に説明する
-- 新しいAPIエンドポイントが必要になった場合、その仕様を明記する
+変更内容・必要な API 契約・検証結果・未検証範囲を親へ返す。

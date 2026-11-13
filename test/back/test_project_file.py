@@ -185,6 +185,40 @@ class TestDocument:
             bunri_file.write_project(tmp_path / "p.bunri", doc, lambda conn, hashes: None)
         assert not (tmp_path / "p.bunri").exists()
 
+    def test_ノートの強さが往復する_持たないノートには項目を付けない(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        # お手本と打ち込みの両方に、強さの在るノートと無いノートを混ぜる。範囲の外や形の違う値は、無いものとして扱う
+        doc["tracks"][1]["referenceNotes"] = [{**note("C", 2, 0), "velocity": 90}, note("G", 2, 8)]
+        doc["tracks"][2]["notes"] = [
+            {**note("C", 2, 0), "velocity": 1}, {**note("D", 2, 4), "velocity": 127}, note("E", 2, 8),
+            {**note("F", 2, 12), "velocity": 0}, {**note("G", 2, 16), "velocity": 300}, {**note("A", 2, 20), "velocity": "強く"},
+            {**note("B", 2, 24), "velocity": True},
+        ]
+        path = write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part})
+
+        tracks = bunri_file.read_project(path)["tracks"]
+        assert tracks[1]["referenceNotes"] == [{**note("C", 2, 0), "velocity": 90}, note("G", 2, 8)]
+        assert tracks[2]["notes"] == [
+            {**note("C", 2, 0), "velocity": 1}, {**note("D", 2, 4), "velocity": 127}, note("E", 2, 8),
+            note("F", 2, 12), note("G", 2, 16), note("A", 2, 20), note("B", 2, 24),
+        ]
+
+    def test_強さの列が無い頃のファイルも開ける(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        path = write_with(tmp_path / "old.bunri", sample_document(hs, hp), {hs: song, hp: part})
+        # 強さの列を足す前に保存したファイルの形に戻す
+        conn = sqlite3.connect(str(path))
+        conn.execute("ALTER TABLE project_notes DROP COLUMN velocity")
+        conn.commit()
+        conn.close()
+
+        tracks = bunri_file.read_project(path)["tracks"]
+        assert tracks[1]["referenceNotes"] == [note("C", 2, 0), note("G", 2, 8)]
+        assert tracks[2]["notes"] == [note("C", 2, 0)]
+
     def test_新しすぎる版は開かない(self, tmp_path):
         song = wav_bytes()
         h = bunri_file.audio_hash(song)

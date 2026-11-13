@@ -1,0 +1,6 @@
+# @generated scripts/sync-codex-harness.mjs
+# MCP の正準は .mcp.json。変更後に make harness-sync を実行する。
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y","@playwright/mcp@0.0.85","--isolated"]

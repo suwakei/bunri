@@ -14,7 +14,7 @@
  */
 import { useCallback } from 'react';
 import { useDaw } from './store';
-import engine, { type PianoNote, type Track } from './engine';
+import engine, { MIDI_PART, cloneNote, type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
@@ -258,14 +258,16 @@ export function useLearnActions() {
      * ほかの重い処理が動いていて始められなかったときは、トラックには何もしない（断られた旨を出す）。
      *
      * @param file - 曲のファイル（mp3 / flac / m4a / wav など）
-     * @param options.autoBpm - true ならテンポを自動で検出する（false なら、いまの BPM で解析する）
+     * @param options.autoBpm - true ならテンポと拍子（3 拍子か 4 拍子か）を自動で検出する
+     *   （false なら、いまの BPM と拍子で解析する）
      */
     const importSong = useCallback(async (file: File, options: { autoBpm?: boolean } = {}) => {
         const autoBpm = options.autoBpm ?? true;
         const fd = new FormData();
         fd.append('file', file);
         fd.append('bpm', autoBpm ? '0' : String(bpm));
-        fd.append('beats_per_bar', String(beatsPerBar));
+        // 0 は「自動で決める」。テンポを自動で取るなら、拍子もいまの設定 (既定の 4/4) を押し付けない
+        fd.append('beats_per_bar', autoBpm ? '0' : String(beatsPerBar));
         let job: Job;
         try {
             job = await jobTracker.start('learn-song', '/api/chart', fd);
@@ -324,8 +326,12 @@ export function useLearnActions() {
             if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
             if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
 
-            // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)
-            for (const old of engine.tracks.filter(t => t.role === 'part' || t.role === 'practice')) {
+            // 前に分けたパートは入れ替える (2 回押しても、同じパートが 2 本ずつにならない)。
+            // MIDI ファイルから読み込んだお手本と、その練習のトラックは、原曲から作ったものではないので残す
+            const fromMidi = new Set(engine.tracks.filter(t => t.role === 'part' && t.part === MIDI_PART).map(t => t.id));
+            const replaced = (t: Track) => (t.role === 'part' && !fromMidi.has(t.id))
+                || (t.role === 'practice' && !(t.practiceOf !== undefined && fromMidi.has(t.practiceOf)));
+            for (const old of engine.tracks.filter(replaced)) {
                 if (pianoRollRef.current?.getActiveTrackId() === old.id) pianoRollRef.current.switchToTrack(null);
                 engine.removeTrack(old.id);
             }
@@ -349,7 +355,8 @@ export function useLearnActions() {
                 }
                 if (stem.notes && stem.notes.length > 0) {
                     // お手本として控える。打ち込みは空のまま (自分で打ち込んで、差分チェックで比べる)
-                    track.referenceNotes = stem.notes.map(n => ({ note: n.note, octave: n.octave, step: n.step, length: n.length }));
+                    // 採譜が出した強さも残す (「お手本をノートとして取り込む」で打ち込みに写したとき、強弱が付く)
+                    track.referenceNotes = stem.notes.map(cloneNote);
                     track.pianoNotes = [];
                     withReference++;
                 }

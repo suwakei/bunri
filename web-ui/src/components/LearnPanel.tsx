@@ -14,7 +14,7 @@
  */
 import { useState } from 'react';
 import { useDaw, type LearnTab } from '../lib/store';
-import engine from '../lib/engine';
+import engine, { MIDI_PART } from '../lib/engine';
 import { isDrumPart, partTracks, practiceTrackOf, SONG_ACCEPT, useLearnActions } from '../lib/learn';
 import SubTabs from './SubTabs';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
@@ -75,6 +75,9 @@ function SongPanel() {
     const [confirming, setConfirming] = useState<number | null>(null);
     void trackVersion;
     const parts = partTracks();
+    // 原曲から分けたパートと、MIDI ファイルから読み込んだお手本。「分け直す」で入れ替わるのは前者だけ
+    const separated = parts.filter(p => p.part !== MIDI_PART);
+    const fromMidi = parts.length - separated.length;
     const songTrack = engine.tracks.find(t => t.role === 'song');
 
     return (
@@ -119,16 +122,18 @@ function SongPanel() {
                 <button className="action-btn" onClick={() => void separateParts(sensitivity)} disabled={blocked || !songFile}
                     {...tip(!songFile
                         ? '先に曲を取り込んでください'
-                        : parts.length > 0
-                            ? 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります'
+                        : separated.length > 0
+                            ? (fromMidi > 0
+                                ? 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります。MIDI ファイルから読み込んだお手本は残ります'
+                                : 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります')
                             : '原曲をボーカル・ドラム・ベースなどに分けて、パートごとにお手本を作ります')}>
-                    {parts.length > 0 ? 'パートに分け直す（数分かかります）' : 'パートに分けて採譜する（数分かかります）'}
+                    {separated.length > 0 ? 'パートに分け直す（数分かかります）' : 'パートに分けて採譜する（数分かかります）'}
                 </button>
                 <JobCard slot="learn-parts" job={partsJob.job} busyJob={partsJob.busyJob} onCancel={() => void partsJob.cancel()}
                     onShowBusy={showJob} hint="待っている間も、カルテやガイドは読めます（「カルテ」「ガイド」の段）。" />
                 {!songFile && <p className="note-text" style={{ marginTop: 4 }}>先に曲を取り込んでください。</p>}
-                {songFile && parts.length > 0 && (
-                    <p className="note-text" style={{ marginTop: 4 }}>分け直すと、いまのパートと練習のトラック（打ち込んだノートも）は、新しいものに入れ替わります。</p>
+                {songFile && separated.length > 0 && (
+                    <p className="note-text" style={{ marginTop: 4 }}>分け直すと、いまのパートと練習のトラック（打ち込んだノートも）は、新しいものに入れ替わります。{fromMidi > 0 && 'MIDI ファイルから読み込んだお手本と、その練習のトラックは残ります。'}</p>
                 )}
 
                 {parts.length > 0 && (

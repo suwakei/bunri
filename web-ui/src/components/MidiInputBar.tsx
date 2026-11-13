@@ -6,7 +6,10 @@
  *
  * - 録らない: 音を鳴らすだけ（音を探すとき用）
  * - ステップ入力: 弾くたびに、カーソルの位置へ決まった長さのノートを置いて進む
- * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く
+ * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く。再生の前に 1 小節ぶんのカウントを入れられる。
+ *   弾いた位置は、遅れの補正のぶんだけ前へ戻して置く
+ *
+ * 弾いた強さ（ベロシティ）は、どちらの録り方でもノートに残る。
  *
  * 入力元は環境で変わる（lib/midi-input.ts）。開発用のブラウザ起動は Web MIDI API（Chrome / Edge）、
  * デスクトップ版はネイティブ側。どちらも無い環境では、使えない旨だけを出す。
@@ -16,7 +19,7 @@
  */
 import { useDaw } from '../lib/store';
 import { cursorLabel, type RecordMode } from '../lib/midi-input';
-import { midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
+import { MAX_LATENCY_MS, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
 import { tip } from '../lib/tooltip';
 
 /** ステップ入力で選べるノートの長さ（ステップ数と呼び名）。 */
@@ -34,6 +37,41 @@ const controlStyle = {
     background: 'var(--bg-deep)', color: 'var(--text-mid)', border: '1px solid var(--border)',
     borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
 } as const;
+
+/**
+ * リアルタイム録音の設定（録音前のカウントと、遅れの補正）。練習画面でも使う。
+ *
+ * 遅れの補正は、弾いた位置を前へ戻す量。聞こえた音に合わせて弾くと、音が耳に届くまでの遅れのぶんだけ
+ * 後ろに置かれるので、そのぶんを戻す。既定は、音の出力の遅れ（ブラウザが知らせる値）。
+ * ノートが後ろにずれて入るなら増やし、前にずれるなら減らす。
+ */
+export function RealtimeSettings({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
+    const control = style ?? controlStyle;
+    // 見出しと欄が、行の折り返しで離れないようにする
+    const labelStyle = { marginLeft: 8, fontSize: 11, color: 'var(--text-mid)', whiteSpace: 'nowrap', display: 'inline-block' } as const;
+    return (
+        <>
+            <label style={labelStyle}>
+                <input type="checkbox" checked={midi.countIn} onChange={(e) => midi.setCountIn(e.target.checked)}
+                    style={{ width: 'auto', marginRight: 4, verticalAlign: 'middle' }}
+                    {...tip('再生を押すと、曲が始まる前に 1 小節ぶんのクリックが鳴ります。そのあいだは、弾いても録りません')} />
+                録音前にカウント
+            </label>
+            <label style={labelStyle}>
+                遅れの補正
+                <input type="number" aria-label="遅れの補正（ミリ秒）" min={0} max={MAX_LATENCY_MS} step={5} value={midi.latencyMs}
+                    onChange={(e) => midi.setLatencyMs(e.target.value === '' ? null : Number(e.target.value))}
+                    style={{ ...control, width: 56, cursor: 'text' }}
+                    {...tip('弾いた位置を、この時間だけ前へ戻して置きます。ノートが後ろにずれて入るなら増やし、前にずれるなら減らしてください')} />
+                ミリ秒
+            </label>
+            {!midi.latencyAuto && (
+                <button type="button" style={control} onClick={() => midi.setLatencyMs(null)}
+                    {...tip('遅れの補正を、音が出るまでの遅れから自動で決めた値に戻します')}>おまかせに戻す</button>
+            )}
+        </>
+    );
+}
 
 /** ステップ入力の長さの選択肢（練習画面でも使う）。 */
 export function StepLengthSelect({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
@@ -88,6 +126,7 @@ export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
                             </button>
                         </>
                     )}
+                    {c.mode === 'realtime' && <RealtimeSettings midi={c} />}
                     <span className="area-hint" style={{ marginLeft: 8 }}>
                         {c.devices.length > 0 ? c.devices.join(' / ') : '鍵盤が見つかりません（つないでから「再検出」）'}
                     </span>

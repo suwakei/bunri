@@ -224,8 +224,9 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 3. 設定ファイルからの混入を Rust のテストで止める (`lib.rs` の `配布物の設定では_webdriverの機能が有効にならない`):
    `default` に `e2e` が無い、`tauri.conf.json` の `build.features` に `e2e` が無い、窓の権限 (`capabilities/`) に
    プラグインの権限が無い (プラグインの既定の権限は空なので、足す必要も無い)
-4. デスクトップの e2e の CI (`.github/workflows/desktop-e2e.yml`) で、既定の依存にプラグインが無いことと、
-   release + `e2e` のビルドが失敗することを確かめる
+4. デスクトップの e2e のワークフロー (`.github/workflows/desktop-e2e.yml`。手で起動したときだけ走る) で、
+   既定の依存にプラグインが無いことと、release + `e2e` のビルドが失敗することを確かめる。
+   前者は `make lint` でも確かめる
 
 ### テスト用のビルドで変わること
 

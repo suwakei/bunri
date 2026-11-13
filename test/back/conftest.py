@@ -114,6 +114,25 @@ def chord_song(tmp_path_factory):
     }
 
 
+@pytest.fixture(scope="session")
+def waltz_song(tmp_path_factory):
+    """3 拍子の合成音源（ピアノの和音、90 BPM。``grid_materials`` の ``meter3 piano_chords 90``）。
+
+    拍子を渡さないとき、カルテが 3 拍子で小節を数えることの確認用。
+
+    Returns:
+        tuple[str, dict]: ``(wav_path, truth)``。``truth`` は ``grid_materials.write_song`` の正解。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import grid_materials
+
+    by_label = {label: (kind, kwargs) for label, kind, kwargs in grid_materials.design_cases()}
+    kind, kwargs = by_label["meter3 piano_chords 90"]
+    path = tmp_path_factory.mktemp("waltz") / "waltz.wav"
+    truth = grid_materials.write_song(path, kind, **kwargs)
+    return str(path), truth
+
+
 @pytest.fixture
 def silent_wav(tmp_path):
     """完全な無音の WAV。解析が破綻せず unavailable に落ちることの確認用。"""

@@ -1,0 +1,20 @@
+name: Agent harness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check generated Codex files
+        run: node scripts/sync-codex-harness.mjs --check
+      - name: Test harness behavior
+        run: node --test scripts/check.test.mjs scripts/sync-codex-harness.test.mjs
