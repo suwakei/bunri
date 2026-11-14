@@ -5,7 +5,8 @@ Demucs 本体のモデル（htdemucs など）は、Demucs が自分でダウン
 
 配るファイルは safetensors（重みと設定値だけを持つ形式）にしてある。元の配布物は pickle 形式で、
 Demucs の標準の読み方で開くと中のコードが実行されうるため、利用者の PC では開かない。
-変換の手順は ``scripts/convert_drum_model.py``。
+変換の手順は ``scripts/convert_drum_model.py``。同じ配布物からは、いつ変換しても同じバイト列が
+できるようにしてあるので、下の定義のハッシュは、変換をやり直して確かめられる。
 
 ダウンロードしたファイルは SHA-256 を照合してから置く。合わなければ置かずに失敗する。
 """
@@ -22,7 +23,7 @@ ADDON_MODELS = {
     # 出典: https://github.com/inagoy/drumsep （MIT License, Copyright (c) 2024 Iñaki Goyeneche）
     "drumsep": {
         "file": "drumsep-49469ca8.safetensors",
-        "sha256": "fd9a07c3c8ada7f6db8f6ec4758b329f4b717bdf16c9724b8348d3e47d7a6fc5",
+        "sha256": "37822da594e50d30aac8283753ece58bf320d49bf974aa77854ae3ba9a694fcb",
         "size": 167317568,
         # モデルが出すステム名（スペイン語）→ bunri のステム名
         "stems": {
