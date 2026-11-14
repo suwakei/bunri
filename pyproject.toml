@@ -23,7 +23,7 @@ dependencies = [
     # 再現ガイド (第2層) が Claude を呼ぶための公式 SDK
     "anthropic>=1.0",
     # resampy (basic-pitch の依存) が pkg_resources を import する。setuptools 81 以降には無い
-    "setuptools<81",
+    "setuptools<85",
 ]
 
 [dependency-groups]
