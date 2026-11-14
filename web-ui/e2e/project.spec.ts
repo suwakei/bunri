@@ -40,6 +40,9 @@ async function traceGhost(page: Page, index: number) {
         if (next.x === box.x && next.y === box.y) break;
         box = next;
     }
+    // お手本は、ピアノロールの見えている範囲に在る (範囲の外をダブルクリックしても、ノートは置かれない)
+    const wrap = (await page.locator('#piano-grid-wrap').boundingBox())!;
+    expect(box.y >= wrap.y && box.y + box.height <= wrap.y + wrap.height, 'お手本が、ピアノロールの見えている範囲に在る').toBe(true);
     const before = await page.locator('#note-layer .note-block').count();
     await page.mouse.dblclick(box.x + Math.min(10, box.width / 2), box.y + box.height / 2);
     await expect(page.locator('#note-layer .note-block')).toHaveCount(before + 1);

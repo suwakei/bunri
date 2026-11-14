@@ -20,6 +20,12 @@ const pianoView = (page: Page) => page.locator('#piano-grid-wrap').evaluate((el)
     stepWidth: (document.querySelector('#note-layer .note-ghost') as HTMLElement).getBoundingClientRect().width / 4 + 0.25,
 }));
 const xOf = (page: Page, selector: string) => page.locator(selector).first().evaluate((el) => el.getBoundingClientRect().left);
+/** お手本のノートが全部、ピアノロールの見えている範囲 (縦) に入っているか。 */
+const ghostsInView = (page: Page) => page.evaluate(() => {
+    const wrap = document.querySelector('#piano-grid-wrap')!.getBoundingClientRect();
+    const ghosts = [...document.querySelectorAll('#note-layer .note-ghost')].map((el) => el.getBoundingClientRect());
+    return ghosts.length > 0 && ghosts.every((box) => box.top >= wrap.top && box.bottom <= wrap.bottom);
+});
 
 /** お手本の i 番目と同じ位置に、高さを rows 行ずらしてノートを置く (負なら高い音)。 */
 async function placeAt(page: Page, ghostIndex: number, rows = 0, steps = 0) {
@@ -48,6 +54,9 @@ test('練習画面に入るとタイムラインと左パネルが隠れ、Esc �
     await expect(region(page)).toHaveCount(0);
     await expect(page.locator('#timeline-area')).toBeVisible();
     await expect(statusText(page)).toHaveText('アレンジに戻りました');
+    // 戻ったアレンジでも、お手本の在る高さが見えている。「このパートを練習する」は、練習画面に入る直前に
+    // ピアノロールをお手本の高さへ動かす。戻る位置は、動かした後の位置 (動かす前の、真ん中のドのあたりではない)
+    await expect.poll(() => ghostsInView(page)).toBe(true);
 
     // アレンジで表示を広げてスクロールしておく
     await page.getByRole('button', { name: '横に広げる' }).click();

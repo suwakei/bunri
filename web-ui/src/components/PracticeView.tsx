@@ -147,6 +147,19 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     const arrangeRef = useRef<ArrangeView | null>(null);
     const lastScrollRef = useRef({ pianoLeft: 0, pianoTop: 0, timelineLeft: 0, timelineTop: 0 });
     const openRef = useRef(practiceOpen);
+    /** ふだんの画面 (アレンジ) の、いまのスクロール位置を読む。 */
+    const readScroll = useCallback(() => {
+        const pr = pianoRollRef.current, tl = timelineRef.current;
+        return {
+            pianoLeft: pr?.wrap?.scrollLeft ?? 0, pianoTop: pr?.wrap?.scrollTop ?? 0,
+            timelineLeft: tl?.scroller?.scrollLeft ?? 0, timelineTop: tl?.scroller?.scrollTop ?? 0,
+        };
+    }, [pianoRollRef, timelineRef]);
+    // 練習画面に入る瞬間 (画面を組み替える前) にも控える。「このパートを練習する」は、入る直前にピアノロールを
+    // お手本の高さへ動かす。その scroll イベントが届くのは次の描画のときで、そのときにはもう練習画面なので
+    // 下の onScroll は控えない。イベントだけに頼ると、動かす前の位置が残り、アレンジに戻ったときに、
+    // お手本の見えない高さへ戻ることがあった (WebKit で 2 回に 1 回ほど)
+    if (practiceOpen && !openRef.current) lastScrollRef.current = readScroll();
     openRef.current = practiceOpen;
     void trackVersion;
 
@@ -161,10 +174,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         const pr = pianoRollRef.current, tl = timelineRef.current;
         const onScroll = () => {
             if (openRef.current) return;
-            lastScrollRef.current = {
-                pianoLeft: pr?.wrap?.scrollLeft ?? 0, pianoTop: pr?.wrap?.scrollTop ?? 0,
-                timelineLeft: tl?.scroller?.scrollLeft ?? 0, timelineTop: tl?.scroller?.scrollTop ?? 0,
-            };
+            lastScrollRef.current = readScroll();
         };
         onScroll();
         pr?.wrap?.addEventListener('scroll', onScroll, { passive: true });
@@ -173,7 +183,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             pr?.wrap?.removeEventListener('scroll', onScroll);
             tl?.scroller?.removeEventListener('scroll', onScroll);
         };
-    }, [pianoRollRef, timelineRef]);
+    }, [pianoRollRef, timelineRef, readScroll]);
 
     // ---- 入る・戻る ----
     useEffect(() => {
