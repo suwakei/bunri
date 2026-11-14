@@ -31,6 +31,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const { parseMidiMessage, pitchToNote, cursorLabel, MidiNoteRecorder, pickMidiSource } = await import('../lib/midi-input');
+const { noteLevel, cloneNote, DEFAULT_VELOCITY } = await import('../lib/engine');
 type PianoNote = import('../lib/engine').PianoNote;
 const { DawProvider, useDaw } = await import('../lib/store');
 const engine = (await import('../lib/engine')).default;
@@ -92,7 +93,7 @@ describe('MidiNoteRecorder — ステップ入力', () => {
     it('弾くたびにカーソルの位置へ置き、離すと進む', () => {
         const { recorder, notes } = makeRecorder();
         recorder.setMode('step');
-        expect(recorder.handle(on(60))).toEqual({ kind: 'added', note: { note: 'C', octave: 4, step: 0, length: 4 } });
+        expect(recorder.handle(on(60))).toEqual({ kind: 'added', note: { note: 'C', octave: 4, step: 0, length: 4, velocity: 100 } });
         recorder.handle(off(60));
         recorder.handle(on(64)); recorder.handle(off(64));
         expect(notes.map((n) => [n.note, n.step])).toEqual([['C', 0], ['E', 4]]);
@@ -146,7 +147,7 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         recorder.setMode('realtime');
         expect(recorder.handle(on(60))).toEqual({ kind: 'ignored' });
         now = 7.6;
-        expect(recorder.handle(off(60))).toEqual({ kind: 'added', note: { note: 'C', octave: 4, step: 4, length: 4 } });
+        expect(recorder.handle(off(60))).toEqual({ kind: 'added', note: { note: 'C', octave: 4, step: 4, length: 4, velocity: 100 } });
         expect(notes).toHaveLength(1);
     });
 
@@ -155,7 +156,7 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         const { recorder, notes } = makeRecorder(() => now);
         recorder.setMode('realtime');
         recorder.handle(on(62)); now = 8.2; recorder.handle(off(62));
-        expect(notes[0]).toEqual({ note: 'D', octave: 4, step: 8, length: 1 });
+        expect(notes[0]).toEqual({ note: 'D', octave: 4, step: 8, length: 1, velocity: 100 });
     });
 
     it('重なって弾いた音は、それぞれの位置と長さで入る', () => {
@@ -163,7 +164,7 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         const { recorder, notes } = makeRecorder(() => now);
         recorder.setMode('realtime');
         recorder.handle(on(60)); now = 2; recorder.handle(on(64)); now = 4; recorder.handle(off(60)); now = 8; recorder.handle(off(64));
-        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4 }, { note: 'E', octave: 4, step: 2, length: 6 }]);
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4, velocity: 100 }, { note: 'E', octave: 4, step: 2, length: 6, velocity: 100 }]);
     });
 
     it('再生していないときは録らない', () => {
@@ -179,7 +180,7 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         const { recorder, notes } = makeRecorder(() => now);
         recorder.setMode('realtime');
         recorder.handle(on(60)); now = null; recorder.handle(off(60));
-        expect(notes).toEqual([{ note: 'C', octave: 4, step: 4, length: 1 }]);
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 4, length: 1, velocity: 100 }]);
     });
 
     it('末尾を越える長さは、末尾までに切る', () => {
@@ -187,7 +188,98 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         const { recorder, notes } = makeRecorder(() => now);
         recorder.setMode('realtime');
         recorder.handle(on(60)); now = 40; recorder.handle(off(60));
-        expect(notes[0]).toEqual({ note: 'C', octave: 4, step: 30, length: 2 });
+        expect(notes[0]).toEqual({ note: 'C', octave: 4, step: 30, length: 2, velocity: 100 });
+    });
+});
+
+describe('MidiNoteRecorder — 強さ', () => {
+    it('ステップ入力は、押した強さをノートに残す', () => {
+        const { recorder, notes } = makeRecorder();
+        recorder.setMode('step');
+        recorder.handle(on(60, 37)); recorder.handle(on(64, 120));
+        expect(notes.map((n) => n.velocity)).toEqual([37, 120]);
+    });
+
+    it('リアルタイム録音は、押したときの強さを残す (離すときの強さではない)', () => {
+        let now: number | null = 0;
+        const { recorder, notes } = makeRecorder(() => now);
+        recorder.setMode('realtime');
+        recorder.handle(on(60, 45));
+        now = 4;
+        recorder.handle({ type: 'off', pitch: 60, velocity: 0 });
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4, velocity: 45 }]);
+    });
+});
+
+describe('ノートの強さと音量', () => {
+    it('強さを持たないノートと、既定の強さ (96) のノートは、これまでと同じ音量', () => {
+        expect(DEFAULT_VELOCITY).toBe(96);
+        expect(noteLevel()).toBeCloseTo(0.25);
+        expect(noteLevel(96)).toBeCloseTo(0.25);
+    });
+
+    it('強いほど大きく、弱いほど小さい。弱すぎて聞こえなくならないよう、下は止める', () => {
+        expect(noteLevel(127)).toBeCloseTo(0.25 * 127 / 96);
+        expect(noteLevel(48)).toBeCloseTo(0.125);
+        expect(noteLevel(1)).toBeCloseTo(0.05);
+        // 範囲の外や、数でない値は、範囲に収める・既定の強さにする
+        expect(noteLevel(500)).toBeCloseTo(noteLevel(127));
+        expect(noteLevel(Number.NaN)).toBeCloseTo(0.25);
+    });
+
+    it('ノートを写すとき、強さは持っているときだけ写す', () => {
+        expect(cloneNote({ note: 'C', octave: 4, step: 0, length: 4 })).toEqual({ note: 'C', octave: 4, step: 0, length: 4 });
+        expect('velocity' in cloneNote({ note: 'C', octave: 4, step: 0, length: 4 })).toBe(false);
+        expect(cloneNote({ note: 'C', octave: 4, step: 0, length: 4, velocity: 70 })).toEqual({ note: 'C', octave: 4, step: 0, length: 4, velocity: 70 });
+    });
+});
+
+describe('録音前のカウント (再生エンジン)', () => {
+    const ctx = () => engine.ctx as unknown as { currentTime: number };
+    beforeEach(() => { oscillators.length = 0; engine.init(); engine.stop(); ctx().currentTime = 10; engine.bpm = 120; engine.countInBeats = 0; });
+    afterEach(() => { engine.stop(); engine.countInBeats = 0; ctx().currentTime = 0; });
+
+    it('拍数ぶんのクリックを鳴らし、曲はそのあとから進む', () => {
+        engine.countInBeats = 4;
+        engine.play();
+        // クリックが 4 つ (最初だけ高い音)
+        expect(oscillators.map((o) => o.freq)).toEqual([1500, 1000, 1000, 1000]);
+        // カウントの間: 再生中だが、位置は進まず、録る位置は無い
+        expect(engine.isPlaying).toBe(true);
+        expect(engine.isCountingIn()).toBe(true);
+        ctx().currentTime = 11;
+        expect(engine.getCurrentTime()).toBe(0);
+        expect(engine.getPlayPosition()).toBeNull();
+        // 120 BPM の 4 拍 = 2 秒 (+ 頭の 0.03 秒) のあとから進む
+        ctx().currentTime = 10 + 0.03 + 2 + 0.5;
+        expect(engine.isCountingIn()).toBe(false);
+        expect(engine.getPlayPosition()).toBeCloseTo(0.5);
+    });
+
+    it('カウントの途中で止めると、残りのクリックも止まる', () => {
+        engine.countInBeats = 4;
+        engine.play();
+        engine.stop();
+        expect(oscillators.every((o) => o.stopped)).toBe(true);
+        expect(engine.isCountingIn()).toBe(false);
+    });
+
+    it('再生中の移動 (シーク) では、カウントを入れ直さない', () => {
+        engine.countInBeats = 4;
+        engine.play();
+        ctx().currentTime = 13;
+        oscillators.length = 0;
+        engine.seek(4);
+        expect(oscillators).toHaveLength(0);
+        expect(engine.isCountingIn()).toBe(false);
+        expect(engine.getPlayPosition()).toBeCloseTo(4);
+    });
+
+    it('カウントを入れない設定なら、すぐに進む', () => {
+        engine.play();
+        expect(oscillators).toHaveLength(0);
+        ctx().currentTime = 10.5;
+        expect(engine.getPlayPosition()).toBeCloseTo(0.5);
     });
 });
 
@@ -217,7 +309,7 @@ function stubWebMidi(names = ['Keystation 49']) {
     (navigator as { requestMIDIAccess?: unknown }).requestMIDIAccess = request;
     return {
         request, inputs, access,
-        send: (bytes: number[], index = 0) => inputs[index].onmidimessage?.({ data: new Uint8Array(bytes) }),
+        send: (bytes: number[], index = 0, timeStamp?: number) => inputs[index].onmidimessage?.({ data: new Uint8Array(bytes), timeStamp } as { data: Uint8Array }),
     };
 }
 
@@ -284,7 +376,9 @@ function FakePianoRoll({ notes, activeTrackId }: { notes: PianoNote[]; activeTra
         pianoRollRef.current = {
             totalSteps: 128, octaveRange: [2, 7],
             getActiveTrackId: () => activeTrackId,
-            _addNote: (note: string, octave: number, step: number, length: number) => notes.push({ note, octave, step, length }),
+            // 強さは、渡されたときだけ持たせる (本物のピアノロールと同じ)
+            _addNote: (note: string, octave: number, step: number, length: number, options: { velocity?: number } = {}) =>
+                notes.push(typeof options.velocity === 'number' ? { note, octave, step, length, velocity: options.velocity } : { note, octave, step, length }),
         };
     }, [pianoRollRef, notes, activeTrackId]);
     return null;
@@ -318,7 +412,8 @@ describe('MidiInputBar', () => {
         expect(oscillators[0].stopped).toBe(true);
 
         act(() => { midi.send([0x90, 64, 100]); midi.send([0x80, 64, 0]); });
-        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4 }, { note: 'E', octave: 4, step: 4, length: 4 }]);
+        // 弾いた強さがノートに残る
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4, velocity: 100 }, { note: 'E', octave: 4, step: 4, length: 4, velocity: 100 }]);
         expect(screen.getByText('次の位置: 1 小節 3 拍')).toBeInTheDocument();
     });
 
@@ -357,6 +452,93 @@ describe('MidiInputBar', () => {
         expect(screen.getByText(/再生してから弾いてください/)).toBeInTheDocument();
     });
 
+    it('リアルタイム録音を選ぶと、録音前のカウントが入る。外すこともでき、設定は覚えている', async () => {
+        stubWebMidi();
+        localStorage.removeItem('bunri-midi-count-in');
+        renderBar([]);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await screen.findByLabelText('録り方');
+        // ステップ入力のあいだは、カウントを入れない
+        expect(engine.countInBeats).toBe(0);
+        expect(screen.queryByLabelText('録音前にカウント')).not.toBeInTheDocument();
+
+        fireEvent.change(screen.getByLabelText('録り方'), { target: { value: 'realtime' } });
+        expect(screen.getByLabelText('録音前にカウント')).toBeChecked();
+        expect(engine.countInBeats).toBe(4);
+
+        fireEvent.click(screen.getByLabelText('録音前にカウント'));
+        expect(engine.countInBeats).toBe(0);
+        expect(localStorage.getItem('bunri-midi-count-in')).toBe('0');
+    });
+
+    it('カウントの間に弾いた音は録らず、案内も出さない。カウントが終わると録る', async () => {
+        const midi = stubWebMidi();
+        localStorage.removeItem('bunri-midi-count-in');
+        localStorage.setItem('bunri-midi-latency-ms', '0');
+        const notes: PianoNote[] = [];
+        renderBar(notes);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await screen.findByLabelText('録り方');
+        fireEvent.change(screen.getByLabelText('録り方'), { target: { value: 'realtime' } });
+        const ctx = engine.ctx as unknown as { currentTime: number };
+        ctx.currentTime = 0;
+        act(() => { engine.play(); });
+
+        ctx.currentTime = 1;   // カウントの 3 拍目
+        act(() => { midi.send([0x90, 60, 100]); midi.send([0x80, 60, 0]); });
+        expect(notes).toEqual([]);
+        expect(screen.queryByText(/再生してから弾いてください/)).not.toBeInTheDocument();
+
+        // カウント (0.03 + 2 秒) が終わって 0.5 秒 = 4 ステップ目から、1 秒 = 8 ステップ目まで
+        ctx.currentTime = 2.03 + 0.5;
+        act(() => { midi.send([0x90, 62, 80]); });
+        ctx.currentTime = 2.03 + 1.0;
+        act(() => { midi.send([0x80, 62, 0]); });
+        expect(notes).toEqual([{ note: 'D', octave: 4, step: 4, length: 4, velocity: 80 }]);
+        act(() => { engine.stop(); });
+        ctx.currentTime = 0;
+    });
+
+    it('遅れの補正のぶんだけ、弾いた位置を前へ戻して置く。届くまでの待ちも差し引く', async () => {
+        const midi = stubWebMidi();
+        localStorage.setItem('bunri-midi-count-in', '0');
+        localStorage.removeItem('bunri-midi-latency-ms');
+        const notes: PianoNote[] = [];
+        renderBar(notes);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await screen.findByLabelText('録り方');
+        fireEvent.change(screen.getByLabelText('録り方'), { target: { value: 'realtime' } });
+        // 任せているあいだは、音の出力の遅れ (この環境では分からないので 0)
+        const field = screen.getByLabelText('遅れの補正（ミリ秒）') as HTMLInputElement;
+        expect(field.value).toBe('0');
+        expect(screen.queryByRole('button', { name: 'おまかせに戻す' })).not.toBeInTheDocument();
+
+        // 250 ミリ秒 = 120 BPM で 2 ステップぶん
+        fireEvent.change(field, { target: { value: '250' } });
+        expect(localStorage.getItem('bunri-midi-latency-ms')).toBe('250');
+        const ctx = engine.ctx as unknown as { currentTime: number };
+        ctx.currentTime = 0;
+        act(() => { engine.play(); });
+        ctx.currentTime = 1.0;                        // 8 ステップ目で押した → 6 ステップ目に置く
+        act(() => { midi.send([0x90, 60, 100]); });
+        ctx.currentTime = 1.5;
+        act(() => { midi.send([0x80, 60, 0]); });
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 6, length: 4, velocity: 100 }]);
+
+        // 機器から届いたのが 125 ミリ秒前 (= 1 ステップぶん) なら、そのぶんも戻す
+        ctx.currentTime = 2.0;                        // 16 ステップ目 → 補正 2 + 待ち 1 = 13 ステップ目
+        act(() => { midi.send([0x90, 62, 90], 0, performance.now() - 125); });
+        ctx.currentTime = 2.5;
+        act(() => { midi.send([0x80, 62, 0], 0, performance.now() - 125); });
+        expect(notes[1]).toEqual({ note: 'D', octave: 4, step: 13, length: 4, velocity: 90 });
+
+        // おまかせに戻すと、保存した値も消える
+        fireEvent.click(screen.getByRole('button', { name: 'おまかせに戻す' }));
+        expect(localStorage.getItem('bunri-midi-latency-ms')).toBeNull();
+        act(() => { engine.stop(); });
+        ctx.currentTime = 0;
+    });
+
     it('止めると、鳴っている音も止まる', async () => {
         const midi = stubWebMidi();
         renderBar([]);
@@ -373,6 +555,6 @@ describe('MidiInputBar', () => {
         (navigator as { requestMIDIAccess?: unknown }).requestMIDIAccess = vi.fn(async () => { throw new Error('許可されませんでした'); });
         renderBar([]);
         fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
-        await waitFor(() => expect(screen.getByText(/MIDI 入力を開けませんでした: 許可されませんでした/)).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(/MIDI 入力を開けませんでした。.*許可されませんでした/)).toBeInTheDocument());
     });
 });

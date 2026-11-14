@@ -7,6 +7,7 @@ sidecar として起動したときの約束を確かめる。
 - 親（標準入力のパイプを握っている側）が居なくなったら自分で終わる
 """
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -59,6 +60,42 @@ class TestBindSocket:
         out = capsys.readouterr().out
         assert out.endswith("\n") and out.count("\n") == 1
         assert json.loads(out) == {"event": "listening", "port": 12345, "pid": os.getpid()}
+
+
+class TestLogRedaction:
+    """アクセスログに、URL に載った API の鍵（?token=）を残さない"""
+
+    @pytest.mark.parametrize("url, expected", [
+        ("/api/download/a.wav?token=abc123", "/api/download/a.wav?token=***"),
+        ("/api/download/a.wav?x=1&token=abc123&y=2", "/api/download/a.wav?x=1&token=***&y=2"),
+        ("/api/download/a.wav?mytoken=keep", "/api/download/a.wav?mytoken=keep"),
+        ("/api/health", "/api/health"),
+    ])
+    def test_URLの鍵だけを伏せる(self, url, expected):
+        assert run_web.redact_url(url) == expected
+
+    def test_uvicornのアクセスログの形で伏せる(self):
+        """uvicorn のアクセスログは、引数 (client, method, path, version, status) で URL を渡す"""
+        from uvicorn.logging import AccessFormatter
+
+        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                                   ("127.0.0.1:5000", "GET", "/api/download/a.wav?token=secret-value", "1.1", 200),
+                                   None)
+        assert run_web.RedactTokenFilter().filter(record) is True
+        line = AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False).format(record)
+        assert "secret-value" not in line
+        assert "/api/download/a.wav?token=***" in line
+
+    def test_フィルタは1つだけ付く(self):
+        logger = logging.getLogger("uvicorn.access")
+        before = [f for f in logger.filters if isinstance(f, run_web.RedactTokenFilter)]
+        run_web.install_log_redaction()
+        run_web.install_log_redaction()
+        after = [f for f in logger.filters if isinstance(f, run_web.RedactTokenFilter)]
+        assert len(after) == 1
+        for f in after:
+            if f not in before:
+                logger.removeFilter(f)
 
 
 def _get(port, path, token=None):
@@ -126,6 +163,17 @@ class TestSidecar:
         assert proc.poll() is not None, "標準入力が閉じても sidecar が終了しない"
         assert not _alive(proc.pid)
 
+    def test_アクセスログに鍵が残らない(self, sidecar):
+        """<audio src> のようにクエリで鍵を送っても、ログ (標準出力に流れる) には残らない"""
+        proc, info = sidecar
+        status, _ = _get(info["port"], "/api/health?token=test-token")
+        assert status == 200
+        proc.stdin.close()
+        proc.wait(timeout=10)
+        log = proc.stdout.read().decode("utf-8", "replace")
+        assert "/api/health?token=***" in log
+        assert "test-token" not in log
+
     def test_親が居なくなると_起動した子プロセスも終わる(self):
         """demucs の実行などの子プロセスを孤児にしない（サーバは起動しない）"""
         code = (
@@ -153,3 +201,42 @@ class TestSidecar:
                 proc.kill()
                 proc.wait(timeout=10)
             proc.stdout.close()
+
+    def test_親が居なくなると_動いているジョブを止めて書きかけの出力を消す(self, tmp_path):
+        """ジョブが動かしている子プロセスを残さず、途中まで書いた出力も残さない（サーバは起動しない）"""
+        partial = tmp_path / "partial.wav"
+        code = (
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(BACKEND_DIR)!r})\n"
+            "import run_web, background_jobs\n"
+            "run_web.watch_parent()\n"
+            "def work(job):\n"
+            f"    job.remove_on_abort({str(partial)!r})\n"
+            f"    open({str(partial)!r}, 'wb').write(b'half')\n"
+            "    sleeper = [sys.executable, '-c', \"import time; print('up', flush=True); time.sleep(600)\"]\n"
+            "    job.run_process(sleeper, on_line=lambda line: print(job._process.pid, flush=True))\n"
+            "background_jobs.default_manager().submit('fake', work)\n"
+            "time.sleep(600)\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            child_pid = int(proc.stdout.readline())
+            assert _alive(child_pid) and partial.exists()
+
+            proc.stdin.close()
+            proc.wait(timeout=10)
+            deadline = time.time() + 5
+            while _alive(child_pid) and time.time() < deadline:
+                time.sleep(0.05)
+            assert not _alive(child_pid), "親が居なくなっても、ジョブの子プロセスが残っている"
+            assert not partial.exists(), "書きかけの出力が残っている"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            proc.stdout.close()
+
+    def test_ジョブの仕組みを読み込んでいなくても終了できる(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "background_jobs", raising=False)
+        run_web._stop_jobs()
+        assert "background_jobs" not in sys.modules

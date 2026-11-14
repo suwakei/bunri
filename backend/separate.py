@@ -1,9 +1,11 @@
-import subprocess
 import sys
 from pathlib import Path
 
 
 SUPPORTED_FORMATS = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
+
+# Demucs を子プロセスとして起動するスクリプト
+RUNNER = Path(__file__).parent / "_demucs_runner.py"
 
 MODELS = {
     "htdemucs":    "標準4ステム（推奨・CPU向け）",
@@ -42,6 +44,47 @@ STEM_LABELS = {
     "other_other": "その他 → 残余成分",
 }
 
+# ジョブとして動かすときのステージ（``background_jobs``）。``(キー, 表示名)`` を進む順に並べる。
+# モデルが手元に無いときは、"model" の表示名がダウンロード中のものに変わる（``demucs_progress``）
+SEPARATE_STAGES = [
+    ("model", "モデルを読み込んでいます"),
+    ("separate", "パートに分けています"),
+]
+DEEP_SEPARATE_STAGES = [
+    ("model", "モデルを読み込んでいます"),
+    ("separate", "6 つのパートに分けています"),
+    ("separate_other", "「その他」のパートをさらに分けています"),
+]
+# ドラムを部位ごとに分けるとき（``deep_separate(split_drums=True)``）だけ通るステージ。
+# 追加のモデルは、手元に無いときだけ最初にダウンロードする（``stem_models``）
+DRUM_MODEL_STAGE = ("drum_model", "ドラムを分けるモデルをダウンロードしています（初回のみ）")
+DRUM_SPLIT_STAGE = ("separate_drums", "ドラムをキック・スネア・タム・シンバルに分けています")
+
+
+def deep_separate_stages(recursive_depth=1, split_drums=False, download_drum_model=False):
+    """``deep_separate`` をジョブとして動かすときのステージの並びを返す。
+
+    Args:
+        recursive_depth (int, optional): ``"other"`` を再分離する深さ。0 なら、そのステージを入れない。
+        split_drums (bool, optional): ドラムを部位ごとに分けるか。真なら、そのステージを入れる。
+        download_drum_model (bool, optional): ドラムを分けるモデルのダウンロードが要るか
+            （``split_drums`` が真で、モデルが手元に無いとき）。真なら、最初にそのステージを入れる。
+
+    Returns:
+        list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
+    """
+    stages = []
+    if split_drums and download_drum_model:
+        stages.append(DRUM_MODEL_STAGE)
+    for stage in DEEP_SEPARATE_STAGES:
+        if stage[0] == "separate_other":
+            if split_drums:
+                stages.append(DRUM_SPLIT_STAGE)
+            if recursive_depth <= 0:
+                continue
+        stages.append(stage)
+    return stages
+
 
 def separate_audio(
     input_path: str,
@@ -51,6 +94,9 @@ def separate_audio(
     mp3_output: bool = False,
     segment: int = 7,
     jobs: int = 1,
+    job=None,
+    stage: str = "separate",
+    model_stage: str | None = "model",
 ) -> dict[str, Path]:
     """Demucs を使って音声ファイルを各ステムに分離し、出力パスを返す。
 
@@ -73,6 +119,11 @@ def separate_audio(
         segment (int, optional): Demucs の処理セグメント長（秒）。
             小さいほどメモリ使用量を抑えられる。デフォルト 7。
         jobs (int, optional): 並列ジョブ数。CPU 負荷を抑えるなら 1。デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            進み具合の報告とキャンセルに使う。None なら報告しない。
+        stage (str, optional): 分離のステージのキー。デフォルト ``"separate"``。
+        model_stage (str | None, optional): モデルを用意するステージのキー。
+            None なら設けない（同じジョブの中で 2 回目に分離するとき）。デフォルト ``"model"``。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -85,11 +136,17 @@ def separate_audio(
         FileNotFoundError: ``input_path`` が存在しない場合。
         ValueError: ``input_path`` の拡張子が非対応フォーマットの場合。
         RuntimeError: Demucs サブプロセスが非ゼロ終了コードを返した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合（サブプロセスは kill 済み）。
 
     Note:
-        進捗ログは標準出力に直接出力される（``subprocess.run`` の
-        ``capture_output=False`` による）。
+        Demucs の出力（進捗バーを含む）は、今までどおりこのプロセスの標準出力・標準エラーに出る。
+        ジョブが失敗またはキャンセルで終わったら、このトラックの出力ディレクトリは消される。
     """
+    import background_jobs
+    import demucs_progress
+
+    if job is None:
+        job = background_jobs.detached()
     input_path = Path(input_path)
 
     if not input_path.exists():
@@ -102,9 +159,8 @@ def separate_audio(
     if model == "htdemucs_6s":
         two_stems = False
 
-    runner = str(Path(__file__).parent / "_demucs_runner.py")
     cmd = [
-        sys.executable, runner,
+        sys.executable, str(RUNNER),
         "--out", output_dir,
         "-n", model,
         "--segment", str(segment),
@@ -131,14 +187,16 @@ def separate_audio(
     print(f"[*] セグメント長: {segment}秒  ジョブ数: {jobs}")
     print(f"[*] 実行コマンド: {' '.join(cmd)}\n")
 
-    result = subprocess.run(cmd, capture_output=False, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError("Demucs の実行に失敗しました。")
-
     ext = ".mp3" if mp3_output else ".wav"
     stem_name = input_path.stem
     base = Path(output_dir) / model / stem_name
+
+    # 途中でやめたときに、書きかけのステムを残さない
+    job.remove_on_abort(base)
+    returncode = demucs_progress.run(cmd, model=model, job=job, stage=stage, model_stage=model_stage)
+
+    if returncode != 0:
+        raise RuntimeError("Demucs の実行に失敗しました。")
 
     # 存在するステムだけ返す
     paths = {}
@@ -180,12 +238,45 @@ def _is_silent(file_path: Path, threshold_db: float = -50) -> bool:
 DRUM_MODEL = "drumsep"
 
 
+def _ensure_drum_model(job):
+    """ドラムを分けるモデルを用意して、ファイルのパスを返す。手元に無ければダウンロードする。
+
+    ダウンロードの間は、ジョブをそのステージ（``DRUM_MODEL_STAGE``）に入れ、落とした量を
+    進み具合として伝える（ファイルの大きさが分かっているので、本物の割合が出せる）。
+    キャンセルされたら、ブロックの切れ目で止まる（書きかけは ``stem_models`` が消す）。
+
+    Args:
+        job (background_jobs.Job): この処理を動かしているジョブ。
+
+    Returns:
+        pathlib.Path: モデルのファイルのパス。
+
+    Raises:
+        stem_models.ModelUnavailableError: ダウンロードできなかった、またはハッシュが合わなかった場合。
+        background_jobs.JobCancelled: ダウンロードの途中でキャンセルされた場合。
+    """
+    import stem_models
+
+    if stem_models.is_cached(DRUM_MODEL):
+        return stem_models.model_path(DRUM_MODEL)
+    job.enter_stage(DRUM_MODEL_STAGE[0])
+    size = stem_models.ADDON_MODELS[DRUM_MODEL]["size"]
+
+    def on_bytes(done):
+        job.check_cancelled()
+        job.set_progress(done / size)
+
+    return stem_models.ensure_model(DRUM_MODEL, on_bytes=on_bytes)
+
+
 def separate_drums(
     drums_path: str,
     output_dir: str = "output",
     mp3_output: bool = False,
     segment: int = 7,
     jobs: int = 1,
+    job=None,
+    stage: str = DRUM_SPLIT_STAGE[0],
 ) -> dict[str, Path]:
     """ドラムのステムを、キック / スネア / タム / シンバルに分ける。
 
@@ -199,6 +290,9 @@ def separate_drums(
         mp3_output (bool, optional): ``True`` → MP3 出力。デフォルト ``False``（WAV）。
         segment (int, optional): 処理セグメント長（秒）。デフォルト 7。
         jobs (int, optional): 並列ジョブ数。デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            進み具合の報告とキャンセルに使う。None なら報告しない。
+        stage (str, optional): 分離のステージのキー。デフォルト ``"separate_drums"``。
 
     Returns:
         dict[str, Path]: ``"drums_kick"`` ``"drums_snare"`` ``"drums_toms"`` ``"drums_cymbals"`` を
@@ -208,17 +302,24 @@ def separate_drums(
         FileNotFoundError: ``drums_path`` が存在しない場合。
         stem_models.ModelUnavailableError: モデルをダウンロードできなかった場合。
         RuntimeError: Demucs サブプロセスが失敗した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合（サブプロセスは kill 済み）。
+
+    Note:
+        ジョブが失敗またはキャンセルで終わったら、このトラックの出力ディレクトリは消される。
     """
+    import background_jobs
+    import demucs_progress
     import stem_models
 
+    if job is None:
+        job = background_jobs.detached()
     src = Path(drums_path)
     if not src.exists():
         raise FileNotFoundError(f"ファイルが見つかりません: {src}")
 
-    model_file = stem_models.ensure_model(DRUM_MODEL)
-    runner = str(Path(__file__).parent / "_demucs_runner.py")
+    model_file = _ensure_drum_model(job)
     cmd = [
-        sys.executable, runner,
+        sys.executable, str(RUNNER),
         "--out", output_dir,
         "-n", DRUM_MODEL,
         "--bunri-model-file", str(model_file),
@@ -230,12 +331,16 @@ def separate_drums(
     cmd.append(str(src))
 
     print(f"[*] モデル: {DRUM_MODEL}  ファイル: {src.name}")
-    result = subprocess.run(cmd, capture_output=False, text=True)
-    if result.returncode != 0:
-        raise RuntimeError("ドラムの細分化（Demucs）の実行に失敗しました。")
-
     ext = ".mp3" if mp3_output else ".wav"
     base = Path(output_dir) / DRUM_MODEL / src.stem
+
+    # 途中でやめたときに、書きかけのステムを残さない
+    job.remove_on_abort(base)
+    # モデルはすでに手元に在るので、モデルを用意するステージは設けない
+    returncode = demucs_progress.run(cmd, model=DRUM_MODEL, job=job, stage=stage, model_stage=None)
+    if returncode != 0:
+        raise RuntimeError("ドラムの細分化（Demucs）の実行に失敗しました。")
+
     paths = {}
     for model_stem, key in stem_models.ADDON_MODELS[DRUM_MODEL]["stems"].items():
         p = base / f"{model_stem}{ext}"
@@ -252,6 +357,7 @@ def deep_separate(
     jobs: int = 1,
     recursive_depth: int = 1,
     split_drums: bool = False,
+    job=None,
 ) -> dict[str, Path]:
     """htdemucs_6s による多段のレイヤー分離を行い、有音ステムのパスを返す。
 
@@ -276,6 +382,8 @@ def deep_separate(
             ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
         split_drums (bool, optional): ドラムを部位ごとに分けるか。デフォルト ``False``。
             真のとき、追加のモデルが手元に無ければ最初にダウンロードする（約 160 MB）。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            ステージは ``deep_separate_stages()`` のキーで進む。None なら報告しない。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -286,15 +394,19 @@ def deep_separate(
         RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
         stem_models.ModelUnavailableError: ``split_drums`` が真で、モデルを用意できなかった場合。
             分離を始める前に送出する（数分かけて分離したあとで失敗しないように）。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合。
 
     Note:
         第2段の出力は ``<output_dir>/deep_other/`` と ``<output_dir>/deep_drums/`` に書き出される。
         進捗ログは標準出力に直接出力される。
     """
+    import background_jobs
+
+    if job is None:
+        job = background_jobs.detached()
     if split_drums:
         # 重い処理の前に、モデルを用意しておく。用意できなければここで止まる
-        import stem_models
-        stem_models.ensure_model(DRUM_MODEL)
+        _ensure_drum_model(job)
 
     # 第1段: htdemucs_6s でフル分離
     print("[深層分離] === 第1段: htdemucs_6s フル分離 ===")
@@ -306,6 +418,7 @@ def deep_separate(
         mp3_output=mp3_output,
         segment=segment,
         jobs=jobs,
+        job=job,
     )
 
     result = {}
@@ -325,6 +438,7 @@ def deep_separate(
                         mp3_output=mp3_output,
                         segment=segment,
                         jobs=jobs,
+                        job=job,
                     )
                     for part_key, part_p in parts.items():
                         if not _is_silent(part_p):
@@ -350,6 +464,9 @@ def deep_separate(
                 mp3_output=mp3_output,
                 segment=segment,
                 jobs=jobs,
+                job=job,
+                stage="separate_other",
+                model_stage=None,
             )
 
             has_sub = False

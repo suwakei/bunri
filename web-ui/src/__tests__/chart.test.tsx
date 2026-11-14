@@ -27,7 +27,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const {
-    confidenceTier, formatTime, secondsToBarBeat, TIER_DISPLAY,
+    confidenceTier, formatTime, isChartResponse, secondsToBarBeat, TIER_DISPLAY,
 } = await import('../lib/chart');
 type SongChart = import('../lib/chart').SongChart;
 type ChartGrid = import('../lib/chart').ChartGrid;
@@ -115,6 +115,21 @@ function renderChart(chart: SongChart | null, withStatusBar = false) {
     );
 }
 
+describe('isChartResponse', () => {
+    it('カルテの API の結果の形なら true', () => {
+        expect(isChartResponse({ chart_id: 'demo', chart: makeChart(), glossary: {} })).toBe(true);
+    });
+
+    it('カルテの入っていない結果 (e2e の遅いジョブの結果など)・グリッドの欠けたカルテ・空は false', () => {
+        expect(isChartResponse({ ok: true, kind: 'chart', filename: 'e2e-card.wav' })).toBe(false);
+        expect(isChartResponse({ chart_id: 'demo', chart: { ...makeChart(), grid: undefined } })).toBe(false);
+        expect(isChartResponse({ chart_id: 'demo', chart: { ...makeChart(), chords: null } })).toBe(false);
+        expect(isChartResponse(null)).toBe(false);
+        expect(isChartResponse(undefined)).toBe(false);
+        expect(isChartResponse('chart')).toBe(false);
+    });
+});
+
 describe('confidenceTier', () => {
     it.each([
         [1.0, 'certain'], [0.7, 'certain'],
@@ -156,9 +171,24 @@ describe('secondsToBarBeat', () => {
 describe('ChartPanel', () => {
     beforeEach(() => cleanup());
 
-    it('カルテ未取得ならファイルタブへ誘導する', () => {
+    it('カルテ未取得なら、曲を取り込むよう案内する', () => {
         render(<DawProvider><ChartPanel /></DawProvider>);
         expect(screen.getByText(/まだ解析していません/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '曲を取り込む' })).toBeInTheDocument();
+    });
+
+    it('コードの升目を押すと、カルテの実測のビート列で引いたその小節の頭へ、再生位置が移る', async () => {
+        const engine = (await import('../lib/engine')).default;
+        engine.init();
+        renderChart(makeChart(), true);
+        fireEvent.click(screen.getByRole('button', { name: /^1 小節: C/ }));
+        // カルテの 1 小節目は 1 拍目の位置 (0.35 秒) から
+        expect(engine.playOffset).toBeCloseTo(0.35, 5);
+        expect(screen.getByRole('status')).toHaveTextContent('1 小節（C）へ移動しました');
+        // 構成の行を押すと、区間の頭へ
+        engine.playOffset = 0;
+        fireEvent.click(screen.getByRole('button', { name: /1〜4 小節の区間/ }));
+        expect(engine.playOffset).toBeCloseTo(0.35, 5);
     });
 
     it('キーとBPMを表示する', () => {
@@ -226,18 +256,10 @@ describe('ChartPanel', () => {
         expect(screen.queryByText(/コードも構成も全部ずれます/)).not.toBeInTheDocument();
     });
 
-    it('用語にホバーするとヒントが出る（ツールチップ義務化）', () => {
+    it('用語には、辞書の解説をツールチップとして付ける（ツールチップ義務化）', () => {
         renderChart(makeChart(), true);
-        fireEvent.mouseEnter(screen.getByText('BPM'));
-        expect(screen.getByText(/1分間に刻まれる拍の数/)).toBeInTheDocument();
-    });
-
-    it('ホバーを外すとヒントが消える', () => {
-        renderChart(makeChart(), true);
-        const term = screen.getByText('BPM');
-        fireEvent.mouseEnter(term);
-        fireEvent.mouseLeave(term);
-        expect(screen.queryByText(/1分間に刻まれる拍の数/)).not.toBeInTheDocument();
+        // 表示そのものは components/Tooltip.tsx (画面全体で 1 つ) が受け持つ。ここでは説明が付いていることを見る
+        expect(screen.getByText('BPM').closest('[data-tip]')?.getAttribute('data-tip')).toMatch(/1分間に刻まれる拍の数/);
     });
 
     it('モノラル音源ではステレオ項目を出さない', () => {

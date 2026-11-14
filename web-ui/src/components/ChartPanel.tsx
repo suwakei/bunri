@@ -6,20 +6,31 @@
  * - 検出できなかった項目は値を出さず理由を示す
  * - セクションのラベルは「提案」として出し、断定しない
  * - 全要素にツールチップを付ける（`Term` を通すことで構造的に強制する）
+ *
+ * コードの升目と構成の行を押すと、その小節へ移動する（再生位置と、タイムライン・ピアノロールのスクロール）。
+ * 小節の位置はカルテの実測のビート列から引く（lib/grid.ts の `chartBarToSec`）。
  */
 import { useMemo, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
-import GuidePanel from './GuidePanel';
+import { chartBarToSec } from '../lib/grid';
 import {
     confidenceTier, formatTime,
     TIER_DISPLAY, SECTION_LABEL_JA, BAND_LABEL_JA,
     type ChartChord, type ConfidenceTier,
 } from '../lib/chart';
+import { tip } from '../lib/tooltip';
+
+/** 確信度のバッジに載せたときの説明 */
+const TIER_TIP: Record<ConfidenceTier, string> = {
+    certain: '解析の確かさ: 確実。ほぼこのとおりです',
+    likely: '解析の確かさ: たぶん。おおむね合っていますが、耳でも確かめてください',
+    unsure: '解析の確かさ: 自信なし。外れているかもしれないので、耳で確かめてください',
+};
 
 /**
  * 用語にツールチップを付けるラッパー。
  *
- * 辞書に載っている用語は点線の下線が付き、ホバーでステータスバーに解説が出る。
+ * 辞書に載っている用語は点線の下線が付き、マウスを載せるとそばに解説が出る（ツールチップ）。
  * 辞書を Python 側に置いているため、ここでの説明と LLM（第2層）の説明が
  * 食い違わない。
  *
@@ -27,14 +38,13 @@ import {
  * @param children - 表示する内容
  */
 function Term({ term, children }: { term: string; children: ReactNode }) {
-    const { glossary, setHint } = useDaw();
+    const { glossary } = useDaw();
     const text = glossary[term]?.ja;
 
     if (!text) return <>{children}</>;
     return (
         <span
-            onMouseEnter={() => setHint(text)}
-            onMouseLeave={() => setHint('')}
+            {...tip(text)}
             style={{ borderBottom: '1px dotted var(--text-dim)', cursor: 'help' }}
         >
             {children}
@@ -47,16 +57,14 @@ function Term({ term, children }: { term: string; children: ReactNode }) {
  * @param value - 確信度の生値（0.0〜1.0）
  */
 function ConfidenceBadge({ value }: { value: number | null }) {
-    const { glossary, setHint } = useDaw();
     const tier: ConfidenceTier = confidenceTier(value);
     const display = TIER_DISPLAY[tier];
 
     return (
         <span
-            onMouseEnter={() => setHint(glossary['confidence']?.ja ?? '')}
-            onMouseLeave={() => setHint('')}
+            {...tip(TIER_TIP[tier])}
             style={{
-                fontSize: 9, padding: '1px 6px', borderRadius: 8, marginLeft: 6,
+                fontSize: 11, padding: '1px 6px', borderRadius: 8, marginLeft: 6,
                 border: `1px solid ${display.color}`, color: display.color,
                 fontWeight: 600, cursor: 'help', whiteSpace: 'nowrap',
             }}
@@ -75,9 +83,9 @@ function Unavailable({ reason }: { reason?: string }) {
     if (!reason) return null;
     return (
         <div style={{
-            fontSize: 10, color: 'var(--text-mid)', padding: '6px 8px',
-            background: 'var(--danger-dim)', borderRadius: 'var(--radius-sm)',
-            borderLeft: '2px solid var(--danger)',
+            fontSize: 12, lineHeight: 1.6, color: 'var(--text-mid)', padding: '6px 8px',
+            background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
+            borderLeft: '2px solid var(--warn)',
         }}>
             {reason}
         </div>
@@ -102,7 +110,7 @@ function Block({ title, term, badge, children }: {
 /** 数値の行（ラベル + 値）。ラベルには必ずツールチップが付く */
 function Row({ term, label, children }: { term: string; label: string; children: ReactNode }) {
     return (
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' }}>
             <span style={{ color: 'var(--text-mid)' }}><Term term={term}>{label}</Term></span>
             <span style={{ color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{children}</span>
         </div>
@@ -112,9 +120,10 @@ function Row({ term, label, children }: { term: string; label: string; children:
 /**
  * 楽曲カルテパネル。
  * 解析済みのカルテが無い場合は、ファイルタブへ誘導する案内を出す。
+ * 文字の大きさは、本文 12px・補足 11px を下限にする（docs/ui-terms.md）。
  */
 export default function ChartPanel() {
-    const { chart, setShowGridEditor, setHint } = useDaw();
+    const { chart, setShowGridEditor, openSongPicker, jumpTo, setStatus } = useDaw();
 
     // 小節ごとに最も長いコードを代表として選ぶ（1小節に複数コードがある場合の要約）
     const chordsByBar = useMemo(() => {
@@ -132,20 +141,28 @@ export default function ChartPanel() {
             <div id="chart-panel" className="panel-content">
                 <h3>楽曲カルテ</h3>
                 <p className="panel-desc">
-                    取り込んだ楽曲を解析して、キー・コード進行・構成・ミックスの特性を表示します。
+                    取り込んだ原曲を解析して、キー・コード進行・構成・ミックスの特性を表示します。
                     「自分の力で再現する」ための材料です。
                 </p>
                 <div style={{
-                    fontSize: 11, color: 'var(--text-mid)', padding: 12,
-                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)',
+                    fontSize: 12, lineHeight: 1.7, color: 'var(--text-mid)', padding: 12,
+                    background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
                     border: '1px dashed var(--border-light)', textAlign: 'center',
                 }}>
                     まだ解析していません。<br />
-                    <strong style={{ color: 'var(--accent)' }}>ファイル</strong>タブで楽曲を読み込んでください。
+                    「<strong style={{ color: 'var(--accent)' }}>曲とパート</strong>」で曲を取り込んでください。
+                    <button className="action-btn" style={{ marginTop: 8 }} onClick={openSongPicker}
+                        {...tip('教材にする曲のファイルを選びます')}>曲を取り込む</button>
                 </div>
             </div>
         );
     }
+
+    /** カルテの小節へ移動する（再生位置と、タイムライン・ピアノロール）。 */
+    const jumpToBar = (bar: number, label: string) => {
+        jumpTo({ sec: chartBarToSec(chart, bar) });
+        setStatus(`${label}へ移動しました`);
+    };
 
     const { grid, key, sections, mix, unavailable } = chart;
     const perBar = grid.time_signature[0];
@@ -168,13 +185,12 @@ export default function ChartPanel() {
                     className="action-btn"
                     style={{ marginTop: 8 }}
                     onClick={() => setShowGridEditor(true)}
-                    onMouseEnter={() => setHint('波形とグリッド線を見比べて、BPMや小節頭のずれを直します。ここがずれていると他の解析も全部ずれます')}
-                    onMouseLeave={() => setHint('')}
+                    {...tip('波形と縦線を見比べて、テンポと 1 小節目の位置を直します。ここがずれていると、コードも構成もずれます')}
                 >
                     グリッドを確認・補正する
                 </button>
                 {!grid.user_confirmed && (
-                    <div style={{ fontSize: 10, color: 'var(--text-mid)', marginTop: 6, lineHeight: 1.5 }}>
+                    <div className="note-text" style={{ color: 'var(--text-mid)', marginTop: 6 }}>
                         グリッドは自動検出のままです。<strong style={{ color: 'var(--accent)' }}>ここがずれていると
                         コードも構成も全部ずれます</strong>。波形を見て確認することをおすすめします。
                     </div>
@@ -189,7 +205,7 @@ export default function ChartPanel() {
                             {key.tonic} <Term term={key.mode ?? 'major'}>{key.mode === 'minor' ? 'マイナー' : 'メジャー'}</Term>
                         </div>
                         {key.alternatives.length > 0 && (
-                            <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                            <div className="note-text">
                                 他の可能性: {key.alternatives.map(a =>
                                     `${a.tonic} ${a.mode === 'minor' ? 'マイナー' : 'メジャー'}`).join(' / ')}
                             </div>
@@ -204,31 +220,33 @@ export default function ChartPanel() {
                     <>
                         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(perBar, 4)}, 1fr)`, gap: 4 }}>
                             {chordsByBar.map(({ bar, chord }) => (
-                                <div key={bar}
-                                    onMouseEnter={() => setHint(
-                                        `${bar}小節目: ${chord.symbol}` +
-                                        (chord.degree ? `（キーに対して ${chord.degree}）` : '') +
-                                        ` — ${TIER_DISPLAY[confidenceTier(chord.confidence)].label}`
+                                <button type="button" key={bar} className="chord-cell" data-bar={bar}
+                                    aria-label={`${bar} 小節: ${chord.symbol}（押すとこの小節へ移動します）`}
+                                    onClick={() => jumpToBar(bar, `${bar} 小節（${chord.symbol}）`)}
+                                    {...tip(
+                                        `${bar} 小節目: ${chord.symbol}` + (chord.degree ? `（${chord.degree}）` : '') +
+                                        `、確かさ: ${TIER_DISPLAY[confidenceTier(chord.confidence)].label}` +
+                                        '\n押すと、この小節へ移動します'
                                     )}
-                                    onMouseLeave={() => setHint('')}
                                     style={{
                                         padding: '5px 4px', borderRadius: 'var(--radius-sm)',
-                                        background: 'var(--bg-secondary)', textAlign: 'center', cursor: 'help',
+                                        background: 'var(--bg-deep)', textAlign: 'center', cursor: 'pointer',
+                                        border: 'none', color: 'inherit', font: 'inherit',
                                         borderLeft: `2px solid ${TIER_DISPLAY[confidenceTier(chord.confidence)].color}`,
                                     }}>
-                                    <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>{bar}</div>
+                                    <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bar}</div>
                                     <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>{chord.symbol}</div>
                                     {chord.degree && (
-                                        <div style={{ fontSize: 9, color: 'var(--secondary)' }}>
+                                        <div style={{ fontSize: 11, color: 'var(--secondary)' }}>
                                             <Term term="degree">{chord.degree}</Term>
                                         </div>
                                     )}
-                                </div>
+                                </button>
                             ))}
                         </div>
-                        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
-                            数字は小節番号。緑の <Term term="degree">ディグリー</Term> はキーから見た度数で、
-                            キーが変わっても同じ進行なら同じ番号になります。
+                        <div className="note-text" style={{ marginTop: 6 }}>
+                            上の数字は小節番号（ピアノロールの小節番号と同じ）。コード名の下の青緑の文字は <Term term="degree">ディグリー</Term>（キーから見た度数）で、
+                            キーが変わっても同じ進行なら同じ番号になります。押すと、その小節へ移動します。
                         </div>
                     </>
                 ) : <Unavailable reason={unavailable['chords']} />}
@@ -239,32 +257,34 @@ export default function ChartPanel() {
                 {sections.length > 0 ? (
                     <>
                         {sections.map(section => (
-                            <div key={section.id}
-                                onMouseEnter={() => setHint(
-                                    `${section.start_bar}〜${section.end_bar}小節（${formatTime(section.start_sec)}〜${formatTime(section.end_sec)}）` +
-                                    `／繰り返しグループ ${section.repeat_group}`
+                            <button type="button" key={section.id} className="section-row" data-section={section.id}
+                                aria-label={`${section.start_bar}〜${section.end_bar} 小節の区間（押すとこの区間の頭へ移動します）`}
+                                onClick={() => { jumpTo({ sec: section.start_sec }); setStatus(`${section.start_bar} 小節（区間の頭）へ移動しました`); }}
+                                {...tip(
+                                    `${section.start_bar}〜${section.end_bar} 小節（${formatTime(section.start_sec)}〜${formatTime(section.end_sec)}）` +
+                                    '\n押すと、この区間の頭へ移動します'
                                 )}
-                                onMouseLeave={() => setHint('')}
                                 style={{
-                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                                    fontSize: 11, padding: '5px 8px', marginBottom: 3, cursor: 'help',
-                                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%',
+                                    fontSize: 12, padding: '5px 8px', marginBottom: 3, cursor: 'pointer',
+                                    background: 'var(--bg-deep)', borderRadius: 'var(--radius-sm)',
+                                    border: 'none', color: 'inherit', font: 'inherit', textAlign: 'left',
                                     borderLeft: '3px solid var(--secondary)',
                                 }}>
                                 <span style={{ color: 'var(--text)' }}>
                                     {section.start_bar}–{section.end_bar} 小節
-                                    <span style={{ color: 'var(--text-dim)', marginLeft: 6, fontSize: 10 }}>
+                                    <span style={{ color: 'var(--text-dim)', marginLeft: 6, fontSize: 11 }}>
                                         <Term term="repeat_group">{section.repeat_group}</Term>
                                     </span>
                                 </span>
-                                <span style={{ color: 'var(--text-mid)', fontSize: 10 }}>
+                                <span style={{ color: 'var(--text-mid)', fontSize: 11 }}>
                                     {section.suggested_label
                                         ? `${SECTION_LABEL_JA[section.suggested_label] ?? section.suggested_label}？`
                                         : '—'}
                                 </span>
-                            </div>
+                            </button>
                         ))}
-                        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.5 }}>
+                        <div className="note-text" style={{ marginTop: 6 }}>
                             「イントロ？」のような名前は<strong>自動推定の提案</strong>で、確定ではありません。
                             区間の切れ目そのものは音の変化から検出したものです。
                         </div>
@@ -294,9 +314,6 @@ export default function ChartPanel() {
                     </>
                 ) : <Unavailable reason={unavailable['mix']} />}
             </Block>
-
-            {/* ---- 再現ガイド（第2層） ---- */}
-            <GuidePanel />
         </div>
     );
 }
@@ -307,7 +324,6 @@ export default function ChartPanel() {
  * @param bands - 帯域ごとのエネルギー
  */
 function SpectrumBars({ bands }: { bands: { name: string; hz: [number, number]; energy_db: number }[] }) {
-    const { setHint } = useDaw();
     const values = bands.map(b => b.energy_db);
     const max = Math.max(...values);
     const min = Math.min(...values);
@@ -315,15 +331,14 @@ function SpectrumBars({ bands }: { bands: { name: string; hz: [number, number]; 
 
     return (
         <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-mid)', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-mid)', marginBottom: 4 }}>
                 <Term term="spectrum_bands">帯域バランス</Term>
             </div>
             {bands.map(band => (
                 <div key={band.name}
-                    onMouseEnter={() => setHint(`${band.hz[0]}〜${band.hz[1]}Hz: ${band.energy_db.toFixed(1)} dB`)}
-                    onMouseLeave={() => setHint('')}
+                    {...tip(`${band.hz[0]}〜${band.hz[1]} Hz の音の量: ${band.energy_db.toFixed(1).replace('-', '−')} dB`)}
                     style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, cursor: 'help' }}>
-                    <span style={{ fontSize: 9, color: 'var(--text-dim)', width: 44, textAlign: 'right' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)', width: 48, textAlign: 'right' }}>
                         {BAND_LABEL_JA[band.name] ?? band.name}
                     </span>
                     <div style={{ flex: 1, height: 8, background: 'var(--bg-deep)', borderRadius: 2, overflow: 'hidden' }}>

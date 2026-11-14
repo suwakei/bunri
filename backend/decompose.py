@@ -62,7 +62,28 @@ def _midi_to_note(midi):
     return note_name, octave
 
 
-def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4, engine="basic_pitch"):
+def seconds_to_step(sec, step_sec, offset_sec=0.0):
+    """秒の位置を、ピアノロールのステップ（16 分音符単位）に丸める。
+
+    ステップ 0 は ``offset_sec``（1 小節目の 1 拍目）。楽曲カルテが在るときは、カルテの
+    1 拍目の位置とテンポを渡す。こうすると、カルテの小節番号とピアノロールの小節番号が
+    同じ時刻を指す（docs/coach-diff-design.md の「カルテとピアノロールの小節番号」）。
+
+    Args:
+        sec (float): 位置（秒）。
+        step_sec (float): 1 ステップの長さ（秒）。
+        offset_sec (float, optional): ステップ 0 の位置（秒）。デフォルト 0。
+
+    Returns:
+        int | None: ステップ。1 小節目より前（丸めて負になる位置。弱起）なら None。
+            ピアノロールは 1 小節目より前を持てないので、その音は置かない。
+    """
+    step = int(round((float(sec) - float(offset_sec)) / step_sec))
+    return step if step >= 0 else None
+
+
+def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4, engine="basic_pitch",
+                          offset_sec=0.0):
     """音声ファイルからポリフォニック（多声）ピッチを検出してノートリストを返す。
 
     デフォルトエンジンは Spotify Basic Pitch（``engine="basic_pitch"``）。
@@ -78,6 +99,8 @@ def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_fra
             ``engine="stft"`` の場合のみ有効。デフォルト 4。
         engine (str, optional): 使用するエンジン。``"basic_pitch"``（デフォルト）または
             ``"stft"``。
+        offset_sec (float, optional): ステップ 0 の位置（秒。1 小節目の 1 拍目）。
+            それより前に始まる音は置かない（``seconds_to_step``）。デフォルト 0。
 
     Returns:
         list[dict]: ノートイベントのリスト。各要素は以下のキーを持つ辞書。
@@ -96,11 +119,11 @@ def transcribe_polyphonic(file_path, bpm=120, sensitivity=0.5, max_notes_per_fra
         重いモジュール（``basic_pitch`` または ``librosa``）は関数内で遅延インポートする。
     """
     if engine == "stft":
-        return _transcribe_stft(file_path, bpm, sensitivity, max_notes_per_frame)
-    return _transcribe_basic_pitch(file_path, bpm, sensitivity)
+        return _transcribe_stft(file_path, bpm, sensitivity, max_notes_per_frame, offset_sec=offset_sec)
+    return _transcribe_basic_pitch(file_path, bpm, sensitivity, offset_sec=offset_sec)
 
 
-def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
+def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5, offset_sec=0.0):
     """Spotify Basic Pitch を使ってポリフォニックピッチ検出を行う内部実装。
 
     Basic Pitch の ICASSP 2022 モデルを用いてオンセット閾値とフレーム閾値を
@@ -110,6 +133,7 @@ def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
         file_path (str): 解析する音声ファイルのパス。
         bpm (int, optional): テンポ（BPM）。ステップ長計算に使用。デフォルト 120。
         sensitivity (float, optional): 検出感度（0〜1）。デフォルト 0.5。
+        offset_sec (float, optional): ステップ 0 の位置（秒）。デフォルト 0。
 
     Returns:
         list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
@@ -149,7 +173,9 @@ def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
             continue
         note_name = NOTE_NAMES[midi_note % 12]
         octave = (midi_note // 12) - 1
-        step = max(0, int(round(start_sec / step_sec)))
+        step = seconds_to_step(start_sec, step_sec, offset_sec)
+        if step is None:
+            continue
         length = max(1, int(round((end_sec - start_sec) / step_sec)))
         velocity = min(127, max(1, int(amplitude * 127)))
         notes.append({
@@ -164,7 +190,7 @@ def _transcribe_basic_pitch(file_path, bpm=120, sensitivity=0.5):
     return notes
 
 
-def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4):
+def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4, offset_sec=0.0):
     """STFT スペクトル解析によるポリフォニックピッチ検出の旧実装。
 
     Basic Pitch が使えない環境向けのフォールバック。
@@ -177,6 +203,7 @@ def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4)
         sensitivity (float, optional): 検出感度（0〜1）。デフォルト 0.5。
         max_notes_per_frame (int, optional): 1フレームあたりの最大同時発音数。
             デフォルト 4。
+        offset_sec (float, optional): ステップ 0 の位置（秒）。デフォルト 0。
 
     Returns:
         list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
@@ -225,7 +252,7 @@ def _transcribe_stft(file_path, bpm=120, sensitivity=0.5, max_notes_per_frame=4)
         frame_velocities.append(vels)
 
     # フレーム → ノートイベントに変換
-    notes = _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec)
+    notes = _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec, offset_sec=offset_sec)
     return notes
 
 
@@ -291,7 +318,7 @@ def _find_harmonic_peaks(spectrum, freqs, midi_min, midi_max, threshold, max_pea
     return filtered
 
 
-def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
+def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec, offset_sec=0.0):
     """フレーム単位のMIDIノート列をノートイベントリストに変換する。
 
     フレームを順に走査し、各MIDIノートのオン/オフ遷移を検出して開始・終了フレームを
@@ -303,6 +330,7 @@ def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
         sr (int): サンプルレート（Hz）。
         hop_length (int): STFTのホップ長（サンプル数）。フレーム→秒変換に使用。
         step_sec (float): 1ステップの長さ（秒）。通常は16分音符の長さ。
+        offset_sec (float, optional): ステップ 0 の位置（秒）。デフォルト 0。
 
     Returns:
         list[dict]: ``transcribe_polyphonic`` と同じ形式のノートリスト。
@@ -357,7 +385,9 @@ def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
             continue
 
         note_name, octave = _midi_to_note(ev["midi"])
-        step = max(0, int(round(start_sec / step_sec)))
+        step = seconds_to_step(start_sec, step_sec, offset_sec)
+        if step is None:
+            continue
         length = max(1, int(round(duration / step_sec)))
 
         notes.append({
@@ -373,7 +403,7 @@ def _frames_to_notes(frame_notes, frame_velocities, sr, hop_length, step_sec):
     return notes
 
 
-def transcribe_drums(file_path, bpm=120, sensitivity=0.5):
+def transcribe_drums(file_path, bpm=120, sensitivity=0.5, offset_sec=0.0):
     """ドラムステムからリズムパターンを検出してドラムイベントリストを返す。
 
     librosa のオンセット検出でアタックを特定し、各オンセット近傍の 30ms 窓の
@@ -384,6 +414,7 @@ def transcribe_drums(file_path, bpm=120, sensitivity=0.5):
         bpm (int, optional): テンポ（BPM）。ステップ位置の計算に使用。デフォルト 120。
         sensitivity (float, optional): 検出感度（0〜1）。大きいほど弱いアタックも検出。
             デフォルト 0.5。
+        offset_sec (float, optional): ステップ 0 の位置（秒）。デフォルト 0。
 
     Returns:
         list[dict]: ドラムイベントのリスト。各要素は以下のキーを持つ辞書。
@@ -429,7 +460,9 @@ def transcribe_drums(file_path, bpm=120, sensitivity=0.5):
             continue
 
         drum_type, velocity = _classify_drum_hit(window, sr)
-        step = max(0, int(round(onset_time / step_sec)))
+        step = seconds_to_step(onset_time, step_sec, offset_sec)
+        if step is None:
+            continue
         events.append({
             "type": drum_type,
             "step": step,
@@ -617,7 +650,23 @@ def estimate_mix_params(file_path):
     }
 
 
-def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
+def decompose_stages(detect_bpm=True):
+    """``decompose`` をジョブとして動かすときのステージの並びを返す。
+
+    Args:
+        detect_bpm (bool, optional): BPM を自動検出するか（``bpm=None`` で呼ぶか）。
+            False なら、テンポを調べるステージを入れない。
+
+    Returns:
+        list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
+    """
+    from separate import DEEP_SEPARATE_STAGES
+
+    stages = [("tempo", "テンポを調べています")] if detect_bpm else []
+    return stages + list(DEEP_SEPARATE_STAGES) + [("transcribe", "パートごとにノートを採譜しています")]
+
+
+def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None, grid_offset_sec=0.0):
     """音源分解のメインパイプライン。WAV → 分離 → 解析 → トラックデータを返す。
 
     以下の3段階で処理する:
@@ -628,13 +677,20 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
 
     Args:
         input_path (str): 入力 WAV ファイルのパス。
-        bpm (int | None, optional): テンポ（BPM）。None の場合は librosa で自動検出し
-            60〜200 の範囲にクランプする。デフォルト None。
+        bpm (float | None, optional): テンポ（BPM。小数も可）。None の場合は librosa で自動検出し
+            60〜200 の範囲にクランプする（整数）。デフォルト None。楽曲カルテが在るときは、
+            カルテのテンポを渡す。
         sensitivity (float, optional): ピッチ/リズム検出の感度（0〜1）。デフォルト 0.5。
         segment (int, optional): Demucs の処理セグメント長（秒）。小さいほどメモリ節約。
             デフォルト 7。
         jobs (int, optional): Demucs の並列ジョブ数。CPU 負荷を抑えるなら 1。
             デフォルト 1。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            進み具合の報告とキャンセルに使う。ステージは ``decompose_stages`` のキーで進む。
+            None なら報告しない。
+        grid_offset_sec (float, optional): ノートのステップ 0 を置く位置（秒）。楽曲カルテの
+            1 拍目の位置（``grid.downbeat_offset_sec``）を渡すと、カルテとピアノロールの
+            小節番号がそろう。それより前（弱起）の音は置かない。デフォルト 0。
 
     Returns:
         dict: 以下の構造を持つ辞書。
@@ -642,7 +698,8 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
         .. code-block:: python
 
             {
-                "bpm": int,
+                "bpm": float,
+                "grid_offset_sec": float,   # ステップ 0 の位置（秒）
                 "stems": {
                     "<stem_name>": {
                         "audio_path": str,        # results/decompose/<stem>.wav
@@ -661,23 +718,32 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
     Raises:
         FileNotFoundError: ``input_path`` が存在しない場合（``deep_separate`` が送出）。
         RuntimeError: Demucs の実行に失敗した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合。
 
     Note:
         分離済みステムは ``results/decompose/`` に WAV としてコピーされる。
         ``numpy`` および ``librosa`` を関数内で遅延インポートする。
+        キャンセルが効くのは、Demucs の実行中（子プロセスを kill する）と、パートとパートの間。
+        1 つのパートを音符にしている最中は止められない。
     """
     import numpy as np
     import librosa
+    import background_jobs
+
+    if job is None:
+        job = background_jobs.detached()
+    grid_offset_sec = max(0.0, float(grid_offset_sec or 0.0))
 
     # BPM自動検出
     if bpm is None:
+        job.enter_stage("tempo")
         y_full, sr_full = librosa.load(input_path, sr=22050, mono=True, duration=30)
         tempo, _ = librosa.beat.beat_track(y=y_full, sr=sr_full)
         bpm = int(round(float(np.atleast_1d(tempo)[0])))
         bpm = max(60, min(200, bpm))
 
     # 1. Demucs 分離
-    from separate import deep_separate
+    from separate import deep_separate, STEM_LABELS
     import shutil
     from pathlib import Path
 
@@ -690,14 +756,24 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
         segment=segment,
         jobs=jobs,
         recursive_depth=1,
+        job=job,
     )
 
     # 2. 各ステムを解析
+    job.enter_stage("transcribe")
     stems = {}
-    for stem_name, stem_path in stem_paths.items():
+    for index, (stem_name, stem_path) in enumerate(stem_paths.items()):
+        # パートの切れ目でだけキャンセルを見る。進み具合は「済んだパートの数」
+        job.check_cancelled()
+        job.set_label(
+            f"パートごとにノートを採譜しています（{index + 1}/{len(stem_paths)}: {STEM_LABELS.get(stem_name, stem_name)}）"
+        )
+        job.set_progress(index / len(stem_paths))
+
         stem_path = str(stem_path)
         # 保存用にコピー
         dst = results_dir / f"{stem_name}.wav"
+        job.remove_on_abort(dst)
         shutil.copy2(stem_path, str(dst))
 
         stem_data = {
@@ -710,19 +786,21 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1):
 
         if "drum" in stem_name:
             # ドラム → リズム解析
-            stem_data["drum_events"] = transcribe_drums(stem_path, bpm, sensitivity)
+            stem_data["drum_events"] = transcribe_drums(stem_path, bpm, sensitivity, offset_sec=grid_offset_sec)
         else:
             # メロディ/和音 → ポリフォニック書き起こし
             max_polyphony = 1 if "bass" in stem_name or "vocal" in stem_name else 4
             stem_data["notes"] = transcribe_polyphonic(
-                stem_path, bpm, sensitivity, max_notes_per_frame=max_polyphony
+                stem_path, bpm, sensitivity, max_notes_per_frame=max_polyphony, offset_sec=grid_offset_sec
             )
             # 楽器推定
             stem_data["gm_program"] = estimate_instrument(stem_path, stem_name)
 
         stems[stem_name] = stem_data
 
+    job.set_progress(1.0)
     return {
         "bpm": bpm,
+        "grid_offset_sec": grid_offset_sec,
         "stems": stems,
     }

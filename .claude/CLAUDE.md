@@ -1,7 +1,9 @@
 # bunri DAW
 
 ## 概要
-Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。FastAPI + HTML/CSS/JS の Web UI で操作。
+Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。
+React / Vite / TypeScript の画面、FastAPI / Python 3.11 の音声処理、Tauri v2 / Rust のデスクトップアプリ。
+この文書を Claude Code と Codex の共通規約とし、Codex の入口はルートの `AGENTS.md`。
 
 ## 起動
 デスクトップアプリ（Tauri v2）。開発モード（Rust と uv が要る）:
@@ -16,14 +18,31 @@ make desktop           # = npm run tauri dev
 （Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
 
 ## テスト
+音のエンジン（`src-tauri/audio-engine`）は sfizz を submodule からビルドするので、`make test` / `make lint` / `make check` の desktop 検証には
+submodule と cmake が要る（`git submodule update --init --recursive`、`brew install cmake`）。設計は [docs/instrument-engine-design.md](../docs/instrument-engine-design.md)。
 ```bash
+make check-plan   # 変更した領域に必要な検証を表示（実行しない）
+make check        # 変更した領域の lint・型・単体テスト・build。UI 変更は E2E も含む
+make check-all    # 全領域の検証 + ブラウザ / 本物の窓の E2E
 make test    # 単体テスト（フロント + バック + Rust）
 make lint
 make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
+make e2e-desktop  # 本物の窓（テスト用にビルドしたデスクトップアプリ）を自動操作するテスト（mac のみ）
 ```
+通常の開発では `make check` を使う。Python のテスト出力は毎回新しい一時 `BUNRI_DATA_DIR` に隔離する。
+ブランチ全体の差分を確かめるときは `node scripts/check.mjs --base main`。
+隠しファイル込みの探索や lint で `.claude/worktrees/` の別チェックアウトを巻き込まない。
+`make clean` はユーザーの `uploads/`・`results/`・`projects/` を削除するので、通常の検証では使わない。
 画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
 不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
-Claude Code が画面をその場で操作して確かめるときは、Playwright MCP（`.mcp.json`）と `make dev-web` を使う。
+`make e2e` の画面にはデスクトップ版と同じ CSP が掛かっていて、違反があれば失敗する。
+
+CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の起動や鍵・書き出しを変えたら、`make e2e-desktop` も回す
+（初回はビルドで数分、2 回目からは 20 秒ほど）。テスト用のビルドはアプリの中で WebDriver サーバを動かすので、
+機能 `e2e` は配布物に入れない（[docs/desktop-architecture.md](../docs/desktop-architecture.md)「窓を自動操作するテスト」）。
+エージェントが画面をその場で操作して確かめるときは、Playwright MCP と `make dev-web` を使う。
+MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync` で生成する `.codex/config.toml`。
+実 LLM API を使うテストは通常の検証に含めず、ユーザーが明示したときだけ実行する。
 
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
@@ -33,7 +52,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `run_web.py` | API サーバの起動スクリプト。デスクトップアプリが sidecar として起動する（`--sidecar`）。開発用に単体でも起動できる |
 | `web/api.py` | FastAPI バックエンド API（API だけ。画面は配らない） |
-| `separate.py` | Demucs 音源分離（htdemucs標準）。深層分離（6 ステム + その他の再分離 + ドラムの細分化）もここ |
+| `web/project_routes.py` | プロジェクトの保存・開く（`/api/project/*`）とデータの整理（`/api/storage*`）の API |
+| `web/job_routes.py` | ジョブの API（`/api/jobs…`）と、時間のかかる API を `?async=1` でジョブとして始めるための共通処理（`dispatch`） |
+| `separate.py` | Demucs 音源分離（htdemucs標準） |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
 | `effects.py` | エフェクト（3バンドEQ/コンプレッサー/リバーブ/ディレイ） |
@@ -49,28 +70,34 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `structure.py` | グリッド推定（BPM/ダウンビート）とセクション検出 |
 | `music_theory.py` | キー推定・コード検出・ディグリー変換・用語辞書 |
 | `mix_profile.py` | 曲全体のミックス特性（ラウドネス/ステレオ幅/残響/帯域） |
-| `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き |
-| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir 等） |
-| `_demucs_runner.py` | torchaudio 保存パッチ。追加のモデルを手元の safetensors から読む指定（`--bunri-model-file`）も受ける |
+| `bunri_file.py` | `.bunri` ドキュメント（SQLiteベース単一ファイル）の読み書き。v2（2.0）はプロジェクト全体（トラック・ノート・音声 FLAC・カルテ・学ぶ流れの状態・学習の記録・ガイドと説明の写し）。v1 は `migrate` で上げる |
+| `project_store.py` | プロジェクトの保存と開く（作業用の写し `work/`・音声の預かり・開発用の置き場 `projects/`・以前の形式 JSON・データの整理）。sidecar はデータ置き場の外を読み書きしない |
+| `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir / work_dir 等） |
+| `_demucs_runner.py` | Demucs を子プロセスとして動かすスクリプト（torchaudio 保存パッチ。API から起動されたときは `demucs_progress` で進み具合を報告する） |
 | `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
 | `guide_cache.py` | 作った再現ガイドの保存（同じ条件なら Claude を呼ばない）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
 | `guide_usage.py` | 再現ガイドの使用量の記録（`results/guide/usage.jsonl`。中身とキーは残さない）、概算の費用、1 日の上限 |
 | `llm_pricing.json` | Claude の単価の表（概算の費用の計算に使う。コードに埋めず、ここと設定で持つ） |
 | `coach_diff.py` | 差分コーチ（第3層）の土台。お手本のノートと打ち込みの差分を事実として出す（LLM 不使用） |
+| `coach_explain.py` | 差分コーチ（第3層）の言語化。差分の事実を Claude に渡して「どんな傾向か・なぜと考えられるか・まず何を見直すか」にする。出力は Structured Outputs で形を固定し、事実と突き合わせて検証する。保存・使用量の記録・1 日の上限は第2層と共通 |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `stem_models.py` | Demucs が自分では取りに行けない追加の分離モデル（ドラムの細分化）の置き場とダウンロード。ハッシュを照合してから置く。配るのは safetensors だけ（pickle 形式のモデルを利用者の PC で開かない） |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
+| `background_jobs.py` | 時間のかかる処理（ジョブ）を 1 つずつ裏で動かし、ステージ・進み具合・経過時間を持ち、キャンセルと書きかけの出力の削除を受け持つ（FastAPI に依存しない）。約束は [docs/jobs.md](../docs/jobs.md) |
+| `demucs_progress.py` | Demucs の子プロセスとのやり取り（子の側で進み具合をイベントとして出し、親の側でジョブに伝える。親が居なくなったら子は自分で終わる） |
 
 `backend/` の外:
 
 | 場所 | 役割 |
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取りだけを持つ |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）だけを持つ |
+| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、オフライン描画（WAV 書き出し）。アプリからはまだ呼んでいない（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
+| `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係
@@ -104,12 +131,15 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 原則: **DSPが事実を出し、LLMは言語化だけをする。LLMは音符を1つも出力しない。**
 
-3層構成（第1層と第2層を実装済み。第3層は差分を出す部分だけ。第2層・第3層の決定は暫定）:
+3層構成（第1層と第2層を実装済み。第3層は、差分を出す部分と、それを言葉にする部分のバックエンドまで。言葉にする部分の画面はまだ無い。第2層・第3層の決定は暫定）:
 1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
 2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
 3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点
 
-詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層の土台）を参照。
+グリッド推定（テンポと 1 拍目の位置）を直すときは、[docs/grid-estimation.md](../docs/grid-estimation.md) を読み、
+`uv run python test/back/bench_grid.py` で直す前と後の誤差を比べる（正解の分かっている合成音源 157 件）。
+
+詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層。差分と、その言語化）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
 

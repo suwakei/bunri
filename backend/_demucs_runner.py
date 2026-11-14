@@ -87,6 +87,11 @@ def _use_model_file(path):
 if __name__ == "__main__":
     import sys
 
+    # API サーバから起動されたときだけ、進み具合を親に伝え、親が居なくなったら終わるようにする
+    import demucs_progress
+
+    demucs_progress.setup_child()
+
     _model_file, _rest = _take_model_file(sys.argv[1:])
     if _model_file:
         _use_model_file(_model_file)

@@ -10,7 +10,8 @@ bunri.app (Tauri v2)
 ├─ WebView: web-ui (React) をアプリに同梱して表示
 │     ├─ HTTP ──► Python sidecar (FastAPI。127.0.0.1 の空きポート)
 │     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く)
-├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了
+├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了、
+│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ
 └─ Python sidecar (backend/): demucs / basic-pitch / librosa / fluidsynth / dawdreamer
 ```
 
@@ -42,7 +43,9 @@ Python (AI・音声処理)、Web (画面)、Rust (ネイティブ) が、それ�
    合わないとき (初回、途中で落ちた、アプリの更新) は、時間がかかる旨を画面に出す
 3. **sidecar の起動**: 作った環境の Python で `backend/run_web.py --sidecar` を起動する
 4. **画面**: `web-ui/src/lib/api.ts` の `initBackend()` が Rust の `backend_info` を呼び、
-   sidecar が待ち受けを始めるまで待つ。その間 `boot_status` を 0.5 秒おきに聞いて進み具合を表示する
+   sidecar が待ち受けを始めるまで待つ。その間 `boot_status` を 0.5 秒おきに聞いて進み具合を表示する。
+   起動できなかったときは理由と「再試行」を出す（押すと下の `restart_backend` で起動し直す）
+5. **起動したあと**: 画面は sidecar が止まっていないかを見張る（下の「sidecar が止まったとき」）
 
 ## 約束ごと (変えるときは両側を一緒に変える)
 
@@ -60,7 +63,8 @@ Rust が起動ごとに乱数のトークンを作り、環境変数 `BUNRI_TOKE
 CORS は `BUNRI_ALLOWED_ORIGINS` (アプリの origin) だけ許す。
 
 - `<audio src>` と `<a href download>` はヘッダを付けられないので、クエリ `?token=` でも受け付ける。
-  画面側は `backendUrl()` を通す
+  画面側は `backendUrl()` を通す。uvicorn のアクセスログは URL をそのまま出すので、`run_web.py` がログの
+  `token=` の値を `***` に伏せる（`RedactTokenFilter`）
 - `BUNRI_TOKEN` が無いとき (開発用の起動とテスト) は、トークンも CORS も足さない
 - **画面から API を呼ぶときは、必ず `apiFetch` / `backendUrl` を通す。** 素の `fetch('/api/...')` は
   開発用のブラウザ起動では動くが、デスクトップアプリでは接続先もトークンも付かず失敗する
@@ -72,9 +76,39 @@ Rust は sidecar の標準入力をパイプで握ったままにする。sideca
 アプリが強制終了されても、OS がパイプを閉じるので同じように終わる。
 通常の終了時は、Rust が先にパイプを閉じ、3 秒待っても終わらなければ kill する。
 
+sidecar は、終わる前に、動いているジョブ (下の「時間のかかる処理」) を止めて書きかけの出力を消す。
+片付けに使うのは 1.5 秒まで (アプリが kill しに来る 3 秒より短くしてある)。
+Demucs の子プロセスも同じ仕組みで sidecar を見張っていて、sidecar が強制終了されたら自分で終わる。
+
 セットアップ中 (`uv sync` の実行中) は事情が違う。通常の終了なら Rust が `uv` をプロセスグループごと
 kill するが、アプリが強制終了された場合、`uv` は親が居なくなったことに気づかず、ダウンロードを
 最後まで続けてから終わる。害は無い (次回の起動はその続きから入る) が、プロセスはしばらく残る。
+
+### sidecar が止まったとき
+
+起動したあとに sidecar が落ちる (メモリ不足、ライブラリの異常終了など) と、画面の操作は黙って失敗し続ける。
+そこで画面が見張り、利用者が起動し直せるようにする。
+
+- **見張り** (`web-ui/src/lib/health.ts`): 5 秒おき (画面が隠れている間は 15 秒) に `boot_status` と
+  `GET /api/health` (軽い応答だけ) を聞く。API の呼び出しが届かなかったとき (`apiFetch` の失敗) は、次の回を待たずに
+  すぐ確かめる。一瞬の取りこぼしで知らせないよう、応答が無ければ 0.8 秒後にもう 1 回だけ確かめる
+- **知らせ** (`components/HealthBanner.tsx`): 画面の上に重ねるが、操作は止めない (モーダルにしない)。トラックやノートは
+  画面の側に在るので、止まっている間も編集はできる。「再起動」を押すと、Rust のコマンド `restart_backend` を呼ぶ
+- **起動し直し** (`src-tauri/src/sidecar.rs` の `Sidecar::restart`): 初めの起動と同じ手順 (配布物ではセットアップから) で、
+  新しい sidecar を起動する。**ポートを Python 側が決める・トークンを起動ごとに作る・標準入力を握る** の約束はそのまま。
+  ポートとトークンは新しくなるので、`restart_backend` は待ち受けを始めるまで待って新しい接続情報を返し、画面は
+  `apiFetch` / `backendUrl` の接続先を差し替える (`restartBackend`)。動いている sidecar を起動し直すときは、前の sidecar を
+  起動スレッドの中で終わらせてから起動する (標準入力を閉じ、3 秒で kill)
+- **世代**: 起動し直すたびに世代を 1 つ進める。前の sidecar の起動スレッドが遅れて「終了した」と書き込んだり、
+  新しい sidecar を取り上げたり (終了の後始末) しないよう、状態の書き込みと子プロセスの預け入れは、いまの世代のときだけ行う
+- **ほかの窓**: ツールの画面 (別の窓) も同じ見張りを持つ。片方が起動し直したら、もう片方は `boot_status` が起動中・
+  待ち受け中であることを見て、`backend_info` で新しい接続情報を受け取り直すだけにする (2 回起動し直さない)
+- **ジョブ**: 起動し直すと、ジョブの記録は消える。画面は見張っていたジョブを失敗として終わらせる (docs/jobs.md)
+- **開発用のブラウザ起動**: 画面からは起動し直せないので、知らせに `make dev-web` を起動し直すよう案内する。
+  応答が戻れば知らせは消える
+- 起動方法を決められなかった (同梱物の場所が分からない、など) ときと、アプリの終了中は、起動し直さずに理由を返す
+
+自動では起動し直さない。落ちた原因が続いていると、起動と異常終了を繰り返すことになるため (利用者が押したときだけ)。
 
 ### アプリの中には書き込まない
 
@@ -85,11 +119,73 @@ kill するが、アプリが強制終了された場合、`uv` は親が居な�
 | `bunri.app/Contents/MacOS/uv` | 同梱した `uv` (版とハッシュは `scripts/prepare-desktop.mjs` で固定) |
 | `bunri.app/Contents/Resources/runtime/` | `backend/` と `pyproject.toml` / `uv.lock` (読み取り専用) |
 | `~/Library/Application Support/io.github.suwakei.bunri/runtime/` | Python 本体、venv、uv のキャッシュ、`.pyc` |
-| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` `soundfonts/` `models/` (`BUNRI_DATA_DIR`) |
+| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` (以前の形式) `work/` (作業中のプロジェクトの写し) `soundfonts/` `models/` (追加の分離モデル) `recent-projects.json` (最近使ったプロジェクト) (`BUNRI_DATA_DIR`) |
+| 利用者が選んだ場所 (既定は `~/Documents/bunri/`) | 保存したプロジェクト (`.bunri`)。書くのは Rust だけ (下の「プロジェクトのファイル」) |
 | `~/.cache/huggingface/` `~/.cache/torch/` | 音源分離のモデル (ライブラリの既定の置き場のまま)。Demucs が自分で取りに行けない追加のモデルだけは、上の `data/models/` に入る (`backend/stem_models.py`) |
 
 Python 側は、データの場所を `audio_utils.data_dir()` から引く。パスを直書きしない。
 外から受け取ったファイル名は `audio_utils.safe_join()` を通す。
+
+## プロジェクトのファイル
+
+プロジェクト (`.bunri`。形は [song-chart-design.md](song-chart-design.md)「プロジェクトの保存」) は、利用者が選んだ場所に保存する。
+ダイアログは Tauri 公式の `tauri-plugin-dialog` (`=2.8.4`、MIT/Apache-2.0) を **Rust から**出す。
+
+### 誰がどこを読み書きするか (変えるときは両側を一緒に変える)
+
+| 誰が | 読み書きする場所 |
+|---|---|
+| sidecar (Python) | データ置き場の中だけ。保存は `work/<token>.bunri` (作業用の写し) に書いて名前を返す。開くのは `work/` に置かれた写しだけ |
+| Rust (`src-tauri/src/project.rs`) | 利用者が選んだ場所と `work/` の間で写す。写してよい行き先は「この起動でダイアログで選ばれた場所」と「最近使ったプロジェクトに在る場所」(これもダイアログで選ばれたものだけが入る) だけ。拡張子は `.bunri` だけ。写しの名前は 24 桁の 16 進だけ (パスの区切りを含められない) |
+| 画面 (WebView) | パスを Rust に渡すだけ。ファイルの中身には触らない。ダイアログの権限 (`dialog:*`) は渡していない (`capabilities/` に足していない) |
+
+- 保存: 画面が文書と音声を sidecar に送る → sidecar が `work/` に書く → 画面が `project_pick_save` (初めて・別名で保存のときだけ) →
+  `project_commit(token, path)` → Rust が同じフォルダの別名に写してから置き換える (書きかけを利用者のファイルとして残さない)
+- 開く: `project_pick_open` (ダイアログ) か `project_open_recent(path)` (一覧に在るものだけ) → Rust が `work/` に写す →
+  画面が sidecar の `POST /api/project/open/{token}` を呼ぶ。古い形式の写しは sidecar が v2 に上げる (利用者のファイルはそのまま)
+- 最近使ったプロジェクト: Rust がデータ置き場の `recent-projects.json` に持つ (12 件まで。外せる。無くなったファイルは `exists: false`)
+- 作業用の写しは「データの整理」で消せる (開いているものは残す)。sidecar の起動では消さない
+
+**なぜこの形か**: sidecar の API に任意のパスを受け取らせると、API の鍵を持つ画面が乗っ取られたとき (XSS など)、利用者の
+どのファイルでも上書きできてしまう (`~/.zshrc` など)。パスの検査を sidecar に足しても、何が「利用者が選んだ」かを sidecar は知らない。
+ダイアログを出したのは Rust なので、Rust が選ばれた場所を覚え、そこにだけ写す。sidecar は今までどおり「データ置き場の外に触らない」。
+検討して捨てた案: 画面からダイアログを出してパスを sidecar に渡す (上の理由)、Rust と sidecar の間に別の鍵を作って許可したパスを
+sidecar に教える (鍵と HTTP の呼び出しが Rust に増える。写すだけなら Rust で足りる)、ファイルの中身を画面経由で運ぶ (100 MB を超える)。
+
+開発用のブラウザ起動 (Rust が無い) では、名前を尋ねてデータ置き場の `projects/` に置く (`POST /api/project/library/save`)。
+一覧もそこから作る。ブラウザのテストはこの経路で、保存・開く・以前の形式・確かめを通す。
+
+### 保存していない変更と、閉じる前の確かめ
+
+画面が `document_state(dirty, title)` で、窓の題名 (「曲名 ● — bunri」) と保存していない変更の有無を Rust に知らせる。
+
+- メインの窓を閉じる (`CloseRequested`) / ⌘Q (`RunEvent::ExitRequested` で `code` が無いもの) とき、変更が在れば止めて、
+  イベント `close-requested` (`{quit}`) を画面に送る。画面は「保存 / 保存しない / キャンセル」を尋ね、保存か保存しないなら
+  `close_confirmed(quit)` を呼ぶ。Rust は印を下ろしてから閉じる (終える)
+- 判断は `DocumentState::decide_close` (Rust のテストで確かめる)。画面が何も知らせていない (起動中など) ときは止めない
+- 開く・新しいプロジェクトの前の確かめは、画面だけで行う (`lib/project-actions.ts` の `confirmDiscard`)
+- 開発用のブラウザ起動では、タブを閉じる前の確かめ (`beforeunload`) は付けていない (製品の形ではなく、テストの再読み込みを妨げるため)
+
+`.bunri` をダブルクリックして開く (ファイルの関連付け) は、まだ入れていない (`tauri.conf.json` の `fileAssociations` と、起動時に渡された
+パスを受けて開く仕組みが要る)。
+
+### テスト用のビルドで
+
+WebDriver はネイティブのダイアログ (NSSavePanel / NSOpenPanel) を操作できない。機能 `e2e` のときだけ、ダイアログを出さずに環境変数
+`BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所が選ばれたことにする (`src-tauri/src/e2e.rs` の `dialog_path`)。テストは一時ディレクトリの
+中を渡す。それ以外 (写してよい場所の確かめ、最近使ったプロジェクト、閉じる前の確かめ) は配布物と同じに動く。
+
+## 時間のかかる処理
+
+音源分離・分解・カルテ・採譜は、sidecar の中で「ジョブ」として 1 つずつ動く。画面は API に `?async=1` を
+付けて始め、`GET /api/jobs/{id}` で進み具合 (ステージの名前、分かるときは割合) を聞き、
+`POST /api/jobs/{id}/cancel` でやめる。`?async=1` を付けない従来の呼び方も、そのまま使える。
+
+- 重い処理は同時に 1 つ。動いている間の開始は 409 で断り、何が動いているかを返す
+- Demucs は子プロセスなので、キャンセルで kill できる。Python の中で動く解析は、ステージの切れ目でしか止まらない
+- ジョブの API も、ほかの API と同じくトークンで守られる
+
+API の約束、どのステージで割合が出るか、キャンセルで止まらないものは [jobs.md](jobs.md) にまとめてある。
 
 ## 開発用のブラウザ起動
 
@@ -100,6 +196,66 @@ Python 側は、データの場所を `audio_utils.data_dir()` から引く。�
   (中継先のポートは環境変数 `BUNRI_API_PORT`)
 - この経路では、ネイティブ側 (Rust) の機能は動かない: API キーのキーチェーン保存、MIDI のネイティブ入力、
   別窓、初回セットアップ。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+- `scripts/dev-web.mjs` で起動したときは、画面にデスクトップ版と同じ CSP を掛ける (`tauri.conf.json` から
+  起動のたびに読む。`scripts/desktop-csp.mjs`)。違いは、Vite が埋め込むスクリプトの nonce、自動再読み込みの
+  接続 (`ws:`)、違反の知らせ先 (`report-uri`) を足したことだけ。CSP を変えたら、ブラウザのテスト (`make e2e`) で
+  違反が無いことまで確かめられる
+
+## 窓を自動操作するテスト
+
+本物の窓 (WKWebView) をプログラムで操作するテスト (`make e2e-desktop`、[ui-testing.md](ui-testing.md))。
+mac の WKWebView には、ブラウザのような外から操作する口 (WebDriver) が無い。Tauri 公式の `tauri-driver` も
+mac には対応していない。そこで、**テスト用のビルドだけ**、アプリの中で WebDriver サーバを動かす。
+
+- 使うもの: `tauri-plugin-wdio-webdriver` (Rust のプラグイン。WebdriverIO の公式、MIT)。版は `=1.5.1` で固定
+- テスト側は npm のクライアントを入れず、W3C WebDriver の HTTP の API を直接呼ぶ (`web-ui/e2e-desktop/webdriver.ts`)
+- 機能 `e2e` (Cargo の feature) を付けたときだけ入る。付けるのは `web-ui/e2e-desktop/build.mjs` だけ
+
+### 守ること (配布物に WebDriver サーバを入れない)
+
+WebDriver サーバには認証が無い。同じ PC のプロセスなら誰でも窓を操作し、任意の JavaScript を実行できる
+(= sidecar のトークンも読める)。**配布物には絶対に入れない。** 次の 4 重で止めている:
+
+1. 依存は `optional = true` で、機能 `e2e` は `default` に入れない (`Cargo.toml`)。既定のビルドには
+   プラグインのコードが入らない (`cargo tree -i tauri-plugin-wdio-webdriver` が「見つからない」になる。`make lint` で確かめる)
+2. release ビルドで機能 `e2e` を付けると、`compile_error!` でビルドが止まる (`src-tauri/src/lib.rs`)。
+   `tauri build` (配布物) は release なので、誤って `--features e2e` を付けても配布物はできない。
+   プラグインの登録自体も `#[cfg(all(feature = "e2e", debug_assertions))]` の中にある
+3. 設定ファイルからの混入を Rust のテストで止める (`lib.rs` の `配布物の設定では_webdriverの機能が有効にならない`):
+   `default` に `e2e` が無い、`tauri.conf.json` の `build.features` に `e2e` が無い、窓の権限 (`capabilities/`) に
+   プラグインの権限が無い (プラグインの既定の権限は空なので、足す必要も無い)
+4. デスクトップの e2e のワークフロー (`.github/workflows/desktop-e2e.yml`。手で起動したときだけ走る) で、
+   既定の依存にプラグインが無いことと、release + `e2e` のビルドが失敗することを確かめる。
+   前者は `make lint` でも確かめる
+
+### テスト用のビルドで変わること
+
+機能 `e2e` のときだけ、次のように動く (`src-tauri/src/e2e.rs`)。どれも、利用者のデータに触れないためと、
+テストが確かめやすくするため。
+
+| 何が | どう変わるか | なぜ |
+|---|---|---|
+| 画面 | 配布物と同じく、同梱した画面を `tauri://localhost` で出す (CSP も同じ) | 本物と同じ条件で確かめるため |
+| sidecar の起動 | 開発時と同じく、リポジトリの `backend/` を開発機の `uv run` で起動する (`sidecar.rs` の `for_e2e`)。CORS の許可先は `tauri://localhost` だけ | 配布物の起動方法 (アプリのデータ置き場に `uv sync`) だと、利用者のデータ置き場に触れ、毎回 torch を入れ直すことになる |
+| データの置き場 | テストが環境変数 `BUNRI_DATA_DIR` で一時ディレクトリを渡す | 利用者の `uploads/` などを汚さない |
+| WebView の保存領域 | 使い捨て (incognito)。localStorage は毎回空から始まる | 開発用の `tauri dev` と実行ファイル名が同じで、そのままだと保存領域を共有してしまう |
+| キーチェーン | 起動時に読まない。API キーの保存・削除は、別の項目名 (`<識別子>.e2e`) に向ける | 利用者の本物のキーに触れない。テストは偽のキーを環境変数で渡す |
+| 書き出したファイル | 環境変数 `BUNRI_E2E_DOWNLOAD_DIR` の場所に保存する | `~/Downloads` に書かない |
+| プロジェクトの保存・開くのダイアログ | 出さずに、環境変数 `BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所を使う | WebDriver はネイティブのダイアログを操作できない。`~/Documents` に書かない |
+| 記録 | CSP の違反と、捕まえられなかった例外を `window.__bunriE2E` に記録する (画面の読み込みより前に入れる) | テストが、起動の途中で起きた違反まで拾えるように |
+| WebView の UI の受け手 | プラグインが WKWebView の UI の受け手 (WKUIDelegate) を自分のものに差し替える | `alert()` などをテストから扱うため。代わりに、別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認は、テスト用のビルドでは配布物と同じには動かない ([ui-testing.md](ui-testing.md) の「確かめられない範囲」) |
+
+### 選んだ理由と、検討して捨てた案
+
+| 候補 | 判断 |
+|---|---|
+| `tauri-plugin-wdio-webdriver` 1.5.1 (採用) | WebdriverIO の公式 (github.com/webdriverio/desktop-mobile)、MIT。2026-05 に公開、月に 1〜2 回の更新、crates.io で 41 万ダウンロード (直近 90 日 37 万)。127.0.0.1 だけで待ち受け、ポートは環境変数で変えられる。mac (WKWebView) に対応 |
+| `@wdio/tauri-service` (npm。上のプラグインを使う WebdriverIO の仕組み) | 不採用。アプリの起動を受け持つが、環境変数 (データ置き場、偽の Claude) を渡す設定が無く、sidecar まで終わったかの確認もできない。`@wdio/cli` などを含め依存が多い |
+| `webdriverio` (npm のクライアント) 9.31.9 | 不採用。試したが、200 を超える依存 (ブラウザや FTP のダウンロードなど、ここでは使わないもの) が入り、そのうち `basic-ftp` に深刻度 high の勧告が出ていた。使う API は 7 つだけなので、fetch で直接呼ぶ |
+| Tauri 公式の `tauri-driver` | mac に対応していない (WKWebView の WebDriver が無い) |
+| `@crabnebula/tauri-driver` | mac では有料のキーが要る |
+| `tauri-webdriver-automation` + `tauri-wd` | MIT/Apache-2.0 だが、利用が少ない (約 4 千ダウンロード) |
+| MCP の橋渡し (`tauri-plugin-mcp-bridge` など) | 入れていない。窓の画像と JS の実行は WebDriver で足りる (`npm run desktop:inspect`)。もう 1 つ自動操作のサーバをアプリに入れることになり、npm の MCP サーバも第三者製のため |
 
 ## ビルド
 
@@ -166,4 +322,6 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新
-- 書き出しの保存先を選ぶダイアログ (WebView の既定の動きで `~/Downloads` に保存される)
+- 書き出し (WAV・MIDI) の保存先を選ぶダイアログ (プロジェクトの保存にはダイアログを入れた)。いまは `~/Downloads` に保存する (同じ名前が在れば `名前 (1).wav` のように番号を付ける)。
+  保存は Rust が受けている (`src-tauri/src/windows.rs` の `on_download`)。受けなくても WKWebView は `~/Downloads` に
+  保存するが、受けておくとログに残り、窓を自動操作するテストが保存先を差し替えられる

@@ -92,6 +92,21 @@ class TestBuildChart:
         assert chart["source"]["filename"] == "song.wav"
         assert chart["source"]["duration_sec"] > 0
 
+    def test_counts_bars_in_detected_triple_meter(self, waltz_song):
+        """拍子を渡さなければ自動で決め、コードの小節・拍もその拍子で数える"""
+        path, truth = waltz_song
+        chart = song_chart.build_chart(path)
+        assert chart["grid"]["time_signature"] == [truth["beats_per_bar"], 4] == [3, 4]
+        assert chart["chords"]
+        assert all(1 <= chord["beat"] <= 3 for chord in chart["chords"])
+
+    def test_given_meter_is_used_for_bars(self, waltz_song):
+        """拍子を渡せば、その拍子で数える（3 拍子の曲でも 4 と言われれば 4）"""
+        path, _ = waltz_song
+        chart = song_chart.build_chart(path, beats_per_bar=4)
+        assert chart["grid"]["time_signature"] == [4, 4]
+        assert any(chord["beat"] == 4 for chord in chart["chords"])
+
     def test_detects_key(self, chord_song):
         """キーを正しく推定する"""
         path, truth = chord_song

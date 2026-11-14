@@ -122,23 +122,29 @@ def model_status(name):
     return {"model": name, "cached": cached, "missing": 0 if cached else 1}
 
 
-def _http_fetch(url, dest):
+def _http_fetch(url, dest, on_bytes=None):
     """URL の中身を ``dest`` に書き出す（リダイレクトを追う）。
 
     Args:
         url: 取りに行く URL。
         dest: 書き出し先のパス。
+        on_bytes: ``on_bytes(書き出したバイト数の合計)``。ブロックを書くたびに呼ぶ。
+            進み具合の報告と、途中でやめる（例外を送出する）ために使う。None なら呼ばない。
 
     Raises:
         Exception: 接続できない、または 2xx 以外が返った場合（httpx の例外）。
     """
     import httpx
 
+    done = 0
     with httpx.stream("GET", url, follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as resp:
         resp.raise_for_status()
         with open(dest, "wb") as f:
             for block in resp.iter_bytes(1 << 20):
                 f.write(block)
+                done += len(block)
+                if on_bytes is not None:
+                    on_bytes(done)
 
 
 def _sha256_of(path):
@@ -150,7 +156,7 @@ def _sha256_of(path):
     return digest.hexdigest()
 
 
-def ensure_model(name, fetch=None):
+def ensure_model(name, fetch=None, on_bytes=None):
     """モデルが手元に無ければダウンロードし、ファイルのパスを返す。
 
     落としたファイルは、SHA-256 が定義と一致したときだけ置く。同時に呼ばれても、
@@ -159,6 +165,10 @@ def ensure_model(name, fetch=None):
     Args:
         name: モデル名。
         fetch: ``fetch(url, dest)`` の形の関数。None なら HTTP で取りに行く。テスト用。
+        on_bytes: ``on_bytes(落としたバイト数の合計)``。HTTP で取りに行くあいだ、ブロックごとに呼ぶ
+            （``fetch`` を渡したときは呼ばない）。ジョブの進み具合の報告に使う。ここから
+            ``Exception`` でない例外（``background_jobs.JobCancelled``）を送出すると、
+            ダウンロードをやめて、その例外をそのまま外へ出す。
 
     Returns:
         pathlib.Path: モデルのファイルのパス。
@@ -176,13 +186,20 @@ def ensure_model(name, fetch=None):
         url = model_url(name)
         print(f"[モデル] {name} をダウンロードします（約 {spec['size'] // (1 << 20)} MB）: {url}")
         try:
-            (fetch or _http_fetch)(url, part)
+            if fetch is not None:
+                fetch(url, part)
+            else:
+                _http_fetch(url, part, on_bytes=on_bytes)
         except Exception as e:
             part.unlink(missing_ok=True)
             raise ModelUnavailableError(
                 "分離用の追加モデルをダウンロードできませんでした。ネットワークの接続を確かめてください。"
                 f"（{type(e).__name__}）"
             ) from e
+        except BaseException:
+            # 途中でやめたとき（ジョブのキャンセルなど）。書きかけを残さない
+            part.unlink(missing_ok=True)
+            raise
         actual = _sha256_of(part)
         if actual != spec["sha256"]:
             part.unlink(missing_ok=True)

@@ -59,6 +59,8 @@ blocks it the first time:
 
 To work on the app, run it in development mode: `make install`, `make install-frontend` and `make install-desktop` once, then `make desktop`.
 
+For development with Codex, run `make harness-setup`; see the [Codex harness guide](docs/codex-harness.md) for shared agent rules, skills and verification commands.
+
 ## How It Works
 
 ```mermaid
@@ -84,14 +86,12 @@ graph LR
 | Polyphonic transcription | Yes | No | Yes | No | Yes |
 | Editable piano roll | Yes | No | Yes | No | No |
 | Built-in DAW | Yes | Limited | Yes | No | No |
-| AI composition assistant | Yes | No | No | No | No |
 | Price | Free | $4-25/mo | $200+ | Free | Free |
 
 ## Features
 
 - **Song to Piano Roll** — Upload any audio file, get editable notes on a timeline in one click
 - **Source Separation** — Demucs 6-stem (vocals / drums / bass / guitar / piano / other), plus an optional drum split (kick / snare / toms / cymbals)
-- **AI Music Assistant** — Describe what you want in natural language, get note suggestions (Ollama local or Claude cloud)
 - **Synth & Drum Machine** — 4 waveforms, 6 instrument presets, GM soundfont, 4 drum patterns
 - **Effects** — EQ, compressor, reverb, delay, pitch shift, time stretch
 - **WAV Optimizer** — Reduce file size with high-quality resampling + TPDF dithering
@@ -101,15 +101,22 @@ graph LR
 
 - [x] Basic Pitch integration (polyphonic transcription)
 - [x] Desktop app (macOS, Apple Silicon)
-- [x] AI composition assistant (Ollama + Claude)
 - [x] MIDI export (piano-roll notes to a standard MIDI file)
 - [x] MIDI keyboard input (step input and real-time recording)
-- [ ] MIDI import
+- [x] MIDI import (as new tracks, or as a reference to practise against)
 - [ ] VST plugin support
 - [ ] Real-time collaboration
 - [ ] Windows / Linux builds
 
 ## Development
+
+The audio engine (`src-tauri/audio-engine`) builds [sfizz](https://github.com/sfztools/sfizz) from a git submodule,
+so `make test` / `make lint` also need the submodules and CMake:
+
+```bash
+git submodule update --init --recursive
+brew install cmake
+```
 
 ```bash
 make install           # Backend dependencies (uv sync)

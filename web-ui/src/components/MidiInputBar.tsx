@@ -6,156 +6,129 @@
  *
  * - 録らない: 音を鳴らすだけ（音を探すとき用）
  * - ステップ入力: 弾くたびに、カーソルの位置へ決まった長さのノートを置いて進む
- * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く
+ * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く。再生の前に 1 小節ぶんのカウントを入れられる。
+ *   弾いた位置は、遅れの補正のぶんだけ前へ戻して置く
+ *
+ * 弾いた強さ（ベロシティ）は、どちらの録り方でもノートに残る。
  *
  * 入力元は環境で変わる（lib/midi-input.ts）。開発用のブラウザ起動は Web MIDI API（Chrome / Edge）、
  * デスクトップ版はネイティブ側。どちらも無い環境では、使えない旨だけを出す。
+ *
+ * つなぐ・録る仕組みは `useMidiInput`（lib/useMidiInput.ts）にまとめてあり、中央エリアが 1 つだけ持つ。ふだんのピアノロールの
+ * 見出し（この操作バー）と練習画面の「入力」は、同じ 1 つを操作する（画面を切り替えても、つないだまま）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
-import engine from '../lib/engine';
-import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, type MidiSource, type RecordMode } from '../lib/midi-input';
+import { cursorLabel, type RecordMode } from '../lib/midi-input';
+import { MAX_LATENCY_MS, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
+import { tip } from '../lib/tooltip';
 
 /** ステップ入力で選べるノートの長さ（ステップ数と呼び名）。 */
 const STEP_LENGTHS: [number, string][] = [[1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
 
+/** 録り方に載せたときの説明 */
+const MODE_TIPS: Record<RecordMode, string> = {
+    off: '鍵盤を弾くと音が鳴るだけで、ノートは置きません',
+    step: '弾くたびに、決めた長さのノートを順に置いていきます。同時に押すと和音になります',
+    realtime: '再生しているあいだ、弾いたとおりのタイミングと長さでノートを置きます',
+};
+
 const controlStyle = {
-    fontSize: 10, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
+    fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
     background: 'var(--bg-deep)', color: 'var(--text-mid)', border: '1px solid var(--border)',
     borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
 } as const;
 
 /**
- * MIDI キーボード入力の操作バー。
+ * リアルタイム録音の設定（録音前のカウントと、遅れの補正）。練習画面でも使う。
+ *
+ * 遅れの補正は、弾いた位置を前へ戻す量。聞こえた音に合わせて弾くと、音が耳に届くまでの遅れのぶんだけ
+ * 後ろに置かれるので、そのぶんを戻す。既定は、音の出力の遅れ（ブラウザが知らせる値）。
+ * ノートが後ろにずれて入るなら増やし、前にずれるなら減らす。
  */
-export default function MidiInputBar() {
-    const { pianoRollRef, setStatus, bumpTracks, beatsPerBar } = useDaw();
-    const [available] = useState(() => pickMidiSource() !== null);
-    const [connected, setConnected] = useState(false);
-    const [devices, setDevices] = useState<string[]>([]);
-    const [mode, setMode] = useState<RecordMode>('step');
-    const [stepLength, setStepLength] = useState(4);
-    const [cursor, setCursor] = useState(0);
-    const sourceRef = useRef<MidiSource | null>(null);
-    const recorderRef = useRef<MidiNoteRecorder | null>(null);
+export function RealtimeSettings({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
+    const control = style ?? controlStyle;
+    // 見出しと欄が、行の折り返しで離れないようにする
+    const labelStyle = { marginLeft: 8, fontSize: 11, color: 'var(--text-mid)', whiteSpace: 'nowrap', display: 'inline-block' } as const;
+    return (
+        <>
+            <label style={labelStyle}>
+                <input type="checkbox" checked={midi.countIn} onChange={(e) => midi.setCountIn(e.target.checked)}
+                    style={{ width: 'auto', marginRight: 4, verticalAlign: 'middle' }}
+                    {...tip('再生を押すと、曲が始まる前に 1 小節ぶんのクリックが鳴ります。そのあいだは、弾いても録りません')} />
+                録音前にカウント
+            </label>
+            <label style={labelStyle}>
+                遅れの補正
+                <input type="number" aria-label="遅れの補正（ミリ秒）" min={0} max={MAX_LATENCY_MS} step={5} value={midi.latencyMs}
+                    onChange={(e) => midi.setLatencyMs(e.target.value === '' ? null : Number(e.target.value))}
+                    style={{ ...control, width: 56, cursor: 'text' }}
+                    {...tip('弾いた位置を、この時間だけ前へ戻して置きます。ノートが後ろにずれて入るなら増やし、前にずれるなら減らしてください')} />
+                ミリ秒
+            </label>
+            {!midi.latencyAuto && (
+                <button type="button" style={control} onClick={() => midi.setLatencyMs(null)}
+                    {...tip('遅れの補正を、音が出るまでの遅れから自動で決めた値に戻します')}>おまかせに戻す</button>
+            )}
+        </>
+    );
+}
 
-    // 録り方を決める部品。ピアノロールと再生位置を、呼ばれたときに見にいく
-    if (recorderRef.current === null) {
-        recorderRef.current = new MidiNoteRecorder({
-            position: () => {
-                const sec = engine.getPlayPosition();
-                return sec === null ? null : sec / (60 / engine.bpm / 4);
-            },
-            addNote: (n) => pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length),
-            get totalSteps() { return pianoRollRef.current?.totalSteps ?? 128; },
-            get minOctave() { return pianoRollRef.current?.octaveRange?.[0] ?? 2; },
-            get maxOctave() { return pianoRollRef.current?.octaveRange?.[1] ?? 7; },
-        });
-    }
+/** ステップ入力の長さの選択肢（練習画面でも使う）。 */
+export function StepLengthSelect({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
+    return (
+        <select aria-label="ノートの長さ" style={style ?? controlStyle} value={midi.stepLength}
+            {...tip('ステップ入力で置くノートの長さ')}
+            onChange={(e) => midi.setStepLength(Number(e.target.value))}>
+            {STEP_LENGTHS.map(([steps, label]) => <option key={steps} value={steps}>{label}</option>)}
+        </select>
+    );
+}
 
-    const handleMessage = useCallback((bytes: ArrayLike<number>) => {
-        const event = parseMidiMessage(bytes);
-        const recorder = recorderRef.current;
-        if (!event || !recorder) return;
+/**
+ * MIDI キーボード入力の操作バー。
+ *
+ * @param midi - 中央エリアが持つ MIDI 入力の仕組み。省略すると、自分で 1 つ持つ（テスト用）
+ */
+export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
+    const { beatsPerBar } = useDaw();
+    const own = useMidiInput();
+    const c = midi ?? own;
 
-        // 弾いた音は、録るかどうかに関係なく鳴らす
-        if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity);
-        else engine.liveNoteOff(event.pitch);
-
-        if (recorder.mode === 'off') return;
-        if (pianoRollRef.current?.getActiveTrackId?.() == null) {
-            if (event.type === 'on') setStatus('MIDI 入力: 先に、ノートを入れるトラックをクリックして選んでください');
-            return;
-        }
-        const result = recorder.handle(event);
-        if (result.kind === 'added') {
-            bumpTracks();
-        } else if (result.kind === 'skipped') {
-            setStatus({
-                range: 'MIDI 入力: この高さはピアノロールの範囲の外です',
-                end: 'MIDI 入力: ピアノロールの末尾まで入力しました',
-                stopped: 'MIDI 入力: リアルタイム録音は、再生してから弾いてください',
-            }[result.reason]);
-        }
-        setCursor(recorder.cursor);
-    }, [pianoRollRef, setStatus, bumpTracks]);
-
-    const connect = useCallback(async () => {
-        const source = pickMidiSource();
-        if (!source) return;
-        try {
-            await source.start(handleMessage, setDevices);
-            sourceRef.current = source;
-            setConnected(true);
-        } catch (e) {
-            setStatus('MIDI 入力を開けませんでした: ' + String((e as Error)?.message ?? e));
-        }
-    }, [handleMessage, setStatus]);
-
-    const disconnect = useCallback(async () => {
-        const source = sourceRef.current;
-        sourceRef.current = null;
-        setConnected(false);
-        setDevices([]);
-        engine.liveAllNotesOff();
-        try { await source?.stop(); } catch { /* 閉じる途中の失敗は無視する */ }
-    }, []);
-
-    // 画面を離れるときは入力を閉じ、鳴っている音を止める
-    useEffect(() => () => {
-        engine.liveAllNotesOff();
-        void sourceRef.current?.stop().catch(() => {});
-    }, []);
-
-    const handleMode = useCallback((next: RecordMode) => {
-        setMode(next);
-        recorderRef.current?.setMode(next);
-    }, []);
-
-    // 最初の録り方を、録る部品にも伝えておく
-    useEffect(() => { recorderRef.current?.setMode(mode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    if (!available) {
-        return (
-            <span className="area-hint" style={{ marginLeft: 12 }}>
-                MIDI 入力はこのブラウザでは使えません（Chrome / Edge、またはデスクトップ版で使えます）
-            </span>
-        );
+    if (!c.available) {
+        return <span className="area-hint" style={{ marginLeft: 12 }}>{midiUnavailableText()}</span>;
     }
 
     return (
         <span id="midi-input-bar" style={{ marginLeft: 12, textTransform: 'none', letterSpacing: 0 }}>
-            <button type="button" style={controlStyle} aria-pressed={connected}
-                onClick={connected ? disconnect : connect}>
-                {connected ? 'MIDI 入力を止める' : 'MIDI 入力'}
+            <button type="button" style={controlStyle} aria-pressed={c.connected}
+                {...tip(c.connected
+                    ? 'MIDI 鍵盤からの入力を止めます'
+                    : 'つないだ MIDI 鍵盤で音を鳴らしたり、ノートを置いたりできるようにします')}
+                onClick={c.connected ? () => void c.disconnect() : () => void c.connect()}>
+                {c.connected ? 'MIDI 入力を止める' : 'MIDI 入力'}
             </button>
-            {connected && (
+            {c.connected && (
                 <>
-                    <button type="button" style={controlStyle} onClick={connect} title="機器を挿し直したときに押す">再検出</button>
-                    <select aria-label="録り方" style={controlStyle} value={mode} onChange={(e) => handleMode(e.target.value as RecordMode)}>
+                    <button type="button" style={controlStyle} onClick={() => void c.connect()} {...tip('鍵盤をつなぎ直したときに押します')}>再検出</button>
+                    <select aria-label="録り方" style={controlStyle} value={c.mode} onChange={(e) => c.setMode(e.target.value as RecordMode)}
+                        {...tip(MODE_TIPS[c.mode])}>
                         <option value="off">録らない（音だけ）</option>
                         <option value="step">ステップ入力</option>
                         <option value="realtime">リアルタイム録音</option>
                     </select>
-                    {mode === 'step' && (
+                    {c.mode === 'step' && (
                         <>
-                            <select aria-label="ノートの長さ" style={controlStyle} value={stepLength}
-                                onChange={(e) => {
-                                    const length = Number(e.target.value);
-                                    setStepLength(length);
-                                    if (recorderRef.current) recorderRef.current.stepLength = length;
-                                }}>
-                                {STEP_LENGTHS.map(([steps, label]) => <option key={steps} value={steps}>{label}</option>)}
-                            </select>
-                            <span className="area-hint" style={{ marginLeft: 6 }}>次の位置: {cursorLabel(cursor, beatsPerBar)}</span>
-                            <button type="button" style={controlStyle}
-                                onClick={() => { if (recorderRef.current) recorderRef.current.cursor = 0; setCursor(0); }}>
+                            <StepLengthSelect midi={c} />
+                            <span className="area-hint" style={{ marginLeft: 6 }}>次の位置: {cursorLabel(c.cursor, beatsPerBar)}</span>
+                            <button type="button" style={controlStyle} onClick={() => c.setCursor(0)}
+                                {...tip('次にノートを置く位置を、曲の頭に戻します')}>
                                 先頭へ
                             </button>
                         </>
                     )}
+                    {c.mode === 'realtime' && <RealtimeSettings midi={c} />}
                     <span className="area-hint" style={{ marginLeft: 8 }}>
-                        {devices.length > 0 ? devices.join(' / ') : '鍵盤が見つかりません（つないでから「再検出」）'}
+                        {c.devices.length > 0 ? c.devices.join(' / ') : '鍵盤が見つかりません（つないでから「再検出」）'}
                     </span>
                 </>
             )}

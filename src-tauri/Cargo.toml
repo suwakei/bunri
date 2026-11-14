@@ -6,6 +6,10 @@ license = "Apache-2.0"
 edition = "2021"
 publish = false
 
+# 音のエンジンは Tauri 抜きでテストできるよう別の crate に分けている
+[workspace]
+members = ["audio-engine"]
+
 [lib]
 name = "bunri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -22,7 +26,20 @@ tokio = { version = "1", features = ["sync"] }
 # 起動ごとのトークンを OS の乱数から作る
 getrandom = "0.3"
 keyring = "4.2"
+# プロジェクトの保存・開くのネイティブのダイアログ (Tauri 公式)。ダイアログは Rust から出すだけで、
+# 画面 (JS) には権限を渡さない (capabilities に dialog:* を足さない)。docs/desktop-architecture.md「プロジェクトのファイル」
+tauri-plugin-dialog = "=2.8.4"
 midir = "0.11.1"
+# テスト専用 (機能 e2e のときだけ入る)。窓を外から操作する WebDriver サーバを、アプリの中で動かす。
+# 配布物には入れない。選んだ理由と守っている約束は docs/desktop-architecture.md「窓を自動操作するテスト」
+tauri-plugin-wdio-webdriver = { version = "=1.5.1", optional = true }
+
+[features]
+# 既定では何も足さない。e2e は make e2e-desktop が付けるだけで、ここ (default) には絶対に入れない
+default = []
+# 窓を自動操作するテスト用のビルド。WebDriver サーバ (認証の無い HTTP) をアプリの中で起動するので、
+# 配布物 (release ビルド) では使えない (lib.rs の compile_error! で止める)
+e2e = ["dep:tauri-plugin-wdio-webdriver"]
 
 [target.'cfg(unix)'.dependencies]
 # 止めるとき、子プロセスが起動した孫までプロセスグループごと終わらせる

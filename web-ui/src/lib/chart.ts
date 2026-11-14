@@ -138,6 +138,27 @@ export interface ChartResponse {
     glossary: Glossary;
 }
 
+/**
+ * ジョブの結果（`unknown`）が、カルテの API の結果の形か。画面に当てる前に確かめる。
+ *
+ * ジョブの結果は、終わった状態（`done`）でも中身の形までは決まっていない（`Job.result` は `unknown`）。
+ * 形の違う結果をカルテとして当てると、グリッドを読むところで例外になり、取り込みが途中で止まる
+ * （e2e の遅いジョブ `/api/e2e/slow-job` の結果 `{ok, kind, filename}` を、カルテとして当てていた）。
+ * 画面が読むところ（グリッド・キー・コード・構成）だけを見る。
+ */
+export function isChartResponse(value: unknown): value is ChartResponse {
+    if (!value || typeof value !== 'object') return false;
+    const chart = (value as { chart?: unknown }).chart as Partial<SongChart> | null | undefined;
+    if (!chart || typeof chart !== 'object') return false;
+    const grid = chart.grid as Partial<ChartGrid> | undefined;
+    return !!grid && typeof grid === 'object'
+        && typeof grid.bpm === 'number' && Number.isFinite(grid.bpm)
+        && typeof grid.downbeat_offset_sec === 'number'
+        && Array.isArray(grid.time_signature)
+        && !!chart.key && typeof chart.key === 'object'
+        && Array.isArray(chart.chords) && Array.isArray(chart.sections);
+}
+
 /** 確信度の3段階 */
 export type ConfidenceTier = 'certain' | 'likely' | 'unsure';
 
@@ -160,9 +181,9 @@ export function confidenceTier(value: number | null | undefined): ConfidenceTier
 
 /** 確信度の段階ごとの表示ラベルと色 */
 export const TIER_DISPLAY: Record<ConfidenceTier, { label: string; color: string }> = {
-    certain: { label: '確実', color: 'var(--secondary)' },
+    certain: { label: '確実', color: 'var(--ok)' },
     likely: { label: 'たぶん', color: 'var(--accent)' },
-    unsure: { label: '自信なし', color: 'var(--danger)' },
+    unsure: { label: '自信なし', color: 'var(--error)' },
 };
 
 /** セクションの提案ラベルを日本語表示にする対応表 */

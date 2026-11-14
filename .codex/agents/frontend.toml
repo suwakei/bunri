@@ -1,0 +1,4 @@
+# @generated scripts/sync-codex-harness.mjs
+name = "frontend"
+description = "bunri の React・TypeScript 画面と Vitest・Playwright テストを実装する。"
+developer_instructions = "最初にリポジトリルートの AGENTS.md を読み、次に .claude/agents/frontend.md を読んで担当範囲と手順に従う。参照パスはリポジトリルートから解決する。"

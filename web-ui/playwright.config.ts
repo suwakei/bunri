@@ -7,13 +7,11 @@
  * ここでは確かめられない (それらは src-tauri のテストで見る)。
  *
  * ブラウザは 2 つ。Chromium と、デスクトップアプリの WebView に近い WebKit。
+ * 画面にはデスクトップアプリと同じ CSP を掛け (src-tauri/tauri.conf.json から読む)、違反が在れば失敗させる。
+ * 本物の窓 (Tauri) を相手にするテストは別に在る (e2e-desktop/、make e2e-desktop)。
  */
 import { defineConfig, devices } from '@playwright/test';
-import { FAKE_LLM_PORT, FAKE_LLM_URL } from './e2e/helpers';
-
-/** 画面のポート。ほかの開発サーバとぶつからないよう、よく使われる番号を避けている。 */
-const PORT = 5199;
-const URL = `http://127.0.0.1:${PORT}`;
+import { E2E_PORT as PORT, E2E_URL as URL, FAKE_LLM_PORT, FAKE_LLM_URL } from './e2e/helpers';
 
 /*
  * 普段のテストでは、API サーバに本物の Claude ではなく、偽のサーバ (e2e/fake-anthropic.mjs) を呼ばせる。
@@ -39,6 +37,9 @@ export default defineConfig({
     fullyParallel: false,
     workers: 1,
     reporter: [['list']],
+    // 画面にはデスクトップアプリと同じ CSP が掛かっている (scripts/dev-web.mjs)。
+    // どのテストの途中でも違反が 1 つでも起きていたら、最後に失敗させる
+    globalTeardown: './e2e/csp-check.ts',
     use: {
         baseURL: URL,
         trace: 'retain-on-failure',
@@ -56,8 +57,12 @@ export default defineConfig({
             command: `node ../scripts/dev-web.mjs --port ${PORT}`,
             url: URL,
             timeout: 120_000,
-            // dev-web.mjs は、受け取った環境変数をそのまま API サーバに渡す
-            env: REAL_LLM ? {} : { ANTHROPIC_BASE_URL: FAKE_LLM_URL, ANTHROPIC_API_KEY: 'e2e-fake-key' },
+            // dev-web.mjs は、受け取った環境変数をそのまま API サーバに渡す。
+            // BUNRI_E2E_HOOKS: テスト用の、わざと遅いジョブの API を足す (進み具合のカードと中止を確かめるため)
+            env: {
+                BUNRI_E2E_HOOKS: '1',
+                ...(REAL_LLM ? {} : { ANTHROPIC_BASE_URL: FAKE_LLM_URL, ANTHROPIC_API_KEY: 'e2e-fake-key' }),
+            },
         },
     ],
     projects: [

@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -169,12 +169,54 @@ impl LaunchConfig {
     ///
     /// - `tauri dev`: 開発機の `uv run` で、リポジトリのコードをそのまま起動する
     /// - 配布物: 同梱した `uv` でアプリのデータ置き場に環境を作り、同梱したコードを起動する
+    #[cfg(not(feature = "e2e"))]
     pub fn for_app(app: &AppHandle) -> Result<Self, String> {
         if tauri::is_dev() {
             Ok(Self::for_dev(app))
         } else {
             Self::for_bundle(app)
         }
+    }
+
+    /// 窓を自動操作するテストのビルドでは、いつも [`LaunchConfig::for_e2e`] で起動する。
+    #[cfg(feature = "e2e")]
+    pub fn for_app(app: &AppHandle) -> Result<Self, String> {
+        Ok(Self::for_e2e(app))
+    }
+
+    /// 窓を自動操作するテスト (`make e2e-desktop`) での起動方法。
+    ///
+    /// 画面は配布物と同じく同梱したもの (`tauri://localhost`、CSP も同じ) を出すが、sidecar は
+    /// 開発時と同じく、リポジトリのコードを開発機の `uv run` で起動する。配布物の起動方法
+    /// (アプリのデータ置き場に `uv sync` で環境を作る) だと、利用者のデータ置き場に触れ、
+    /// 毎回 torch を含む依存を入れ直すことになるため。データの置き場は、テストが環境変数
+    /// `BUNRI_DATA_DIR` で一時ディレクトリを渡す (sidecar はそれを受け継ぐ)。
+    ///
+    /// - CORS の許可先は、配布物と同じ `tauri://localhost` だけ
+    /// - キーチェーンは読まない (テストは偽の API キーを環境変数で渡す)
+    #[cfg(feature = "e2e")]
+    fn for_e2e(app: &AppHandle) -> Self {
+        let mut config = Self::for_dev(app);
+        config.allowed_origins = vec!["tauri://localhost".to_string()];
+        config.keychain_service = None;
+        config
+    }
+
+    /// sidecar のデータ置き場 (`BUNRI_DATA_DIR`)。sidecar が同じ場所を使うように、渡す環境変数と同じ決め方をする。
+    ///
+    /// - 起動に渡す環境変数に在ればそれ (配布物: アプリのデータ置き場の `data/`)
+    /// - アプリが環境変数で受け取っていればそれ (sidecar はそれを受け継ぐ。テストの一時ディレクトリなど)
+    /// - どちらも無ければ作業ディレクトリ (開発時: リポジトリの直下。backend/audio_utils.py の既定と同じ)
+    ///
+    /// プロジェクトのファイルを写すとき (`project.rs`) に使う。
+    pub fn data_dir(&self) -> PathBuf {
+        if let Some((_, value)) = self.server.envs.iter().find(|(k, _)| k == "BUNRI_DATA_DIR") {
+            return PathBuf::from(value);
+        }
+        if let Some(value) = std::env::var_os("BUNRI_DATA_DIR") {
+            return PathBuf::from(value);
+        }
+        self.server.cwd.clone()
     }
 
     /// 開発時の起動方法。
@@ -230,6 +272,7 @@ impl LaunchConfig {
     ///   `runtime/` に Python 本体・venv・uv のキャッシュ、`data/` に利用者のデータ
     ///
     /// アプリの中には何も書き込まない (署名が壊れるため)。
+    #[cfg_attr(feature = "e2e", allow(dead_code))]
     fn for_bundle(app: &AppHandle) -> Result<Self, String> {
         let resource_dir = app
             .path()
@@ -361,21 +404,49 @@ fn tool_path_envs() -> Vec<(OsString, OsString)> {
 }
 
 /// 起動の進み具合を持ち、画面に見せる形で更新していく。
+///
+/// 起動し直したとき (再起動) は、前の起動のスレッドが遅れて「終了した」と書き込まないよう、
+/// 自分の世代 (`generation`) がいまの世代と同じときだけ書き込む。
 struct Progress {
-    tx: watch::Sender<BootStatus>,
+    tx: Arc<watch::Sender<BootStatus>>,
+    /// この起動の世代。
+    generation: u64,
+    /// いまの世代 (再起動のたびに 1 つ進む)。[`Running::generation`] と同じもの。
+    current: Arc<AtomicU64>,
 }
 
 impl Progress {
+    /// 再起動の無い、単独の進み具合 (テスト用)。
+    #[cfg(test)]
+    fn standalone(tx: watch::Sender<BootStatus>) -> Self {
+        Self {
+            tx: Arc::new(tx),
+            generation: 0,
+            current: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// いまの世代のときだけ、状態を書き換えて知らせる。
+    fn update(&self, change: impl FnOnce(&mut BootStatus)) {
+        self.tx.send_if_modified(|status| {
+            if self.current.load(Ordering::SeqCst) != self.generation {
+                return false;
+            }
+            change(status);
+            true
+        });
+    }
+
     fn set(&self, phase: Phase, message: impl Into<String>) {
         let message = message.into();
-        self.tx.send_modify(|status| {
+        self.update(|status| {
             status.phase = phase;
             status.message = message;
         });
     }
 
     fn first_run(&self, first_run: bool) {
-        self.tx.send_modify(|status| status.first_run = first_run);
+        self.update(|status| status.first_run = first_run);
     }
 
     fn log(&self, line: &str) {
@@ -383,7 +454,7 @@ impl Progress {
         if line.is_empty() {
             return;
         }
-        self.tx.send_modify(|status| {
+        self.update(|status| {
             status.log.push(line.to_string());
             let extra = status.log.len().saturating_sub(LOG_TAIL);
             status.log.drain(..extra);
@@ -391,7 +462,7 @@ impl Progress {
     }
 
     fn ready(&self, info: BackendInfo) {
-        self.tx.send_modify(|status| {
+        self.update(|status| {
             status.phase = Phase::Ready;
             status.message = "起動しました".into();
             status.info = Some(info);
@@ -400,7 +471,7 @@ impl Progress {
 
     fn fail(&self, reason: impl Into<String>) {
         let reason = reason.into();
-        self.tx.send_modify(|status| {
+        self.update(|status| {
             status.phase = Phase::Failed;
             status.message = reason;
             status.info = None;
@@ -409,39 +480,93 @@ impl Progress {
 }
 
 /// いま動かしている子プロセス (セットアップ中は uv、そのあとは sidecar) と、止める指示。
+///
+/// 子プロセスは、それを起動した世代と一緒に預ける。再起動のあと、前の世代の起動スレッドが
+/// 新しい sidecar を取り上げてしまわないように。
 #[derive(Default)]
 struct Running {
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<(u64, Child)>>,
+    /// アプリの終了中か (立ったら、もう起動も再起動もしない)。
     stopping: AtomicBool,
+    /// いまの世代。再起動のたびに 1 つ進む。
+    generation: Arc<AtomicU64>,
 }
 
 impl Running {
-    /// 子プロセスを預ける。すでに止める指示が出ていたら、その場で終わらせて false を返す。
-    fn hold(&self, mut child: Child) -> bool {
+    /// 子プロセスを預ける。すでに止める指示が出ていた、または世代が古くなっていたら
+    /// (待っている間に再起動された)、その場で終わらせて false を返す。
+    fn hold(&self, generation: u64, mut child: Child) -> bool {
         let mut slot = self.child.lock().unwrap_or_else(|e| e.into_inner());
-        if self.stopping.load(Ordering::SeqCst) {
+        if self.stopping.load(Ordering::SeqCst)
+            || self.generation.load(Ordering::SeqCst) != generation
+        {
             kill_tree(&mut child);
             return false;
         }
-        *slot = Some(child);
+        *slot = Some((generation, child));
         true
     }
 
     /// 預けた子プロセスの終了を待つ (出力を読み切ったあとに呼ぶ)。
-    fn wait(&self) -> Option<std::process::ExitStatus> {
-        let mut child = self
-            .child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()?;
+    /// 別の世代の子プロセス (再起動で起動し直したもの) には触れない。
+    fn wait(&self, generation: u64) -> Option<std::process::ExitStatus> {
+        let mut slot = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(&*slot, Some((g, _)) if *g == generation) {
+            return None;
+        }
+        let (_, mut child) = slot.take()?;
+        drop(slot);
         child.wait().ok()
     }
+
+    /// 預けている子プロセスを取り出す (世代は問わない)。
+    fn take(&self) -> Option<Child> {
+        self.child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .map(|(_, child)| child)
+    }
+
+    /// 預けている子プロセスの番号 (テスト用)。
+    #[cfg(test)]
+    fn pid(&self) -> Option<u32> {
+        self.child
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, child)| child.id())
+    }
+}
+
+/// 子プロセスを終わらせる。
+///
+/// 標準入力を握っていれば (sidecar)、まずそれを閉じる (sidecar は EOF を見て、自分と子プロセスを終わらせる)。
+/// 3 秒待っても終わらなければ kill する。標準入力を握っていない (セットアップ中の uv) なら、すぐ kill する
+/// (uv sync は次回の起動で続きから入る)。
+fn terminate(mut child: Child) {
+    if child.stdin.take().is_some() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                _ => break,
+            }
+        }
+    }
+    kill_tree(&mut child);
 }
 
 /// 起動した sidecar。Tauri の state として管理する。
 pub struct Sidecar {
     status: watch::Receiver<BootStatus>,
+    tx: Arc<watch::Sender<BootStatus>>,
     running: Arc<Running>,
+    /// 起動方法。決められなかったときは、その理由 (再起動しても同じ理由で失敗する)。
+    config: Result<LaunchConfig, String>,
+    /// 再起動を 1 つずつ通す錠 (連打で 2 つの sidecar を起動しないため)。
+    restarting: Mutex<()>,
 }
 
 impl Sidecar {
@@ -450,23 +575,42 @@ impl Sidecar {
     /// 用意や起動に失敗しても panic せず、状態を「失敗」にする。画面がその理由を表示する。
     pub fn spawn(config: Result<LaunchConfig, String>) -> Self {
         let (tx, rx) = watch::channel(BootStatus::new(Phase::Starting, "bunri を起動しています…"));
-        let running = Arc::new(Running::default());
-        let progress = Progress { tx };
-
-        match config {
-            Err(reason) => progress.fail(reason),
-            Ok(config) => {
-                let running = Arc::clone(&running);
-                thread::Builder::new()
-                    .name("sidecar-boot".into())
-                    .spawn(move || boot(config, &progress, &running))
-                    .expect("sidecar の起動スレッドを作れません");
-            }
-        }
-        Self {
+        let sidecar = Self {
             status: rx,
-            running,
+            tx: Arc::new(tx),
+            running: Arc::new(Running::default()),
+            config,
+            restarting: Mutex::new(()),
+        };
+        match &sidecar.config {
+            Err(reason) => sidecar.progress(0).fail(reason.clone()),
+            Ok(config) => sidecar.start_boot(config.clone(), 0, None),
         }
+        sidecar
+    }
+
+    /// その世代の進み具合の書き手を作る。
+    fn progress(&self, generation: u64) -> Progress {
+        Progress {
+            tx: Arc::clone(&self.tx),
+            generation,
+            current: Arc::clone(&self.running.generation),
+        }
+    }
+
+    /// 起動スレッドを始める。`previous` が在れば、先にそれを終わらせてから起動する。
+    fn start_boot(&self, config: LaunchConfig, generation: u64, previous: Option<Child>) {
+        let progress = self.progress(generation);
+        let running = Arc::clone(&self.running);
+        thread::Builder::new()
+            .name("sidecar-boot".into())
+            .spawn(move || {
+                if let Some(child) = previous {
+                    terminate(child);
+                }
+                boot(config, &progress, &running, generation)
+            })
+            .expect("sidecar の起動スレッドを作れません");
     }
 
     /// 起動の進み具合を返す (画面が起動待ちの間に繰り返し聞く)。
@@ -490,6 +634,32 @@ impl Sidecar {
         }
     }
 
+    /// sidecar を起動し直す。すぐに戻る (待ち受け開始は [`Sidecar::wait_ready`] で待つ)。
+    ///
+    /// 止まった sidecar を画面から起動し直すとき (「再起動」「再試行」) に呼ぶ。動いていても起動し直す
+    /// (応答しなくなった sidecar を終わらせるため)。手順は初めの起動と同じ (配布物ではセットアップから)。
+    /// ポートとトークンは新しくなるので、画面は [`Sidecar::wait_ready`] で受け取り直す。
+    ///
+    /// 前の sidecar は、起動スレッドの中で終わらせる (標準入力を閉じて、3 秒で kill)。
+    /// 前の起動スレッドが遅れて「終了した」と書き込んでも、世代が違うので無視される。
+    ///
+    /// 起動方法を決められなかった場合と、アプリの終了中は、理由を返して何もしない。
+    pub fn restart(&self) -> Result<(), String> {
+        let config = self.config.clone()?;
+        let _one_at_a_time = self.restarting.lock().unwrap_or_else(|e| e.into_inner());
+        if self.running.stopping.load(Ordering::SeqCst) {
+            return Err("終了中です".into());
+        }
+        // 世代を進めてから取り出す。前の世代の起動スレッドは、このあと子プロセスを預けようとしても断られる
+        let generation = self.running.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let previous = self.running.take();
+        self.progress(generation).update(|status| {
+            *status = BootStatus::new(Phase::Starting, "bunri を起動し直しています…")
+        });
+        self.start_boot(config, generation, previous);
+        Ok(())
+    }
+
     /// 動かしているものを止める。アプリの終了時に呼ぶ。何度呼んでもよい。
     ///
     /// まず標準入力を閉じる (sidecar は EOF を見て、自分と子プロセスを終わらせる)。
@@ -497,28 +667,9 @@ impl Sidecar {
     /// (次回の起動で続きから入る)。
     pub fn stop(&self) {
         self.running.stopping.store(true, Ordering::SeqCst);
-        let Some(mut child) = self
-            .running
-            .child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        else {
-            return;
-        };
-        if child.stdin.take().is_some() {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) if Instant::now() < deadline => {
-                        thread::sleep(Duration::from_millis(50))
-                    }
-                    _ => break,
-                }
-            }
+        if let Some(child) = self.running.take() {
+            terminate(child);
         }
-        kill_tree(&mut child);
     }
 }
 
@@ -529,9 +680,9 @@ impl Drop for Sidecar {
 }
 
 /// 起動の本体 (起動スレッドで動く)。セットアップ → sidecar の起動 → 終了までの監視。
-fn boot(config: LaunchConfig, progress: &Progress, running: &Running) {
+fn boot(config: LaunchConfig, progress: &Progress, running: &Running, generation: u64) {
     if let Some(setup) = &config.setup {
-        if let Err(reason) = run_setup(setup, progress, running) {
+        if let Err(reason) = run_setup(setup, progress, running, generation) {
             if !running.stopping.load(Ordering::SeqCst) {
                 progress.fail(reason);
             }
@@ -542,11 +693,16 @@ fn boot(config: LaunchConfig, progress: &Progress, running: &Running) {
         return;
     }
     progress.set(Phase::Starting, "bunri を起動しています…");
-    run_server(&config, progress, running);
+    run_server(&config, progress, running, generation);
 }
 
 /// Python 環境を用意する (`uv sync`)。出力を進み具合として流す。
-fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Result<(), String> {
+fn run_setup(
+    setup: &SetupSpec,
+    progress: &Progress,
+    running: &Running,
+    generation: u64,
+) -> Result<(), String> {
     let first_run = setup.needs_install();
     progress.first_run(first_run);
     progress.set(
@@ -579,7 +735,7 @@ fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Resul
             )
         })?;
     let stderr = child.stderr.take();
-    if !running.hold(child) {
+    if !running.hold(generation, child) {
         return Err("終了中です".into());
     }
 
@@ -593,7 +749,7 @@ fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Resul
             tail.drain(..extra);
         }
     }
-    match running.wait() {
+    match running.wait(generation) {
         Some(status) if status.success() => {
             // 済んだ印を書く。書けなくても起動は続ける (次回も同じ確認をするだけ)
             if !setup.lock_hash.is_empty() {
@@ -610,7 +766,7 @@ fn run_setup(setup: &SetupSpec, progress: &Progress, running: &Running) -> Resul
 }
 
 /// sidecar を起動し、終了するまで標準出力を読み続ける。
-fn run_server(config: &LaunchConfig, progress: &Progress, running: &Running) {
+fn run_server(config: &LaunchConfig, progress: &Progress, running: &Running, generation: u64) {
     let token = match generate_token() {
         Ok(token) => token,
         Err(reason) => return progress.fail(reason),
@@ -640,15 +796,16 @@ fn run_server(config: &LaunchConfig, progress: &Progress, running: &Running) {
         }
     };
     let stdout = child.stdout.take();
-    if !running.hold(child) {
+    if !running.hold(generation, child) {
         return;
     }
     if let Some(stdout) = stdout {
         watch_stdout(stdout, token, progress);
     }
     if !running.stopping.load(Ordering::SeqCst) {
-        // 自分から終わった (止める指示は出していない)。後始末だけしておく
-        let _ = running.wait();
+        // 自分から終わった (止める指示は出していない)。後始末だけしておく。
+        // 再起動で取り出されていれば (別の世代)、何もしない
+        let _ = running.wait(generation);
     }
 }
 
@@ -724,7 +881,7 @@ mod tests {
 
     fn progress() -> (Progress, watch::Receiver<BootStatus>) {
         let (tx, rx) = watch::channel(BootStatus::new(Phase::Starting, ""));
-        (Progress { tx }, rx)
+        (Progress::standalone(tx), rx)
     }
 
     fn sh(script: &str) -> ProcessSpec {
@@ -954,7 +1111,7 @@ mod tests {
         assert_eq!(info.port, 4321);
         assert_eq!(info.token.len(), 64);
 
-        let pid = sidecar.running.child.lock().unwrap().as_ref().unwrap().id();
+        let pid = sidecar.running.pid().unwrap();
         let started = Instant::now();
         sidecar.stop();
         // 標準入力を閉じただけで終わるので、kill の待ち時間 (3 秒) より十分早い
@@ -1052,7 +1209,7 @@ mod tests {
         );
         assert!(status.message.contains("error: Failed to fetch"));
         assert!(
-            sidecar.running.child.lock().unwrap().is_none(),
+            sidecar.running.pid().is_none(),
             "失敗したのに sidecar を起動している"
         );
         assert!(!marker.exists(), "失敗したのに済んだ印を書いている");
@@ -1079,7 +1236,7 @@ mod tests {
         }));
         let status = wait_until(&sidecar, |s| !s.log.is_empty());
         assert_eq!(status.phase, Phase::Setup);
-        let pid = sidecar.running.child.lock().unwrap().as_ref().unwrap().id();
+        let pid = sidecar.running.pid().unwrap();
 
         let begun = Instant::now();
         sidecar.stop();
@@ -1101,5 +1258,175 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
         assert!(!started.exists(), "止めたのに sidecar を起動している");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 起動するたびに違うポートを知らせる「sidecar もどき」。何回目かを `counter` に数える。
+    /// `die_first` なら、1 回目は知らせたあとすぐ終わる (sidecar が落ちた状態を作る)。
+    #[cfg(unix)]
+    fn counting_server(counter: &Path, die_first: bool) -> ProcessSpec {
+        let die = if die_first {
+            r#"[ "$n" = 1 ] && exit 0;"#
+        } else {
+            ""
+        };
+        sh(&format!(
+            r#"n=$(cat '{c}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{c}'; echo "{{\"event\": \"listening\", \"port\": $((4000+n))}}"; {die} cat > /dev/null"#,
+            c = counter.display()
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 再起動すると新しいポートとトークンで待ち受け_前のsidecarは終わる() {
+        let dir = std::env::temp_dir().join(format!("bunri-test-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = Sidecar::spawn(Ok(LaunchConfig {
+            setup: None,
+            server: counting_server(&dir.join("count"), false),
+            allowed_origins: vec![],
+            keychain_service: None,
+        }));
+        let first = wait_until(&sidecar, |s| s.phase == Phase::Ready)
+            .info
+            .unwrap();
+        assert_eq!(first.port, 4001);
+        let old_pid = sidecar.running.pid().unwrap();
+
+        sidecar.restart().unwrap();
+        // 戻った直後から「起動中」。画面はこのあと wait_ready で新しい接続情報を待つ
+        assert_eq!(sidecar.status().phase, Phase::Starting);
+        let status = wait_until(&sidecar, |s| {
+            s.info.as_ref().is_some_and(|i| i.port == 4002)
+        });
+        assert_eq!(status.phase, Phase::Ready, "{}", status.message);
+        let second = status.info.unwrap();
+        assert_ne!(second.token, first.token, "トークンも作り直す");
+        let new_pid = sidecar.running.pid().unwrap();
+        assert_ne!(new_pid, old_pid);
+        assert!(alive(new_pid));
+        assert!(!alive(old_pid), "前の sidecar が残っている");
+        // 前の sidecar が終わったこと (出力が閉じた) で、状態が「失敗」に戻ったりしない
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(sidecar.status().phase, Phase::Ready);
+
+        sidecar.stop();
+        assert!(
+            !alive(new_pid),
+            "stop() のあとも再起動した sidecar が残っている"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 止まったsidecarを再起動できる() {
+        let dir =
+            std::env::temp_dir().join(format!("bunri-test-restart-dead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = Sidecar::spawn(Ok(LaunchConfig {
+            setup: None,
+            server: counting_server(&dir.join("count"), true),
+            allowed_origins: vec![],
+            keychain_service: None,
+        }));
+        // 1 回目は、待ち受けを始めたあとに終わる (落ちた)
+        let dead = wait_until(&sidecar, |s| s.phase == Phase::Failed);
+        assert_eq!(dead.phase, Phase::Failed);
+        assert_eq!(dead.message, "バックエンドが終了しました");
+
+        sidecar.restart().unwrap();
+        let status = wait_until(&sidecar, |s| s.phase == Phase::Ready);
+        assert_eq!(status.phase, Phase::Ready, "{}", status.message);
+        assert_eq!(status.info.unwrap().port, 4002);
+        let pid = sidecar.running.pid().unwrap();
+        sidecar.stop();
+        assert!(!alive(pid));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 前の世代の知らせは_再起動したあとの状態を書き換えない() {
+        let (tx, rx) = watch::channel(BootStatus::new(Phase::Starting, ""));
+        let tx = Arc::new(tx);
+        let current = Arc::new(AtomicU64::new(0));
+        let old = Progress {
+            tx: Arc::clone(&tx),
+            generation: 0,
+            current: Arc::clone(&current),
+        };
+        let new = Progress {
+            tx,
+            generation: 1,
+            current: Arc::clone(&current),
+        };
+        current.store(1, Ordering::SeqCst);
+        new.ready(BackendInfo {
+            port: 4002,
+            token: "new".into(),
+        });
+        // 前の sidecar の出力が遅れて閉じた
+        old.fail("バックエンドが終了しました");
+        old.log("old line");
+        let status = rx.borrow().clone();
+        assert_eq!(status.phase, Phase::Ready);
+        assert_eq!(status.info.unwrap().port, 4002);
+        assert!(status.log.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 前の世代の子プロセスは_新しい世代に預けられない() {
+        let running = Running::default();
+        running.generation.store(1, Ordering::SeqCst);
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // 待っている間に再起動された起動スレッドが、古い世代で預けようとした
+        assert!(!running.hold(0, child));
+        assert!(running.pid().is_none());
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !alive(pid),
+            "預けられなかった子プロセスは、その場で終わらせる"
+        );
+        // 別の世代の wait は、いまの子プロセスに触れない
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+        assert!(running.hold(1, child));
+        assert!(running.wait(0).is_none());
+        assert!(running.pid().is_some());
+        terminate(running.take().unwrap());
+    }
+
+    #[test]
+    fn 起動方法を決められないときは_再起動しても同じ理由で失敗する() {
+        let sidecar = Sidecar::spawn(Err("同梱物の場所が分かりません".into()));
+        assert_eq!(
+            sidecar.restart(),
+            Err("同梱物の場所が分かりません".to_string())
+        );
+        assert_eq!(sidecar.status().phase, Phase::Failed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 終了中は再起動しない() {
+        let sidecar = Sidecar::spawn(Ok(LaunchConfig {
+            setup: None,
+            server: sh(r#"echo "{\"event\": \"listening\", \"port\": 4999}"; cat > /dev/null"#),
+            allowed_origins: vec![],
+            keychain_service: None,
+        }));
+        wait_until(&sidecar, |s| s.phase == Phase::Ready);
+        sidecar.stop();
+        assert_eq!(sidecar.restart(), Err("終了中です".to_string()));
+        thread::sleep(Duration::from_millis(200));
+        assert!(sidecar.running.pid().is_none(), "終了中なのに起動している");
     }
 }

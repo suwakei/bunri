@@ -1,0 +1,14 @@
+[package]
+name = "bunri-audio"
+version = "0.1.0"
+description = "bunri の音のエンジン (曲を受け取って音を作る engine、sfizz によるサンプラー、オフライン描画)"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# WAV の読み書き (クリップの読み込みと、書き出し)
+hound = "3.5"
+
+[build-dependencies]
+cmake = "0.1"

@@ -28,6 +28,28 @@ class TestEstimateKey:
         assert result["mode"] is None
         assert result["confidence"] == 0.0
 
+    def test_weak_contrast_with_clear_profile_is_likely(self):
+        """起伏は弱いがプロファイルとはっきり合うクロマ（倍音の多い矩形波の曲）では、
+        キーを出すが「確実」とは言わない"""
+        profile = np.roll(np.asarray(mt.KS_MINOR_PROFILE), 9)  # A マイナー
+        chroma = 1.0 + 0.12 * (profile - profile.mean())
+        flatness = float(np.std(chroma) / np.mean(chroma))
+        assert mt._KEY_FLATNESS_MIN <= flatness < mt._KEY_FLATNESS_CLEAR
+        result = mt.estimate_key(chroma)
+        assert (result["tonic"], result["mode"]) == ("A", "minor")
+        assert 0 < result["confidence"] <= mt._KEY_WEAK_MAX_CONFIDENCE
+
+    def test_weak_contrast_without_clear_profile_yields_no_key(self):
+        """起伏が弱く、プロファイルとも合わないクロマではキーを出さない"""
+        rng = np.random.RandomState(3)
+        chroma = 1.0 + 0.6 * rng.rand(12)
+        flatness = float(np.std(chroma) / np.mean(chroma))
+        assert mt._KEY_FLATNESS_MIN <= flatness < mt._KEY_FLATNESS_CLEAR
+        corr = max(np.corrcoef(chroma, np.roll(prof, t))[0, 1]
+                   for prof in (mt.KS_MAJOR_PROFILE, mt.KS_MINOR_PROFILE) for t in range(12))
+        assert corr < mt._KEY_WEAK_MIN_CORR
+        assert mt.estimate_key(chroma)["tonic"] is None
+
     def test_empty_chroma_yields_no_key(self):
         """クロマが全て0（無音）ならキーは推定しない"""
         result = mt.estimate_key(np.zeros(12))
@@ -94,6 +116,24 @@ class TestMatchChord:
             result = mt._match_chord(_chroma_for(pcs))
             if result is not None:
                 assert 0.0 <= result[2] <= 1.0
+
+    def test_pure_sus4_is_still_detected(self):
+        """構成音（G・C・D）だけが鳴っていれば、減点があっても sus4 になる"""
+        root, quality, _ = mt._match_chord(_chroma_for([7, 0, 2], strength=1.0))
+        assert (mt.NOTE_NAMES[root], quality) == ("G", "sus4")
+
+    def test_major_with_fifth_harmonics_is_not_sus4(self):
+        """長三和音に倍音（5 度上の音）が薄く乗っても、sus4 に化けない
+
+        C の和音（C・E・G）では、G の第 3 倍音の D が混ざる。3 度（E）が弱めだと、
+        クロマは {C, D, G}（= Gsus4 / Csus2）に寄る。
+        """
+        chroma = np.zeros(12)
+        chroma[[0, 7]] = 1.0   # C, G
+        chroma[4] = 0.55       # E（3 度）がやや弱い
+        chroma[2] = 0.6        # D（G の倍音）
+        root, quality, _ = mt._match_chord(chroma, bass_pc=0)
+        assert (mt.NOTE_NAMES[root], quality) == ("C", "maj")
 
 
 class TestChordContrast:
@@ -238,3 +278,22 @@ class TestDetectChords:
         path, _ = chord_song
         assert mt.detect_chords(path, []) == []
         assert mt.detect_chords(path, [1.0]) == []
+
+    def test_audio_length_where_chroma_frame_counts_differ(self, tmp_path):
+        """全帯域と低域でクロマのフレーム数が食い違う長さの音声でも、例外を投げない
+
+        CQT は帯域の低さに応じて音声を間引いてから解析するので、長さによっては
+        低域のクロマのほうが 1 フレーム長くなる（10.1 秒、17.6 秒、25.1 秒、32.6 秒…）。
+        以前はここで IndexError になり、その長さの曲はカルテを作れなかった。
+        """
+        import soundfile as sf
+
+        sr = 22050
+        t = np.arange(int(sr * 10.1)) / sr
+        chord = sum(np.sin(2 * np.pi * hz * t) for hz in (261.63, 329.63, 392.0))
+        path = tmp_path / "length.wav"
+        sf.write(str(path), (0.2 * chord).astype(np.float32), sr)
+
+        events = mt.detect_chords(str(path), [i * 0.5 for i in range(20)])
+        assert events
+        assert events[0]["symbol"] == "C"

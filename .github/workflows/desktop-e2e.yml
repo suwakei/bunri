@@ -1,0 +1,71 @@
+name: Desktop E2E
+
+# 本物の窓 (Tauri の WKWebView) を自動操作するテスト (make e2e-desktop)。docs/ui-testing.md
+#
+# CI ではテストを自動で回さない (ビルドの確認だけにする方針。ci.yml)。このワークフローも、
+# 手で起動したとき (Actions の画面の「Run workflow」) にだけ走る。ふだんは手元で make e2e-desktop を回す
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web-ui/package-lock.json
+
+      # Python の版は .python-version、依存は uv.lock のとおりに入れる
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      # Rust のビルドの再利用。テスト用のビルドは src-tauri/target/e2e に出る (target の下なので一緒に残る)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix web-ui ci
+          # sidecar は開発時と同じく `uv run --frozen` で起動する。uv run は uv.lock のとおりに環境を揃えるので、
+          # torch などを抜いた軽い環境にはできない (抜いても起動時に入れ直される)。ここで全部入れておく
+          uv sync --frozen
+
+      # 窓を自動操作する WebDriver サーバが、配布物に入らないことを確かめる (docs/desktop-architecture.md)
+      - name: Release builds cannot include the WebDriver server
+        working-directory: src-tauri
+        run: |
+          node ../scripts/prepare-desktop.mjs
+          if cargo tree -e normal --prefix none | grep -q '^tauri-plugin-wdio-webdriver '; then
+            echo "::error::既定のビルドに tauri-plugin-wdio-webdriver が入っています"; exit 1
+          fi
+          # release で機能 e2e を付けると compile_error! で止まること (止まらなければ失敗)
+          if cargo check --release --features e2e > release-e2e.log 2>&1; then
+            echo "::error::release ビルドで機能 e2e が通ってしまいました"; exit 1
+          fi
+          grep -q 'release ビルドでは使えません' release-e2e.log || { cat release-e2e.log; exit 1; }
+
+      - name: Desktop E2E
+        working-directory: web-ui
+        run: npm run e2e:desktop
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-desktop-results
+          path: web-ui/e2e-desktop-results/
+          if-no-files-found: ignore

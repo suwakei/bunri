@@ -1,8 +1,9 @@
 /**
  * bunri DAW — ウェルカムガイドモーダル
  */
-import type { MouseEvent } from 'react';
+import { useRef, type MouseEvent } from 'react';
 import { useDaw } from '../lib/store';
+import { useDialog } from '../lib/dialog';
 
 /**
  * ウェルカムガイドの1ステップを表すデータ型。
@@ -15,28 +16,30 @@ interface GuideStep {
 }
 
 const STEPS: GuideStep[] = [
-    { title: '音声を追加する', desc: '左の「ファイル」タブからWAVを読み込むか、タイムライン上にドラッグ&ドロップします。' },
-    { title: '音を作る', desc: '「シンセ」タブで波形を選び、下のピアノロールにダブルクリックでノートを配置。「シーケンスをレンダリング」で音声化されます。' },
-    { title: 'ドラムを追加する', desc: '「ドラム」タブでパターンとBPMを選んで生成。自動でDrumトラックに追加されます。' },
-    { title: 'タイムラインで配置する', desc: 'クリップをドラッグして好きな位置に移動。各トラックの M（ミュート）S（ソロ）で聴き比べ。' },
-    { title: '再生・書き出し', desc: '▶で再生、「書出」ボタンで全トラックをミックスしたWAVをダウンロードできます。' },
+    { title: '曲を取り込む', desc: '「曲を取り込んで始める」を押して、MP3 や WAV などの曲のファイルを選びます。音声が「原曲」のトラックに置かれます。' },
+    { title: 'カルテを見る', desc: '取り込むと、キー・コード進行・構成・ミックスをまとめたカルテが「学ぶ」タブに出ます。コードを押すと、その小節へ移動します。' },
+    { title: 'パートに分ける', desc: '「パートに分けて採譜する」で、ボーカル・ベースなどのパートに分けます（数分）。採譜したノートはお手本になります。' },
+    { title: '打ち込む', desc: 'パートの「このパートを練習する」を押すと、水色のお手本を重ねたピアノロールが開きます。お手本と原曲を聴きながら、ノートを置きます。' },
+    { title: '差分で直す', desc: '「差分」の「お手本と比べる」で、お手本との違いが一覧になります。指摘を押すと、その場所へ移動します。' },
 ];
 
 /**
  * 初回起動時に表示するウェルカムガイドモーダル。
  * `showGuide` が false の場合は何もレンダリングしない。
- * オーバーレイ外クリックまたは「はじめる」ボタンで閉じると、
+ * オーバーレイ外クリック・Esc キー・「はじめる」ボタンで閉じると、
  * localStorage に既読フラグが保存されて次回以降は表示されない。
  * @returns ガイドモーダルの JSX 要素、非表示時は null
  */
 export default function WelcomeGuide(): React.ReactElement | null {
     const { showGuide, closeGuide } = useDaw();
+    const modalRef = useRef<HTMLDivElement>(null);
+    useDialog(modalRef, showGuide, closeGuide);
     if (!showGuide) return null;
 
     return (
         <div id="guide-overlay" onClick={(e: MouseEvent<HTMLDivElement>) => { if ((e.target as HTMLDivElement).id === 'guide-overlay') closeGuide(); }}>
-            <div id="guide-modal">
-                <h2>bunri DAW へようこそ</h2>
+            <div id="guide-modal" ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="guide-title" tabIndex={-1}>
+                <h2 id="guide-title">bunri DAW へようこそ</h2>
                 <div className="guide-steps">
                     {STEPS.map((step, i) => (
                         <div className="guide-step" key={i}>
@@ -48,8 +51,8 @@ export default function WelcomeGuide(): React.ReactElement | null {
                         </div>
                     ))}
                 </div>
-                <p className="guide-tip">各ボタンやスライダーにマウスを乗せると、画面下部に説明が表示されます。</p>
-                <button className="action-btn" onClick={closeGuide}>はじめる</button>
+                <p className="guide-tip">いまどの段階かは、画面の上の「進み具合」に出ます。曲を使わずに作るときは「自由に作る」を押します。ボタンにマウスを載せると、そばに説明が出ます。</p>
+                <button className="action-btn" data-autofocus onClick={closeGuide}>はじめる</button>
             </div>
         </div>
     );

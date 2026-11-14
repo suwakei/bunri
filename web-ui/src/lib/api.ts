@@ -87,6 +87,37 @@ export async function invokeDesktop<T>(cmd: string, args?: Record<string, unknow
 const BOOT_POLL_MS = 500;
 
 /**
+ * Rust 側のコマンド（`backend_info` / `restart_backend`）で接続情報を受け取り、接続先を差し替える。
+ * 待っている間は `boot_status` を聞いて、進み具合を `onStatus` に渡す。
+ */
+async function connect(tauri: TauriGlobal, cmd: 'backend_info' | 'restart_backend',
+    onStatus?: (status: BootStatus) => void): Promise<BackendInfo> {
+    let waiting = true;
+    const poll = async () => {
+        while (waiting) {
+            try {
+                const status = await tauri.core.invoke<BootStatus>('boot_status');
+                if (waiting) onStatus?.(status);
+            } catch {
+                // 進み具合が取れなくても、起動そのものはコマンドの結果で決まる
+            }
+            await new Promise((resolve) => setTimeout(resolve, BOOT_POLL_MS));
+        }
+    };
+    if (onStatus) void poll();
+    try {
+        const info = await tauri.core.invoke<TauriBackendInfo>(cmd);
+        backend = { baseUrl: `http://127.0.0.1:${info.port}`, token: info.token };
+    } catch (e) {
+        // Rust 側は理由を文字列で返す
+        throw e instanceof Error ? e : new Error(String(e));
+    } finally {
+        waiting = false;
+    }
+    return backend;
+}
+
+/**
  * 接続先とトークンを決める。アプリの描画を始める前に 1 回呼ぶ。
  *
  * デスクトップ版では、sidecar が待ち受けを始めるまで待つ（Rust 側のコマンドが待つ）。
@@ -99,30 +130,65 @@ const BOOT_POLL_MS = 500;
 export async function initBackend(onStatus?: (status: BootStatus) => void): Promise<BackendInfo> {
     const tauri = tauriGlobal();
     if (!tauri) return backend;
+    return connect(tauri, 'backend_info', onStatus);
+}
 
-    let waiting = true;
-    const poll = async () => {
-        while (waiting) {
-            try {
-                const status = await tauri.core.invoke<BootStatus>('boot_status');
-                if (waiting) onStatus?.(status);
-            } catch {
-                // 進み具合が取れなくても、起動そのものは backend_info の結果で決まる
-            }
-            await new Promise((resolve) => setTimeout(resolve, BOOT_POLL_MS));
-        }
-    };
-    if (onStatus) void poll();
-    try {
-        const info = await tauri.core.invoke<TauriBackendInfo>('backend_info');
-        backend = { baseUrl: `http://127.0.0.1:${info.port}`, token: info.token };
-    } catch (e) {
-        // Rust 側は理由を文字列で返す
-        throw e instanceof Error ? e : new Error(String(e));
-    } finally {
-        waiting = false;
-    }
-    return backend;
+/**
+ * sidecar を起動し直し、新しい接続先とトークンに差し替える（デスクトップ版のみ）。
+ *
+ * sidecar が止まったときの「再起動」と、起動に失敗した画面の「再試行」で使う。ポートとトークンは
+ * 起動ごとに変わるので、以後の `apiFetch` / `backendUrl` は新しいほうを使う。
+ *
+ * @param onStatus - 起動待ちの間、進み具合が変わるたびに呼ばれる
+ * @throws デスクトップアプリの外で呼んだ場合、または起動し直せなかった場合（理由つき）
+ */
+export async function restartBackend(onStatus?: (status: BootStatus) => void): Promise<BackendInfo> {
+    const tauri = tauriGlobal();
+    if (!tauri) throw new Error('デスクトップアプリの中でしか使えません');
+    return connect(tauri, 'restart_backend', onStatus);
+}
+
+/**
+ * sidecar の起動の様子を聞く（デスクトップ版のみ）。開発用のブラウザ起動では null。
+ * 失敗（`phase: 'failed'`）なら、sidecar は止まっている。
+ */
+export async function backendStatus(): Promise<BootStatus | null> {
+    const tauri = tauriGlobal();
+    if (!tauri) return null;
+    return tauri.core.invoke<BootStatus>('boot_status');
+}
+
+/**
+ * Rust 側に、いまの接続情報を聞き直す（デスクトップ版のみ）。ほかの窓が sidecar を起動し直して
+ * ポートとトークンが変わっていたら、こちらも差し替えて true を返す。
+ */
+export async function refreshBackend(): Promise<boolean> {
+    const tauri = tauriGlobal();
+    if (!tauri) return false;
+    const before = backend;
+    await connect(tauri, 'backend_info');
+    return backend.baseUrl !== before.baseUrl || backend.token !== before.token;
+}
+
+/** API に届かなかったとき（fetch そのものの失敗）に呼ぶ関数。見張り（lib/health.ts）が登録する。 */
+let networkErrorListener: (() => void) | null = null;
+
+/**
+ * API に届かなかったとき（接続できない・接続が切れた）に知らせを受ける関数を登録する。
+ * sidecar が止まったことに、次の見張りの回を待たずに気づくため。
+ *
+ * @param listener - 知らせを受ける関数。null で外す
+ */
+export function setNetworkErrorListener(listener: (() => void) | null): void {
+    networkErrorListener = listener;
+}
+
+/** fetch の失敗のうち、API に届かなかったもの（中断を除く）なら、見張りに知らせる。 */
+function watchNetwork(promise: Promise<Response>): Promise<Response> {
+    return promise.catch((e: unknown) => {
+        if (e instanceof TypeError) networkErrorListener?.();
+        throw e;
+    });
 }
 
 /** 現在の接続情報を返す。 */
@@ -172,11 +238,13 @@ function withBase(url: string): string {
 export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
     if (!isBackendUrl(url) || (backend.baseUrl === '' && backend.token === null)) {
         // 開発用のブラウザ起動はここを通る。今までの fetch(url, init) とまったく同じ呼び出し
-        return init === undefined ? fetch(url) : fetch(url, init);
+        // (届かなかったときだけ、見張りに知らせる。失敗はそのまま呼び出し側へ返す)
+        const response = init === undefined ? fetch(url) : fetch(url, init);
+        return isBackendUrl(url) ? watchNetwork(response) : response;
     }
     const headers = new Headers(init?.headers);
     if (backend.token !== null) headers.set(TOKEN_HEADER, backend.token);
-    return fetch(withBase(url), { ...init, headers });
+    return watchNetwork(fetch(withBase(url), { ...init, headers }));
 }
 
 /**
@@ -193,4 +261,92 @@ export function backendUrl(url: string): string {
     if (backend.token === null) return full;
     const sep = full.includes('?') ? '&' : '?';
     return `${full}${sep}${TOKEN_QUERY}=${encodeURIComponent(backend.token)}`;
+}
+
+/**
+ * 状態コードから、利用者に見せる文を作る。「何が起きたか」と「次にどうすればよいか」を並べる。
+ *
+ * API が理由の文を返さなかったときに使う。`HTTP 500` のような番号だけの表示にしない
+ * (番号を見ても、利用者は次に何をすればよいか分からない)。
+ *
+ * @param status - HTTP の状態コード
+ */
+export function statusMessage(status: number): string {
+    if (status === 401 || status === 403) {
+        return 'アプリの処理部分との接続が切れました。アプリを再起動してから、もう一度試してください';
+    }
+    if (status === 404) return '必要なデータが見つかりませんでした。最初の操作からやり直してください';
+    if (status === 413) return 'ファイルが大きすぎて受け取れませんでした。短く切るか、別のファイルで試してください';
+    if (status === 400 || status === 422) {
+        return '入力した内容を受け付けられませんでした。ファイルと設定を確かめて、もう一度試してください';
+    }
+    if (status >= 500) {
+        return '処理の途中で問題が起きました。もう一度試してください。繰り返す場合は、アプリを再起動してください';
+    }
+    return '処理できませんでした。もう一度試してください';
+}
+
+/** 入力の検査で API が返す指摘 (FastAPI の 422) の 1 件。 */
+interface ValidationIssue {
+    loc?: unknown[];
+    msg?: unknown;
+}
+
+/**
+ * 失敗した応答から、利用者に見せる文を作る。
+ *
+ * API は失敗の理由を `{"detail": "..."}` の形で返す。応答の本文をそのまま見せると
+ * この JSON が画面に出てしまうので、中の文だけを取り出す。
+ *
+ * - 理由が文で返ってきた: 4xx (利用者が直せる失敗) はその文をそのまま返す。
+ *   5xx (処理の側の失敗) は、次にどうすればよいかを添える
+ * - 理由が文でない (入力の検査の指摘の一覧など) / 本文が JSON でない / 本文が無い:
+ *   状態コードから文を作る (`statusMessage`)。生の JSON や `HTTP 500` は返さない
+ *
+ * @param resp - `ok` でない応答（本文をまだ読んでいないもの）
+ */
+export async function errorDetail(resp: Response): Promise<string> {
+    let detail: unknown;
+    try {
+        detail = (JSON.parse(await resp.text()) as { detail?: unknown } | null)?.detail;
+    } catch {
+        // 本文が読めない、または JSON ではない。下で状態コードから文を作る
+    }
+    if (typeof detail === 'string' && detail.trim()) {
+        const reason = detail.trim();
+        return resp.status >= 500 ? `${statusMessage(resp.status)}（理由: ${reason}）` : reason;
+    }
+    if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+        // {"message": "..."} の形で理由を返す API も在る (再現ガイド)
+        const message = (detail as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message.trim();
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+        // 入力の検査の指摘。どの項目かだけを添える (指摘の文は英語の定型文なので出さない)
+        const fields = (detail as ValidationIssue[])
+            .map((issue) => (Array.isArray(issue?.loc) ? String(issue.loc[issue.loc.length - 1] ?? '') : ''))
+            .filter((name) => name !== '');
+        const unique = [...new Set(fields)];
+        return unique.length > 0
+            ? `${statusMessage(resp.status)}（項目: ${unique.join('、')}）`
+            : statusMessage(resp.status);
+    }
+    return statusMessage(resp.status);
+}
+
+/**
+ * 捕まえた失敗を、利用者に見せる文にする。
+ *
+ * API に届かなかったとき (`fetch` そのものの失敗) は、ブラウザごとに違う英語の文
+ * (`Failed to fetch` / `Load failed`) になるので、何が起きたかと次の手を日本語で返す。
+ * それ以外は、失敗に付いている文 (`errorDetail` で作った文など) をそのまま返す。
+ *
+ * @param error - `catch` で受け取った値
+ */
+export function describeError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    if (error instanceof TypeError && /fetch|load failed|network/i.test(message)) {
+        return 'アプリの処理部分に接続できませんでした。少し待ってから、もう一度試してください。繰り返す場合は、アプリを再起動してください';
+    }
+    return message.trim() || '処理できませんでした。もう一度試してください';
 }

@@ -2,31 +2,15 @@
  * bunri DAW — ヘッダーバー（トランスポート + アクションボタン）
  */
 import { useCallback, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { apiFetch } from '../lib/api';
+import { describeError } from '../lib/api';
+import { UNTITLED, useProjectActions, useProjectWiring } from '../lib/project-actions';
+import PopupMenu, { type MenuRequest } from './PopupMenu';
+import { historyShortcut, isDialogOpen, isKeyboardFocusedControl, isTypingTarget, modKeyLabel } from '../lib/keys';
 import { notesToMidi } from '../lib/midi';
-
-/**
- * プロジェクトデータの構造を表すインターフェース。
- * API の `/api/project/save` / `/api/project/load/{name}` でやり取りされる。
- *
- * @property bpm - テンポ（Beats Per Minute）
- * @property beatsPerBar - 1小節あたりの拍数
- * @property tracks - トラックごとのピアノロールノート配列を含むトラック情報
- * @property pianoRollNotes - 旧形式の互換フィールド（単一ピアノロールノート列）
- * @property automation - オートメーションポイントのシリアライズ済みデータ
- */
-interface ProjectData {
-    bpm?: number;
-    beatsPerBar?: number;
-    tracks?: Array<{
-        pianoNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-        referenceNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-    }>;
-    pianoRollNotes?: Array<{ note: string; octave: number; step: number; length: number }>;
-    automation?: Record<string, unknown>;
-}
+import { tip } from '../lib/tooltip';
 
 /**
  * 再生時間（秒）を `M:SS.d` 形式の文字列に変換する。
@@ -54,13 +38,14 @@ function TimeDisplay() {
         }, 100);
         return () => clearInterval(interval);
     }, []);
-    return <span id="time-display">{time}</span>;
+    return <span id="time-display" {...tip('いまの再生位置（分:秒）')}>{time}</span>;
 }
 
 /**
  * ヘッダーバーコンポーネント。
  * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
- * プロジェクト操作ボタン（保存・読込・WAV書き出し・ガイド）を提供する。
+ * 元に戻す・やり直す、プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）を提供する。
+ * Space キーで、再生と一時停止を切り替えられる。Cmd+Z / Cmd+Shift+Z（Ctrl でも）で元に戻す・やり直す。
  *
  * @returns ヘッダー全体の `<div id="header">` 要素
  */
@@ -69,9 +54,23 @@ export default function HeaderBar() {
         bpm, setBpm, beatsPerBar, setBeatsPerBar,
         isPlaying, setIsPlaying, setStatus,
         metronomeEnabled, setMetronomeEnabled,
-        withProgress, bumpTracks, pianoRollRef, automationRef,
-        setHint, showGuide, setShowGuide,
+        withProgress, showProgress, bumpTracks, pianoRollRef,
+        canUndo, canRedo, undoLabel, redoLabel, undo, redo, recordAsync, project, isDirty,
     } = useDaw();
+
+    // Cmd+Z (Ctrl+Z) で元に戻す、Cmd+Shift+Z (Ctrl+Shift+Z, Ctrl+Y) でやり直す。
+    // 文字を打ち込む欄の中では受けない (欄の中の Cmd+Z は、打った文字を元に戻す。ブラウザと、
+    // デスクトップアプリの「編集」メニューに任せる)。案内などの窓が開いているあいだも受けない
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            const action = historyShortcut(e);
+            if (!action || isTypingTarget(e.target) || isDialogOpen()) return;
+            e.preventDefault();
+            if (action === 'undo') undo(); else redo();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+    }, [undo, redo]);
 
     const handlePlay = useCallback(() => {
         engine.init();
@@ -84,10 +83,39 @@ export default function HeaderBar() {
             if (pr) pr._saveToEngine();
             engine.play();
             setIsPlaying(true);
-            setStatus('再生中...');
+            setStatus('再生中…');
         }
         bumpTracks();
     }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks]);
+
+    // Space キーで、再生と一時停止を切り替える (▶ のボタンと同じ)。
+    // - 文字を打ち込む欄に居るとき、案内などの窓が開いているときは、切り替えない
+    // - キーボードで選んだボタンに居るときも、切り替えない (Space はそのボタンを押す操作)
+    // - マウスで押したボタンにフォーカスが残っているだけのときは、切り替える。そのままだと
+    //   ブラウザがそのボタンをもう一度押してしまうので、キーを離すところまで既定の動作を止める
+    useEffect(() => {
+        let swallowKeyUp = false;
+        const isSpace = (e: KeyboardEvent) => e.code === 'Space' || e.key === ' ';
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (!isSpace(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+            if (isTypingTarget(e.target) || isKeyboardFocusedControl(e.target) || isDialogOpen()) return;
+            e.preventDefault();
+            swallowKeyUp = true;
+            // 押しっぱなしで何度も切り替わらないようにする
+            if (!e.repeat) handlePlay();
+        };
+        const onKeyUp = (e: KeyboardEvent) => {
+            if (!isSpace(e) || !swallowKeyUp) return;
+            swallowKeyUp = false;
+            e.preventDefault();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('keyup', onKeyUp);
+        };
+    }, [handlePlay]);
 
     const handleStop = useCallback(() => {
         engine.stop();
@@ -104,21 +132,23 @@ export default function HeaderBar() {
                 if (pr) pr._saveToEngine();
                 engine.play();
                 setIsPlaying(true);
-                setStatus('録音中...');
+                setStatus('録音中…');
             } catch (_e) {
-                setStatus('マイクにアクセスできません');
+                setStatus('マイクを使えませんでした。OS の設定で、このアプリにマイクの使用を許可してください', 'error');
             }
         } else {
             const buffer = await engine.stopRecording();
             engine.pause();
             setIsPlaying(false);
-            let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-            if (!recTrack) recTrack = engine.addTrack('Rec');
-            await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            await recordAsync('録音を追加', async () => {
+                let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+                if (!recTrack) recTrack = engine.addTrack('Rec');
+                await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            });
             bumpTracks();
             setStatus('録音完了');
         }
-    }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks]);
+    }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks, recordAsync]);
 
     const handleMetronome = useCallback(() => {
         engine.init();
@@ -129,22 +159,26 @@ export default function HeaderBar() {
 
     const handleExport = useCallback(async () => {
         engine.init();
-        const totalClips = engine.tracks.reduce((sum, t) => sum + t.clips.length, 0);
-        if (totalClips === 0) {
-            setStatus('書き出すクリップがありません');
+        const pr = pianoRollRef.current;
+        if (pr) pr._saveToEngine();
+        // 書き出すのは、再生で鳴るもの (クリップと、ピアノロールのノート)。どちらも無ければ書き出さない
+        if (engine.getTotalDuration() === 0) {
+            setStatus('書き出すものがありません。クリップかノートを置いてください', 'error');
             return;
         }
-        await withProgress('ミックスダウン中...', async () => {
-            const pr = pianoRollRef.current;
-            if (pr) pr._saveToEngine();
+        if (engine.audibleTracks().length === 0) {
+            setStatus('鳴らすトラックがありません。ミュートを外してから書き出してください', 'error');
+            return;
+        }
+        await withProgress('WAV を書き出しています…', async () => {
             const blob = await engine.exportWav();
-            if (!blob) { setStatus('書き出しに失敗しました'); return; }
+            if (!blob) { setStatus('WAV を書き出せませんでした。もう一度試してください', 'error'); return; }
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url; a.download = 'bunri_mix.wav'; a.style.display = 'none';
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('WAVファイルを書き出しました');
+            setStatus('WAV ファイルを書き出しました');
         });
     }, [withProgress, setStatus, pianoRollRef]);
 
@@ -165,100 +199,106 @@ export default function HeaderBar() {
             a.href = url; a.download = 'bunri.mid'; a.style.display = 'none';
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('MIDIファイルを書き出しました');
+            setStatus('MIDI ファイルを書き出しました');
         } catch (e) {
             setStatus((e as Error).message === '書き出せるノートがありません'
                 ? '書き出すノートがありません。ピアノロールにノートを置いてください'
-                : 'MIDIの書き出しに失敗しました: ' + (e as Error).message);
+                : 'MIDI ファイルを書き出せませんでした（' + describeError(e) + '）', 'error');
         }
     }, [setStatus, pianoRollRef]);
 
-    const handleSave = useCallback(async () => {
-        const pr = pianoRollRef.current;
-        if (pr) pr.getNotes();
-        const auto = automationRef.current;
-        const project = {
-            bpm: engine.bpm, beatsPerBar: engine.beatsPerBar,
-            tracks: engine.tracks.map(t => ({
-                name: t.name, gain: t.gain, pan: t.pan, mute: t.mute,
-                clips: t.clips.map(c => ({ name: c.name, offset: c.offset, duration: c.duration })),
-                pianoNotes: t.pianoNotes || [],
-                referenceNotes: t.referenceNotes,
-            })),
-            automation: auto ? auto.toJSON() : {},
-        };
-        const fd = new FormData();
-        fd.append('data', JSON.stringify(project));
-        await apiFetch('/api/project/save', { method: 'POST', body: fd });
-        setStatus('プロジェクトを保存しました');
-    }, [pianoRollRef, automationRef, setStatus]);
+    // プロジェクトの保存・開く (lib/project-actions.ts)。⌘S / ⇧⌘S / ⌘O と、窓を閉じる前の確かめもここで受ける
+    const projectActions = useProjectActions();
+    useProjectWiring(projectActions);
+    const [projectMenu, setProjectMenu] = useState<MenuRequest | null>(null);
+    const openProjectMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const mod = modKeyLabel();
+        setProjectMenu({
+            label: 'プロジェクト', x: rect.left, y: rect.bottom + 2,
+            returnFocus: () => document.getElementById('btn-project-menu'),
+            items: [
+                { label: '新しいプロジェクト', action: () => void projectActions.newProject(), title: '空のプロジェクトから始めます' },
+                { label: `別名で保存…（${mod}Shift+S）`, action: () => void projectActions.save(true), title: 'いまの内容を、別の名前のファイルとして保存します' },
+                { label: `最近使ったプロジェクト…（${mod}O）`, action: () => void projectActions.open(), title: '最近開いたプロジェクトから選んで開きます' },
+            ],
+        });
+    }, [projectActions]);
 
-    const handleLoad = useCallback(async () => {
-        const resp = await apiFetch('/api/project/list');
-        const files = await resp.json();
-        if (files.length === 0) { setStatus('保存されたプロジェクトがありません'); return; }
-        const name = files[0];
-        const projResp = await apiFetch(`/api/project/load/${name}`);
-        const project: ProjectData = await projResp.json();
-        engine.bpm = project.bpm || 120;
-        engine.beatsPerBar = project.beatsPerBar || 4;
-        setBpm(engine.bpm); setBeatsPerBar(engine.beatsPerBar);
-        if (project.tracks) {
-            project.tracks.forEach((pt, i) => {
-                if (engine.tracks[i] && pt.pianoNotes) engine.tracks[i].pianoNotes = pt.pianoNotes;
-                if (engine.tracks[i] && pt.referenceNotes) engine.tracks[i].referenceNotes = pt.referenceNotes;
-            });
-        }
-        const auto = automationRef.current;
-        if (auto) auto.fromJSON(project.automation || {});
-        const pr = pianoRollRef.current;
-        if (pr) pr.switchToTrack(null);
-        bumpTracks();
-        setStatus(`プロジェクト ${name} を読み込みました（※音声データは再インポートが必要です）`);
-    }, [setBpm, setBeatsPerBar, automationRef, pianoRollRef, bumpTracks, setStatus]);
-
-    const h = (text: string) => ({
-        onMouseEnter: () => setHint(text),
-        onMouseLeave: () => setHint(''),
-    });
+    const mod = modKeyLabel();
 
     return (
-        <div id="header">
+        <div id="header" data-tip-side="bottom">
             <h1>bunri DAW</h1>
+            <span id="project-title"
+                {...tip(project.path ?? project.file
+                    ? `保存先: ${project.path ?? project.file}${isDirty ? '\n● は、まだ保存していない変更があるしるしです' : ''}`
+                    : 'まだ保存していないプロジェクトです')}
+                aria-label={`プロジェクト: ${project.name ?? UNTITLED}${isDirty ? '（保存していない変更があります）' : ''}`}>
+                <span className="project-name">{project.name ?? UNTITLED}{project.legacy ? '（以前の形式）' : ''}</span>
+                {isDirty && <span className="unsaved-mark" aria-hidden="true">●</span>}
+            </span>
             <div id="transport">
-                <label>BPM</label>
-                <input type="number" value={bpm} min="20" max="300"
+                <label htmlFor="transport-bpm">BPM</label>
+                <input id="transport-bpm" type="number" value={bpm} min="20" max="300" step="0.01"
                     onChange={e => setBpm(e.target.value)}
-                    {...h('テンポ（BPM）。曲の速さを指定します')} />
-                <label>拍子</label>
-                <select value={beatsPerBar} onChange={e => setBeatsPerBar(e.target.value)}
-                    {...h('1小節の拍数')}>
+                    {...tip('曲の速さ（1 分間に刻む拍の数）。数字を大きくすると速くなります')} />
+                <label htmlFor="transport-meter">拍子</label>
+                <select id="transport-meter" value={beatsPerBar} onChange={e => setBeatsPerBar(e.target.value)}
+                    {...tip('1 小節に入る拍の数。多くの曲は 4/4 です')}>
                     <option value="4">4/4</option>
                     <option value="3">3/4</option>
                     <option value="6">6/8</option>
                 </select>
-                <button id="btn-play" title="再生/一時停止" onClick={handlePlay}
-                    {...h('再生/一時停止を切り替えます')}>
+                <button id="btn-play" aria-label={isPlaying ? '一時停止' : '再生'} onClick={handlePlay}
+                    {...tip(isPlaying ? '一時停止します。もう一度押すと続きから鳴ります' : 'いまの再生位置から鳴らします', { key: 'Space' })}>
                     {isPlaying ? '⏸' : '▶'}
                 </button>
-                <button title="停止" onClick={handleStop} {...h('停止して先頭に戻ります')}>■</button>
-                <button title="録音" onClick={handleRecord}
+                <button aria-label="停止" onClick={handleStop} {...tip('止めて、曲の頭に戻ります')}>■</button>
+                <button aria-label="録音" aria-pressed={engine.isRecording} onClick={handleRecord}
                     className={engine.isRecording ? 'active' : ''}
-                    style={engine.isRecording ? { color: '#e74c3c' } : {}}
-                    {...h('マイクから録音')}>●</button>
-                <button title="メトロノーム" onClick={handleMetronome}
+                    style={engine.isRecording ? { color: 'var(--danger)' } : {}}
+                    {...tip(engine.isRecording
+                        ? '録音を止めます。録った音は「Rec」のトラックに入ります'
+                        : 'マイクの音を録ります。ほかのトラックを鳴らしながら録れます')}>●</button>
+                <button aria-label="メトロノーム" aria-pressed={metronomeEnabled} onClick={handleMetronome}
                     className={metronomeEnabled ? 'active' : ''}
-                    {...h('メトロノームON/OFF')}>🔔</button>
+                    {...tip(metronomeEnabled ? 'クリック音を止めます' : '再生中、拍に合わせてクリック音を鳴らします')}>🔔</button>
                 <TimeDisplay />
             </div>
             <div>
-                <button onClick={handleSave} {...h('プロジェクト保存')}>保存</button>
-                <button onClick={handleLoad} {...h('プロジェクト読込')}>読込</button>
-                <button onClick={handleExport} {...h('WAV書き出し')}>書出</button>
-                <button onClick={handleExportMidi} {...h('ピアノロールのノートを MIDI ファイルとして書き出す')}>MIDI</button>
-                <button onClick={() => setShowGuide(true)} {...h('ガイド表示')}>❓</button>
-                <a href="/tools" target="_blank" {...h('ツールを別タブで開く')}>ツール</a>
-                <a href="/help" target="_blank" {...h('使い方ガイド')}>使い方</a>
+                {/* 元に戻す・やり直す。何を戻すかを、マウスを載せたときの説明に出す */}
+                <div id="history-buttons" role="group" aria-label="元に戻す・やり直す">
+                    {/* ヘッダの幅が足りないので記号だけを出し、名前は aria-label で伝える */}
+                    <button type="button" id="btn-undo" onClick={undo} disabled={!canUndo} aria-label="元に戻す"
+                        aria-keyshortcuts="Meta+Z Control+Z"
+                        {...(canUndo
+                            ? tip(`直前の操作（${undoLabel}）を取り消します`, { key: `${mod}Z` })
+                            : tip('取り消せる操作はまだありません'))}>
+                        <span aria-hidden="true">↶</span>
+                    </button>
+                    <button type="button" id="btn-redo" onClick={redo} disabled={!canRedo} aria-label="やり直す"
+                        aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z Control+Y"
+                        {...(canRedo
+                            ? tip(`取り消した操作（${redoLabel}）をもう一度行います`, { key: `${mod}${mod === '⌘' ? '⇧' : 'Shift+'}Z` })
+                            : tip('やり直せる操作はありません'))}>
+                        <span aria-hidden="true">↷</span>
+                    </button>
+                </div>
+                <button onClick={() => void projectActions.save(false)} aria-keyshortcuts="Meta+S Control+S"
+                    {...tip('トラック・ノート・音声・カルテ・学習の記録を、1 つのファイルにまとめて保存します', { key: `${mod}S` })}>保存</button>
+                <button onClick={() => void projectActions.open()} aria-keyshortcuts="Meta+O Control+O"
+                    {...tip('保存したプロジェクトを開きます', { key: `${mod}O` })}>開く</button>
+                <button id="btn-project-menu" type="button" aria-label="プロジェクトのメニュー" aria-haspopup="menu"
+                    aria-expanded={projectMenu !== null} onClick={openProjectMenu}
+                    {...tip('新しいプロジェクト、別名で保存、最近使ったプロジェクト')}>▼</button>
+                {/* ヘッダのボタンの見た目 (#header のボタンの決まり) を受けないよう、body の直下に出す */}
+                {createPortal(<PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />, document.body)}
+                <button onClick={handleExport} disabled={showProgress}
+                    {...tip('再生で鳴る音をまとめて、1 つの WAV ファイルにします')}>WAV 書き出し</button>
+                <button onClick={handleExportMidi} {...tip('ピアノロールのノートを MIDI ファイルにします。ほかの音楽ソフトで開けます')}>MIDI 書き出し</button>
+                <a href="/tools" target="_blank" {...tip('パート分離や形式の変換など、ファイルを加工する道具を別の窓で開きます')}>ツール</a>
+                <a href="/help" target="_blank" {...tip('使い方の説明を別の窓で開きます')}>使い方</a>
             </div>
         </div>
     );

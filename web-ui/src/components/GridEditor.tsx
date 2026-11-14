@@ -12,8 +12,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDaw } from '../lib/store';
-import { apiFetch } from '../lib/api';
-import { formatTime, type ChartResponse } from '../lib/chart';
+import { describeError } from '../lib/api';
+import { useDialog } from '../lib/dialog';
+import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
+import { useJob } from '../lib/useJob';
+import JobCard from './JobCard';
+import { tip } from '../lib/tooltip';
+import { cssVar } from '../lib/theme';
+import { formatTime, isChartResponse, type ChartResponse } from '../lib/chart';
 
 /** 表示する窓の長さの選択肢（秒） */
 const WINDOW_OPTIONS = [4, 8, 16];
@@ -29,14 +35,16 @@ const TIME_SIGNATURES = [
 /**
  * グリッド補正モーダル。
  * BPM・小節頭・拍子を波形と見比べながら直し、カルテを再計算する。
+ * Esc キー・外側のクリック・「キャンセル」で閉じる（再計算の途中は閉じない。やめるときは進み具合のカードの「中止」）。
  */
 export default function GridEditor() {
     const {
         chart, chartId, chartPeaks, showGridEditor, setShowGridEditor,
-        setChartResult, setStatus, setBpm, setBeatsPerBar, withProgress,
+        setChartResult, setStatus, applyChartGrid, showProgress,
     } = useDaw();
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const dialogRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<{ x: number; offset: number } | null>(null);
 
     const [localBpm, setLocalBpm] = useState(120);
@@ -44,7 +52,25 @@ export default function GridEditor() {
     const [localBeats, setLocalBeats] = useState(4);
     const [viewStart, setViewStart] = useState(0);
     const [windowSec, setWindowSec] = useState(8);
-    const [applying, setApplying] = useState(false);
+    // 再計算の結果を画面に当てる (確定したときと、画面を開き直す前に始めた再計算が終わったとき)
+    const applyResult = useCallback((result: ChartResponse) => {
+        setChartResult(result);
+        // DAW 本体のテンポ・拍子・1 小節目の位置もカルテに合わせる (カルテとピアノロールの小節番号をそろえる)。
+        // パートに分けた後は合わせない。お手本は分けたときのグリッドに載っているので、変えると原曲とずれる
+        const applied = applyChartGrid(result.chart);
+        setStatus(applied
+            ? `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`
+            : `グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）。お手本は直す前のグリッドで採譜したものなので、ピアノロールのテンポと小節の位置はそのままにしました。合わせるには、もう一度パートに分けてください`);
+    }, [setChartResult, applyChartGrid, setStatus]);
+    // 再計算は時間のかかる処理 (ジョブ)。進み具合はこのモーダルの中に出す
+    const regrid = useJob('grid', (job) => {
+        // 結果の形は確かめてから当てる (カルテの入っていない結果を当てると、グリッドを読むところで例外になる)
+        if (job.state === 'done' && isChartResponse(job.result)) applyResult(job.result);
+        else if (job.state === 'done') setStatus('グリッドの再計算は終わりましたが、結果にカルテが入っていませんでした。カルテは前のままです', 'error');
+        else if (job.state === 'cancelled') setStatus('グリッドの再計算を中止しました。カルテは前のままです');
+        else setStatus('グリッドを確定できませんでした。' + jobErrorMessage(job), 'error');
+    });
+    const applying = regrid.job !== null;
 
     // モーダルを開くたびに現在のカルテの値へ初期化する
     useEffect(() => {
@@ -69,14 +95,16 @@ export default function GridEditor() {
         const mid = height / 2;
         const viewEnd = viewStart + windowSec;
 
+        // 色は CSS のトークンから読む (canvas は var(--…) を解釈できない)
+        const accent = cssVar('--accent', '#d4a44c');
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = '#0c0c0f';
+        ctx.fillStyle = cssVar('--bg-deep', '#0c0c0f');
         ctx.fillRect(0, 0, width, height);
 
         // ---- 波形 ----
         const total = chartPeaks.points;
         const peakDuration = chartPeaks.duration_sec || duration || 1;
-        ctx.strokeStyle = '#5e5b55';
+        ctx.strokeStyle = cssVar('--text-dim', '#908c85');
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (let x = 0; x < width; x++) {
@@ -110,7 +138,7 @@ export default function GridEditor() {
             if (time >= viewStart && index >= 0) {
                 const x = ((time - viewStart) / windowSec) * width;
                 const isBarHead = index % perBar === 0;
-                ctx.strokeStyle = isBarHead ? '#d4a44c' : 'rgba(212, 164, 76, 0.28)';
+                ctx.strokeStyle = isBarHead ? accent : cssVar('--accent-glow', 'rgba(212, 164, 76, 0.25)');
                 ctx.lineWidth = isBarHead ? 2 : 1;
                 ctx.beginPath();
                 ctx.moveTo(x, 0);
@@ -118,9 +146,9 @@ export default function GridEditor() {
                 ctx.stroke();
 
                 if (isBarHead) {
-                    ctx.fillStyle = '#d4a44c';
-                    ctx.font = '10px system-ui, sans-serif';
-                    ctx.fillText(String(index / perBar + 1), x + 3, 11);
+                    ctx.fillStyle = accent;
+                    ctx.font = '11px system-ui, sans-serif';
+                    ctx.fillText(String(index / perBar + 1), x + 3, 12);
                 }
             }
             index++;
@@ -156,36 +184,34 @@ export default function GridEditor() {
 
     const handleApply = useCallback(async () => {
         if (!chartId) return;
-        setApplying(true);
-        await withProgress('補正したグリッドでカルテを再計算しています…', async () => {
-            const body = new FormData();
-            body.append('chart_id', chartId);
-            body.append('bpm', String(localBpm));
-            body.append('downbeat_offset', String(localOffset));
-            body.append('beats_per_bar', String(localBeats));
-
-            const resp = await apiFetch('/api/chart/regrid', { method: 'POST', body });
-            if (!resp.ok) throw new Error(await resp.text());
-
-            const result: ChartResponse = await resp.json();
-            setChartResult(result);
-            // DAW 本体のテンポ・拍子もカルテに合わせる
-            setBpm(Math.round(result.chart.grid.bpm));
-            setBeatsPerBar(result.chart.grid.time_signature[0]);
-            setStatus(`グリッドを確定しました（BPM ${result.chart.grid.bpm.toFixed(1)}）`);
+        const body = new FormData();
+        body.append('chart_id', chartId);
+        body.append('bpm', String(localBpm));
+        body.append('downbeat_offset', String(localOffset));
+        body.append('beats_per_bar', String(localBeats));
+        setStatus('補正したグリッドでカルテを再計算しています…');
+        try {
+            applyResult(await regrid.run<ChartResponse>('/api/chart/regrid', body));
             setShowGridEditor(false);
-        });
-        setApplying(false);
-    }, [chartId, localBpm, localOffset, localBeats, withProgress,
-        setChartResult, setBpm, setBeatsPerBar, setStatus, setShowGridEditor]);
+        } catch (e) {
+            // 中止したときは、モーダルを開いたままにする (値を直して確定し直せるように)
+            if (e instanceof JobCancelledError) setStatus('グリッドの再計算を中止しました。カルテは前のままです');
+            else setStatus('グリッドを確定できませんでした。' + describeError(e), 'error');
+        }
+    }, [chartId, localBpm, localOffset, localBeats, regrid, applyResult, setStatus, setShowGridEditor]);
 
-    if (!showGridEditor || !chart) return null;
+    const open = showGridEditor && chart !== null;
+    // 再計算の途中は閉じない (閉じると、結果がどうなったか分からなくなる)
+    const close = useCallback(() => { if (!applying) setShowGridEditor(false); }, [applying, setShowGridEditor]);
+    useDialog(dialogRef, open, close);
+
+    if (!open) return null;
 
     const maxViewStart = Math.max(0, duration - windowSec);
 
     return (
         <div
-            onClick={() => setShowGridEditor(false)}
+            onClick={close}
             style={{
                 position: 'fixed', inset: 0, zIndex: 200,
                 background: 'rgba(0, 0, 0, 0.72)',
@@ -193,6 +219,10 @@ export default function GridEditor() {
             }}
         >
             <div
+                ref={dialogRef}
+                id="grid-editor"
+                className="panel-content"
+                role="dialog" aria-modal="true" aria-labelledby="grid-editor-title" tabIndex={-1}
                 onClick={e => e.stopPropagation()}
                 style={{
                     width: 'min(900px, 94vw)', maxHeight: '90vh', overflow: 'auto',
@@ -200,9 +230,9 @@ export default function GridEditor() {
                     borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-lg)', padding: 20,
                 }}
             >
-                <h3 style={{ color: 'var(--accent)', marginTop: 0, marginBottom: 4 }}>グリッドの確認・補正</h3>
-                <p style={{ fontSize: 11, color: 'var(--text-mid)', lineHeight: 1.6, marginBottom: 12 }}>
-                    <strong style={{ color: 'var(--text)' }}>音の始まり（波形が立ち上がるところ）に縦線が重なっていれば正解です。</strong>
+                <h3 id="grid-editor-title" style={{ marginTop: 0, marginBottom: 4 }}>グリッドの確認・補正</h3>
+                <p className="body-text" style={{ color: 'var(--text-mid)', marginBottom: 12 }}>
+                    <strong style={{ color: 'var(--text)' }}>音の始まり（波形が立ち上がるところ）に縦線が重なっていれば、合っています。</strong>
                     ずれていたら、下のボタンで直してください。
                     ここがずれているとコードも構成も全部ずれます。
                 </p>
@@ -217,38 +247,43 @@ export default function GridEditor() {
                         borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
                     }}
                 />
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', margin: '4px 0 12px' }}>
+                <div className="note-text" style={{ margin: '4px 0 12px' }}>
                     波形の上を左右にドラッグすると、小節の先頭（太い線）を動かせます。
                 </div>
 
                 {/* ---- 表示位置と拡大率 ---- */}
                 <div className="param-row">
                     <div style={{ flex: 2 }}>
-                        <label>表示位置 — {formatTime(viewStart)} / {formatTime(duration)}</label>
-                        <input type="range" min={0} max={maxViewStart} step={0.05}
+                        <label htmlFor="grid-view-start">表示位置 — {formatTime(viewStart)} / {formatTime(duration)}</label>
+                        <input id="grid-view-start" type="range" min={0} max={maxViewStart} step={0.05}
                             value={Math.min(viewStart, maxViewStart)}
-                            onChange={e => setViewStart(+e.target.value)} />
+                            onChange={e => setViewStart(+e.target.value)}
+                            {...tip('波形の、曲のどのあたりを見るかを動かします')} />
                     </div>
                     <div>
-                        <label>表示範囲</label>
-                        <select value={windowSec} onChange={e => setWindowSec(+e.target.value)}>
+                        <label htmlFor="grid-window">表示範囲</label>
+                        <select id="grid-window" value={windowSec} onChange={e => setWindowSec(+e.target.value)}
+                            {...tip('一度に見える長さ。短くすると、線と音の始まりのずれが見やすくなります')}>
                             {WINDOW_OPTIONS.map(sec => <option key={sec} value={sec}>{sec} 秒</option>)}
                         </select>
                     </div>
                 </div>
 
                 {/* ---- BPM ---- */}
-                <label>BPM</label>
+                <label htmlFor="grid-bpm">BPM</label>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10 }}>
-                    <button onClick={() => setLocalBpm(v => Math.max(20, v / 2))}
-                        style={secondaryButton}>÷2（遅く）</button>
-                    <input type="number" step="0.1" value={localBpm.toFixed(1)}
+                    <button type="button" onClick={() => setLocalBpm(v => Math.max(20, v / 2))}
+                        style={secondaryButton}
+                        {...tip('BPM を半分にします。音が鳴っていないところにも線が来ているときに押します')}>÷2（遅く）</button>
+                    <input id="grid-bpm" type="number" step="0.1" value={localBpm.toFixed(1)}
                         onChange={e => setLocalBpm(Math.max(20, +e.target.value || 120))}
-                        style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600 }} />
-                    <button onClick={() => setLocalBpm(v => Math.min(400, v * 2))}
-                        style={secondaryButton}>×2（速く）</button>
+                        style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600 }}
+                        {...tip('曲の速さ（1 分間に刻む拍の数）。線の間隔が、音の始まりの間隔と合うように直します')} />
+                    <button type="button" onClick={() => setLocalBpm(v => Math.min(400, v * 2))}
+                        style={secondaryButton}
+                        {...tip('BPM を 2 倍にします。線が音の 2 回に 1 回しか来ていないときに押します')}>×2（速く）</button>
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
+                <div className="note-text" style={{ marginBottom: 12 }}>
                     線が音の2回に1回しか来ていなければ <strong>×2</strong>、
                     音が鳴っていないところにも線が来ていれば <strong>÷2</strong> です。
                 </div>
@@ -256,20 +291,22 @@ export default function GridEditor() {
                 {/* ---- 小節頭と拍子 ---- */}
                 <div className="param-row">
                     <div>
-                        <label>小節の先頭（秒）</label>
+                        <label htmlFor="grid-offset">小節の先頭（秒）</label>
                         <div style={{ display: 'flex', gap: 4 }}>
-                            <button onClick={() => setLocalOffset(v => Math.max(0, v - 60 / localBpm))}
-                                style={secondaryButton}>◀ 1拍</button>
-                            <input type="number" step="0.001" value={localOffset.toFixed(3)}
+                            <button type="button" onClick={() => setLocalOffset(v => Math.max(0, v - 60 / localBpm))}
+                                style={secondaryButton} {...tip('小節の先頭を、1 拍ぶん前へずらします')}>◀ 1拍</button>
+                            <input id="grid-offset" type="number" step="0.001" value={localOffset.toFixed(3)}
                                 onChange={e => setLocalOffset(Math.max(0, +e.target.value || 0))}
-                                style={{ flex: 1, textAlign: 'center' }} />
-                            <button onClick={() => setLocalOffset(v => v + 60 / localBpm)}
-                                style={secondaryButton}>1拍 ▶</button>
+                                style={{ flex: 1, textAlign: 'center' }}
+                                {...tip('最初の小節が始まる位置（曲の頭からの秒数）。太い線がここに来ます')} />
+                            <button type="button" onClick={() => setLocalOffset(v => v + 60 / localBpm)}
+                                style={secondaryButton} {...tip('小節の先頭を、1 拍ぶん後ろへずらします')}>1拍 ▶</button>
                         </div>
                     </div>
                     <div>
-                        <label>拍子</label>
-                        <select value={localBeats} onChange={e => setLocalBeats(+e.target.value)}>
+                        <label htmlFor="grid-beats">拍子</label>
+                        <select id="grid-beats" value={localBeats} onChange={e => setLocalBeats(+e.target.value)}
+                            {...tip('1 小節に入る拍の数。多くの曲は 4/4 です')}>
                             {TIME_SIGNATURES.map(ts => (
                                 <option key={ts.beats} value={ts.beats}>{ts.label}</option>
                             ))}
@@ -277,16 +314,20 @@ export default function GridEditor() {
                     </div>
                 </div>
 
+                <JobCard slot="grid" job={regrid.job} busyJob={regrid.busyJob} onCancel={() => void regrid.cancel()}
+                    hint="数秒〜十数秒かかります。中止すると、カルテは前のままです。" />
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                    <button className="action-btn" style={{ flex: 2 }} disabled={applying} onClick={handleApply}>
+                    <button className="action-btn" data-autofocus style={{ flex: 2, marginTop: 0 }}
+                        disabled={applying || showProgress || regrid.heavyBusy} onClick={handleApply}
+                        {...tip('この BPM・小節の先頭・拍子で、コード進行と構成を調べ直します。数秒〜十数秒かかります')}>
                         {applying ? '再計算中…' : 'この設定で確定して再計算'}
                     </button>
-                    <button style={{ ...secondaryButton, flex: 1 }} disabled={applying}
-                        onClick={() => setShowGridEditor(false)}>
+                    <button type="button" style={{ ...secondaryButton, flex: 1 }} disabled={applying}
+                        onClick={close} {...tip('何も変えずに閉じます。カルテは前のままです')}>
                         キャンセル
                     </button>
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 8 }}>
+                <div className="note-text" style={{ marginTop: 8 }}>
                     確定すると、この設定でコード進行と構成を検出し直します。
                 </div>
             </div>
@@ -302,6 +343,7 @@ const secondaryButton: React.CSSProperties = {
     border: '1px solid var(--accent)',
     borderRadius: 'var(--radius-sm)',
     cursor: 'pointer',
-    fontSize: 11,
+    fontSize: 12,
+    fontFamily: 'inherit',
     whiteSpace: 'nowrap',
 };

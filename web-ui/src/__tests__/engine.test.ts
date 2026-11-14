@@ -241,6 +241,77 @@ describe('AudioEngine', () => {
             expect(engine.playOffset).toBeGreaterThanOrEqual(5);
         });
     });
+
+    describe('ミュートとソロ', () => {
+        /** 書き出しのあいだに鳴らされたクリップの名前を集める、偽の OfflineAudioContext を仕掛ける。 */
+        function stubOffline(): string[] {
+            const started: string[] = [];
+            class MockOfflineAudioContext {
+                destination = {};
+                createGain() { return new MockGainNode() as unknown as GainNode; }
+                createStereoPanner() { return new MockStereoPannerNode() as unknown as StereoPannerNode; }
+                createOscillator() { return { type: 'sine', frequency: { value: 440 }, connect: () => {}, start: () => {}, stop: () => {} }; }
+                createBufferSource() {
+                    const source = {
+                        buffer: null as unknown as { tag: string } | null,
+                        connect: () => {},
+                        start: () => { started.push(source.buffer?.tag ?? ''); },
+                    };
+                    return source;
+                }
+                async startRendering() { return {} as AudioBuffer; }
+            }
+            // @ts-expect-error OfflineAudioContext モック
+            globalThis.OfflineAudioContext = MockOfflineAudioContext;
+            return started;
+        }
+
+        async function threeTracks() {
+            const tracks = [engine.addTrack('A'), engine.addTrack('B'), engine.addTrack('C')];
+            for (const track of tracks) {
+                const buffer = { duration: 1, tag: track.name } as unknown as AudioBuffer;
+                await engine.addClipFromBuffer(track.id, buffer, track.name);
+            }
+            return tracks;
+        }
+
+        it('ソロが無ければ、ミュートしていないトラックが鳴る', async () => {
+            const [a, b, c] = await threeTracks();
+            engine.toggleMute(b.id);
+            expect(engine.audibleTracks().map(t => t.id)).toEqual([a.id, c.id]);
+        });
+
+        it('ソロが在れば、ソロのトラックだけが鳴る。ミュートはソロより強い', async () => {
+            const [a, b, c] = await threeTracks();
+            b.solo = true;
+            expect(engine.audibleTracks().map(t => t.id)).toEqual([b.id]);
+            c.solo = true;
+            engine.toggleMute(c.id);
+            expect(engine.audibleTracks().map(t => t.id)).toEqual([b.id]);
+            void a;
+        });
+
+        it('書き出しは、再生と同じトラックだけを鳴らす (ソロに従う)', async () => {
+            const started = stubOffline();
+            const [, b] = await threeTracks();
+            await engine.mixdown();
+            expect(started).toEqual(['A', 'B', 'C']);
+
+            // 以前は、書き出しだけがソロを無視して、全部のトラックを混ぜていた
+            started.length = 0;
+            b.solo = true;
+            await engine.mixdown();
+            expect(started).toEqual(['B']);
+        });
+
+        it('書き出しは、ミュートしたトラックを鳴らさない', async () => {
+            const started = stubOffline();
+            const [a] = await threeTracks();
+            engine.toggleMute(a.id);
+            await engine.mixdown();
+            expect(started).toEqual(['B', 'C']);
+        });
+    });
 });
 
 describe('NOTE_FREQ', () => {

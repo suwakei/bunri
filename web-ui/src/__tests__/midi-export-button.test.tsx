@@ -50,7 +50,7 @@ describe('MIDI 書き出しボタン', () => {
     it('ノートが無ければ書き出さず、理由を出す', () => {
         engine.addTrack('Piano');
         render(<DawProvider><HeaderBar /><StatusBar /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'MIDI' }));
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 書き出し' }));
         expect(created).toHaveLength(0);
         expect(screen.getByText(/書き出すノートがありません/)).toBeInTheDocument();
     });
@@ -59,11 +59,11 @@ describe('MIDI 書き出しボタン', () => {
         const track = engine.addTrack('Piano');
         track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
         render(<DawProvider><HeaderBar /><StatusBar /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'MIDI' }));
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 書き出し' }));
         expect(created).toHaveLength(1);
         expect(created[0].type).toBe('audio/midi');
         const head = new Uint8Array(await created[0].arrayBuffer()).slice(0, 4);
         expect(String.fromCharCode(...head)).toBe('MThd');
-        expect(screen.getByText('MIDIファイルを書き出しました')).toBeInTheDocument();
+        expect(screen.getByText('MIDI ファイルを書き出しました')).toBeInTheDocument();
     });
 });

@@ -36,7 +36,7 @@ MAX_TOKENS = 16000
 # 指示文・出力の形・検証・カルテの渡し方の版。どれかを変えたら上げる。上げると、保存済みのガイドは
 # 使われなくなる。指示文と出力の形は、上げ忘れても指紋（``request_fingerprint``）が変わるので、
 # 古い保存分が使われることは無い
-GUIDE_VERSION = 3
+GUIDE_VERSION = 4
 
 # 思考の深さ。Opus 5.5 の既定（medium）より 1 段浅い low に固定する。確信度をコードの側で 3 段階に
 # 直して渡すようにしたうえで、low でも内容の誤りが出ないことを実測で確かめた（2026-11-11。短い曲・
@@ -137,8 +137,9 @@ SYSTEM_PROMPT = """\
 - 数値を並べるだけにしない。その値から、利用者が次に何をすればよいかを 1 つ言う。\
 帯域のエネルギーなら、全部の値を読み上げるのではなく、どの帯域が中心かと、それを踏まえて \
 音作りでどうするかを書く。
-- grid.user_confirmed が false のときは、最初の手順でテンポと 1 拍目の位置を確認するよう促す。\
-テンポが倍や半分にずれていると、コードもセクションも全部ずれるため。
+- grid.user_confirmed が false のときは、最初の手順でテンポ・拍子・1 拍目の位置を確認するよう促す。\
+どれも解析が自動で決めた値で、テンポが倍や半分にずれていたり、拍子が違っていたりすると、\
+コードもセクションも小節番号が全部ずれるため。
 - 場所を指すときは refs を使う。セクション全体なら section_id、特定の小節なら bar（必要なら beat）。\
 本文にも「サビ（17〜24 小節）」のように小節番号を書く。
 - 手順は、テンポとキーの設定 → 曲の構成 → コード進行 → 音作りとミックス、の順を基本にする。\
@@ -201,6 +202,14 @@ def _tier_label(value):
     import song_chart
 
     return _TIER_LABEL[song_chart.confidence_tier(value)]
+
+
+def confidence_label(value):
+    """確信度の生値を、画面と同じ 3 段階の言い方（確実 / たぶん / 自信なし）にする。
+
+    第3層（``coach_explain``）も同じ言い方で渡すので、外から呼べる名前を付けてある。
+    """
+    return _tier_label(value)
 
 
 def _label_confidences(node):
@@ -539,7 +548,22 @@ def unverified_terms(text, chart):
     Returns:
         list[str]: カルテに無い語（出てきた順、重複なし）。
     """
-    allowed = chart_vocabulary(chart)
+    return terms_outside(text, chart_vocabulary(chart))
+
+
+def terms_outside(text, allowed):
+    """説明文に出てきた音名・コード名のうち、``allowed`` に無いものを返す。
+
+    ``unverified_terms`` の中身。語の範囲を呼び出し側が決められるよう分けてある
+    （第3層は、カルテではなく差分の事実から範囲を作る）。
+
+    Args:
+        text: 説明文。
+        allowed: 出てきてよい語の集合（``#`` ``b`` で書いたもの）。
+
+    Returns:
+        list[str]: ``allowed`` に無い語（出てきた順、重複なし）。
+    """
     found = []
     for match in _TERM_RE.finditer(text or ""):
         term = _normalize_term(match.group(1))
@@ -667,6 +691,50 @@ def fit_request(chart, focus, client, max_input_tokens, *, model=None, effort=No
     return trimmed
 
 
+def call_structured(request, client,
+                    truncated_message="ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください"):
+    """Claude を 1 回呼び、Structured Outputs の JSON を辞書にして返す。
+
+    呼び出しと、応答の読み取り（断られた・途中で切れた・JSON でない、の見分け）だけを受け持つ。
+    中身の検証は呼び出し側が行う。第2層（``generate``）と第3層（``coach_explain.generate``）が使う。
+
+    Args:
+        request: ``client.beta.messages.create`` に渡すキーワード引数。
+        client: Anthropic のクライアント。
+        truncated_message: 出力が途中で切れたときに、利用者に見せる文。
+
+    Returns:
+        tuple[dict, str, dict]: ``(モデルが返した JSON, 応答したモデル, 使用量)``。
+
+    Raises:
+        GuideError: API キーが無い・正しくない、通信できない、モデルが応答を断った、出力が途中で
+            切れた、JSON として読めない、などの場合。応答が返ってきていた失敗では、``usage`` に
+            使用量が入る。
+    """
+    with _api_errors():
+        response = client.beta.messages.create(**request)
+
+    usage = _usage(response)
+    model = getattr(response, "model", request["model"])
+
+    def fail(message, code):
+        return GuideError(message, code=code, usage=usage, model=model)
+
+    if response.stop_reason == "refusal":
+        raise fail("この内容については、モデルが応答を返しませんでした", "refused")
+    if response.stop_reason == "max_tokens":
+        raise fail(truncated_message, "truncated")
+
+    text = next((block.text for block in response.content if block.type == "text"), None)
+    if not text:
+        raise fail("モデルから説明文が返りませんでした", "invalid")
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        raise fail("モデルの応答を読み取れませんでした", "invalid")
+    return raw, model, usage
+
+
 def generate(chart, focus=None, client=None, request=None):
     """楽曲カルテから再現ガイドを作る（Claude を 1 回呼ぶ）。
 
@@ -692,38 +760,23 @@ def generate(chart, focus=None, client=None, request=None):
     if client is None:
         client = llm_settings.make_client()
 
-    with _api_errors():
-        response = client.beta.messages.create(**request)
-
-    usage = _usage(response)
-    model = getattr(response, "model", request["model"])
-
-    def fail(message, code):
-        return GuideError(message, code=code, usage=usage, model=model)
-
-    if response.stop_reason == "refusal":
-        raise fail("この内容については、モデルが応答を返しませんでした", "refused")
-    if response.stop_reason == "max_tokens":
-        raise fail("ガイドが長くなりすぎて途中で切れました。セクションを絞って試してください", "truncated")
-
-    text = next((block.text for block in response.content if block.type == "text"), None)
-    if not text:
-        raise fail("モデルから説明文が返りませんでした", "invalid")
-    try:
-        raw = json.loads(text)
-    except json.JSONDecodeError:
-        raise fail("モデルの応答を読み取れませんでした", "invalid")
+    raw, model, usage = call_structured(request, client)
     try:
         guide = validate_guide(raw, chart)
     except GuideError as e:
-        raise fail(str(e), e.code)
+        raise GuideError(str(e), code=e.code, usage=usage, model=model)
 
     return {"guide": guide, "model": model, "usage": usage}
 
 
-def _public(entry, cached):
-    """保存したガイドの 1 件を、API の応答に載せる形にする。"""
+def _public(entry, cached, key=None):
+    """保存したガイドの 1 件を、API の応答に載せる形にする。
+
+    ``key`` は保存の鍵。プロジェクトの保存（``project_store``）が、この曲のガイドの写しを
+    `.bunri` に入れるときの識別子になる。
+    """
     return {
+        "key": key,
         "guide": entry["guide"],
         "model": entry.get("model"),
         "usage": entry.get("usage") or {},
@@ -732,6 +785,29 @@ def _public(entry, cached):
         "created_at": entry.get("created_at"),
         "cached": cached,
     }
+
+
+def cache_keys_for(chart):
+    """このカルテのガイドの保存の鍵を、曲全体と各セクションのぶん返す（いまのモデルと設定で）。
+
+    プロジェクトを保存するとき、保存済みのガイドの写しを `.bunri` に入れるのに使う
+    （開き直したときに Claude を呼ばずに出すため。``project_store``）。
+
+    Args:
+        chart: 楽曲カルテ。
+
+    Returns:
+        list[str]: 鍵のリスト（曲全体が先頭）。
+    """
+    keys = []
+    focuses = [None] + [s.get("id") for s in chart.get("sections") or [] if isinstance(s, dict) and s.get("id")]
+    for focus in focuses:
+        try:
+            request = build_request(chart, focus)
+        except GuideError:
+            continue
+        keys.append(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
+    return keys
 
 
 def saved_guide(chart, focus=None):
@@ -750,8 +826,9 @@ def saved_guide(chart, focus=None):
     import guide_cache
 
     request = build_request(chart, focus)
-    entry = guide_cache.load(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
-    return _public(entry, cached=True) if entry else None
+    key = guide_key(chart, focus, request["model"], request["output_config"]["effort"])
+    entry = guide_cache.load(key)
+    return _public(entry, cached=True, key=key) if entry else None
 
 
 def guide_for(chart, focus=None, regenerate=False, client=None):
@@ -787,14 +864,14 @@ def guide_for(chart, focus=None, regenerate=False, client=None):
     if not regenerate:
         entry = guide_cache.load(key)
         if entry:
-            return _public(entry, cached=True)
+            return _public(entry, cached=True, key=key)
 
     chart_id = guide_cache.chart_hash(chart)
     asked_at = time.time()
     with guide_cache.lock_for(chart_id):
         entry = guide_cache.load(key)
         if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
-            return _public(entry, cached=True)
+            return _public(entry, cached=True, key=key)
 
         shortage = material_shortage(chart)
         if shortage:
@@ -834,4 +911,4 @@ def guide_for(chart, focus=None, regenerate=False, client=None):
             "fingerprint": request_fingerprint(),
         }
         guide_cache.save(key, entry)
-        return _public(entry, cached=False)
+        return _public(entry, cached=False, key=key)

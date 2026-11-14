@@ -4,7 +4,7 @@
  * 楽曲カルテを Claude に渡し、「こう作れば再現できる」という手順の説明を受け取る。
  * 説明はカルテの読み上げで、音符は含まない（backend/reproduction_guide.py）。
  */
-import { apiFetch, invokeDesktop, isDesktop } from './api';
+import { apiFetch, invokeDesktop, isDesktop, statusMessage } from './api';
 import type { SongChart } from './chart';
 import { SECTION_LABEL_JA } from './chart';
 
@@ -123,8 +123,13 @@ export class GuideRequestError extends Error {
     }
 }
 
-/** 失敗したレスポンスから、利用者向けの文と種類を取り出す。 */
-async function toError(resp: Response): Promise<GuideRequestError> {
+/**
+ * 失敗したレスポンスから、利用者向けの文と種類を取り出す。差分の説明（lib/coach.ts）も同じ形で失敗を返すので、共用する。
+ *
+ * @param resp - `ok` でない応答
+ * @param what - 理由が取れなかったときの文の頭（「再現ガイドを作れませんでした。」など）
+ */
+export async function toError(resp: Response, what = '再現ガイドを作れませんでした。'): Promise<GuideRequestError> {
     try {
         const body = await resp.json();
         const detail = body?.detail;
@@ -135,7 +140,8 @@ async function toError(resp: Response): Promise<GuideRequestError> {
     } catch {
         // JSON でない応答。下の既定の文にする
     }
-    return new GuideRequestError(`再現ガイドを作れませんでした（${resp.status}）`, 'api');
+    // 理由が取れなかったときも、状態コードの番号ではなく、次にどうすればよいかを出す
+    return new GuideRequestError(`${what}${statusMessage(resp.status)}`, 'api');
 }
 
 /**

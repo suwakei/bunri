@@ -56,7 +56,17 @@ def confidence_tier(value):
     return TIER_UNSURE
 
 
-def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats_per_bar=4):
+# ``build_chart`` をジョブとして動かすときのステージ（``background_jobs``）。``(キー, 表示名)`` を進む順に並べる
+CHART_STAGES = [
+    ("grid", "テンポと拍を調べています"),
+    ("key", "キーを調べています"),
+    ("chords", "コードを調べています"),
+    ("sections", "曲の構成を調べています"),
+    ("mix", "音の特徴を調べています"),
+]
+
+
+def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats_per_bar=None, job=None):
     """音声ファイルから楽曲カルテを組み立てる。
 
     ステム分離は行わない（速報カルテ）。原曲ミックスのみを解析するため
@@ -72,7 +82,12 @@ def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats
             一時ファイルのフルパスをカルテに残さないための引数。
         bpm (float | None, optional): BPM の上書き値。None なら自動検出。
         downbeat_offset (float | None, optional): 1拍目の位置（秒）の上書き値。
-        beats_per_bar (int, optional): 1小節あたりの拍数。デフォルト 4。
+        beats_per_bar (int | None, optional): 1小節あたりの拍数。None なら、3 拍子か 4 拍子かを
+            自動で決める（``structure.estimate_grid``）。コード・セクションの小節番号は、
+            決まった拍子（``grid["time_signature"][0]``）で数える。
+        job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
+            ステージは ``CHART_STAGES`` のキーで進み、ステージの切れ目でキャンセルを見る。
+            None なら報告しない。
 
     Returns:
         dict: 正規化済みのカルテ辞書。構造は ``docs/song-chart-design.md`` を参照。
@@ -82,6 +97,7 @@ def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats
     Raises:
         FileNotFoundError: ``audio_path`` が存在しない場合。
         RuntimeError: 音声の読み込みに失敗した場合。
+        background_jobs.JobCancelled: ジョブがキャンセルされた場合。
 
     Note:
         波形ピークはカルテに含めない。サイズが大きくバイト安定性も損なうため、
@@ -91,6 +107,10 @@ def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats
     import structure
     import music_theory
     import mix_profile
+    import background_jobs
+
+    if job is None:
+        job = background_jobs.detached()
 
     path = Path(audio_path)
     if not path.exists():
@@ -98,17 +118,21 @@ def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats
 
     unavailable = {}
 
+    job.enter_stage("grid")
     grid = structure.estimate_grid(
         str(path), bpm=bpm, downbeat_offset=downbeat_offset, beats_per_bar=beats_per_bar
     )
     beat_times = grid["beat_times_sec"]
+    beats_per_bar = grid["time_signature"][0]
     if len(beat_times) < 2:
         unavailable["grid"] = "ビートを検出できませんでした（音声が短すぎる可能性があります）"
 
+    job.enter_stage("key")
     key = _analyze_key(str(path), unavailable)
     tonic = key.get("tonic")
     mode = key.get("mode")
 
+    job.enter_stage("chords")
     chords = music_theory.detect_chords(str(path), beat_times, tonic=tonic, mode=mode)
     chords = [c for c in chords if c["confidence"] >= MIN_CONFIDENCE]
     if not chords:
@@ -116,10 +140,12 @@ def build_chart(audio_path, filename=None, bpm=None, downbeat_offset=None, beats
     else:
         _attach_bar_beat(chords, beat_times, beats_per_bar)
 
+    job.enter_stage("sections")
     sections = structure.detect_sections(str(path), beat_times, beats_per_bar=beats_per_bar)
     if not sections:
         unavailable["sections"] = "構成を検出できませんでした（曲が短い、または変化が乏しい可能性があります）"
 
+    job.enter_stage("mix")
     mix = mix_profile.analyze_mix(str(path))
     if mix.get("loudness_lufs") is None:
         unavailable["mix"] = "ミックス特性を解析できませんでした（無音に近い可能性があります）"

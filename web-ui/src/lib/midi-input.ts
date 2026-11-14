@@ -73,6 +73,12 @@ export interface RecorderOptions {
     minOctave: number;
     /** 表示できる最高のオクターブ（含まない）。 */
     maxOctave: number;
+    /**
+     * 録る範囲（ステップ。`end` は含まない）。練習画面の区間ループ。無ければ（null）ピアノロール全体。
+     * ステップ入力は範囲の頭から始めて、終わりで止まる。リアルタイム録音は、区間の終わりをまたいで
+     * 押していたノートを、区間の終わりまでの長さにする（再生位置が区間の頭に戻るため）。
+     */
+    bounds?: () => { start: number; end: number } | null;
 }
 
 /**
@@ -92,8 +98,8 @@ export class MidiNoteRecorder {
     cursor = 0;
 
     private options: RecorderOptions;
-    /** リアルタイム録音で、押している鍵盤と押した位置。 */
-    private held = new Map<number, number>();
+    /** リアルタイム録音で、押している鍵盤と、押した位置・強さ。 */
+    private held = new Map<number, { position: number; velocity: number }>();
     /** ステップ入力で、押している鍵盤。 */
     private stepHeld = new Set<number>();
     /** ステップ入力で、いまの和音にノートを 1 つでも置いたか。 */
@@ -135,8 +141,11 @@ export class MidiNoteRecorder {
         }
         this.stepHeld.add(event.pitch);
         if (!this.inRange(event.pitch)) return { kind: 'skipped', reason: 'range' };
-        if (this.cursor + this.stepLength > this.options.totalSteps) return { kind: 'skipped', reason: 'end' };
-        const note = { ...pitchToNote(event.pitch), step: this.cursor, length: this.stepLength };
+        const bounds = this.options.bounds?.() ?? null;
+        // 範囲の外にカーソルが在れば、範囲の頭から始める (和音の途中では動かさない)
+        if (bounds && !this.stepPlaced && (this.cursor < bounds.start || this.cursor >= bounds.end)) this.cursor = bounds.start;
+        if (this.cursor + this.stepLength > (bounds ? bounds.end : this.options.totalSteps)) return { kind: 'skipped', reason: 'end' };
+        const note = { ...pitchToNote(event.pitch), step: this.cursor, length: this.stepLength, velocity: event.velocity };
         this.options.addNote(note);
         this.stepPlaced = true;
         return { kind: 'added', note };
@@ -147,22 +156,30 @@ export class MidiNoteRecorder {
         if (event.type === 'on') {
             if (position === null) return { kind: 'skipped', reason: 'stopped' };
             if (!this.inRange(event.pitch)) return { kind: 'skipped', reason: 'range' };
-            this.held.set(event.pitch, position);
+            this.held.set(event.pitch, { position, velocity: event.velocity });
             return { kind: 'ignored' };
         }
-        const start = this.held.get(event.pitch);
-        if (start === undefined) return { kind: 'ignored' };
+        const pressed = this.held.get(event.pitch);
+        if (pressed === undefined) return { kind: 'ignored' };
         this.held.delete(event.pitch);
+        const start = pressed.position;
         const step = Math.max(0, Math.round(start));
         if (step >= this.options.totalSteps) return { kind: 'skipped', reason: 'end' };
         // 離す前に再生が止まっていたら、長さは最短（16 分音符 1 つ）にする
-        const end = position ?? start;
+        let end = position ?? start;
+        // 区間ループの終わりをまたいだ (再生位置が頭に戻った) ら、区間の終わりまでにする
+        const bounds = this.options.bounds?.() ?? null;
+        if (bounds && end < start) end = bounds.end;
         const length = Math.min(Math.max(1, Math.round(end - start)), this.options.totalSteps - step);
-        const note = { ...pitchToNote(event.pitch), step, length };
+        // 強さは、押したときのもの (離すときの強さは、ノートの強さではない)
+        const note = { ...pitchToNote(event.pitch), step, length, velocity: pressed.velocity };
         this.options.addNote(note);
         return { kind: 'added', note };
     }
 }
+
+/** MIDI メッセージの受け口。 */
+export type MidiMessageHandler = (bytes: ArrayLike<number>, receivedAt?: number) => void;
 
 /** MIDI の入力元。 */
 export interface MidiSource {
@@ -171,10 +188,11 @@ export interface MidiSource {
     /**
      * 入力を開く。つながっている機器をすべて対象にする。
      *
-     * @param onMessage - MIDI メッセージを受けるたびに呼ばれる
+     * @param onMessage - MIDI メッセージを受けるたびに呼ばれる。`receivedAt` は、機器から届いた時刻
+     *   （`performance.now()` と同じ時計。ミリ秒）。分からない入力元では渡さない
      * @param onDevices - つながっている機器の名前が分かったとき・変わったときに呼ばれる
      */
-    start(onMessage: (bytes: ArrayLike<number>) => void, onDevices: (names: string[]) => void): Promise<void>;
+    start(onMessage: MidiMessageHandler, onDevices: (names: string[]) => void): Promise<void>;
     /** 入力を閉じる。 */
     stop(): Promise<void>;
 }
@@ -183,7 +201,7 @@ export interface MidiSource {
 interface WebMidiInput {
     name?: string | null;
     state?: string;
-    onmidimessage: ((event: { data: Uint8Array | null }) => void) | null;
+    onmidimessage: ((event: { data: Uint8Array | null; timeStamp?: number }) => void) | null;
 }
 interface WebMidiAccess {
     inputs: { forEach(fn: (input: WebMidiInput) => void): void };
@@ -201,7 +219,7 @@ class WebMidiSource implements MidiSource {
     kind = 'web' as const;
     private access: WebMidiAccess | null = null;
 
-    async start(onMessage: (bytes: ArrayLike<number>) => void, onDevices: (names: string[]) => void): Promise<void> {
+    async start(onMessage: MidiMessageHandler, onDevices: (names: string[]) => void): Promise<void> {
         const request = webMidiRequest();
         if (!request) throw new Error('このブラウザは MIDI 入力に対応していません');
         const access = await request({ sysex: false });
@@ -210,7 +228,11 @@ class WebMidiSource implements MidiSource {
             const names: string[] = [];
             access.inputs.forEach((input) => {
                 if (input.state === 'disconnected') return;
-                input.onmidimessage = (event) => { if (event.data) onMessage(event.data); };
+                // timeStamp は、ブラウザが機器からメッセージを受けた時刻。この関数が呼ばれるまでの
+                // 待ち (画面の処理が詰まっていると数十ミリ秒になる) を、録る側で差し引ける
+                input.onmidimessage = (event) => {
+                    if (event.data) onMessage(event.data, typeof event.timeStamp === 'number' && event.timeStamp > 0 ? event.timeStamp : undefined);
+                };
                 names.push(input.name || 'MIDI 入力');
             });
             onDevices(names);
@@ -232,10 +254,11 @@ class DesktopMidiSource implements MidiSource {
     kind = 'desktop' as const;
     private unlisten: (() => void) | null = null;
 
-    async start(onMessage: (bytes: ArrayLike<number>) => void, onDevices: (names: string[]) => void): Promise<void> {
+    async start(onMessage: MidiMessageHandler, onDevices: (names: string[]) => void): Promise<void> {
         await this.stop();
         // 先に受け口を用意してから開く（開いた直後のメッセージを取りこぼさないため）
-        this.unlisten = await listenDesktop<number[]>('midi-message', onMessage);
+        // ネイティブ側は届いた時刻を渡してこないので、バイト列だけを受ける
+        this.unlisten = await listenDesktop<number[]>('midi-message', (bytes) => onMessage(bytes));
         try {
             onDevices(await invokeDesktop<string[]>('midi_start'));
         } catch (e) {
