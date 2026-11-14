@@ -19,6 +19,7 @@ import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
 import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
 import { isChartResponse } from './chart';
+import type { ReferenceSource } from './coach';
 import { decodeWithSource } from './audio-sources';
 
 /** カルテの作成のジョブが終わったのに、結果にカルテが入っていなかったときの知らせ。 */
@@ -95,6 +96,15 @@ export function isDecomposeResult(value: unknown): value is DecomposeResult {
 /** パートのトラック（パート分離で作ったもの）。トラックの並び順。 */
 export function partTracks(): Track[] {
     return engine.tracks.filter(t => t.role === 'part');
+}
+
+/**
+ * お手本の出どころ。MIDI ファイルから「お手本として読み込む」で作ったトラック（`MIDI_PART`）なら `midi`、
+ * ほかは `transcription`（音源から採譜したお手本。以前の形式から開いた、出どころの分からないお手本も同じ扱い）。
+ * 差分チェックは、`midi` のときだけ強さを比べる（lib/coach.ts の `ReferenceSource`）。
+ */
+export function referenceSourceOf(track: Pick<Track, 'role' | 'part'> | undefined): ReferenceSource {
+    return track?.role === 'part' && track.part === MIDI_PART ? 'midi' : 'transcription';
 }
 
 /** お手本を持つパートのトラックの、練習のトラック（まだ無ければ undefined）。 */
