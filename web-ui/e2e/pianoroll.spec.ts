@@ -83,6 +83,42 @@ async function scrollTo(page: Page, left: number, top: number) {
     await page.locator('#piano-grid-wrap').evaluate((el, [l, t]) => { el.scrollLeft = l; el.scrollTop = t; }, [left, top]);
 }
 
+/**
+ * 鍵盤の列とグリッドの縦のスクロール位置を、同じ瞬間に読む。
+ *
+ * 2 回の呼び出しに分けて読まない。トラックを開くと、見出しが 2 行になってピアノロールの見える高さが変わり、
+ * 次の描画でノートの行を真ん中に据え直す (CenterArea の ResizeObserver)。据え直しは鍵盤とグリッドを一緒に
+ * 動かすが、読むのを 2 回に分けると、そのあいだに据え直しが入って、そろっているのに違う値が返る
+ * (鍵盤 1104・グリッド 1114 のように、ちょうど据え直しのぶんだけ違う)。
+ */
+const scrollTops = (page: Page) => page.evaluate(() => ({
+    keys: document.querySelector('#piano-keys')!.scrollTop,
+    grid: document.querySelector('#piano-grid-wrap')!.scrollTop,
+}));
+
+type ScrollWatch = { frames: number; mismatched: { keys: number; grid: number }[] };
+
+/**
+ * 描画のたびに (requestAnimationFrame)、鍵盤の列とグリッドの縦の位置を比べ始める。
+ * 返した関数を呼ぶと、それまでに見た描画の数と、ずれていた描画の一覧が返る。
+ * 位置を据え直す途中の 1 回の描画でも、鍵盤とノートの段がずれて見えないことを確かめるのに使う。
+ */
+async function watchScrollTops(page: Page): Promise<() => Promise<ScrollWatch>> {
+    await page.evaluate(() => {
+        const keys = document.querySelector('#piano-keys')!;
+        const grid = document.querySelector('#piano-grid-wrap')!;
+        const seen: ScrollWatch = { frames: 0, mismatched: [] };
+        (window as unknown as { __scrollWatch: ScrollWatch }).__scrollWatch = seen;
+        const loop = () => {
+            seen.frames++;
+            if (keys.scrollTop !== grid.scrollTop) seen.mismatched.push({ keys: keys.scrollTop, grid: grid.scrollTop });
+            requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+    });
+    return () => page.evaluate(() => (window as unknown as { __scrollWatch: ScrollWatch }).__scrollWatch);
+}
+
 test('最初は 8 小節ぶんで、グリッドの下に空の領域が無い', async ({ page }) => {
     await openPianoRoll(page);
     const size = await page.locator('#piano-grid-wrap').evaluate((el) => ({ w: el.scrollWidth, h: el.scrollHeight }));
@@ -102,12 +138,9 @@ test('最初は、真ん中のド (C4) のあたりが見えている', async ({
     });
     expect(visible).toBe(true);
     // 鍵盤の列とグリッドの縦の位置がそろっている
-    const [keysTop, gridTop] = await Promise.all([
-        page.locator('#piano-keys').evaluate((el) => el.scrollTop),
-        page.locator('#piano-grid-wrap').evaluate((el) => el.scrollTop),
-    ]);
-    expect(keysTop).toBe(gridTop);
-    expect(gridTop).toBeGreaterThan(0);
+    const tops = await scrollTops(page);
+    expect(tops.keys).toBe(tops.grid);
+    expect(tops.grid).toBeGreaterThan(0);
 });
 
 test('縦横にスクロールしてからダブルクリックしても、押した場所にノートが入る', async ({ page }) => {
@@ -144,12 +177,22 @@ test('低い音だけのトラックを開くと、ノートの在る高さへ�
         [note('E', 1, 0), note('G', 1, 4), note('A', 1, 8)],
         [note('C', 4, 0), note('C', 8, 4)],
     ]);
+    const watched = await watchScrollTops(page);
     await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#note-layer .note-block')).toHaveCount(3);
     expect(await isInView(page, '#note-layer .note-block')).toBe(true);
     // 鍵盤の列も一緒に動いている
-    expect(await page.locator('#piano-keys').evaluate((el) => el.scrollTop))
-        .toBe(await page.locator('#piano-grid-wrap').evaluate((el) => el.scrollTop));
+    const tops = await scrollTops(page);
+    expect(tops.keys).toBe(tops.grid);
+    // トラックを開くと見出しが 2 行になって、見える高さが変わることがある。そのときも、ノートの在る行
+    // (3 つの真ん中の値の G1) が、見えている範囲の真ん中に据わる
+    const middle = (rowOf('G', 1) + 0.5) * NOTE_HEIGHT;
+    await expect.poll(() => page.locator('#piano-grid-wrap').evaluate((el, y) => Math.abs(el.scrollTop - (y - el.clientHeight / 2)), middle))
+        .toBeLessThanOrEqual(1);
+    // 据え直す途中も含めて、どの描画でも鍵盤の列とグリッドはそろっている (鍵盤とノートの段がずれて見えない)
+    const seen = await watched();
+    expect(seen.frames).toBeGreaterThan(0);
+    expect(seen.mismatched).toEqual([]);
 
     // 別のトラックへ移ると、そのトラックのノートの在る高さへ移動する (真ん中の値の C4)
     await page.locator('#tracks-container .track-name').nth(1).click();
