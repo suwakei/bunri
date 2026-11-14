@@ -25,7 +25,9 @@ bunri は macOS（Apple Silicon）のデスクトップアプリ。Python のバ
 配布済みのバイナリはまだ無いので、自分でビルドする。
 
 ```bash
-# Rust と Node.js 22 以上、インターネット接続が要る（同梱する uv をビルド時に取得する）
+# Rust と Node.js 22 以上、CMake、インターネット接続が要る（同梱する uv をビルド時に取得する）
+brew install cmake
+git submodule update --init --recursive   # 音のエンジンが使う sfizz（初回は 10 分ほどかかる）
 npm ci
 npm --prefix web-ui ci
 npm run tauri build

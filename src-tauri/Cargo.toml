@@ -30,9 +30,16 @@ keyring = "4.2"
 # 画面 (JS) には権限を渡さない (capabilities に dialog:* を足さない)。docs/desktop-architecture.md「プロジェクトのファイル」
 tauri-plugin-dialog = "=2.8.4"
 midir = "0.11.1"
+# 音のエンジン (engine・再生の状態・cpal での出力)。sfizz を cmake でビルドするので、
+# submodule (third_party/sfizz) と cmake が要る。docs/instrument-engine-design.md
+bunri-audio = { path = "audio-engine" }
 # テスト専用 (機能 e2e のときだけ入る)。窓を外から操作する WebDriver サーバを、アプリの中で動かす。
 # 配布物には入れない。選んだ理由と守っている約束は docs/desktop-architecture.md「窓を自動操作するテスト」
 tauri-plugin-wdio-webdriver = { version = "=1.5.1", optional = true }
+
+[dev-dependencies]
+# command を、窓もデバイスも無しで IPC の口から呼んで確かめる (tauri::test。audio.rs のテスト)
+tauri = { version = "2", features = ["test"] }
 
 [features]
 # 既定では何も足さない。e2e は make e2e-desktop が付けるだけで、ここ (default) には絶対に入れない

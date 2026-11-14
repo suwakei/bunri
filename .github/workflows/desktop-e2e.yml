@@ -16,7 +16,12 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
+      # アプリは音のエンジン (src-tauri/audio-engine) をリンクする。エンジンが使う sfizz
+      # (third_party/sfizz) とその依存は submodule で、ビルドのときに cmake にかける
+      # (cmake は macOS のランナーに入っている)
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:

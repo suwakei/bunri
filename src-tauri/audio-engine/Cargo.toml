@@ -7,8 +7,12 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# 音声デバイスへの出力 (output)
+cpal = "0.18.2"
 # WAV の読み書き (クリップの読み込みと、書き出し)
 hound = "3.5"
+# 画面の側と音声スレッドのあいだの、ロックの無いキュー (transport)
+rtrb = "0.4.1"
 
 [build-dependencies]
 cmake = "0.1"

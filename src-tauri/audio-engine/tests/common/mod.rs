@@ -118,6 +118,20 @@ pub fn sampler_track(sfz: &Path, notes: Vec<Note>) -> Track {
     }
 }
 
+/// 仮の音 (三角波) でノートを鳴らすトラック。
+pub fn tone_track(notes: Vec<Note>) -> Track {
+    Track {
+        instrument: Some(Instrument::Tone),
+        notes,
+        ..Track::default()
+    }
+}
+
+/// 山の高さ (いちばん大きい絶対値)。
+pub fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0, |m, v| m.max(v.abs()))
+}
+
 /// トラックを並べた曲 (120 BPM、1 小節目は 0 秒)。
 pub fn song(tracks: Vec<Track>) -> Song {
     Song {

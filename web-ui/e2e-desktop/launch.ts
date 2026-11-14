@@ -122,6 +122,9 @@ export async function launchApp(): Promise<LaunchedApp> {
         BUNRI_E2E_SAVE_PATH: projectPath,
         BUNRI_E2E_OPEN_PATH: projectPath,
         TAURI_WEBDRIVER_PORT: String(webdriverPort),
+        // テストを回している機械のスピーカーから音を出さない (Rust の engine が、作った音に 0 を掛けてから
+        // デバイスへ渡す。出力デバイスを開くところから位置を送るところまでは、配布物と同じに動く)
+        BUNRI_E2E_AUDIO_SILENT: '1',
         ANTHROPIC_BASE_URL: fakeLlmUrl,
         ANTHROPIC_API_KEY: 'e2e-fake-key',
         PYTHONUNBUFFERED: '1',

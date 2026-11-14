@@ -1,8 +1,18 @@
 /**
- * bunri DAW — WebAudio リアルタイム再生エンジン
+ * bunri DAW — リアルタイム再生エンジン
  * トラック管理、クリップ再生、ピアノノート再生、メトロノーム、録音を担当
+ *
+ * 音を鳴らす先は 2 つ在る。呼ぶ側（画面の部品）からは、どちらで鳴っているかは見えない。
+ *
+ * - デスクトップ版: Rust の engine（lib/native-audio.ts を通す）。再生・停止・位置・区間ループ・メトロノーム・
+ *   録音前のカウント・鍵盤の試聴を任せる。曲の内容は、再生を始めるときに渡す
+ * - ブラウザ（開発用のブラウザ起動と自動テスト）と、Rust の呼び出しが失敗したあと: Web Audio（ここに書いてある予約の処理）
+ *
+ * 書き出し（`mixdown` / `exportWav`）、録音、音声のデコードは、どちらのときも Web Audio のまま。
+ * トラックの `gainNode` / `panNode` も、どちらのときも今の値を持たせておく（途中で Web Audio に切り替わっても、そのまま鳴らせる）。
  */
 import { apiFetch } from './api';
+import { nativeAudio, type NativePlayback } from './native-audio';
 import { rememberSource } from './audio-sources';
 import { stepSeconds, type ProjectGrid } from './grid';
 import { beatsInSegment, clampToLoop, clipInSegment, loopLength, loopPosition, loopSegment, noteInSegment, type LoopRange, type LoopSegment } from './loop';
@@ -195,7 +205,8 @@ class AudioEngine {
      * 曲を取り込むとカルテの 1 拍目の位置になる（lib/grid.ts）。自由に作るときは 0
      */
     gridOffset: number;
-    metronomeEnabled: boolean;
+    /** メトロノームを鳴らすか（`metronomeEnabled` の中身。画面は `metronomeEnabled` を書き換える） */
+    private _metronomeEnabled = false;
     metronomeInterval: ReturnType<typeof setInterval> | null = null;
 
     tracks: Track[] = [];
@@ -240,6 +251,10 @@ class AudioEngine {
     countInClicks: OscillatorNode[] = [];
     /** 区間ループで再生しているあいだの状態 */
     private loopPlayback: LoopPlayback | null = null;
+    /** Rust の engine で再生しているあいだの状態（lib/native-audio.ts）。Web Audio で鳴らしているときは null */
+    private nativePlayback: NativePlayback | null = null;
+    /** Rust の engine で鳴らしている鍵盤の試聴（MIDI ノート番号 → 強さ） */
+    private nativeHeld: Map<number, number> = new Map();
 
     constructor() {
         this.isPlaying = false;
@@ -249,8 +264,103 @@ class AudioEngine {
         this.bpm = 120;
         this.beatsPerBar = 4;
         this.gridOffset = 0;
-        this.metronomeEnabled = false;
         this.nextTrackId = 1;
+        nativeAudio.onFailure = () => this._onNativeFailure();
+        nativeAudio.onInterrupted = () => this._onNativeInterrupted();
+        nativeAudio.project = () => this._nativeBuffers();
+    }
+
+    /**
+     * メトロノームを鳴らすか。画面（ヘッダのボタン）が直接書き換える。
+     * Rust の engine で再生している最中に書き換えたら、すぐ Rust に伝える。
+     */
+    get metronomeEnabled(): boolean {
+        return this._metronomeEnabled;
+    }
+
+    set metronomeEnabled(enabled: boolean) {
+        const next = !!enabled;
+        if (next === this._metronomeEnabled) return;
+        this._metronomeEnabled = next;
+        if (this.nativePlayback) nativeAudio.setMetronome(next);
+    }
+
+    /** 再生を Rust の engine に任せるか（デスクトップ版で、Rust の呼び出しが失敗していないあいだ）。 */
+    usesNativeAudio(): boolean {
+        return nativeAudio.enabled();
+    }
+
+    /**
+     * 音を出す準備が終わるまで待つ。Rust の engine を使うときは、出力デバイスを開き終わる
+     * （か、開けずに Web Audio に切り替わる）まで。Web Audio のときは、すぐ終わる。
+     * `outputLatencySec()` は、このあとで読むと Rust の値になる。
+     */
+    audioReady(): Promise<void> {
+        return this.usesNativeAudio() ? nativeAudio.whenReady() : Promise.resolve();
+    }
+
+    /** いまの曲で使っている音声（Rust に送っておくもの）。音声の無いクリップ（`missing`）は入れない。 */
+    private _nativeBuffers(): AudioBuffer[] {
+        const out: AudioBuffer[] = [];
+        for (const track of this.tracks) {
+            for (const clip of track.clips) if (!clip.missing) out.push(clip.buffer);
+        }
+        if (this.stretched) out.push(this.stretched.buffer);
+        return out;
+    }
+
+    /** クリップの音声を、裏で Rust に送り始める（使わなくなった音声は捨てる）。Web Audio のときは何もしない。 */
+    private _syncNativeClips(): void {
+        if (this.usesNativeAudio()) nativeAudio.syncClips();
+    }
+
+    /**
+     * そのトラックを Rust の engine で鳴らすか。Web Audio の再生と同じ判定:
+     * トラック単体の再生ならそのトラックだけ、ふつうの再生なら `playbackTracks()`（ミュート・ソロ・「聴く」）。
+     */
+    private _nativeAudible(track: Track, playing: Track[] = this.playbackTracks()): boolean {
+        const on = this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
+        if (this.soloTrackId !== null) return on && track.id === this.soloTrackId;
+        return on && playing.includes(track);
+    }
+
+    /** Rust の engine で再生しているなら、トラックの音量・パン・鳴らすかを伝える。 */
+    private _sendNativeMix(track: Track, playing?: Track[]): void {
+        if (!this.nativePlayback) return;
+        nativeAudio.setTrack(track.id, { gainDb: track.gain, pan: track.pan, audible: this._nativeAudible(track, playing) });
+    }
+
+    /**
+     * いまのトラックの状態を Rust の engine に合わせる: クリップの音声を送り始め、再生中なら全トラックの
+     * 音量・パン・鳴らすかを伝える。トラックを、このクラスのメソッドを通さずに書き換えたあとで呼ぶ
+     * （元に戻す・やり直す、ソロの切り替え、プロジェクトを開いたとき）。Web Audio のときは何もしない。
+     */
+    syncNative(): void {
+        if (!this.usesNativeAudio()) return;
+        nativeAudio.syncClips();
+        if (!this.nativePlayback) return;
+        const playing = this.playbackTracks();
+        for (const track of this.tracks) this._sendNativeMix(track, playing);
+    }
+
+    /**
+     * Rust の呼び出しが失敗したとき（lib/native-audio.ts が呼ぶ）。このあとは Web Audio で鳴らす。
+     * 再生中だったら、同じ位置から Web Audio で鳴らし直す。押したままの鍵盤も鳴らし直す。
+     */
+    private _onNativeFailure(): void {
+        const held = [...this.nativeHeld];
+        this.nativeHeld.clear();
+        const playback = this.nativePlayback;
+        this.nativePlayback = null;
+        if (this.ctx) for (const [pitch, velocity] of held) this.liveNoteOn(pitch, velocity);
+        if (!playback || !this.isPlaying) return;
+        const at = nativeAudio.position(playback);
+        const single = this.soloTrackId;
+        this.isPlaying = false;
+        this.playOffset = at.position;
+        // カウントが終わる前だったら、カウントから鳴らし直す
+        if (single !== null) this.playSingleTrack(single);
+        else this.play(null, { countIn: at.countingIn });
     }
 
     /**
@@ -276,6 +386,20 @@ class AudioEngine {
     /** いまのグリッド（テンポ・拍子・1 小節目の位置）。 */
     get grid(): ProjectGrid {
         return { bpm: this.bpm, beatsPerBar: this.beatsPerBar, offsetSec: this.gridOffset };
+    }
+
+    /**
+     * Rust の再生が、頼んでいないのに止まったとき（出力デバイスが外れたなど。lib/native-audio.ts が呼ぶ）。
+     * 止まった位置から鳴らし直す（Rust が出力を開き直す。開けなければ、失敗として Web Audio に切り替わる）。
+     */
+    private _onNativeInterrupted(): void {
+        if (!this.nativePlayback || !this.isPlaying) return;
+        const position = this.getCurrentTime();
+        const single = this.soloTrackId;
+        this.stop();
+        this.playOffset = position;
+        if (single !== null) this.playSingleTrack(single);
+        else this.play(null, { countIn: false });
     }
 
     /**
@@ -324,6 +448,7 @@ class AudioEngine {
     removeTrack(trackId: number | string): void {
         trackId = Number(trackId);
         this.tracks = this.tracks.filter(t => t.id !== trackId);
+        this._syncNativeClips();
     }
 
     /**
@@ -369,6 +494,7 @@ class AudioEngine {
     applyTrackGain(track: Track): void {
         const on = this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
         track.gainNode.gain.value = on ? Math.pow(10, track.gain / 20) : 0;
+        this._sendNativeMix(track);
     }
 
     /**
@@ -392,6 +518,7 @@ class AudioEngine {
         if (!track) return;
         track.pan = pan;
         track.panNode.pan.value = pan;
+        this._sendNativeMix(track);
     }
 
     /**
@@ -424,6 +551,7 @@ class AudioEngine {
         rememberSource(buffer, file, file.name);
         const clip: Clip = { buffer, offset: offsetSec, name: file.name, duration: buffer.duration };
         track.clips.push(clip);
+        this._syncNativeClips();
         return clip;
     }
 
@@ -447,6 +575,7 @@ class AudioEngine {
         rememberSource(buffer, original, decodeURIComponent(url.split('?')[0].split('/').pop() || name || 'clip'));
         const clip: Clip = { buffer, offset: offsetSec, name: name || 'clip', duration: buffer.duration };
         track.clips.push(clip);
+        this._syncNativeClips();
         return clip;
     }
 
@@ -463,6 +592,7 @@ class AudioEngine {
         if (!track) return;
         const clip: Clip = { buffer: audioBuffer, offset: offsetSec, name: name || 'clip', duration: audioBuffer.duration };
         track.clips.push(clip);
+        this._syncNativeClips();
         return clip;
     }
 
@@ -487,6 +617,7 @@ class AudioEngine {
         const track = this.getTrack(trackId);
         if (!track) return;
         track.clips.splice(clipIndex, 1);
+        this._syncNativeClips();
     }
 
     /**
@@ -532,6 +663,10 @@ class AudioEngine {
         this.init();
         if (this.isPlaying) this.stop();
         if (fromSec !== null) this.playOffset = fromSec;
+        if (this.usesNativeAudio()) {
+            this._playNative(null, options.countIn !== false);
+            return;
+        }
         // 録音前のカウント。鳴らし直し (シーク、区間や速度の変更) では入れない
         const lead = options.countIn === false ? 0 : this._beginCountIn();
         if (this.loopRange && loopLength(this.loopRange) > 0.05) {
@@ -547,6 +682,50 @@ class AudioEngine {
             this._scheduleTrack(track);
         }
         if (this.metronomeEnabled) this._startMetronome();
+    }
+
+    /**
+     * Rust の engine で再生を始める。曲の内容（ノート・クリップ・音量・鳴らすトラック）は、いまの時点のものを渡す。
+     * 区間ループ・速度・録音前のカウント・メトロノームの決まりは、Web Audio の再生と同じ:
+     * トラック単体の再生では、区間ループ・速度・カウントは効かない。
+     *
+     * @param single - トラック単体の再生なら、そのトラック ID。ふつうの再生なら null
+     * @param countIn - 録音前のカウントを入れてよいか（鳴らし直しでは入れない）
+     */
+    private _playNative(single: number | null, countIn: boolean): void {
+        const loop = single === null && this.loopRange && loopLength(this.loopRange) > 0.05 ? { ...this.loopRange } : null;
+        if (loop) this.playOffset = clampToLoop(this.playOffset, loop);
+        const beats = single === null && countIn ? Math.max(0, Math.floor(this.countInBeats)) : 0;
+        this.isPlaying = true;
+        this.soloTrackId = single;
+        this.activeSources = [];
+        // 再生 1 回ごとの印 (PracticeView が録音の記録を分けるのに使う)。Rust で鳴らすときは AudioContext の時計が
+        // 止まっていることもあるので、再生のたびに必ず変わる値にする
+        this.startTime = Math.max(this.ctx!.currentTime, this.startTime + 0.001);
+        const playing = this.playbackTracks();
+        this.nativePlayback = nativeAudio.play({
+            bpm: this.bpm,
+            beatsPerBar: this.beatsPerBar,
+            offsetSec: this.gridOffset,
+            tracks: this.tracks.map((t) => ({
+                id: t.id, gainDb: t.gain, pan: t.pan, audible: this._nativeAudible(t, playing),
+                notes: this.soundingNotes(t), clips: t.clips,
+            })),
+            fromSec: this.playOffset,
+            loop,
+            rate: loop ? this.effectiveRate() : 1,
+            stretched: this.stretched,
+            // カウントの 1 拍の長さには、速度を掛けない (Web Audio の再生と同じ)
+            countIn: beats > 0 ? { beats, beatSec: 60 / this.bpm } : null,
+            metronome: this.metronomeEnabled,
+        });
+    }
+
+    /** Rust の engine で再生していたら止める（停止と一時停止のどちらも。位置はこちらが持つ）。 */
+    private _stopNative(): void {
+        if (!this.nativePlayback) return;
+        this.nativePlayback = null;
+        nativeAudio.stop();
     }
 
     /** いま効いている速度。区間ループが無ければ 1（速度は区間の中でだけ効く）。 */
@@ -686,6 +865,9 @@ class AudioEngine {
      * MIDI のリアルタイム録音が、1 周ごとに記録を分けるのに使う。
      */
     getLoopPass(): number | null {
+        if (this.isPlaying && this.nativePlayback) {
+            return this.nativePlayback.loop ? nativeAudio.position(this.nativePlayback).pass : null;
+        }
         const p = this.loopPlayback;
         if (!this.isPlaying || !p || !this.ctx) return null;
         return loopPosition(p.loop, p.startPos, p.rate, Math.max(0, this.ctx.currentTime - p.startWhen)).pass;
@@ -733,6 +915,7 @@ class AudioEngine {
 
     /** 録音前のカウントの最中か (再生は始めたが、まだ曲は進んでいない)。 */
     isCountingIn(): boolean {
+        if (this.nativePlayback) return this.isPlaying && nativeAudio.position(this.nativePlayback).countingIn;
         return this.isPlaying && !!this.ctx && this.ctx.currentTime < this.countInUntil;
     }
 
@@ -740,8 +923,14 @@ class AudioEngine {
      * 音が耳に届くまでの遅れ (秒)。ブラウザが知らせる値 (出力の遅れ + 処理の遅れ)。知らせない環境では 0。
      * MIDI 入力のリアルタイム録音が、弾いた位置を前へ戻すのに使う (聞こえた音に合わせて弾くと、
      * そのぶんだけ再生位置より遅れて届くため)。
+     *
+     * Rust の engine で鳴らすときは、Rust が開いた出力デバイスの値 (開き終わるまでは、ブラウザの値。`audioReady()`)。
      */
     outputLatencySec(): number {
+        if (this.usesNativeAudio()) {
+            const native = nativeAudio.outputLatencySec();
+            if (native !== null) return native;
+        }
         const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
         if (!ctx) return 0;
         const total = (Number(ctx.outputLatency) || 0) + (Number(ctx.baseLatency) || 0);
@@ -769,6 +958,8 @@ class AudioEngine {
         if (rate === this.tempoRate && stretched === this.stretched) return;
         this.tempoRate = rate;
         this.stretched = stretched;
+        // 伸ばした音声を、先に Rust へ送り始める (前の速度のぶんは捨てる)
+        this._syncNativeClips();
         this.restartIfPlaying();
     }
 
@@ -783,6 +974,10 @@ class AudioEngine {
         const track = this.getTrack(trackId);
         if (!track) return;
         if (fromSec !== null) this.playOffset = fromSec;
+        if (this.usesNativeAudio()) {
+            this._playNative(track.id, false);
+            return;
+        }
         this.startTime = this.ctx!.currentTime;
         this.isPlaying = true;
         this.soloTrackId = Number(trackId);
@@ -873,6 +1068,7 @@ class AudioEngine {
      * アクティブな全ソースノードを停止する。
      */
     stop(): void {
+        this._stopNative();
         this._stopLoop();
         this._stopCountIn();
         this.isPlaying = false;
@@ -920,6 +1116,12 @@ class AudioEngine {
      */
     liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY): void {
         this.init();
+        if (this.usesNativeAudio()) {
+            // 同じ高さをもう一度押したら、Rust の側で鳴らし直す
+            this.nativeHeld.set(pitch, velocity);
+            nativeAudio.liveNote(pitch, velocity);
+            return;
+        }
         const ctx = this.ctx!;
         this.liveNoteOff(pitch);
         const osc = ctx.createOscillator();
@@ -941,6 +1143,10 @@ class AudioEngine {
      * @param pitch - MIDI ノート番号
      */
     liveNoteOff(pitch: number): void {
+        if (this.nativeHeld.delete(pitch)) {
+            if (this.usesNativeAudio()) nativeAudio.liveNote(pitch, 0);
+            return;
+        }
         const voice = this.liveVoices.get(pitch);
         if (!voice || !this.ctx) return;
         this.liveVoices.delete(pitch);
@@ -953,6 +1159,10 @@ class AudioEngine {
 
     /** `liveNoteOn` で鳴らしている音をすべて止める。 */
     liveAllNotesOff(): void {
+        if (this.nativeHeld.size > 0) {
+            this.nativeHeld.clear();
+            if (this.usesNativeAudio()) nativeAudio.liveAllOff();
+        }
         for (const pitch of Array.from(this.liveVoices.keys())) this.liveNoteOff(pitch);
     }
 
@@ -963,6 +1173,7 @@ class AudioEngine {
     pause(): void {
         if (!this.isPlaying) return;
         this.playOffset = this.getCurrentTime();
+        this._stopNative();
         this._stopLoop();
         this._stopCountIn();
         this.isPlaying = false;
@@ -979,6 +1190,8 @@ class AudioEngine {
      */
     getCurrentTime(): number {
         if (!this.isPlaying) return this.playOffset;
+        // Rust の engine で再生しているときは、Rust が知らせる位置から出す (知らせのあいだは、経過時間で補う)
+        if (this.nativePlayback) return nativeAudio.position(this.nativePlayback).position;
         const p = this.loopPlayback;
         // 区間ループ中は、区間の終わりで頭に戻る。速度を変えていれば、その速さで進む
         // 再生の始まりより前 (録音前のカウントの間) は、始める位置のまま進めない

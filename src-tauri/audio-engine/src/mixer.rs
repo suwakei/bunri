@@ -68,6 +68,98 @@ impl TrackGains {
     }
 }
 
+impl TrackGains {
+    /// 何も通さない倍率 (鳴らさないトラック)。
+    pub(crate) const SILENT: TrackGains = TrackGains {
+        ll: 0.0,
+        lr: 0.0,
+        rl: 0.0,
+        rr: 0.0,
+        ml: 0.0,
+        mr: 0.0,
+    };
+
+    /// `self` から `to` へ、`t` (0.0〜1.0) だけ進んだところの倍率。
+    fn lerp(&self, to: &TrackGains, t: f32) -> TrackGains {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        TrackGains {
+            ll: mix(self.ll, to.ll),
+            lr: mix(self.lr, to.lr),
+            rl: mix(self.rl, to.rl),
+            rr: mix(self.rr, to.rr),
+            ml: mix(self.ml, to.ml),
+            mr: mix(self.mr, to.mr),
+        }
+    }
+}
+
+/// 再生中に倍率を変えるときの、短い直線の移り変わり (急に変えると「ぷつっ」と鳴る)。
+///
+/// 移り変わりの途中の倍率は「始めてから何フレームめか」だけで決まる。足し込みで進めないので、
+/// ブロックの区切り方を変えても同じ値になる。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GainRamp {
+    from: TrackGains,
+    to: TrackGains,
+    /// 移り変わりの長さ (フレーム)
+    total: u32,
+    /// 進んだフレーム数 (`total` で終わり)
+    done: u32,
+}
+
+impl GainRamp {
+    /// 移り変わりの無い状態 (`gains` のまま)。
+    pub(crate) fn settled_at(gains: TrackGains) -> Self {
+        GainRamp {
+            from: gains,
+            to: gains,
+            total: 0,
+            done: 0,
+        }
+    }
+
+    /// 移り変わりが終わっているか。
+    pub(crate) fn is_settled(&self) -> bool {
+        self.done >= self.total
+    }
+
+    /// 行き先の倍率。
+    pub(crate) fn target(&self) -> TrackGains {
+        self.to
+    }
+
+    /// 次のブロックの `i` 番目のフレームに掛ける倍率。
+    pub(crate) fn at(&self, i: usize) -> TrackGains {
+        let step = (self.done as u64 + i as u64 + 1).min(self.total as u64) as u32;
+        if step >= self.total {
+            self.to
+        } else {
+            self.from.lerp(&self.to, step as f32 / self.total as f32)
+        }
+    }
+
+    /// いまの倍率から `to` へ、`frames` フレームかけて移る。
+    pub(crate) fn retarget(&mut self, to: TrackGains, frames: u32) {
+        let now = if self.is_settled() {
+            self.to
+        } else {
+            self.from
+                .lerp(&self.to, self.done as f32 / self.total as f32)
+        };
+        *self = GainRamp {
+            from: now,
+            to,
+            total: frames,
+            done: 0,
+        };
+    }
+
+    /// `frames` フレームぶん進める。
+    pub(crate) fn advance(&mut self, frames: usize) {
+        self.done = (self.done as u64 + frames as u64).min(self.total as u64) as u32;
+    }
+}
+
 /// 四分円の上の位置 `x` (0.0〜1.0) の (cos, sin)。両端はちょうど 0 と 1 にする
 /// (f32 の π/2 は真の値より少し大きく、cos がわずかに負になる。中央に置いたステレオの
 /// 素材が、1 ビットも変わらずに通るように)。
@@ -139,6 +231,40 @@ mod tests {
         assert!(close(center.mr, std::f32::consts::FRAC_1_SQRT_2));
         let left = TrackGains::new(0.0, -1.0);
         assert!(close(left.ml, 1.0) && close(left.mr, 0.0));
+    }
+
+    #[test]
+    fn 倍率は決まった長さの直線で移る() {
+        let from = TrackGains::new(0.0, 0.0);
+        let to = TrackGains::new(-20.0, 0.0);
+        let mut ramp = GainRamp::settled_at(from);
+        assert!(ramp.is_settled());
+        assert_eq!(ramp.at(0), from);
+
+        ramp.retarget(to, 100);
+        assert!(!ramp.is_settled());
+        // 1 フレームめから動き始め、100 フレームめでちょうど行き先に着く
+        assert!(close(ramp.at(0).ll, 1.0 - 0.9 / 100.0));
+        assert!(close(ramp.at(49).ll, 1.0 - 0.9 * 0.5));
+        assert_eq!(ramp.at(99), to);
+        assert_eq!(ramp.at(5000), to);
+
+        // 途中まで進めても、同じフレームの倍率は変わらない (ブロックの区切り方に依らない)
+        let whole = ramp.at(70);
+        ramp.advance(30);
+        assert_eq!(ramp.at(40), whole);
+        ramp.advance(41);
+        assert!(close(ramp.at(0).ll, 1.0 - 0.9 * 0.72));
+
+        // 途中で行き先を変えると、そのときの倍率から移り始める (段差ができない)
+        let now = ramp.at(0);
+        ramp.advance(1);
+        ramp.retarget(TrackGains::SILENT, 10);
+        assert!(close(ramp.at(0).ll, now.ll * 0.9));
+        ramp.advance(10);
+        assert!(ramp.is_settled());
+        assert_eq!(ramp.at(0), TrackGains::SILENT);
+        assert_eq!(ramp.target(), TrackGains::SILENT);
     }
 
     #[test]

@@ -36,7 +36,8 @@ bunri の画面を、人の代わりにプログラム（Playwright）や Claude
 差分チェック、MIDI の書き出しなど）。CSP の違反。
 
 **確かめられない範囲:** 本物の窓 (WKWebView) とネイティブ側（Rust）の機能。これは本物の窓のテスト (3.) と
-`src-tauri` のテストで見る。プロジェクトの保存・開くは、ブラウザでは名前を尋ねてデータ置き場の `projects/` に置く経路で通す
+`src-tauri` のテストで見る。再生は、ブラウザでは Web Audio の経路だけを通る (デスクトップ版は Rust の engine が鳴らす)。
+Rust に渡す口 (`lib/native-audio.ts`) は、Vitest が `__TAURI__` を偽物にして確かめる (`__tests__/native-audio.test.ts`)。プロジェクトの保存・開くは、ブラウザでは名前を尋ねてデータ置き場の `projects/` に置く経路で通す
 (デスクトップ版のダイアログと最近使ったプロジェクトの持ち方は Rust)。
 
 ## 1. 決まった手順を自動で確かめる（Playwright のテスト）
@@ -159,7 +160,8 @@ make e2e-desktop     # = cd web-ui && npm run e2e:desktop
 | 同梱したフォント (Outfit / IBM Plex Mono) の全部の書体が読み込め、画面がそのフォントで描かれる | WKWebView と `tauri://` で配られるフォントは、ブラウザでは確かめられない |
 | トークン無し・違うトークンの API 呼び出しは 401、正しいトークンなら `tauri://localhost` から呼べる (CORS) | 鍵は、デスクトップ版でだけ掛かる |
 | `<audio src>` は、クエリのトークンで sidecar の音声を読める (トークン無しでは読めない) | `media-src` と、ヘッダを付けられない経路の鍵 |
-| WAV をタイムラインに置くとクリップが出て、再生すると再生位置が進み、停止できる | WKWebView の Web Audio が実際に動くか |
+| WAV をタイムラインに置くとクリップが出て、再生すると再生位置が進み、停止できる | 再生が実際に動くか。出力デバイスの在る機械では Rust の engine (クリップの音声を Rust へ送る経路を含む)、無い機械では WKWebView の Web Audio を通る |
+| ノートを置いて再生すると再生位置が進み、止めると止まる | ノートの再生。Rust の engine でも、Web Audio に切り替わっていても通る書き方 (どちらで鳴らしたかは、アプリのログに出す) |
 | WAV の書き出しで、ファイルが保存される (長さと振幅も確かめる) | WKWebView の `<a download>` (blob) の保存は、ブラウザとは別の仕組み (Rust の `on_download`) を通る |
 | カルテを作って再現ガイドを頼むと、sidecar が (偽の) Claude を呼んでガイドが返る | `tauri://localhost` → sidecar (トークン、CORS、`connect-src`) → Claude の通し |
 | sidecar を止める (テストが起動したアプリの sidecar だけ) と、止まったことの知らせが出て、「再起動」で新しいポートとトークンの sidecar に差し替わる。トラックはそのまま残る | sidecar の起動し直し (Rust の `restart_backend`) と、新しい接続情報の受け渡しは、デスクトップ版にしか無い |

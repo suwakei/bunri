@@ -79,6 +79,11 @@ export interface SnapshotSource {
     bpm: number;
     beatsPerBar: number;
     gridOffset: number;
+    /**
+     * トラックを書き換えたあとで、再生のつなぎの外（デスクトップ版の Rust の engine）にも伝える
+     * （engine.ts の `syncNative`）。無ければ呼ばない
+     */
+    syncNative?: () => void;
 }
 
 /** ノートの並びが同じか（同じ配列なら中身を見ない）。 */
@@ -167,7 +172,10 @@ export function snapshotCost(before: ProjectSnapshot, after: ProjectSnapshot): n
     return cost;
 }
 
-/** 音量・パン・ミュートを、再生のつなぎに当てる（再生中でもすぐ効く）。 */
+/**
+ * 音量・パン・ミュートを、再生のつなぎに当てる（再生中でもすぐ効く）。
+ * デスクトップ版で Rust の engine が鳴らしているときは、`applyProject` の最後の `syncNative` で伝える。
+ */
 function applyMix(track: Track): void {
     if (track.gainNode) track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, track.gain / 20);
     if (track.panNode) track.panNode.pan.value = track.pan;
@@ -224,5 +232,7 @@ export function applyProject(engine: SnapshotSource, target: ProjectSnapshot, ot
         const extras = engine.tracks.filter(t => !orderedSet.has(t) && !removed.has(t));
         engine.tracks = [...ordered, ...extras];
     }
+    // 戻した音量・パン・ミュート・ソロとクリップを、Rust の engine にも伝える (再生中ならすぐ効く)
+    engine.syncNative?.();
     return sameGrid(target.grid, other.grid) ? null : { ...target.grid };
 }

@@ -27,6 +27,16 @@ pub const SAVE_PATH_ENV: &str = "BUNRI_E2E_SAVE_PATH";
 /// プロジェクトを開くダイアログの代わりに使う場所。
 pub const OPEN_PATH_ENV: &str = "BUNRI_E2E_OPEN_PATH";
 
+/// 音を出さないようにする環境変数 (`1` のとき)。ネイティブの engine が作った音に 0 を掛けてから
+/// デバイスへ渡す (`audio.rs`)。テストを回している機械のスピーカーから音を出したくないときに使う。
+/// 出力デバイスを開くところから位置を送るところまでは、配布物と同じに動く。
+pub const AUDIO_SILENT_ENV: &str = "BUNRI_E2E_AUDIO_SILENT";
+
+/// 音を出さないようにするか。
+pub fn audio_silent() -> bool {
+    std::env::var_os(AUDIO_SILENT_ENV).is_some_and(|value| value == "1")
+}
+
 /// ダイアログの代わりに使う場所を、環境変数から読む (無ければ None で、本物のダイアログを出す)。
 pub fn dialog_path(env: &str) -> Option<PathBuf> {
     std::env::var_os(env)
