@@ -6,6 +6,8 @@
  * - 検出できなかった項目は値を出さず理由を示す
  * - セクションのラベルは「提案」として出し、断定しない
  * - 全要素にツールチップを付ける（`Term` を通すことで構造的に強制する）
+ * - テンポは本当の倍・半分に読み取られることがあるので、BPM のすぐ下に候補の値と、確かめる窓への導線を出す
+ *   （`TempoHint`。推定では決めきれないので、利用者が気づいて直せるようにする）
  *
  * コードの升目と構成の行を押すと、その小節へ移動する（再生位置と、タイムライン・ピアノロールのスクロール）。
  * 小節の位置はカルテの実測のビート列から引く（lib/grid.ts の `chartBarToSec`）。
@@ -14,7 +16,7 @@ import { useMemo, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
 import { chartBarToSec } from '../lib/grid';
 import {
-    confidenceTier, formatTime,
+    confidenceTier, formatTime, tempoCandidates,
     TIER_DISPLAY, SECTION_LABEL_JA, BAND_LABEL_JA,
     type ChartChord, type ConfidenceTier,
 } from '../lib/chart';
@@ -118,6 +120,38 @@ function Row({ term, label, children }: { term: string; label: string; children:
 }
 
 /**
+ * テンポが本当の倍や半分に読み取られているかもしれないことの案内（BPM のすぐ下に出す）。
+ *
+ * テンポの推定は、曲によって倍・半分を取り、推定の側では決めきれない（docs/song-chart-design.md
+ * 「テンポが倍・半分かもしれないことの案内」）。外れていても確信度が「確実」と出る曲が在るので、
+ * 確信度では出し分けない。いつも出るぶん、補足の文字（小さく、薄い色）で控えめにする。
+ * 直す手段はグリッドの確認・補正の窓（÷2 / ×2）に在るので、そこを開くボタンを付ける。
+ * 候補が 1 つも無ければ（範囲の外、テンポが出ていない）何も出さない。
+ *
+ * @param bpm - カルテのテンポ
+ * @param onOpen - グリッドの確認・補正の窓を開く
+ */
+function TempoHint({ bpm, onOpen }: { bpm: number; onOpen: () => void }) {
+    const { half, double } = tempoCandidates(bpm);
+    if (half === null && double === null) return null;
+    const text = half !== null && double !== null
+        ? `このテンポが速すぎると感じたら ${half}、遅すぎると感じたら ${double} かもしれません。`
+        : half !== null
+            ? `このテンポが速すぎると感じたら、${half} かもしれません。`
+            : `このテンポが遅すぎると感じたら、${double} かもしれません。`;
+
+    return (
+        <div id="tempo-hint" className="note-text" style={{ marginBottom: 4 }}>
+            {text}
+            <button type="button" className="link-btn" style={{ marginLeft: 4, marginRight: 0 }} onClick={onOpen}
+                {...tip('テンポは、本当の倍や半分に読み取られることがあります。押すと、波形と拍の線を見比べる窓が開き、「÷2」「×2」のボタンで直せます')}>
+                波形で確かめる
+            </button>
+        </div>
+    );
+}
+
+/**
  * 楽曲カルテパネル。
  * 解析済みのカルテが無い場合は、ファイルタブへ誘導する案内を出す。
  * 文字の大きさは、本文 12px・補足 11px を下限にする（docs/ui-terms.md）。
@@ -177,6 +211,10 @@ export default function ChartPanel() {
             {/* ---- グリッド ---- */}
             <Block title="グリッド" term="bpm" badge={<ConfidenceBadge value={grid.bpm_confidence} />}>
                 <Row term="bpm" label="BPM">{grid.bpm.toFixed(1)}</Row>
+                {/* 利用者がグリッドを確定した後は出さない (波形と見比べて決めた値なので、もう疑わせない) */}
+                {!grid.user_confirmed && !unavailable['grid'] && (
+                    <TempoHint bpm={grid.bpm} onOpen={() => setShowGridEditor(true)} />
+                )}
                 <Row term="time_signature" label="拍子">{grid.time_signature[0]}/{grid.time_signature[1]}</Row>
                 <Row term="downbeat_offset" label="1拍目">{grid.downbeat_offset_sec.toFixed(3)} 秒</Row>
                 <Row term="beat" label="検出した拍数">{grid.beat_times_sec.length}</Row>
