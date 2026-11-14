@@ -186,6 +186,30 @@ export const TIER_DISPLAY: Record<ConfidenceTier, { label: string; color: string
     unsure: { label: '自信なし', color: 'var(--error)' },
 };
 
+/** 倍・半分の候補として出すテンポの範囲（BPM）。ほとんどの曲はこの中に収まるので、外の値は候補にしない */
+export const TEMPO_CANDIDATE_RANGE = { min: 40, max: 250 } as const;
+
+/**
+ * いまのテンポが本当の倍・半分に読み取られていた場合の、本当のテンポの候補を出す。
+ *
+ * テンポの推定は、曲によって本当のテンポの倍や半分を取り、推定の側では決めきれない
+ * （docs/song-chart-design.md「テンポが倍・半分かもしれないことの案内」）。カルテに候補の値を出して、
+ * 利用者が気づいて直せるようにするのに使う。値は目安なので、整数に丸める。
+ *
+ * @param bpm - カルテのテンポ
+ * @returns `half` は、いまのテンポが速すぎる（倍に読み取られた）ときの候補。`double` は、遅すぎる
+ *   （半分に読み取られた）ときの候補。範囲（`TEMPO_CANDIDATE_RANGE`）の外になる候補と、テンポが無いときは null
+ */
+export function tempoCandidates(bpm: number): { half: number | null; double: number | null } {
+    if (!Number.isFinite(bpm) || bpm <= 0) return { half: null, double: null };
+    const half = Math.round(bpm / 2);
+    const double = Math.round(bpm * 2);
+    return {
+        half: half >= TEMPO_CANDIDATE_RANGE.min ? half : null,
+        double: double <= TEMPO_CANDIDATE_RANGE.max ? double : null,
+    };
+}
+
 /** セクションの提案ラベルを日本語表示にする対応表 */
 export const SECTION_LABEL_JA: Record<string, string> = {
     intro: 'イントロ',
