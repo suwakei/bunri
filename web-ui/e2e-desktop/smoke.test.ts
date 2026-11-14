@@ -391,15 +391,28 @@ describe('プロジェクトのファイル', () => {
         await app.waitFor('クリップが戻る', () => document.querySelectorAll('#tracks-container .clip').length === 1, []);
         expect(await app.run(() => document.querySelector<HTMLInputElement>('#transport-bpm')!.value)).toBe('96');
 
-        // 開く: 「ほかのファイルを選ぶ…」(テスト用のビルドでは BUNRI_E2E_OPEN_PATH が選ばれる)
-        await press('開く');
-        await app.waitFor('開く一覧', () => document.querySelector('[role="dialog"]') !== null, []);
-        await press('ほかのファイルを選ぶ…');
-        await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
         // 開いた音声は再生できる
         await app.click('//button[@aria-label="再生"]');
         await waitStatus('再生中');
         await app.click('//button[@aria-label="停止"]');
+        // ここで知らせの文を「停止」に変えておく。下の 2 回目の「開く」は、1 回目と同じ文で終わるので、
+        // 文が残ったままだと、開き終わるのを待たずに先へ進んでしまう (遅れて終わった「開く」が、次のテストの
+        // 操作を上書きして落ちたことがある)
+        await waitStatus('停止');
+
+        // 開く: 「ほかのファイルを選ぶ…」(テスト用のビルドでは BUNRI_E2E_OPEN_PATH が選ばれる)
+        await press('開く');
+        await app.waitFor('開く一覧', () => document.querySelector('[role="dialog"]') !== null, []);
+        const pickedAt = Date.now();
+        await press('ほかのファイルを選ぶ…');
+        await waitStatus('プロジェクト「e2e-project」を開きました', 60_000);
+        console.log(`[e2e-desktop] ファイルを選んで開くのにかかった時間: ${Date.now() - pickedAt} ms`);
+        await app.waitFor('クリップが戻る', () => document.querySelectorAll('#tracks-container .clip').length === 1, []);
+        // 開き直した音声も再生できる
+        await app.click('//button[@aria-label="再生"]');
+        await waitStatus('再生中');
+        await app.click('//button[@aria-label="停止"]');
+        await waitStatus('停止');
         expect(await record()).toEqual({ csp: [], errors: [] });
         writeFileSync(join(import.meta.dirname, '..', 'e2e-desktop-results', 'project-reopened.png'), await app.screenshot());
     });
