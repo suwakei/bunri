@@ -13,6 +13,9 @@
  *
  * 指摘を押すと、その場所へ移動する（ピアノロールは、その小節とノートの高さまでスクロールする）。
  *
+ * お手本が MIDI ファイルから読み込んだもののときだけ、強さ（ベロシティ）も比べて「強さの違い」の欄を出す
+ * （components/VelocityFindings.tsx）。音源から採譜したお手本では、強さの欄そのものを出さない。
+ *
  * 比べたあとは「Claude に説明してもらう」で、違いの傾向・考えられる理由・まず何を見直すかを言葉にしてもらえる
  * （差分の説明。docs/coach-diff-design.md「言語化」）。説明の点に付いた場所を押すと、そこへ移動し、
  * 指摘の一覧の該当する行を示す。費用まわり（保存済みなら呼ばない・作り直しは明示的に・使用量と今日の累計）は
@@ -24,16 +27,17 @@ import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
 import engine, { type PianoNote } from '../lib/engine';
 import { describeError } from '../lib/api';
-import { chartIdOfParts, practiceTrackOf } from '../lib/learn';
+import { chartIdOfParts, practiceTrackOf, referenceSourceOf } from '../lib/learn';
 import {
-    ExplainRequestError, KIND_LABEL, comparedOf, explanationRefLabel, fetchSavedExplanation, issueText, issuesById,
-    rememberCompared, requestDiff, requestExplanation, type DiffIssue, type DiffResult, type ExplainRequest, type ExplanationRef,
-    type ExplanationResponse, type IssueKind,
+    ExplainRequestError, KIND_LABEL, comparedOf, explanationRefLabel, fetchSavedExplanation, hasVelocityDiff, issueText, issuesById,
+    rememberCompared, requestDiff, requestExplanation, velocityNotesOf, type DiffIssue, type DiffResult, type ExplainRequest,
+    type ExplanationRef, type ExplanationResponse, type IssueKind, type VelocityFinding,
 } from '../lib/coach';
 import { formatUsd, type GuideToday } from '../lib/guide';
 import { todayLine, usageLine } from '../lib/claude-usage';
 import { ClaudeSendNote, ClaudeSettings, UnverifiedTerms } from './ClaudeParts';
 import LearnHistory from './LearnHistory';
+import VelocityFindings from './VelocityFindings';
 import { attemptFromDiff } from '../lib/learn-history';
 
 /** 一覧に出す指摘の上限。多すぎると読めないので、重い小節から順に出して打ち切る。 */
@@ -47,6 +51,7 @@ const attemptEntry = new WeakMap<DiffResult, number>();
 /** Claude に頼むまでもないとき（決まった文）の、理由の一言。 */
 const RULE_NOTE: Record<string, string> = {
     no_diff: 'お手本と違うところが無いので、Claude は呼んでいません（費用はかかっていません）。',
+    velocity_only: '違うのは強さだけで、上の「強さの違い」を読めば足りるので、Claude は呼んでいません（費用はかかっていません）。',
     no_attempt: '打ち込みがまだ無いので、Claude は呼んでいません（費用はかかっていません）。',
     few_notes: 'お手本のノートが少なく傾向を言えないので、Claude は呼んでいません（費用はかかっていません）。',
     few_issues: '違いが少なく一覧を読めば足りるので、Claude は呼んでいません（費用はかかっていません）。',
@@ -101,8 +106,12 @@ export default function CoachPanel() {
             const referenceNotes = reference.referenceNotes ?? [];
             const attemptNotes = attempt.pianoNotes ?? [];
             const stepsPerBar = (beatsPerBar || 4) * 4;
-            const diff = await requestDiff(referenceNotes, attemptNotes, stepsPerBar);
-            rememberCompared(diff, { reference: referenceNotes.map((n) => ({ ...n })), attempt: attemptNotes.map((n) => ({ ...n })), stepsPerBar });
+            // 強さを比べるのは、MIDI ファイルから読み込んだお手本のときだけ (採譜したお手本の強さは当てにならない)
+            const referenceSource = referenceSourceOf(reference);
+            const diff = await requestDiff(referenceNotes, attemptNotes, stepsPerBar, referenceSource);
+            rememberCompared(diff, {
+                reference: referenceNotes.map((n) => ({ ...n })), attempt: attemptNotes.map((n) => ({ ...n })), stepsPerBar, referenceSource,
+            });
             // 学習の記録に 1 件足す (説明ができたら、その鍵を結び付ける)
             attemptEntry.set(diff, recordLearnAttempt(attemptFromDiff(diff, {
                 referenceId: reference.id, attemptId: attempt.id, part: reference.part ?? attempt.part ?? null,
@@ -140,6 +149,24 @@ export default function CoachPanel() {
     }, [pianoRollRef, attempt, beatsPerBar, bumpTracks, jumpTo]);
 
     /**
+     * 強さの違いのまとまりを開く。比べた打ち込みのトラックをピアノロールで開き、最初のノートの場所へ移って、
+     * 当たるノートを選んで光らせる（選ぶと、ピアノロールの上の「強さ」の欄で変えられる）。
+     */
+    const handleVelocity = useCallback((finding: VelocityFinding) => {
+        const pr = pianoRollRef.current;
+        const velocity = result?.velocity;
+        if (!pr || !attempt || !velocity) return;
+        if (pr.getActiveTrackId() !== attempt.id) {
+            pr.switchToTrack(attempt.id);
+            bumpTracks();
+        }
+        const first = velocity.notes[finding.notes[0]]?.actual;
+        jumpTo({ step: first ? first.step : (finding.start_bar - 1) * (beatsPerBar || 4) * 4, pitch: first });
+        // ピアノロールがいま持っているノートの並びで探す (比べたあとにノートを変えていても、同じ形のノートが残っていれば選ぶ)
+        pr.flashNotes?.(velocityNotesOf(finding, velocity, pr.notes ?? attempt.pianoNotes ?? []));
+    }, [pianoRollRef, result, attempt, beatsPerBar, bumpTracks, jumpTo]);
+
+    /**
      * 説明の材料。比べたときのノートに、お手本と同じ曲のカルテを添える（カルテのグリッドで採譜したパートのときだけ。
      * 別の曲を取り込んだあとの古いパートには、新しい曲のカルテを添えない）。
      */
@@ -147,6 +174,8 @@ export default function CoachPanel() {
         const compared = result ? comparedOf(result) : undefined;
         if (!compared) return null;
         const body: ExplainRequest = { reference: compared.reference, attempt: compared.attempt, steps_per_bar: compared.stepsPerBar };
+        // 差分チェックと同じ出どころで頼む (MIDI のお手本のときだけ、強さの違いも説明の材料になる)
+        if (compared.referenceSource === 'midi') body.reference_source = 'midi';
         if (chart && chartId && reference?.role === 'part' && chartIdOfParts() === chartId) {
             body.chart_id = chartId;
             body.bpm = bpm;
@@ -279,7 +308,9 @@ export default function CoachPanel() {
                 </select>
             </div>
             <button className="action-btn" onClick={handleCompare} disabled={busy}
-                {...tip('打ち込みをお手本と比べて、違うところを小節ごとに挙げます')}>
+                {...tip(referenceSourceOf(reference) === 'midi'
+                    ? '打ち込みをお手本と比べて、違うところを小節ごとに挙げます。MIDI ファイルから読み込んだお手本なので、強さも比べます'
+                    : '打ち込みをお手本と比べて、違うところを小節ごとに挙げます')}>
                 {busy ? '比べています…' : 'お手本と比べる'}
             </button>
 
@@ -293,7 +324,9 @@ export default function CoachPanel() {
                         （位置も長さもぴったり: {result.summary.exact} ノート）。
                     </p>
                     {total === 0 ? (
-                        <p className="body-text" style={{ marginTop: 6 }}>お手本どおりです。</p>
+                        <p className="body-text" style={{ marginTop: 6 }}>
+                            {hasVelocityDiff(result) ? '高さ・位置・長さは、お手本どおりです。' : 'お手本どおりです。'}
+                        </p>
                     ) : (
                         <>
                             <p style={{ fontSize: 12, color: 'var(--text-mid)', marginTop: 4 }}>
@@ -306,6 +339,7 @@ export default function CoachPanel() {
                             )}
                         </>
                     )}
+                    <VelocityFindings velocity={result.velocity} onSelect={handleVelocity} />
                     {reference && attempt && <LearnHistory referenceId={reference.id} attemptId={attempt.id} />}
                     {request && (
                         <ExplanationSection explain={explain} explaining={explaining} error={explainError} today={today}

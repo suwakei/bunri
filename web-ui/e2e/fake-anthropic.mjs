@@ -40,6 +40,8 @@ const GUIDE = {
 /**
  * 差分の説明 (backend/coach_explain.py の COACH_SCHEMA の形) を、送られてきた事実から作る。
  * 1 つ目の点は最初の指摘を、2 つ目の点は 2 つ目の指摘の小節だけを指す。音名は書かない。
+ * 事実に強さの違い (facts.velocity。お手本が MIDI ファイルから読み込んだもののときだけ在る) が入っていれば、
+ * その 1 つ目のまとまりの小節を指す点を足す (強さの事実が Claude まで届いたかを、テストが画面で確かめられる)。
  */
 function explanationFor(body) {
     const content = String(body.messages?.[0]?.content ?? '');
@@ -65,6 +67,17 @@ function explanationFor(body) {
             fix: 'お手本を重ねて、位置をそろえてください。',
             issue_ids: [],
             bars: [rows[1][1]],
+        });
+    }
+    const strength = facts.velocity?.findings?.[0];
+    if (strength) {
+        points.push({
+            title: '強さを見直す',
+            observation: `${strength.start_bar} 小節目から、強さがお手本と違っています（まとまり ${facts.velocity.findings.length} 個）。`,
+            cause: 'マウスで置いたノートは、強さが同じになるからかもしれません。',
+            fix: 'ノートを選んで、強さの欄で変えてください。',
+            issue_ids: [],
+            bars: [strength.start_bar],
         });
     }
     return {

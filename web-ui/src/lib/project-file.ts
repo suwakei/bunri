@@ -21,7 +21,7 @@ import { apiFetch, errorDetail } from './api';
 import { audioBufferToFloatWav, decodeWithSource, rememberSource, sha256Hex, sourceOf } from './audio-sources';
 import { captureProject } from './project-snapshot';
 import type { SongChart, WaveformPeaks } from './chart';
-import { comparedOf, rememberCompared, type DiffResult } from './coach';
+import { comparedOf, rememberCompared, type ComparedNotes, type DiffResult } from './coach';
 import { HISTORY_KINDS, type LearnAttempt } from './learn-history';
 import type { CoachPair, CoachResult, GhostChoice, LearnTab, LeftTab } from './store';
 
@@ -188,7 +188,8 @@ export interface BuildInput {
 export interface LearnState extends DocSection {
     ghostChoice: 'auto' | 'off' | { track: number };
     coachPair: { reference: number | null; attempt: number | null };
-    coachResult: { reference: number; attempt: number; result: DiffResult; compared: { reference: PianoNote[]; attempt: PianoNote[]; stepsPerBar: number } | null } | null;
+    /** `compared` は、比べたときのノートとお手本の出どころ（出どころは、以前の版が保存したものには無い） */
+    coachResult: { reference: number; attempt: number; result: DiffResult; compared: ComparedNotes | null } | null;
     partsUseChart: boolean;
     leftTab: LeftTab;
     learnTab: LearnTab;

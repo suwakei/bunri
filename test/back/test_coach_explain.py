@@ -834,6 +834,144 @@ class TestSharedBudget:
         assert len(ok.calls) == 1
 
 
+def _with_velocity(notes, velocities):
+    """ノートに強さを付ける（``velocities`` を順に繰り返す。None なら、強さを持たないノート）"""
+    out = []
+    for i, note in enumerate(notes):
+        velocity = velocities[i % len(velocities)]
+        out.append(dict(note) if velocity is None else {**note, "velocity": velocity})
+    return out
+
+
+# MIDI ファイルから読み込んだお手本: 各小節の 1 拍目が強い。4 小節
+MIDI_REFERENCE = _with_velocity(REFERENCE + [{**x, "step": x["step"] + 32} for x in REFERENCE], [120, 96, 60, 96])
+# 打ち込み: マウスで置いた（強さを持たない）。3 小節目の 3 ノートを抜かしている（指摘は 3 件）
+MOUSE_ATTEMPT = [n(x["note"], x["octave"], x["step"]) for x in MIDI_REFERENCE if not 36 <= x["step"] < 48]
+
+
+class TestVelocityFacts:
+    """強さの違いは、お手本が MIDI ファイルから読み込んだもののときだけ、事実と指示文に入る"""
+
+    @pytest.fixture(autouse=True)
+    def clean(self, data_dir):
+        yield
+
+    @pytest.fixture
+    def midi_facts(self):
+        return ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT, reference_source="midi")
+
+    @pytest.mark.parametrize("source", [None, "transcription", "unknown"])
+    def test_採譜のお手本では_事実にも指示文にも強さが出てこない(self, source):
+        facts = ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT, reference_source=source)
+        assert "velocity" not in facts
+        request = ce.build_request(facts)
+        sent = json.dumps(request, ensure_ascii=False)
+        assert "強さ" not in sent and "ベロシティ" not in sent and "velocity" not in sent
+        assert len(request["system"]) == 1
+        # ノートの強さを消して作った事実と、バイト単位で同じ（強さを比べる前の版と同じ事実・同じ鍵）
+        plain = ce.build_facts([n(x["note"], x["octave"], x["step"]) for x in MIDI_REFERENCE], MOUSE_ATTEMPT)
+        assert ce.prompt_facts(facts) == ce.prompt_facts(plain)
+        assert ce.request_fingerprint(facts) == ce.request_fingerprint()
+        assert ce.explanation_key(facts, "m", "low") == ce.explanation_key(plain, "m", "low")
+
+    def test_MIDIのお手本では_まとまりで言える違いを渡し_1ノートごとの一覧は渡さない(self, midi_facts):
+        velocity = midi_facts["velocity"]
+        assert velocity["compared"] == 13 and velocity["attempt_unset"] == 13
+        assert velocity["tolerance"] == 16 and velocity["default_velocity"] == 96
+        assert [(f["kind"], f["direction"]) for f in velocity["findings"]] == [("flat", None)]
+        assert velocity["findings_total"] == 1
+        assert "notes" not in velocity and all("notes" not in finding for finding in velocity["findings"])
+        # 強さの違うノートが在る小節
+        assert velocity["bars"] == [1, 2, 3, 4]
+        # 位置・高さ・長さの事実は、強さを比べないときと同じ
+        plain = ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT)
+        assert {key: value for key, value in midi_facts.items() if key != "velocity"} == plain
+
+    def test_同じノートからは_同じバイト列(self, midi_facts):
+        again = ce.build_facts([dict(x) for x in MIDI_REFERENCE], [dict(x) for x in MOUSE_ATTEMPT],
+                               reference_source="midi")
+        assert ce.prompt_facts(again) == ce.prompt_facts(midi_facts)
+
+    def test_渡すまとまりには上限が在る(self):
+        # 1 小節おきに弱い 60 小節 → 弱い範囲が 30 個
+        reference = [{**n("C", 2, bar * 16 + beat * 4), "velocity": 100} for bar in range(60) for beat in range(4)]
+        attempt = [{**x, "velocity": 50 if (x["step"] // 16) % 2 == 0 else 100} for x in reference]
+        velocity = ce.build_facts(reference, attempt, reference_source="midi")["velocity"]
+        assert velocity["findings_total"] == 30 and len(velocity["findings"]) == ce.MAX_VELOCITY_FINDINGS
+
+    def test_強さの読み方は_区切りの後ろに足す(self, midi_facts, monkeypatch):
+        monkeypatch.delenv("BUNRI_GUIDE_MODEL", raising=False)
+        request = ce.build_request(midi_facts)
+        plain = ce.build_request(ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT))
+        # 区切りまで（1 つ目の system）は、採譜のお手本のときと同じ → 同じキャッシュが使われる
+        assert request["system"][0] == plain["system"][0] and "cache_control" in request["system"][0]
+        assert request["system"][1] == {"type": "text", "text": ce.VELOCITY_PROMPT}
+        assert _sent_facts(request)["velocity"] == midi_facts["velocity"]
+        assert request["output_config"] == plain["output_config"]
+
+    def test_強さの読み方は_MIDIのお手本と伝え_数を並べさせない(self):
+        prompt = ce.VELOCITY_PROMPT
+        assert "MIDI ファイルから読み込んだ" in prompt and "findings に在ることだけ" in prompt
+        assert "1 ノートごとの強さの数を並べない" in prompt
+        assert "「ベロシティ」「音量」とは書かない" in prompt
+        assert "強さ" not in ce.SYSTEM_PROMPT
+
+    def test_強さの事実が在ると_保存の鍵が変わる(self, midi_facts):
+        plain = ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT)
+        assert ce.request_fingerprint(midi_facts) != ce.request_fingerprint(plain)
+        assert ce.explanation_key(midi_facts, "m", "low") != ce.explanation_key(plain, "m", "low")
+
+    def test_強さだけが違う小節も_説明の点が指せる(self, midi_facts):
+        # 1 小節目には、位置・高さ・長さの指摘は無い（強さの違いだけ）
+        assert 1 not in [row[0] for row in midi_facts["bars"]["rows"]]
+        point = _point(title="強弱", observation="打ち込みの強さが一定です。", cause="マウスで置いたからかもしれません。",
+                       fix="1 小節目のノートを選んで、強さの欄で変えます。", issue_ids=[], bars=[1])
+        raw = _raw(summary="強さが一定です。", points=[point], next_step="まず 1 小節目を見ます。", next_step_bar=1)
+        result = ce.validate_explanation(raw, midi_facts)
+        assert result["points"][0]["refs"] == [{"issue_id": None, "bar": 1, "beat": None, "kind": None}]
+        assert result["next_step_bar"] == 1 and result["dropped_points"] == 0
+        # 強さを比べていない事実では、その小節は指せない
+        with pytest.raises(rg.GuideError):
+            ce.validate_explanation(raw, ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT))
+
+    def test_Claudeに渡すのは_強さの事実つきの事実(self, midi_facts):
+        client = FakeClient(payload=_raw(points=[_point(issue_ids=["i1"], bars=[3], title="抜け", observation="3 小節目が抜けています。",
+                                                        cause="この結果からは理由を言えません。", fix="3 小節目を見比べます。")],
+                                         summary="3 小節目に抜けがあります。", next_step="まず 3 小節目を開きます。", next_step_bar=3))
+        result = ce.explain_for(midi_facts, client=client)
+        assert result["source"] == "claude" and len(client.calls) == 1
+        assert _sent_facts(client.calls[0])["velocity"]["findings"][0]["kind"] == "flat"
+        assert client.calls[0]["system"][1]["text"] == ce.VELOCITY_PROMPT
+        # 採譜のお手本として頼むと、別の説明（強さ抜き）として作る
+        ce.explain_for(ce.build_facts(MIDI_REFERENCE, MOUSE_ATTEMPT), client=client)
+        assert len(client.calls) == 2 and len(client.calls[1]["system"]) == 1
+        assert "velocity" not in _sent_facts(client.calls[1])
+
+    def test_高さも位置も合っていて_強さだけが違うときは_呼ばずに強さの欄へ案内する(self):
+        attempt = [n(x["note"], x["octave"], x["step"]) for x in MIDI_REFERENCE]
+        facts = ce.build_facts(MIDI_REFERENCE, attempt, reference_source="midi")
+        client = FakeClient()
+        result = ce.explain_for(facts, client=client)
+        assert client.calls == [] and result["source"] == "rule" and result["reason"] == "velocity_only"
+        assert "強さの違い" in result["explanation"]["next_step"] and result["explanation"]["next_step_bar"] == 1
+        assert "強さには、お手本と違うところがあります" in result["explanation"]["summary"]
+        # 採譜のお手本として比べると、強さには触れない
+        plain = ce.explain_for(ce.build_facts(MIDI_REFERENCE, attempt), client=client)
+        assert plain["reason"] == "no_diff" and "強さ" not in json.dumps(plain["explanation"], ensure_ascii=False)
+
+    def test_強さも合っていれば_違いは無い_MIDIのお手本を採譜の結果とは言わない(self):
+        facts = ce.build_facts(MIDI_REFERENCE, [dict(x) for x in MIDI_REFERENCE], reference_source="midi")
+        reason, explanation = ce.rule_response(facts)
+        assert reason == "no_diff" and "採譜" not in explanation["next_step"]
+        assert "強さも、お手本と合っています" in explanation["next_step"] and explanation["next_step_bar"] is None
+        # 1〜2 ノートだけ強さが違うときは、合っているとは言わず、数だけを言う
+        attempt = [dict(x) for x in MIDI_REFERENCE]
+        attempt[0]["velocity"] = 40
+        reason, explanation = ce.rule_response(ce.build_facts(MIDI_REFERENCE, attempt, reference_source="midi"))
+        assert reason == "no_diff"
+        assert "強さの違うノートが 1 個ありますが、まとまった違いではありません" in explanation["next_step"]
+
+
 @pytest.fixture
 def no_keys(monkeypatch, tmp_path):
     """API キーがどこにも無い状態にする（手元の .env や環境変数を読ませない）"""
@@ -968,3 +1106,23 @@ class TestApi:
             assert (await client.post(path, json={**self.BODY, "bpm": "速め"})).status_code == 400
             assert (await client.post(path, json={**self.BODY, "chart_id": "nope"})).status_code == 404
         assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_MIDIのお手本と伝えたときだけ_強さの事実を足す(self, client, fake, monkeypatch):
+        body = {"reference": MIDI_REFERENCE, "attempt": MOUSE_ATTEMPT}
+        point = _point(issue_ids=["i1"], bars=[3], title="抜け", observation="3 小節目が抜けています。",
+                       cause="この結果からは理由を言えません。", fix="3 小節目を見比べます。")
+        fake._payload = _raw(points=[point], summary="3 小節目に抜けがあります。",
+                             next_step="まず 3 小節目を開きます。", next_step_bar=3)
+        resp = await client.post("/api/coach/explain", json={**body, "reference_source": "midi"})
+        assert resp.status_code == 200
+        assert _sent_facts(fake.calls[0])["velocity"]["findings"][0]["kind"] == "flat"
+        # 保存済みの問い合わせも、同じ出どころで同じ説明に当たる
+        saved = (await client.post("/api/coach/explain/saved", json={**body, "reference_source": "midi"})).json()
+        assert saved["saved"] is True and saved["key"] == resp.json()["key"]
+        # 出どころが無い・採譜・文字列でない → 強さの事実は足さない（別の説明になる）
+        for source in ({}, {"reference_source": "transcription"}, {"reference_source": 1}):
+            assert (await client.post("/api/coach/explain/saved", json={**body, **source})).json()["saved"] is False
+        resp = await client.post("/api/coach/explain", json=body)
+        assert resp.status_code == 200 and "velocity" not in _sent_facts(fake.calls[1])
+        assert len(fake.calls[1]["system"]) == 1

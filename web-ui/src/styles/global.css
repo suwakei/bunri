@@ -2226,6 +2226,40 @@ button.link-btn:hover {
     margin-top: 4px;
 }
 
+/* ---- 強さの違い (components/VelocityFindings.tsx。差分チェックと、練習画面の右の一覧) ---- */
+.coach-velocity {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.coach-velocity h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 4px;
+}
+
+/* 練習画面の右の一覧はパネルの外なので、補足の文の見た目をここでも決める */
+.coach-velocity .note-text { font-size: 11px; line-height: 1.6; color: var(--text-dim); margin: 0 0 4px; }
+
+.velocity-findings { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-direction: column; gap: 2px; }
+
+.velocity-finding-btn {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-left: 3px solid var(--info);
+    padding: 3px 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.velocity-finding-btn:hover, .velocity-finding-btn[aria-current="true"] { background: var(--bg-elevated); }
+
 /* 指摘の一覧で、説明の参照から選んだもの */
 .coach-issue.highlighted > button {
     background: var(--accent-dim) !important;
