@@ -22,11 +22,14 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const { issueText, noteName, requestDiff } = await import('../lib/coach');
+const { hasVelocityDiff, issueText, noteName, requestDiff, velocityFindingText, velocityNotesOf, velocitySummaryText } = await import('../lib/coach');
 type DiffIssue = import('../lib/coach').DiffIssue;
 type DiffResult = import('../lib/coach').DiffResult;
+type VelocityDiff = import('../lib/coach').VelocityDiff;
+type VelocityFinding = import('../lib/coach').VelocityFinding;
 const { DawProvider } = await import('../lib/store');
-const engine = (await import('../lib/engine')).default;
+const { default: engine, MIDI_PART } = await import('../lib/engine');
+const { referenceSourceOf } = await import('../lib/learn');
 const CoachPanel = (await import('../components/CoachPanel')).default;
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
@@ -88,6 +91,100 @@ describe('requestDiff', () => {
     it('失敗の理由をそのまま伝える', async () => {
         stubFetch(async () => Response.json({ detail: 'お手本のノートがありません' }, { status: 400 }));
         await expect(requestDiff([], [])).rejects.toThrow('お手本のノートがありません');
+    });
+
+    it('お手本の出どころは、MIDI のときだけ送る (採譜のお手本では、以前と同じ本文)', async () => {
+        stubFetch(async () => Response.json({ summary: {}, bars: [], worst_bars: [] }));
+        await requestDiff([note('C', 4, 0)], [note('C', 4, 0)], 16, 'midi');
+        await requestDiff([note('C', 4, 0)], [note('C', 4, 0)], 16, 'transcription');
+        const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0].reference_source).toBe('midi');
+        expect(bodies[1]).toEqual({ reference: [note('C', 4, 0)], attempt: [note('C', 4, 0)], steps_per_bar: 16 });
+    });
+});
+
+const strong = (name: string, octave: number, step: number, velocity: number) => ({ ...note(name, octave, step), velocity });
+
+/** 強さの違い (backend/coach_diff.py の velocity_diff の形)。1 小節目の 2 ノートが弱く、2 小節目の 1 ノートが強い。 */
+function velocityDiff(findings: VelocityFinding[] = [], overrides: Partial<VelocityDiff> = {}): VelocityDiff {
+    return {
+        tolerance: 16, default_velocity: 96, compared: 8, weaker: 2, stronger: 1, attempt_unset: 0, median_diff: -4,
+        reference: { min: 60, max: 120, median: 96 }, attempt: { min: 96, max: 96, median: 96 },
+        findings,
+        notes: [
+            { bar: 1, beat: 1, expected: strong('C', 4, 0, 120), actual: strong('C', 4, 0, 96), diff: -24 },
+            { bar: 1, beat: 2, expected: strong('E', 4, 4, 120), actual: strong('E', 4, 5, 96), diff: -24 },
+            { bar: 2, beat: 1, expected: strong('C', 5, 16, 60), actual: strong('C', 5, 16, 96), diff: 36 },
+        ],
+        ...overrides,
+    };
+}
+
+const finding = (overrides: Partial<VelocityFinding>): VelocityFinding => ({
+    kind: 'section', direction: 'weaker', start_bar: 3, end_bar: 4, count: 6, compared: 8, median_diff: -30.5, notes: [0, 1], ...overrides,
+});
+
+describe('強さの違いの文', () => {
+    it('全体に弱い・強い', () => {
+        expect(velocityFindingText(finding({ kind: 'overall', start_bar: 1, end_bar: 8, count: 20, compared: 24 }), velocityDiff()))
+            .toBe('全体に弱い: 合った 24 ノートのうち 20 ノートが、お手本より弱くなっています（強さの差は 31 ほど）');
+        expect(velocityFindingText(finding({ kind: 'overall', direction: 'stronger', count: 7, compared: 8, median_diff: 26 }), velocityDiff()))
+            .toBe('全体に強い: 合った 8 ノートのうち 7 ノートが、お手本より強くなっています（強さの差は 26 ほど）');
+    });
+
+    it('小節の範囲 (1 小節だけなら、その小節)', () => {
+        expect(velocityFindingText(finding({}), velocityDiff()))
+            .toBe('3〜4 小節が弱い: 8 ノートのうち 6 ノートが、お手本より弱くなっています（強さの差は 31 ほど）');
+        expect(velocityFindingText(finding({ direction: 'stronger', start_bar: 5, end_bar: 5, count: 3, compared: 4, median_diff: 20 }), velocityDiff()))
+            .toBe('5 小節が強い: 4 ノートのうち 3 ノートが、お手本より強くなっています（強さの差は 20 ほど）');
+    });
+
+    it('強弱が付いていない (打ち込みが全部同じ強さなら「一定」)', () => {
+        const flat = finding({ kind: 'flat', direction: null });
+        expect(velocityFindingText(flat, velocityDiff()))
+            .toBe('強弱が付いていません: 打ち込みの強さは 96 で一定ですが、お手本は 60〜120 の幅があります');
+        expect(velocityFindingText(flat, velocityDiff([], { attempt: { min: 88, max: 100, median: 96 } })))
+            .toBe('強弱が付いていません: 打ち込みの強さは 88〜100 でほぼ一定ですが、お手本は 60〜120 の幅があります');
+    });
+
+    it('アクセントが付いていない', () => {
+        expect(velocityFindingText(finding({ kind: 'accent', count: 3, compared: 4 }), velocityDiff()))
+            .toBe('アクセントが付いていません: お手本で周りより強いノート 4 個のうち 3 個が、お手本より弱くなっています');
+    });
+
+    it('まとめの 1 行', () => {
+        expect(velocitySummaryText(velocityDiff())).toBe('合った 8 ノートの強さを比べました（お手本より弱い 2 / 強い 1）');
+        expect(velocitySummaryText(velocityDiff([], { weaker: 0 }))).toBe('合った 8 ノートの強さを比べました（お手本より強い 1）');
+        expect(velocitySummaryText(velocityDiff([], { weaker: 0, stronger: 0 })))
+            .toBe('合った 8 ノートの強さを比べました。どれも、お手本と合っています（差が 16 以内）');
+    });
+
+    it('強さの違いが在るか (比べていない結果では、無い)', () => {
+        expect(hasVelocityDiff({ velocity: velocityDiff() })).toBe(true);
+        expect(hasVelocityDiff({ velocity: velocityDiff([], { weaker: 0, stronger: 0, notes: [] }) })).toBe(false);
+        expect(hasVelocityDiff({ velocity: null })).toBe(false);
+        expect(hasVelocityDiff({})).toBe(false);
+        expect(hasVelocityDiff(null)).toBe(false);
+    });
+
+    it('まとまりから、当たるノートの番号を引く (同じ形のノートが 2 つ在れば、1 つずつ)', () => {
+        const velocity = velocityDiff();
+        const attempt = [note('G', 4, 8), note('E', 4, 5), note('C', 4, 0), note('C', 4, 0)];
+        const reference = [note('C', 4, 0), note('E', 4, 4)];
+        expect(velocityNotesOf(finding({ notes: [0, 1] }), velocity, attempt, reference)).toEqual({ own: [2, 1], ghost: [0, 1] });
+        // もう無いノート・番号の外は飛ばす
+        expect(velocityNotesOf(finding({ notes: [2, 9] }), velocity, attempt)).toEqual({ own: [], ghost: [] });
+    });
+});
+
+describe('お手本の出どころ', () => {
+    it('MIDI ファイルからお手本として読み込んだトラックだけが midi。ほかは採譜と同じ扱い', () => {
+        expect(referenceSourceOf({ role: 'part', part: MIDI_PART })).toBe('midi');
+        expect(referenceSourceOf({ role: 'part', part: 'bass' })).toBe('transcription');
+        // 以前の形式から開いた、出どころの分からないお手本
+        expect(referenceSourceOf({})).toBe('transcription');
+        expect(referenceSourceOf({ role: 'practice', part: MIDI_PART })).toBe('transcription');
+        expect(referenceSourceOf(undefined)).toBe('transcription');
     });
 });
 
@@ -162,6 +259,86 @@ describe('CoachPanel', () => {
         render(<DawProvider><CoachPanel /></DawProvider>);
         fireEvent.click(screen.getByRole('button', { name: 'お手本と比べる' }));
         expect(await screen.findByRole('alert')).toHaveTextContent('打ち込みのノートの形式が正しくありません');
+    });
+});
+
+describe('強さの違いの欄', () => {
+    const flat = finding({ kind: 'flat', direction: null, start_bar: 1, end_bar: 2, count: 3, compared: 8, median_diff: 0, notes: [0, 1, 2] });
+    const today = { date: '2026-11-13', calls: 0, cost_usd: 0, limit_calls: 20, limit_usd: null, blocked: null };
+
+    /** お手本のトラックを用意して比べる。`midi` なら、MIDI ファイルからお手本として読み込んだトラックにする。 */
+    async function compare(midi: boolean, diff: DiffResult) {
+        const stem = engine.addTrack('Lead');
+        if (midi) { stem.role = 'part'; stem.part = MIDI_PART; }
+        stem.referenceNotes = [strong('C', 4, 0, 120), strong('E', 4, 4, 120), strong('G', 4, 8, 96), strong('C', 5, 16, 60)];
+        stem.pianoNotes = [note('C', 4, 0), note('E', 4, 5), note('G', 4, 8)];
+        stubFetch(async (url) => (url === '/api/coach/diff' ? Response.json(diff) : Response.json({ saved: false, today })));
+        render(<DawProvider><CoachPanel /></DawProvider>);
+        fireEvent.click(screen.getByRole('button', { name: 'お手本と比べる' }));
+        await waitFor(() => expect(screen.getByText('75%')).toBeInTheDocument());
+        const sent = (url: string) => fetchMock.mock.calls.filter(([u]) => u === url)
+            .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        return { stem, sent };
+    }
+
+    it('MIDI のお手本では、出どころを送り、強さの違いをまとまりで出す。説明も同じ出どころで頼む', async () => {
+        const { sent } = await compare(true, { ...result, velocity: velocityDiff([flat], { attempt_unset: 3 }) });
+        expect(sent('/api/coach/diff')[0].reference_source).toBe('midi');
+        // 強さは、ノートと一緒に送る (お手本は持ち、マウスで置いた打ち込みは持たない)
+        expect(sent('/api/coach/diff')[0].reference[0].velocity).toBe(120);
+        expect(sent('/api/coach/diff')[0].attempt[0].velocity).toBeUndefined();
+
+        const section = screen.getByRole('region', { name: '強さの違い' });
+        expect(section).toHaveTextContent('MIDI ファイルから読み込んだお手本なので、強さも比べています。合った 8 ノートの強さを比べました（お手本より弱い 2 / 強い 1）。');
+        const items = within(section).getAllByRole('listitem').map((li) => li.textContent);
+        expect(items).toEqual(['強弱が付いていません: 打ち込みの強さは 96 で一定ですが、お手本は 60〜120 の幅があります']);
+        expect(section).toHaveTextContent('マウスで置いたノートは強さを持たないので、96 として比べています。');
+        // 位置・高さ・長さの指摘の一覧と件数には、強さを混ぜない
+        expect(screen.getByText('抜け 1 / 位置のずれ 1')).toBeInTheDocument();
+        expect(within(screen.getByRole('list', { name: '指摘の一覧' })).getAllByRole('listitem')).toHaveLength(2);
+
+        await waitFor(() => expect(sent('/api/coach/explain/saved')).toHaveLength(1));
+        expect(sent('/api/coach/explain/saved')[0].reference_source).toBe('midi');
+    });
+
+    it('採譜のお手本では、出どころを送らず、強さの欄そのものを出さない', async () => {
+        const { sent } = await compare(false, { ...result, velocity: null });
+        expect(sent('/api/coach/diff')[0].reference_source).toBeUndefined();
+        expect(screen.queryByRole('region', { name: '強さの違い' })).not.toBeInTheDocument();
+        expect(document.getElementById('coach-panel')).not.toHaveTextContent('強さ');
+        await waitFor(() => expect(sent('/api/coach/explain/saved')).toHaveLength(1));
+        expect(sent('/api/coach/explain/saved')[0].reference_source).toBeUndefined();
+    });
+
+    it('以前の版が保存した結果 (強さの項目が無い) でも、強さの欄を出さない', async () => {
+        await compare(false, result);
+        expect(screen.queryByRole('region', { name: '強さの違い' })).not.toBeInTheDocument();
+    });
+
+    it('強さが合っていれば、合っている旨を 1 行だけ出す', async () => {
+        await compare(true, { ...result, velocity: velocityDiff([], { weaker: 0, stronger: 0, notes: [] }) });
+        const section = screen.getByRole('region', { name: '強さの違い' });
+        expect(section).toHaveTextContent('どれも、お手本と合っています（差が 16 以内）');
+        expect(within(section).queryByRole('list')).not.toBeInTheDocument();
+    });
+
+    it('まとまりにならない違いだけなら、数だけを出す', async () => {
+        await compare(true, { ...result, velocity: velocityDiff() });
+        const section = screen.getByRole('region', { name: '強さの違い' });
+        expect(section).toHaveTextContent('まとまった違いはありません（1〜2 ノートだけの強さの違いは、挙げていません）。');
+        expect(within(section).queryByRole('list')).not.toBeInTheDocument();
+    });
+
+    it('合ったノートが 1 つも無ければ、強さの欄を出さない', async () => {
+        await compare(true, { ...result, velocity: velocityDiff([], { compared: 0, weaker: 0, stronger: 0, notes: [], reference: null, attempt: null, median_diff: null }) });
+        expect(screen.queryByRole('region', { name: '強さの違い' })).not.toBeInTheDocument();
+    });
+
+    it('高さ・位置・長さが合っていて強さだけが違うときは、「お手本どおり」とは言い切らない', async () => {
+        const matched = { ...result, bars: [], worst_bars: [], summary: { ...result.summary, accuracy: 0.75, missing: 0, timing: 0 } };
+        await compare(true, { ...matched, velocity: velocityDiff([flat]) });
+        expect(screen.getByText('高さ・位置・長さは、お手本どおりです。')).toBeInTheDocument();
+        expect(screen.queryByText('お手本どおりです。')).not.toBeInTheDocument();
     });
 });
 

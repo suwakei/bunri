@@ -5,6 +5,10 @@
  * 差分は信号処理側が機械的に出す事実で、LLM は使っていない（backend/coach_diff.py）。
  * ここでの文も決まった型どおりに組み立てる。
  *
+ * 強さ（ベロシティ）の違いは、お手本が MIDI ファイルから読み込んだもののときだけ比べる（`ReferenceSource`）。
+ * 音源から採譜したお手本の強さは当てにならないので、比べない（docs/coach-diff-design.md「強さの違い」）。
+ * 強さは、位置・高さ・長さの指摘とは別の欄（`DiffResult.velocity`）に、まとまりで言える違いとして届く。
+ *
  * 差分の説明（言語化。backend/coach_explain.py）は Claude を使う。説明が持てるのは文と、指摘の ID・小節だけ
  * （音符は出さない）。費用まわりの仕組み（保存・1 日の上限・使用量）は再現ガイドと共通。
  */
@@ -32,6 +36,81 @@ export interface DiffIssue {
     length_diff: number | null;
 }
 
+/**
+ * お手本の出どころ。強さを比べるのは `midi`（MIDI ファイルから読み込んだお手本）のときだけ。
+ * `transcription`（音源から採譜したお手本）と、出どころの分からないお手本では、強さに触れない。
+ */
+export type ReferenceSource = 'midi' | 'transcription';
+
+/** 強さの違いの向き（打ち込みが、お手本より弱い / 強い）。 */
+export type VelocityDirection = 'weaker' | 'stronger';
+
+/**
+ * まとまりで言える強さの違いの種類。
+ * - `overall`: 全体に弱い・強い
+ * - `flat`: 強弱が付いていない（打ち込みの強さがほぼ一定で、お手本には幅が在る）
+ * - `section`: その小節の範囲が弱い・強い
+ * - `accent`: アクセント（お手本で周りより強いノート）が付いていない
+ */
+export type VelocityFindingKind = 'overall' | 'flat' | 'section' | 'accent';
+
+/** まとまりで言える強さの違い 1 つ。 */
+export interface VelocityFinding {
+    kind: VelocityFindingKind;
+    /** `flat` では null */
+    direction: VelocityDirection | null;
+    /** 最初の小節と最後の小節（1 始まり、両端を含む） */
+    start_bar: number;
+    end_bar: number;
+    /** 強さの違うノートの数 */
+    count: number;
+    /** その範囲で比べたノートの数（`accent` では、お手本のアクセントの数） */
+    compared: number;
+    /** 強さの差（打ち込み − お手本）の中央値 */
+    median_diff: number;
+    /** 強さの違うノート（`VelocityDiff.notes` の番号） */
+    notes: number[];
+}
+
+/** 強さが許す幅を超えて違うノートの組。 */
+export interface VelocityNote {
+    bar: number;
+    beat: number;
+    /** お手本のノート（強さつき） */
+    expected: PianoNote;
+    /** 打ち込みのノート（強さつき。強さを持たないノートは `default_velocity`） */
+    actual: PianoNote;
+    /** 強さの差（打ち込み − お手本） */
+    diff: number;
+}
+
+/** 強さの範囲。 */
+export interface VelocityRange {
+    min: number;
+    max: number;
+    median: number;
+}
+
+/** 強さの違い（`/api/coach/diff` の `velocity`）。 */
+export interface VelocityDiff {
+    /** 許す幅。差がこれ以内なら、同じ強さとして扱う */
+    tolerance: number;
+    /** 強さを持たないノート（マウスで置いたもの）を比べるのに使った強さ */
+    default_velocity: number;
+    /** 比べたノートの数（位置と高さが合った組） */
+    compared: number;
+    /** 許す幅を超えて、打ち込みが弱い・強いノートの数 */
+    weaker: number;
+    stronger: number;
+    /** 比べた打ち込みのうち、強さを持たないノートの数 */
+    attempt_unset: number;
+    median_diff: number | null;
+    reference: VelocityRange | null;
+    attempt: VelocityRange | null;
+    findings: VelocityFinding[];
+    notes: VelocityNote[];
+}
+
 /** `/api/coach/diff` のレスポンス。 */
 export interface DiffResult {
     summary: {
@@ -45,6 +124,11 @@ export interface DiffResult {
     bars: { bar: number; issues: DiffIssue[] }[];
     /** 指摘が重い順の小節番号（最大 5 つ） */
     worst_bars: number[];
+    /**
+     * 強さの違い。お手本が MIDI ファイルから読み込んだもののときだけ在る。採譜したお手本では null
+     * （以前の版が保存した結果には、項目そのものが無い）。
+     */
+    velocity?: VelocityDiff | null;
 }
 
 /** 比べたときのノートと 1 小節のステップ数。 */
@@ -52,6 +136,8 @@ export interface ComparedNotes {
     reference: PianoNote[];
     attempt: PianoNote[];
     stepsPerBar: number;
+    /** お手本の出どころ（説明も、同じ出どころで頼む）。以前の版が保存したものには無い（強さに触れない） */
+    referenceSource?: ReferenceSource;
 }
 
 /**
@@ -87,13 +173,17 @@ export const KIND_LABEL: Record<IssueKind, string> = {
  * @param reference - お手本のノート
  * @param attempt - 打ち込みのノート
  * @param stepsPerBar - 1 小節のステップ数（4/4 なら 16）
+ * @param referenceSource - お手本の出どころ。`midi` のときだけ送り、強さも比べる（ほかは、強さに触れない）
  * @throws 比べられなかった場合（理由つき）
  */
-export async function requestDiff(reference: PianoNote[], attempt: PianoNote[], stepsPerBar = 16): Promise<DiffResult> {
+export async function requestDiff(reference: PianoNote[], attempt: PianoNote[], stepsPerBar = 16, referenceSource?: ReferenceSource): Promise<DiffResult> {
     const resp = await apiFetch('/api/coach/diff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reference, attempt, steps_per_bar: stepsPerBar }),
+        body: JSON.stringify({
+            reference, attempt, steps_per_bar: stepsPerBar,
+            ...(referenceSource === 'midi' ? { reference_source: referenceSource } : {}),
+        }),
     });
     // 理由の文は errorDetail が作る (状態コードや生の JSON を、そのまま画面に出さない)
     if (!resp.ok) throw new Error('お手本と比べられませんでした。' + await errorDetail(resp));
@@ -134,6 +224,103 @@ export function issueText(issue: DiffIssue): string {
         case 'length':
             return `${where}: ${expected} が${steps(issue.length_diff ?? 0)}${(issue.length_diff ?? 0) > 0 ? '長い' : '短い'}`;
     }
+}
+
+// ---- 強さの違い ----
+
+/** 向きの呼び名。 */
+const DIRECTION_LABEL: Record<VelocityDirection, string> = { weaker: '弱い', stronger: '強い' };
+
+/** 小節の範囲の言い方（「3 小節」「3〜4 小節」）。 */
+function barsLabel(finding: Pick<VelocityFinding, 'start_bar' | 'end_bar'>): string {
+    return finding.start_bar === finding.end_bar ? `${finding.start_bar} 小節` : `${finding.start_bar}〜${finding.end_bar} 小節`;
+}
+
+/** 強さの差の、おおよその大きさ（「30 ほど」）。 */
+function about(diff: number): string {
+    return `${Math.round(Math.abs(diff))} ほど`;
+}
+
+/**
+ * 強さの違いがあるか（まとまりで言える違いか、許す幅を超えたノートが 1 つでも在る）。
+ * 強さを比べていない（採譜したお手本・以前の版の結果）ときは false。
+ */
+export function hasVelocityDiff(result: Pick<DiffResult, 'velocity'> | null | undefined): boolean {
+    const v = result?.velocity;
+    return !!v && (v.findings.length > 0 || v.weaker + v.stronger > 0);
+}
+
+/**
+ * 強さを比べた結果の、1 行のまとめ。
+ * 例: 「合った 24 ノートの強さを比べました（お手本より弱い 6 / 強い 2）」
+ * 文の終わりの「。」は付けない。
+ */
+export function velocitySummaryText(velocity: VelocityDiff): string {
+    const head = `合った ${velocity.compared} ノートの強さを比べました`;
+    const counts = [
+        velocity.weaker > 0 ? `お手本より弱い ${velocity.weaker}` : '',
+        velocity.stronger > 0 ? `${velocity.weaker > 0 ? '' : 'お手本より'}強い ${velocity.stronger}` : '',
+    ].filter(Boolean);
+    return counts.length ? `${head}（${counts.join(' / ')}）` : `${head}。どれも、お手本と合っています（差が ${velocity.tolerance} 以内）`;
+}
+
+/**
+ * まとまりで言える強さの違いを、1 行の文にする。
+ * 例: 「3〜4 小節が弱い: 8 ノートのうち 6 ノートが、お手本より弱くなっています（強さの差は 30 ほど）」
+ */
+export function velocityFindingText(finding: VelocityFinding, velocity: VelocityDiff): string {
+    const direction = finding.direction ? DIRECTION_LABEL[finding.direction] : '';
+    switch (finding.kind) {
+        case 'overall':
+            return `全体に${direction}: 合った ${finding.compared} ノートのうち ${finding.count} ノートが、お手本より${direction === '弱い' ? '弱く' : '強く'}なっています（強さの差は ${about(finding.median_diff)}）`;
+        case 'section':
+            return `${barsLabel(finding)}が${direction}: ${finding.compared} ノートのうち ${finding.count} ノートが、お手本より${direction === '弱い' ? '弱く' : '強く'}なっています（強さの差は ${about(finding.median_diff)}）`;
+        case 'accent':
+            return `アクセントが付いていません: お手本で周りより強いノート ${finding.compared} 個のうち ${finding.count} 個が、お手本より弱くなっています`;
+        case 'flat': {
+            const own = velocity.attempt, ref = velocity.reference;
+            const mine = own ? (own.min === own.max ? `${own.min} で一定` : `${own.min}〜${own.max} でほぼ一定`) : 'ほぼ一定';
+            const theirs = ref ? `${ref.min}〜${ref.max}` : '';
+            return `強弱が付いていません: 打ち込みの強さは ${mine}ですが、お手本は ${theirs} の幅があります`;
+        }
+    }
+}
+
+/** ノートの形（強さを除く）。同じ形のノートを探すのに使う。 */
+const shapeOf = (n: Pick<PianoNote, 'note' | 'octave' | 'step' | 'length'>) => `${n.note}${n.octave}@${n.step}+${n.length}`;
+
+/**
+ * まとまりで言える強さの違いに当たるノートの番号（打ち込み・お手本）。
+ * 押したとき、そのノートを選んで光らせる（選ぶと、ピアノロールの上の「強さ」の欄で変えられる）。
+ * 同じ形のノートが 2 つ在れば、1 つずつ順に当てる。
+ *
+ * @param finding - まとまりで言える違い
+ * @param velocity - 強さの違い（`finding` を含む結果）
+ * @param attempt - 打ち込みのノート（番号は、この並びの番号）
+ * @param reference - お手本のノート
+ */
+export function velocityNotesOf(
+    finding: VelocityFinding, velocity: VelocityDiff, attempt: readonly PianoNote[], reference: readonly PianoNote[] = [],
+): { own: number[]; ghost: number[] } {
+    const taker = (notes: readonly PianoNote[]) => {
+        const used = new Set<number>();
+        return (target: PianoNote): number => {
+            const key = shapeOf(target);
+            const index = notes.findIndex((n, i) => !used.has(i) && shapeOf(n) === key);
+            if (index >= 0) used.add(index);
+            return index;
+        };
+    };
+    const takeOwn = taker(attempt), takeGhost = taker(reference);
+    const own: number[] = [], ghost: number[] = [];
+    for (const index of finding.notes) {
+        const pair = velocity.notes[index];
+        if (!pair) continue;
+        const o = takeOwn(pair.actual), g = takeGhost(pair.expected);
+        if (o >= 0) own.push(o);
+        if (g >= 0) ghost.push(g);
+    }
+    return { own, ghost };
 }
 
 // ---- 差分の説明（言語化） ----
@@ -180,8 +367,8 @@ export interface ExplanationResponse {
     explanation: Explanation;
     /** claude: Claude が作った / rule: Claude に頼むまでもないときの決まった文（費用 0） */
     source: 'claude' | 'rule';
-    /** 決まった文の理由（rule のとき）。no_diff / no_attempt / few_notes / few_issues */
-    reason: 'no_diff' | 'no_attempt' | 'few_notes' | 'few_issues' | null;
+    /** 決まった文の理由（rule のとき）。velocity_only は、高さ・位置・長さは合っていて、強さだけが違う */
+    reason: 'no_diff' | 'velocity_only' | 'no_attempt' | 'few_notes' | 'few_issues' | null;
     model: string | null;
     usage: GuideUsage;
     cost_usd?: number | null;
@@ -212,6 +399,8 @@ export interface ExplainRequest {
     bpm?: number;
     /** ピアノロールのステップ 0 の位置（秒） */
     grid_offset_sec?: number;
+    /** お手本の出どころ。`midi` のときだけ付ける（強さの違いも説明の材料に足す） */
+    reference_source?: ReferenceSource;
 }
 
 /** 失敗のときの文の頭（理由が取れなかったとき）。 */

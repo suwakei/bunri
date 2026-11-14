@@ -115,7 +115,7 @@ the piano roll's open track, zoom and scroll, the timeline scroll, the お手本
 | Tab | Detail |
 |---|---|
 | Part separation and transcription (パート分離と採譜) | Demucs 6-stem separation → per-stem polyphonic pitch detection → instrument estimation → JSON output |
-| Part separation (パート分離) | Demucs 2 / 4 / 6 stems (htdemucs / htdemucs_ft / htdemucs_6s) |
+| Part separation (パート分離) | Demucs 2 / 4 / 6 stems (htdemucs / htdemucs_ft / htdemucs_6s). The 6-part mode can also split drums into kick / snare / toms / cymbals |
 | Analysis | Frequency band distribution, estimated instrument composition, tempo estimation |
 | Edit | Trim / cut / range copy / silence insert / loop |
 | Effects | EQ / compressor / reverb / delay / volume / fade in-out / pan / reverse / pitch shift / time stretch / speed change |
@@ -216,7 +216,7 @@ Returns a JSON array: `[{filename, url, status}, ...]`
 | POST | `/api/analyze` | `file`, `bpm`, `sensitivity` | pyin pitch detection → piano roll note data |
 | POST | `/api/deep-analyze` | `file` | Frequency band, instrument composition, tempo estimation |
 | POST | `/api/separate` | `file`, `model`, `two_stems` | Demucs stem separation |
-| POST | `/api/deep-separate` | `file`, `depth` | htdemucs_6s + recursive "other" re-separation |
+| POST | `/api/deep-separate` | `file`, `depth`, `split_drums` | htdemucs_6s + recursive "other" re-separation. `split_drums=true` also splits the drum stem into kick / snare / toms / cymbals (add-on model `drumsep`, downloaded on first use, ~160 MB; 503 if it cannot be fetched) |
 | POST | `/api/decompose` | `file`, `bpm` (float, 0 = detect), `grid_offset` (seconds of step 0), `sensitivity` | Full pipeline: separate → pitch detect → instrument estimate. Notes are counted from `grid_offset`; notes before it (pickup) are dropped |
 
 Demucs `model` values: `htdemucs` (default, recommended), `htdemucs_ft` (slow, higher quality), `htdemucs_6s` (6-stem).
@@ -341,6 +341,7 @@ bunri/
 | `htdemucs` | vocals, drums, bass, other | Recommended; CPU-friendly |
 | `htdemucs_ft` | vocals, drums, bass, other | Higher quality; very slow on CPU |
 | `htdemucs_6s` | vocals, drums, bass, guitar, piano, other | 6-stem; used by full decompose |
+| `drumsep` (add-on) | kick, snare, toms, cymbals | Splits a drum stem. [inagoy/drumsep](https://github.com/inagoy/drumsep), MIT. Not fetched by Demucs; see `backend/stem_models.py` |
 
 ---
 

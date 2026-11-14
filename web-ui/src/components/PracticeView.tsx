@@ -31,7 +31,7 @@ import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
 import engine, { type PianoNote, type Track } from '../lib/engine';
 import { describeError } from '../lib/api';
-import { KIND_LABEL, issueText, requestDiff, type DiffIssue, type DiffResult } from '../lib/coach';
+import { KIND_LABEL, hasVelocityDiff, issueText, requestDiff, velocityNotesOf, type DiffIssue, type DiffResult, type VelocityFinding } from '../lib/coach';
 import { SECTION_LABEL_JA } from '../lib/chart';
 import { secToStep, stepsPerBar } from '../lib/grid';
 import { isDialogOpen, isTypingTarget, modKeyLabel } from '../lib/keys';
@@ -42,9 +42,10 @@ import {
     notesInRange, notesOfIssue, shiftLoop, secondsToLoop, speedLabel,
     type InputMode, type ListenMode, type NoteMark, type PracticeLoop, type StepRange,
 } from '../lib/practice';
-import { PART_LABELS } from '../lib/learn';
+import { PART_LABELS, referenceSourceOf } from '../lib/learn';
 import { attemptFromDiff, barRangeOf, deltaText, useMatchSummary } from '../lib/learn-history';
 import { RealtimeSettings, StepLengthSelect } from './MidiInputBar';
+import VelocityFindings from './VelocityFindings';
 import { midiUnavailableText, type MidiInputController } from '../lib/useMidiInput';
 import { cursorLabel } from '../lib/midi-input';
 
@@ -87,6 +88,9 @@ interface PracticeContextValue {
     /** 押したノートの説明（一覧に無い「合っている」ノートも） */
     pressedNote: string | null;
     selectIssue: (issue: DiffIssue) => void;
+    /** 選んでいる強さの違いのまとまり（MIDI ファイルから読み込んだお手本のときだけ在る） */
+    selectedFinding: VelocityFinding | null;
+    selectFinding: (finding: VelocityFinding) => void;
     speedStatus: SpeedStatus;
     playing: boolean;
     togglePlay: () => void;
@@ -136,6 +140,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     const [error, setError] = useState('');
     const [selectedIssue, setSelectedIssue] = useState<DiffIssue | null>(null);
     const [pressedNote, setPressedNote] = useState<string | null>(null);
+    const [selectedFinding, setSelectedFinding] = useState<VelocityFinding | null>(null);
     const [speedStatus, setSpeedStatus] = useState<SpeedStatus>({ kind: 'normal' });
     // ノートを変えたら描き直す (「もう一度比べて」を出す)
     const [notesVersion, setNotesVersion] = useState(0);
@@ -390,7 +395,9 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         setError('');
         try {
             const per = stepsPerBar(engine.grid);
-            const result = await requestDiff(refIn, notesInRange(attempt, range), per);
+            // 強さを比べるのは、MIDI ファイルから読み込んだお手本のときだけ (採譜したお手本の強さは当てにならない)
+            const source = referenceSourceOf(part);
+            const result = await requestDiff(refIn, notesInRange(attempt, range), per, source);
             const marks = markNotes(result, attempt, reference, range);
             const bars = range ? { startBar: practice.loop.startBar, endBar: practice.loop.endBar } : barRangeOf(reference, per);
             setCompare({ result, range, bars, attempt, reference, marks });
@@ -400,10 +407,11 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
                 reference: refIn, stepsPerBar: per, range: bars,
             }));
             setSelectedIssue(null);
+            setSelectedFinding(null);
             setPressedNote(null);
             pr?.setDiffMarks?.({ ...marks, label: noteMarkLabel });
             // 差分チェック (左パネル) と進み具合には、曲全体で比べた結果を渡す (区間だけの結果を全体のものとして見せない)
-            const full = range ? await requestDiff(reference, attempt, per) : result;
+            const full = range ? await requestDiff(reference, attempt, per, source) : result;
             setCoachResult({ referenceId: part.id, attemptId: track.id, result: full });
             const rate = matchRate(result);
             setStatus(`比べました（${range ? `${practice.loop.startBar}〜${practice.loop.endBar} 小節` : '曲全体'}、一致 ${rate}%）`);
@@ -417,10 +425,27 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     const selectIssue = useCallback((issue: DiffIssue) => {
         const pr = pianoRollRef.current;
         setSelectedIssue(issue);
+        setSelectedFinding(null);
         setPressedNote(null);
         if (!pr || !compare) return;
         pr.flashNotes(notesOfIssue(issue, compare.marks));
         const anchor = issue.expected ?? issue.actual;
+        if (anchor) {
+            pr.scrollToStep(anchor.step);
+            pr.scrollToPitch?.(anchor.note, anchor.octave);
+        }
+    }, [pianoRollRef, compare]);
+
+    /** 強さの違いのまとまりを選ぶ。当たるノートを選んで光らせ（「強さ」の欄で変えられる）、最初のノートへ動かす。 */
+    const selectFinding = useCallback((finding: VelocityFinding) => {
+        const pr = pianoRollRef.current;
+        const velocity = compare?.result.velocity;
+        setSelectedFinding(finding);
+        setSelectedIssue(null);
+        setPressedNote(null);
+        if (!pr || !compare || !velocity) return;
+        pr.flashNotes(velocityNotesOf(finding, velocity, compare.attempt, compare.reference));
+        const anchor = velocity.notes[finding.notes[0]]?.actual;
         if (anchor) {
             pr.scrollToStep(anchor.step);
             pr.scrollToPitch?.(anchor.note, anchor.octave);
@@ -469,6 +494,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
 
     const value: PracticeContextValue = {
         midi, part, track, compare, stale, busy, error, runCompare, selectedIssue, pressedNote, selectIssue,
+        selectedFinding, selectFinding,
         speedStatus, playing: isPlaying, togglePlay, stopPlay, setLoop,
     };
     return <PracticeContext.Provider value={value}>{children}</PracticeContext.Provider>;
@@ -703,7 +729,7 @@ function Legend() {
 /** 右の一覧（この区間の指摘・押したノートの説明・凡例・ガイドを読む）。 */
 export function PracticeSide() {
     const { practice, closePractice, openLearn, setStatus } = useDaw();
-    const { compare, stale, error, selectedIssue, pressedNote, selectIssue, runCompare, busy } = usePractice();
+    const { compare, stale, error, selectedIssue, pressedNote, selectIssue, selectedFinding, selectFinding, runCompare, busy } = usePractice();
     const listRef = useRef<HTMLUListElement | null>(null);
     const issues = useMemo(() => (compare ? issuesInOrder(compare.result) : []), [compare]);
 
@@ -733,7 +759,9 @@ export function PracticeSide() {
             )}
             {pressedNote && <p className="practice-pressed" role="status">選んだノート: {pressedNote}</p>}
             {compare && !stale && (issues.length === 0 ? (
-                <p className="body-text">この範囲は、お手本どおりです。</p>
+                <p className="body-text">
+                    {hasVelocityDiff(compare.result) ? 'この範囲の高さ・位置・長さは、お手本どおりです。' : 'この範囲は、お手本どおりです。'}
+                </p>
             ) : (
                 <>
                     <p className="practice-counts">
@@ -752,6 +780,7 @@ export function PracticeSide() {
                     </ul>
                 </>
             ))}
+            {compare && !stale && <VelocityFindings velocity={compare.result.velocity} onSelect={selectFinding} selected={selectedFinding} />}
             <Legend />
             <button type="button" className="action-btn secondary practice-guide"
                 onClick={() => { closePractice(); openLearn('guide'); setStatus('アレンジに戻って、再現ガイドを開きました'); }}

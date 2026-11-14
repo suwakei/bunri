@@ -93,6 +93,7 @@ html, body { overflow: auto; height: auto; }
 .tools-page .form-group input, .tools-page .form-group select { width:100%; background:var(--bg-panel); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:4px; font-size:13px; }
 .tools-page .form-row { display:flex; gap:12px; }
 .tools-page .form-row .form-group { flex:1; }
+.tools-page .check-row { display:flex; align-items:center; gap:6px; margin-bottom:16px; font-size:13px; color:var(--text); cursor:pointer; }
 .tools-page .btn { background:var(--accent); color:var(--bg-deep); border:none; padding:10px 24px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600; width:100%; }
 .tools-page .btn:hover { background:var(--accent-hover); color:var(--bg-deep); }
 .tools-page .btn:disabled { opacity:0.5; cursor:not-allowed; }
@@ -186,6 +187,8 @@ function SeparatePanel() {
             setStatus(text); setStatusType(type);
         }
     });
+    // 分け方。「さらに細かく分ける」のときだけ、ドラムを分けるかの選択を出す
+    const [sepMode, setSepMode] = useState('true');
 
     const handleSeparate = useCallback(async () => {
         const file = ((document.getElementById('sep-file') as HTMLInputElement | null))?.files?.[0];
@@ -194,10 +197,13 @@ function SeparatePanel() {
         const mode = ((document.getElementById('sep-mode') as HTMLInputElement)?.value);
         const isDeep = mode === 'deep';
         let apiUrl; const fd = new FormData();
-        if (isDeep) { fd.append('file', file); fd.append('depth', '1'); apiUrl = '/api/deep-separate'; }
+        const splitDrums = isDeep && ((document.getElementById('sep-split-drums') as HTMLInputElement | null)?.checked ?? false);
+        if (isDeep) { fd.append('file', file); fd.append('depth', '1'); fd.append('split_drums', splitDrums ? 'true' : 'false'); apiUrl = '/api/deep-separate'; }
         else { fd.append('file', file); fd.append('model', model); fd.append('two_stems', mode); apiUrl = '/api/separate'; }
         setStatus(`パートに分けています…（${file.name}）`); setStatusType('processing'); setResults([]);
-        modelDownloadNotice(isDeep ? 'htdemucs_6s' : model).then((notice) => { if (notice) setStatus((prev) => prev.startsWith('パートに分けています') ? prev + notice : prev); });
+        // ドラムを分けるときは、追加のモデル（drumsep）が手元に在るかも見る。案内は 1 回だけ添える
+        Promise.all([modelDownloadNotice(isDeep ? 'htdemucs_6s' : model), splitDrums ? modelDownloadNotice('drumsep') : Promise.resolve('')])
+            .then((notices) => { const notice = notices.find((text) => text); if (notice) setStatus((prev) => prev.startsWith('パートに分けています') ? prev + notice : prev); });
         try {
             const items = separateResults(await separate.run(apiUrl, fd));
             setResults(items); setStatus(`${items.length} 個のパートに分けました`); setStatusType('');
@@ -217,9 +223,15 @@ function SeparatePanel() {
                     <select id="sep-model" {...tip('分けるときに使う方式。迷ったら標準の htdemucs を選んでください')}><option value="htdemucs">htdemucs — 標準（推奨）</option><option value="htdemucs_ft">htdemucs_ft — 高精度（遅い）</option><option value="htdemucs_6s">htdemucs_6s — 6 パート</option></select>
                 </div>
                 <div className="form-group"><label>分け方</label>
-                    <select id="sep-mode" {...tip('いくつに分けるか。歌と伴奏を分けるだけなら「2 つに分ける」が早く済みます')}><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
+                    <select id="sep-mode" value={sepMode} onChange={(e) => setSepMode(e.target.value)} {...tip('いくつに分けるか。歌と伴奏を分けるだけなら「2 つに分ける」が早く済みます')}><option value="true">2 つに分ける（ボーカル / 伴奏）</option><option value="false">すべてのパートに分ける</option><option value="deep">さらに細かく分ける（6 パート）</option></select>
                 </div>
             </div>
+            {sepMode === 'deep' && (
+                <label className="check-row" {...tip('ドラムのパートを、キック・スネア・タム・シンバルの 4 つにも分けます。初めて使うときだけ、追加のモデル（約 160 MB）をダウンロードします')}>
+                    <input type="checkbox" id="sep-split-drums" defaultChecked />
+                    ドラムをさらに分ける（キック / スネア / タム / シンバル）
+                </label>
+            )}
             <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy} {...tip('パート分離を始めます。終わるまで数分〜十数分かかります')}>パート分離を始める</button>
             <ToolsJobCard slot="tools-separate" handle={separate} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
             <StatusLine text={status} type={statusType} />

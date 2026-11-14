@@ -721,15 +721,18 @@ async def api_separate(
 async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
+    split_drums: str = Form("false"),
     run_async: bool = Query(False, alias="async"),
 ):
     """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
 
-    ``other`` ステムを再帰的に再分離することで最大限レイヤーを分割する。
+    ``other`` ステムを再分離し、指定が在ればドラムも部位ごとに分けて、最大限レイヤーを分割する。
 
     Args:
         file: 分離対象の音声ファイル（マルチパートアップロード）。
-        depth: 再帰分離の深さ（1 = 追加再分離なし）。
+        depth: ``other`` を再分離する深さ（1 = 1 回再分離、0 = 再分離なし）。
+        split_drums: ``"true"`` でドラムをキック / スネア / タム / シンバルに分ける。
+            追加のモデルが手元に無ければ、最初にダウンロードする。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
@@ -737,19 +740,29 @@ async def api_deep_separate(
         ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
-        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+        HTTPException: 追加のモデルを用意できなかった場合（HTTP 503）、
+            分離処理中に例外が発生した場合（HTTP 500）。``?async=1`` のときは、
+            どちらもジョブの失敗（``error.status``）として返る。
     """
-    from separate import DEEP_SEPARATE_STAGES
+    import stem_models
+    from separate import DRUM_MODEL, deep_separate_stages
     filename = file.filename
-    # 再分離をしないなら、そのステージは並びに入れない
-    stages = [s for s in DEEP_SEPARATE_STAGES if int(depth) > 0 or s[0] != "separate_other"]
+    with_drums = split_drums.lower() in ("true", "1", "yes")
+    # 通らないステージ（再分離をしない、ドラムを分けない、モデルが手元に在る）は並びに入れない
+    stages = deep_separate_stages(
+        recursive_depth=int(depth), split_drums=with_drums,
+        download_drum_model=with_drums and not stem_models.is_cached(DRUM_MODEL),
+    )
 
     def task(job, src):
         from separate import deep_separate
-        paths = deep_separate(
-            str(src), output_dir=str(results_dir() / "separated"),
-            segment=7, jobs=1, recursive_depth=int(depth), job=job,
-        )
+        try:
+            paths = deep_separate(
+                str(src), output_dir=str(results_dir() / "separated"),
+                segment=7, jobs=1, recursive_depth=int(depth), split_drums=with_drums, job=job,
+            )
+        except stem_models.ModelUnavailableError as e:
+            raise HTTPException(503, str(e))
         return _stem_links(job, paths, "deep", filename)
 
     return await job_routes.dispatch(
@@ -792,7 +805,7 @@ async def api_model_status(name: str):
     事前に伝えられるようにするための API。
 
     Args:
-        name: Demucs のモデル名（例: ``"htdemucs"``）。
+        name: Demucs のモデル名（例: ``"htdemucs"``）、または追加のモデル名（``"drumsep"``）。
 
     Returns:
         ``{"model": 名前, "cached": bool, "missing": 足りないファイル数}``。
@@ -801,8 +814,11 @@ async def api_model_status(name: str):
         HTTPException: 知らないモデル名の場合（HTTP 404）。
     """
     import model_cache
+    import stem_models
 
     try:
+        if name in stem_models.ADDON_MODELS:
+            return stem_models.model_status(name)
         return model_cache.model_status(name)
     except KeyError:
         raise HTTPException(404, "モデルが見つかりません")
@@ -1494,6 +1510,15 @@ async def api_chart_load(chart_id: str):
 
 # ---- 差分コーチ（第3層の土台）API ----
 
+def _reference_source(payload: dict):
+    """リクエストの本文から、お手本の出どころを取り出す（内部用）。
+
+    文字列でなければ None（出どころが分からないお手本。強さを比べない）。
+    """
+    source = payload.get("reference_source")
+    return source if isinstance(source, str) else None
+
+
 @app.post("/api/coach/diff")
 async def api_coach_diff(payload: dict = Body(...)):
     """お手本のノートと、利用者の打ち込みの差分を返す。
@@ -1503,9 +1528,12 @@ async def api_coach_diff(payload: dict = Body(...)):
     Args:
         payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みの
             ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意。
+            ``reference_source``（お手本の出どころ）が ``"midi"``（MIDI ファイルから読み込んだお手本）の
+            ときだけ、強さ（ベロシティ）も比べる。無い・そのほかの値（``"transcription"`` など）では比べない。
 
     Returns:
-        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars``）。
+        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars`` ``velocity``）。
+        ``velocity`` は、強さを比べないお手本では null。
 
     Raises:
         HTTPException: 入力の形が正しくない、またはお手本が空の場合（HTTP 400）。
@@ -1514,7 +1542,8 @@ async def api_coach_diff(payload: dict = Body(...)):
 
     options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance") if key in payload}
     try:
-        return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"), **options)
+        return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"),
+                                     reference_source=_reference_source(payload), **options)
     except coach_diff.DiffError as e:
         raise HTTPException(400, str(e))
 
@@ -1539,7 +1568,8 @@ def _coach_facts(payload: dict):
     try:
         return coach_explain.build_facts(payload.get("reference"), payload.get("attempt"),
                                          chart=chart, bpm=payload.get("bpm"),
-                                         grid_offset_sec=payload.get("grid_offset_sec"), **options)
+                                         grid_offset_sec=payload.get("grid_offset_sec"),
+                                         reference_source=_reference_source(payload), **options)
     except coach_diff.DiffError as e:
         raise HTTPException(400, {"message": str(e), "code": "invalid"})
 
@@ -1588,6 +1618,7 @@ def api_coach_explain(payload: dict = Body(...)):
             （お手本を採譜したときのテンポ）も付けると、その場のコードとセクションも足す。
             ``grid_offset_sec``（ピアノロールのステップ 0 の位置。画面ではカルテの 1 拍目の位置）を
             付けると、ステップを秒に直すときに足す（無ければ 0）。
+            ``reference_source`` が ``"midi"`` のときだけ、強さの違いも事実に足す（``/api/coach/diff`` と同じ）。
             ``regenerate`` が真なら、保存済みが在っても作り直す（費用がかかる）。
 
     Returns:

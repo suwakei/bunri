@@ -32,7 +32,7 @@ def load_audio(file_obj):
 
 
 def data_dir():
-    """利用者のデータ (uploads/ results/ projects/ work/ soundfonts/) を置く親ディレクトリを返す。
+    """利用者のデータ (uploads/ results/ projects/ work/ soundfonts/ models/) を置く親ディレクトリを返す。
 
     データ置き場を一箇所で決めるための関数。環境変数 ``BUNRI_DATA_DIR`` が
     設定されていればそこを使い、無ければリポジトリ直下 (``backend/`` の親) を使う。
@@ -130,6 +130,18 @@ def soundfonts_dir():
         pathlib.Path: 解決済みの絶対パス。存在の保証はしない。
     """
     return _data_subdir("soundfonts", create=False)
+
+
+def models_dir():
+    """追加の分離モデル（bunri が別に配るもの）の置き場 ``models/`` を返す (無ければ作成する)。
+
+    Demucs 本体のモデルは torch / HuggingFace のキャッシュに入るので、ここには置かれない。
+    ここに入るのは ``stem_models.py`` がダウンロードするファイル。
+
+    Returns:
+        pathlib.Path: 解決済みの絶対パス。
+    """
+    return _data_subdir("models")
 
 
 def safe_join(base, name):

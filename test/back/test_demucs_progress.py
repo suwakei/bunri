@@ -253,6 +253,7 @@ for _ in demucs_progress.report_segments(list(range(total)), 0):
 stems = ["vocals", "no_vocals"] if two else {{
     "htdemucs": ["vocals", "drums", "bass", "other"],
     "htdemucs_6s": ["vocals", "drums", "bass", "guitar", "piano", "other"],
+    "drumsep": ["bombo", "redoblante", "toms", "platillos"],
 }}[model]
 name = os.path.splitext(os.path.basename(track))[0]
 target = os.path.join(out, model, name)
@@ -346,6 +347,30 @@ class TestSeparateThroughFakeChild:
         assert stages == ["model", "separate", "separate_other"]
         assert stages == [key for key, _ in separate.DEEP_SEPARATE_STAGES]
         assert "other_vocals" in snap["result"] and "other" not in snap["result"]
+
+    def test_詳細分離でドラムを分けると_その分離も別のステージとして進み具合が出る(
+        self, fake_demucs, manager, song, tmp_path, monkeypatch,
+    ):
+        out = tmp_path / "out"
+        # 追加のモデルは手元に在ることにする（偽の子プロセスは、渡されたファイルを開かない）
+        monkeypatch.setattr(separate, "_ensure_drum_model", lambda job: tmp_path / "drumsep.safetensors")
+        seen = []
+        job = manager.submit(
+            "deep_separate",
+            lambda job: list(separate.deep_separate(str(song), output_dir=str(out), split_drums=True, job=job)),
+            stages=separate.deep_separate_stages(split_drums=True),
+        )
+        watch(job, seen)
+        snap = job.snapshot()
+        assert snap["state"] == DONE, snap
+        keys = [s["stage_key"] for s in seen if s["stage_key"]]
+        assert list(dict.fromkeys(keys)) == ["model", "separate", "separate_drums", "separate_other"]
+        assert snap["stage_count"] == 4
+        # ドラムの部位は drums の直後に並ぶ。出力は deep_drums/ の下
+        result = snap["result"]
+        at = result.index("drums")
+        assert result[at + 1:at + 5] == ["drums_kick", "drums_snare", "drums_toms", "drums_cymbals"]
+        assert (out / "deep_drums" / "drumsep" / "drums" / "bombo.wav").is_file()
 
     def test_キャンセルすると子プロセスが止まり_書きかけの出力が消える(
             self, fake_demucs, manager, song, tmp_path, monkeypatch):

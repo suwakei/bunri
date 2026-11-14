@@ -23,6 +23,11 @@
 - 違いが無い・少ない、打ち込みが無い、お手本が少ないときは、API を呼ばずに決まった文を返す（``rule_response``）
 - 渡す指摘は ``MAX_ISSUES`` 件まで。多いときは一部だけを渡し、全体は件数の集計で伝える
 
+強さ（ベロシティ）の違いは、お手本が MIDI ファイルから読み込んだもののときだけ、事実に足す
+（``facts["velocity"]``）。そのときだけ、指示文に強さの読み方（``VELOCITY_PROMPT``）を足す。
+採譜したお手本・出どころの分からないお手本では、事実も指示文も以前とバイト単位で同じで、
+強さという言葉そのものを LLM に渡さない（保存済みの説明もそのまま使える）。
+
 設計の決定と理由は docs/coach-diff-design.md の「言語化」。
 """
 import hashlib
@@ -60,6 +65,8 @@ MAX_POINTS = 3
 MIN_REFERENCE_NOTES = 4
 # 違いがこれより少ないと、一覧を読めば足りる（API を呼ばない）
 MIN_ISSUES = 3
+# LLM に渡す強さの指摘（まとまり）の上限。超えるぶんは、件数（``findings_total``）だけで伝える
+MAX_VELOCITY_FINDINGS = 12
 
 # 差分の種類の呼び名
 KIND_LABEL = {
@@ -174,6 +181,31 @@ bars に当てはまる小節を入れる。どの点にも、issue_ids か bars
 まとめる。指摘を 1 件ずつ読み上げない（一覧は画面に別に出ている）。
 - observation・cause・fix は、それぞれ 1〜2 文。
 - next_step は 1 文。最初に手を付ける場所を 1 つだけ、小節番号つきで書き、next_step_bar にその小節を入れる。
+"""
+
+# 強さの事実（facts の velocity）が在るときだけ、指示文の後ろに足す。お手本が MIDI ファイルから
+# 読み込んだもののときだけ在る。採譜したお手本では足さない（強さに一切触れさせないため）
+VELOCITY_PROMPT = """\
+強さ（ベロシティ）について:
+- このお手本は、音源から採譜したものではなく、MIDI ファイルから読み込んだノートです。強さは MIDI \
+ファイルに書かれていた値なので、打ち込みの強さと比べた結果が facts の velocity に在ります。
+- 強さは 1〜127 の数で、大きいほど強く弾いた音です。打ち込みのうち、マウスで置いたノートは強さを\
+持たず、velocity.default_velocity の強さで鳴るので、その値として比べています（attempt_unset がその数）。
+- 比べたのは、高さと位置が合ったノートどうしだけです（compared がその数）。差が tolerance 以内の\
+ノートは、同じ強さとして扱っています。weaker と stronger は、それを超えて打ち込みが弱い・強い\
+ノートの数。median_diff は、差（打ち込み − お手本）の真ん中の値。reference と attempt は、比べた\
+ノートの強さの範囲です。
+- findings が、まとまりで言える違いです。kind が overall は「全体に弱い・強い」、flat は「打ち込みの\
+強さがほぼ一定で、お手本の強弱が付いていない」、section は「start_bar〜end_bar 小節が弱い・強い」、\
+accent は「お手本で周りより強く弾いているノート（アクセント）が、お手本より弱い」。direction は \
+weaker（弱い）か stronger（強い）。count は違うノートの数、compared はその範囲で比べたノートの数\
+（accent では、お手本のアクセントの数）。
+- 強さについて書いてよいのは、findings に在ることだけ。findings が空なら、強さには触れない。\
+1 ノートごとの強さの数を並べない。強さの数を自分で計算し直さない。
+- 強さの違いは、抜けや高さの違いより後に直すものとして扱う。points に入れるときは、bars に \
+velocity.bars に在る小節を入れる。直し方は「ノートを選んで、ピアノロールの上の『強さ』の欄で変える」\
+のように書き、強さの数を自分で決めて勧めない。
+- 本文では「強さ」と書き、「ベロシティ」「音量」とは書かない。
 """
 
 # コードの構成音の呼び名（ルートからの半音 → 呼び名）
@@ -388,8 +420,25 @@ def _role(note, chord, scale):
     return "キー内" if in_key else "キー外"
 
 
+def _velocity_facts(velocity):
+    """強さの違い（``coach_diff.velocity_diff`` の結果）を、LLM に渡す形にする。
+
+    1 ノートごとの一覧（``notes``）は渡さない（まとまりで言える事実だけを言葉にさせる）。
+    代わりに、強さの違うノートが在る小節（``bars``）を渡す。説明の点が指してよい小節になる。
+    """
+    findings = [{key: value for key, value in finding.items() if key != "notes"}
+                for finding in velocity["findings"]]
+    bars = sorted({note["bar"] for note in velocity["notes"]} | {finding["start_bar"] for finding in findings})
+    return {
+        **{key: value for key, value in velocity.items() if key not in ("findings", "notes")},
+        "findings": findings[:MAX_VELOCITY_FINDINGS],
+        "findings_total": len(findings),
+        "bars": bars[:MAX_BAR_ROWS],
+    }
+
+
 def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_tolerance=2, chart=None, bpm=None,
-                grid_offset_sec=None):
+                grid_offset_sec=None, reference_source=None):
     """お手本と打ち込みを突き合わせ、LLM に渡す事実を組み立てる。LLM は使わない。
 
     差分そのものは ``coach_diff.diff_notes`` が出す。ここでは、それに次を足す。
@@ -399,6 +448,8 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
     - 種類ごとの偏り（``tendencies``）と、小節ごとの件数（``bars``）。全部の指摘から数える
     - 指摘の表（``issues``）。``MAX_ISSUES`` 件まで。多いときは一部だけで、``total`` が全件の数
     - カルテが在れば、キー、セクション、その場のコードと、音がコードの何の音に当たるか
+    - お手本が MIDI ファイルから読み込んだもの（``reference_source="midi"``）なら、強さの違い（``velocity``）。
+      それ以外では、この項目そのものを足さない（事実は、強さを比べる前の版とバイト単位で同じ）
 
     同じ入力からは、いつも同じ事実になる（保存した説明の鍵に使う）。
 
@@ -413,10 +464,11 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
             ピアノロールの小節に当てるのに使う。None なら、カルテからはキーだけを使う。
         grid_offset_sec: ピアノロールのステップ 0 の位置（秒。1 小節目の 1 拍目）。画面は、カルテの
             1 拍目の位置をここに使う。None なら 0（以前の、0 秒から数えるピアノロール）。
+        reference_source: お手本の出どころ（``coach_diff.diff_notes`` と同じ）。``"midi"`` のときだけ強さを比べる。
 
     Returns:
         dict: ``{"grid", "summary", "worst_bars", "tendencies", "bars", "issues", "chart_context",
-        "key", "sections"}``。
+        "key", "sections"}``。強さを比べたときは ``"velocity"`` も持つ。
 
     Raises:
         coach_diff.DiffError: 入力の形が正しくない、お手本が空、``bpm`` が不正な場合。
@@ -424,7 +476,7 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
     bpm = _bpm_value(bpm)
     grid_offset_sec = _offset_value(grid_offset_sec)
     diff = coach_diff.diff_notes(reference, attempt, steps_per_bar=steps_per_bar, steps_per_beat=steps_per_beat,
-                                 timing_tolerance=timing_tolerance)
+                                 timing_tolerance=timing_tolerance, reference_source=reference_source)
 
     issues = []
     for entry in diff["bars"]:
@@ -457,7 +509,7 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
     summary = {key_: value for key_, value in diff["summary"].items() if key_ != "accuracy"}
     # 割合は、画面と同じ「何 %」に直して渡す（LLM に丸めさせない）
     summary["accuracy_percent"] = round(diff["summary"]["accuracy"] * 100)
-    return {
+    facts = {
         "grid": {"steps_per_bar": steps_per_bar, "steps_per_beat": steps_per_beat,
                  "timing_tolerance": timing_tolerance, "bar_count": bar_count},
         "summary": summary,
@@ -470,6 +522,14 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
         "key": key,
         "sections": sections,
     }
+    if diff["velocity"] is not None:
+        facts["velocity"] = _velocity_facts(diff["velocity"])
+    return facts
+
+
+def _has_velocity(facts):
+    """事実に、強さの違いが入っているか（お手本が MIDI ファイルから読み込んだもののとき）。"""
+    return facts.get("velocity") is not None
 
 
 def prompt_facts(facts):
@@ -489,6 +549,10 @@ def build_request(facts, *, model=None, effort=None):
     事実は呼び出しごとに変わるので、区切りより後ろの user に置く（直して比べ直す、を続けて行うと、
     指示文と出力の形のぶんがキャッシュから読まれる）。
 
+    強さの事実が在るとき（お手本が MIDI ファイルから読み込んだもの）だけ、強さの読み方
+    （``VELOCITY_PROMPT``）を、区切りの後ろに 2 つ目の system として足す。区切りより前は変わらないので、
+    採譜したお手本と MIDI のお手本で、同じキャッシュが使われる。
+
     Args:
         facts: ``build_facts`` の結果。
         model: モデルの ID。None なら ``llm_settings.model()``（第2層と同じ）。
@@ -507,7 +571,7 @@ def build_request(facts, *, model=None, effort=None):
     body = {
         "model": model,
         "max_tokens": MAX_TOKENS,
-        "system": [system],
+        "system": [system, {"type": "text", "text": VELOCITY_PROMPT}] if _has_velocity(facts) else [system],
         "messages": [{
             "role": "user",
             "content": "<facts>\n" + prompt_facts(facts) + "\n</facts>\n\nこの結果について、説明を作ってください。",
@@ -524,15 +588,22 @@ def build_request(facts, *, model=None, effort=None):
     return body
 
 
-def request_fingerprint():
-    """指示文・出力の形・版の指紋を返す。保存した説明の鍵に入れる。"""
-    payload = json.dumps([COACH_VERSION, SYSTEM_PROMPT, COACH_SCHEMA], ensure_ascii=False, sort_keys=True)
+def request_fingerprint(facts=None):
+    """指示文・出力の形・版の指紋を返す。保存した説明の鍵に入れる。
+
+    強さの事実が在るときだけ、強さの読み方（``VELOCITY_PROMPT``）も指紋に入れる。強さの事実が無い
+    ときの指紋は、強さを比べる前の版と同じ（採譜したお手本の、保存済みの説明をそのまま使える）。
+    """
+    parts = [COACH_VERSION, SYSTEM_PROMPT, COACH_SCHEMA]
+    if facts is not None and _has_velocity(facts):
+        parts.append(VELOCITY_PROMPT)
+    payload = json.dumps(parts, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def explanation_key(facts, model, effort):
     """保存した説明の鍵を返す（事実の指紋 + モデル + 思考の深さ + 指示文と出力の形の指紋）。"""
-    parts = [facts_hash(facts), model, effort, request_fingerprint()]
+    parts = [facts_hash(facts), model, effort, request_fingerprint(facts)]
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:40]
 
 
@@ -560,11 +631,27 @@ def rule_response(facts):
     Claude を呼んでも一覧を言い直すだけになる。判断は機械的に決まるので、LLM にさせない。
 
     Returns:
-        tuple[str, dict] | None: ``(理由, 説明)``。理由は ``"no_diff"`` ``"no_attempt"``
-        ``"few_notes"`` ``"few_issues"``。
+        tuple[str, dict] | None: ``(理由, 説明)``。理由は ``"no_diff"`` ``"velocity_only"`` ``"no_attempt"``
+        ``"few_notes"`` ``"few_issues"``。``"velocity_only"`` は、高さ・位置・長さは合っていて、強さだけが違う
+        （強さを比べたお手本のときだけ）。強さの違いは、まとまりの数が少なく、画面の強さの欄を読めば足りる。
     """
     summary, total = facts["summary"], facts["issues"]["total"]
     first_bar = facts["worst_bars"][0] if facts["worst_bars"] else None
+    if total == 0 and _has_velocity(facts):
+        # お手本は MIDI ファイルから読み込んだもの（採譜の結果ではない）
+        findings = facts["velocity"]["findings"]
+        matched = f"お手本 {summary['reference_count']} ノートと、高さ・位置・長さがすべて合っています。"
+        if findings:
+            return "velocity_only", _explanation(
+                matched + "強さには、お手本と違うところがあります。",
+                "高さ・位置・長さは合っています。次は「強さの違い」の欄を見て、お手本と強さを見比べてください。",
+                findings[0]["start_bar"])
+        different = facts["velocity"]["weaker"] + facts["velocity"]["stronger"]
+        return "no_diff", _explanation(
+            matched,
+            "お手本と違う箇所はありません。"
+            + (f"強さの違うノートが {different} 個ありますが、まとまった違いではありません。" if different
+               else "強さも、お手本と合っています。"))
     if total == 0:
         return "no_diff", _explanation(
             f"お手本 {summary['reference_count']} ノートと、高さ・位置・長さがすべて合っています。",
@@ -628,6 +715,9 @@ def _vocabulary(facts):
         tonic = facts["key"]["tonic"]
         words.update({tonic, _FLAT_NAME.get(tonic, tonic)})
     bars = {row[0] for row in facts["bars"]["rows"]} | {issue["bar"] for issue in issues.values()}
+    if _has_velocity(facts):
+        # 強さの違うノートが在る小節も、説明の点が指してよい
+        bars |= set(facts["velocity"]["bars"])
     return {"issues": issues, "bars": bars, "pitches": pitches, "chords": chords, "words": words}
 
 
@@ -931,7 +1021,7 @@ def explain_for(facts, regenerate=False, client=None):
                     "設定で入力の上限を上げてください", code="too_long")
 
         log = {"feature": "coach", "requested_model": model, "effort": effort, "focus": None,
-               "chart": facts_id[:16], "cache_ttl": CACHE_TTL or "none", "version": request_fingerprint()}
+               "chart": facts_id[:16], "cache_ttl": CACHE_TTL or "none", "version": request_fingerprint(facts)}
         started = time.monotonic()
         try:
             result = generate(facts, client=client, request=request)
@@ -952,7 +1042,7 @@ def explain_for(facts, regenerate=False, client=None):
             "requested_model": model,
             "effort": effort,
             "facts": facts_id,
-            "fingerprint": request_fingerprint(),
+            "fingerprint": request_fingerprint(facts),
         }
         guide_cache.save(key, entry, kind="coach")
         return _public(entry, cached=False, facts=facts, key=key)

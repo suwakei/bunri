@@ -33,6 +33,10 @@ projects/
 # Soundfonts (large binary files)
 soundfonts/
 
+# 追加の分離モデル（初回に自動でダウンロードされる）
+/models/
+*.safetensors
+
 # PyTorch model cache
 *.th
 *.pt
