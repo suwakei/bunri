@@ -721,15 +721,18 @@ async def api_separate(
 async def api_deep_separate(
     file: UploadFile = File(...),
     depth: int = Form(1),
+    split_drums: str = Form("false"),
     run_async: bool = Query(False, alias="async"),
 ):
     """htdemucs_6s による深層分離を実行してダウンロードリンクを返す。
 
-    ``other`` ステムを再帰的に再分離することで最大限レイヤーを分割する。
+    ``other`` ステムを再分離し、指定が在ればドラムも部位ごとに分けて、最大限レイヤーを分割する。
 
     Args:
         file: 分離対象の音声ファイル（マルチパートアップロード）。
-        depth: 再帰分離の深さ（1 = 追加再分離なし）。
+        depth: ``other`` を再分離する深さ（1 = 1 回再分離、0 = 再分離なし）。
+        split_drums: ``"true"`` でドラムをキック / スネア / タム / シンバルに分ける。
+            追加のモデルが手元に無ければ、最初にダウンロードする。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
@@ -737,19 +740,29 @@ async def api_deep_separate(
         ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
-        HTTPException: 分離処理中に例外が発生した場合（HTTP 500）。
+        HTTPException: 追加のモデルを用意できなかった場合（HTTP 503）、
+            分離処理中に例外が発生した場合（HTTP 500）。``?async=1`` のときは、
+            どちらもジョブの失敗（``error.status``）として返る。
     """
-    from separate import DEEP_SEPARATE_STAGES
+    import stem_models
+    from separate import DRUM_MODEL, deep_separate_stages
     filename = file.filename
-    # 再分離をしないなら、そのステージは並びに入れない
-    stages = [s for s in DEEP_SEPARATE_STAGES if int(depth) > 0 or s[0] != "separate_other"]
+    with_drums = split_drums.lower() in ("true", "1", "yes")
+    # 通らないステージ（再分離をしない、ドラムを分けない、モデルが手元に在る）は並びに入れない
+    stages = deep_separate_stages(
+        recursive_depth=int(depth), split_drums=with_drums,
+        download_drum_model=with_drums and not stem_models.is_cached(DRUM_MODEL),
+    )
 
     def task(job, src):
         from separate import deep_separate
-        paths = deep_separate(
-            str(src), output_dir=str(results_dir() / "separated"),
-            segment=7, jobs=1, recursive_depth=int(depth), job=job,
-        )
+        try:
+            paths = deep_separate(
+                str(src), output_dir=str(results_dir() / "separated"),
+                segment=7, jobs=1, recursive_depth=int(depth), split_drums=with_drums, job=job,
+            )
+        except stem_models.ModelUnavailableError as e:
+            raise HTTPException(503, str(e))
         return _stem_links(job, paths, "deep", filename)
 
     return await job_routes.dispatch(
@@ -792,7 +805,7 @@ async def api_model_status(name: str):
     事前に伝えられるようにするための API。
 
     Args:
-        name: Demucs のモデル名（例: ``"htdemucs"``）。
+        name: Demucs のモデル名（例: ``"htdemucs"``）、または追加のモデル名（``"drumsep"``）。
 
     Returns:
         ``{"model": 名前, "cached": bool, "missing": 足りないファイル数}``。
@@ -801,8 +814,11 @@ async def api_model_status(name: str):
         HTTPException: 知らないモデル名の場合（HTTP 404）。
     """
     import model_cache
+    import stem_models
 
     try:
+        if name in stem_models.ADDON_MODELS:
+            return stem_models.model_status(name)
         return model_cache.model_status(name)
     except KeyError:
         raise HTTPException(404, "モデルが見つかりません")

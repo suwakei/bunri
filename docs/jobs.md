@@ -108,12 +108,15 @@ GET /api/jobs
 | API | `kind` | ステージ（`stage_key`） | 数字が出るステージ |
 |---|---|---|---|
 | `/api/separate` | `separate` | `model` → `separate` | `separate` |
-| `/api/deep-separate` | `deep_separate` | `model` → `separate` → `separate_other`（`depth=0` なら無し） | `separate` `separate_other` |
+| `/api/deep-separate` | `deep_separate` | `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `separate_other`（`depth=0` なら無し） | `drum_model` `separate` `separate_drums` `separate_other` |
 | `/api/decompose` | `decompose` | `tempo`（BPM 指定なら無し）→ `model` → `separate` → `separate_other` → `transcribe` | `separate` `separate_other` `transcribe` |
 | `/api/chart` `/api/chart/regrid` | `chart` `chart_regrid` | `grid` → `key` → `chords` → `sections` → `mix` → `save` | 無し |
 | `/api/analyze` | `analyze` | `transcribe` | 無し |
 
-- **`separate` / `separate_other`**: Demucs が処理した区間の数（1 区間は音声 5 秒強）。本物の進み具合
+- **`separate` / `separate_drums` / `separate_other`**: Demucs が処理した区間の数（1 区間は音声 5 秒強）。本物の進み具合
+- **`drum_model`**: ドラムを部位ごとに分ける追加のモデル（`backend/stem_models.py` の `drumsep`、約 160 MB）を
+  ダウンロードしている間。ファイルの大きさが分かっているので、落とした量 ÷ 全体の割合が出る。重い処理の前に済ませ、
+  ダウンロードできなければ、分離を始めずに 503 で失敗する。モデルが手元に在れば、このステージは並びに入らない
 - **`transcribe`（分解）**: 済んだパートの数 ÷ パートの総数。表示名にも「2/7: ベース」のように入る。
   1 つのパートの途中の進み具合は取れない
 - **`model`**: モデルを用意している間。モデルが手元に無い（初回）ときは、表示名が
@@ -143,6 +146,7 @@ CPU 前提・低スペック PC 向けなので、ジョブは 1 つずつしか
 |---|---|
 | Demucs（`model` `separate` `separate_other`） | 子プロセスを kill する。1 秒以内に止まる（手元の計測で 0.1 秒）。終了を頼んで 2 秒待っても終わらなければ強制終了する |
 | モデルのダウンロード | 上と同じ（子プロセスの中で動いている）。途中まで落としたファイルの扱いはライブラリ任せで、こちらでは消さない |
+| 追加のモデルのダウンロード（`drum_model`） | API サーバの中で落としている。1 MB 落とすごとにキャンセルを確かめて止まり、書きかけのファイルは消す |
 | 分解の `transcribe` | パートとパートの間で止まる。**1 つのパートを音符にしている最中は止められない**（長い曲だと数十秒かかることがある） |
 | 分解の `tempo`、カルテの各ステージ | **ステージの途中では止められない**。次のステージに入るところで止まる（それぞれ数秒） |
 | `/api/analyze` | **止められない**（切れ目が無い）。最後まで走ってから `cancelled` になり、結果は捨てる |

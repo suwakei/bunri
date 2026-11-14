@@ -56,6 +56,7 @@ class TestDataDir:
         assert audio_utils.results_dir("charts") == data_dir.resolve() / "results" / "charts"
         assert audio_utils.projects_dir() == data_dir.resolve() / "projects"
         assert audio_utils.soundfonts_dir() == data_dir.resolve() / "soundfonts"
+        assert audio_utils.models_dir() == data_dir.resolve() / "models"
 
     def test_書き込み先は作成され_soundfontsは作成されない(self, data_dir):
         assert audio_utils.uploads_dir().is_dir()

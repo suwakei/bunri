@@ -450,8 +450,9 @@ class TestRealEndpoints:
     async def test_詳細な音源分離(self, real_app, wav_bytes, monkeypatch, depth, stage_count):
         import separate
 
-        def fake_deep(input_path, output_dir, segment, jobs, recursive_depth, job):
-            assert (segment, jobs, recursive_depth) == (7, 1, depth)
+        def fake_deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job):
+            # split_drums を付けなければ、ドラムは分けない（ステージも増えない）
+            assert (segment, jobs, recursive_depth, split_drums) == (7, 1, depth, False)
             job.enter_stage("separate")
             return write_stems(Path(output_dir) / "htdemucs_6s" / "song", ["vocals", "piano"])
 
