@@ -27,7 +27,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const {
-    confidenceTier, formatTime, isChartResponse, secondsToBarBeat, TIER_DISPLAY,
+    confidenceTier, formatTime, isChartResponse, secondsToBarBeat, tempoCandidates, TIER_DISPLAY,
 } = await import('../lib/chart');
 type SongChart = import('../lib/chart').SongChart;
 type ChartGrid = import('../lib/chart').ChartGrid;
@@ -168,6 +168,34 @@ describe('secondsToBarBeat', () => {
     });
 });
 
+describe('tempoCandidates', () => {
+    it('いまのテンポの半分と倍を、整数に丸めて出す', () => {
+        expect(tempoCandidates(120)).toEqual({ half: 60, double: 240 });
+        expect(tempoCandidates(119.95)).toEqual({ half: 60, double: 240 });
+        expect(tempoCandidates(87.5)).toEqual({ half: 44, double: 175 });
+    });
+
+    it('ほとんどの曲が収まる範囲 (40〜250 BPM) の外になる候補は出さない', () => {
+        // 164 は 82 の倍に読み取られた形。328 は候補にしない
+        expect(tempoCandidates(164)).toEqual({ half: 82, double: null });
+        // 60 は 120 の半分に読み取られた形。30 は候補にしない
+        expect(tempoCandidates(60)).toEqual({ half: null, double: 120 });
+        expect(tempoCandidates(80)).toEqual({ half: 40, double: 160 });
+        expect(tempoCandidates(125)).toEqual({ half: 63, double: 250 });
+    });
+
+    it('テンポが出ていないときは、候補も無い', () => {
+        expect(tempoCandidates(0)).toEqual({ half: null, double: null });
+        expect(tempoCandidates(Number.NaN)).toEqual({ half: null, double: null });
+    });
+});
+
+/** グリッドの確認・補正の窓が開いているかを出す（窓そのものは描かない） */
+function GridEditorProbe() {
+    const { showGridEditor } = useDaw();
+    return <div data-testid="grid-editor-open">{showGridEditor ? 'open' : 'closed'}</div>;
+}
+
 describe('ChartPanel', () => {
     beforeEach(() => cleanup());
 
@@ -254,6 +282,57 @@ describe('ChartPanel', () => {
         chart.grid.user_confirmed = true;
         renderChart(chart);
         expect(screen.queryByText(/コードも構成も全部ずれます/)).not.toBeInTheDocument();
+    });
+
+    it('BPM の下に、倍・半分の候補を実際の BPM から計算して出す', () => {
+        const chart = makeChart();
+        chart.grid.bpm = 180;
+        renderChart(chart);
+        const hint = document.querySelector('#tempo-hint')!;
+        // 180 の倍 (360) は範囲の外なので、半分だけ
+        expect(hint).toHaveTextContent('このテンポが速すぎると感じたら、90 かもしれません。');
+        cleanup();
+        renderChart(makeChart());
+        expect(document.querySelector('#tempo-hint')).toHaveTextContent(
+            'このテンポが速すぎると感じたら 60、遅すぎると感じたら 240 かもしれません。');
+    });
+
+    it('倍・半分の候補は、確信度が「確実」でも「自信なし」でも出す', () => {
+        for (const confidence of [0.95, 0.1]) {
+            const chart = makeChart();
+            chart.grid.bpm_confidence = confidence;
+            renderChart(chart);
+            expect(document.querySelector('#tempo-hint')).toHaveTextContent('60');
+            cleanup();
+        }
+    });
+
+    it('「波形で確かめる」を押すと、グリッドの確認・補正の窓が開く。説明は data-tip で付け、title は使わない', () => {
+        render(
+            <DawProvider>
+                <ChartLoader chart={makeChart()} />
+                <GridEditorProbe />
+            </DawProvider>
+        );
+        expect(screen.getByTestId('grid-editor-open')).toHaveTextContent('closed');
+        const button = screen.getByRole('button', { name: '波形で確かめる' });
+        expect(button.getAttribute('data-tip')).toMatch(/倍や半分に読み取られることがあります/);
+        expect(button).not.toHaveAttribute('title');
+        fireEvent.click(button);
+        expect(screen.getByTestId('grid-editor-open')).toHaveTextContent('open');
+    });
+
+    it('利用者がグリッドを確定した後と、グリッドを検出できなかったときは、倍・半分の候補を出さない', () => {
+        const confirmed = makeChart();
+        confirmed.grid.user_confirmed = true;
+        confirmed.grid.bpm_source = 'user';
+        renderChart(confirmed);
+        expect(document.querySelector('#tempo-hint')).toBeNull();
+        // 確かめる窓への入口 (もとからのボタン) は残る
+        expect(screen.getByRole('button', { name: 'グリッドを確認・補正する' })).toBeInTheDocument();
+        cleanup();
+        renderChart(makeChart({ unavailable: { grid: 'テンポを検出できませんでした' } }));
+        expect(document.querySelector('#tempo-hint')).toBeNull();
     });
 
     it('用語には、辞書の解説をツールチップとして付ける（ツールチップ義務化）', () => {
