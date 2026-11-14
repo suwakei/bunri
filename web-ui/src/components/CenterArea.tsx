@@ -1445,7 +1445,11 @@ class TimelineEngine {
             btn.addEventListener('click', () => {
                 const id = parseInt(btn.dataset.track), track = engine.getTrack(id);
                 if (!track) return;
-                this.history.record(track.solo ? `「${track.name}」のソロを解除` : `「${track.name}」をソロ`, () => { track.solo = !track.solo; });
+                this.history.record(track.solo ? `「${track.name}」のソロを解除` : `「${track.name}」をソロ`, () => {
+                    track.solo = !track.solo;
+                    // デスクトップ版 (Rust の engine) では、再生中でもすぐ効かせる。Web Audio では、次に鳴らし直すときから効く
+                    engine.syncNative();
+                });
                 this._renderKeepingFocus(pianoRoll, '.btn-solo', id);
             });
         });

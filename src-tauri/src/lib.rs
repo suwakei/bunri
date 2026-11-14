@@ -1,6 +1,6 @@
 //! bunri DAW のデスクトップアプリ (ネイティブ側)。
 //!
-//! 役割は 3 つだけ。
+//! 役割は次のものだけ。
 //!
 //! - 画面 (web-ui の React) を表示する窓を開く
 //! - Python sidecar (今までの FastAPI) を起動し、見張り、アプリと一緒に終わらせる。
@@ -9,11 +9,14 @@
 //! - MIDI キーボードの入力を受けて画面に渡す (WebView が Web MIDI を持たないため)
 //! - プロジェクトのファイル (`.bunri`) を、利用者が選んだ場所とデータ置き場の間で写す。
 //!   保存していない変更が在るときに、窓を閉じる前に画面に尋ねさせる (`project.rs`)
+//! - 音を鳴らす: 画面の再生・停止・位置・区間ループ・メトロノーム・録音前のカウント・鍵盤の試聴を、
+//!   音のエンジン (crate `bunri-audio`。`audio-engine/`) につなぐ (`audio.rs`)
 //!
-//! AI・音声処理は Python、画面は Web のまま。ここには書き直さない。
+//! AI・音声の解析は Python、画面は Web のまま。ここには書き直さない。
 //!
-//! 将来、再生・録音・MIDI 入力を低レイテンシにするための音声エンジン (cpal / midir) は
-//! このクレートに `mod audio;` として足し、`invoke_handler` にコマンドを並べる想定。
+//! 音を作る部分 (engine・サンプラー・再生の状態・cpal での出力) は、Tauri 抜きでテストできるよう
+//! 別の crate (`bunri-audio`) に在る。このクレートの `audio.rs` は、command / event とのつなぎだけを持つ。
+//! 書き出し・録音・音声のデコードは、まだ画面側 (Web Audio) のまま。
 
 // 窓を自動操作するテスト用の仕掛け (WebDriver サーバ) は、配布物に入れてはいけない。
 // 開発用のビルド (debug) でしか有効にできないようにする。docs/desktop-architecture.md「窓を自動操作するテスト」
@@ -22,6 +25,7 @@ compile_error!(
     "機能 e2e (窓を自動操作する WebDriver サーバ) は release ビルドでは使えません。配布物に入れないでください"
 );
 
+mod audio;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod midi;
@@ -120,6 +124,8 @@ pub fn run() {
             app.manage(project::ProjectFiles::new(data_dir));
             app.manage(Sidecar::spawn(config));
             app.manage(midi::MidiInputs::default());
+            // 出力デバイスは、画面が audio_init を呼ぶまで開かない
+            app.manage(audio::AudioState::new(app.handle().clone()));
             windows::create_main_window(app)?;
             Ok(())
         })
@@ -131,6 +137,16 @@ pub fn run() {
             delete_api_key,
             midi_start,
             midi_stop,
+            audio::audio_init,
+            audio::audio_clip_put,
+            audio::audio_clip_drop,
+            audio::audio_set_song,
+            audio::audio_play,
+            audio::audio_stop,
+            audio::audio_set_track,
+            audio::audio_set_metronome,
+            audio::audio_live_note,
+            audio::audio_live_all_off,
             project::project_pick_save,
             project::project_pick_open,
             project::project_commit,
@@ -140,11 +156,20 @@ pub fn run() {
             project::document_state,
             project::close_confirmed
         ])
-        // 保存していない変更が在るときは、窓を閉じる前に画面に尋ねさせる
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            // 保存していない変更が在るときは、窓を閉じる前に画面に尋ねさせる
+            WindowEvent::CloseRequested { api, .. } => {
                 project::on_close_requested(window, api);
             }
+            // メインの窓 (か、再生を頼んだ窓) が無くなったら、音を止める。ほかの窓 (ツール・使い方) が
+            // 開いたままだとアプリは終わらず、下の RunEvent::Exit の片付けが走らないため
+            WindowEvent::Destroyed => {
+                if let Some(audio) = window.try_state::<audio::AudioState>() {
+                    let label = window.label();
+                    audio.window_destroyed(label, label == windows::MAIN_LABEL);
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("Tauri アプリの初期化に失敗しました");
@@ -161,6 +186,10 @@ pub fn run() {
         // 終了時に sidecar を止める。ここを通らない終わり方 (強制終了など) をしても、
         // sidecar は標準入力のパイプが閉じたことで自分から終わる (backend/run_web.py)。
         RunEvent::Exit => {
+            // 音声スレッドと、位置を送るスレッドを止める
+            if let Some(audio) = app_handle.try_state::<audio::AudioState>() {
+                audio.shutdown();
+            }
             if let Some(sidecar) = app_handle.try_state::<Sidecar>() {
                 sidecar.stop();
             }

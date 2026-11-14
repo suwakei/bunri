@@ -34,6 +34,8 @@ pub struct Note {
 pub enum Instrument {
     /// SFZ の楽器 (マルチサンプル)。`sfz` は SFZ ファイルの場所
     Sampler { sfz: PathBuf },
+    /// 仮の音 (三角波。`tone`)。楽器の素材が入るまでの代わり。モノラルの素材として扱う
+    Tone,
 }
 
 /// タイムラインに置いた音声 (取り込んだ原曲・ステム・録音)。

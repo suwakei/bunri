@@ -489,6 +489,8 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
 
     const open = idOf(learn?.openTrack);
     if (open !== null) target.pianoRoll?.switchToTrack?.(open);
+    // 開いた音声を、裏で Rust の engine に送り始める (デスクトップ版。前のプロジェクトの音声は捨てる)
+    engine.syncNative();
     return { tracks: created.length, missingClips };
 }
 

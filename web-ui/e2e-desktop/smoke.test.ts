@@ -206,6 +206,67 @@ describe('音声', () => {
         expect(wav.seconds).toBeGreaterThan(1.9);
         expect(wav.peak).toBeGreaterThan(0.1);
     });
+
+    it('ノートを置いて再生すると、再生位置が進み、止めると止まる (Rust の engine でも、Web Audio に切り替わっていても)', async () => {
+        // 再生位置の表示 (分:秒) を、秒で読む
+        const seconds = () => app.run(() => {
+            const match = /^(\d+):(\d+(?:\.\d+)?)$/.exec(document.querySelector('#time-display')?.textContent?.trim() ?? '');
+            return match ? Number(match[1]) * 60 + Number(match[2]) : -1;
+        });
+        // Track 1 を選んでピアノロールを開き、ノートを 1 つ置く (置いたときの試し聴きで、音の出力を開く)
+        await app.click('(//*[@id="tracks-container"]//*[contains(@class,"track-name")])[1]');
+        await app.waitFor('ピアノロールが Track 1 を開く', () => {
+            const label = document.querySelector('#piano-roll-area .area-label')?.textContent ?? '';
+            return label.includes('Track 1') ? true : `いまの見出し: ${label}`;
+        }, []);
+        const before = await app.run(() => document.querySelectorAll('#note-layer .note-block').length);
+        await app.run(() => {
+            const layer = document.querySelector<HTMLElement>('#note-layer')!;
+            const box = layer.getBoundingClientRect();
+            layer.dispatchEvent(new MouseEvent('dblclick', { clientX: box.left + 10, clientY: box.top + 200, bubbles: true, cancelable: true }));
+        });
+        await app.waitFor('ノートが入る', (count: number) => {
+            const now = document.querySelectorAll('#note-layer .note-block').length;
+            return now === count + 1 ? true : `ノートの数: ${now}`;
+        }, [before]);
+
+        // 音の出力を開けたか (開けない機械では、画面は Web Audio に切り替えて鳴らす。どちらでも下の確かめは同じ)
+        const output = await app.run(() => (window as unknown as {
+            __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } };
+        }).__TAURI__.core.invoke<{ sampleRate: number }>('audio_init').then((info) => `Rust (${info.sampleRate} Hz)`, (e) => `Web Audio (${String(e)})`));
+        console.log(`[e2e-desktop] 再生に使う音の出力: ${output}`);
+
+        expect(await seconds()).toBe(0);
+        await app.click('//button[@aria-label="再生"]');
+        await waitStatus('再生中');
+        // 再生位置が進み続ける (Rust の engine なら、位置の event が窓に届いている)
+        await app.waitFor('再生位置が進む', () => {
+            const text = document.querySelector('#time-display')?.textContent ?? '';
+            return text !== '0:00.0' ? true : `止まったまま: ${text}`;
+        }, [], 10_000);
+        const first = await seconds();
+        await app.waitFor('再生位置がさらに進む', (from: number) => {
+            const match = /^(\d+):(\d+(?:\.\d+)?)$/.exec(document.querySelector('#time-display')?.textContent?.trim() ?? '');
+            const now = match ? Number(match[1]) * 60 + Number(match[2]) : -1;
+            return now >= from + 0.3 ? true : `進んでいない: ${from} → ${now}`;
+        }, [first], 10_000);
+
+        // 止めると先頭に戻り、そのまま動かない
+        await app.click('//button[@aria-label="停止"]');
+        await waitStatus('停止');
+        await app.waitFor('再生位置が先頭に戻る', () => {
+            const text = document.querySelector('#time-display')?.textContent ?? '';
+            return text === '0:00.0' ? true : `戻っていない: ${text}`;
+        }, []);
+        await new Promise((r) => setTimeout(r, 700));
+        expect(await seconds()).toBe(0);
+        // 音の出力を開けた機械では、最後まで Rust の engine で鳴らし通せたこと (途中で Web Audio に切り替わっていないこと)。
+        // 切り替わっても上の確かめは通るので、これが無いと、画面と Rust のつなぎの不具合を見逃す
+        // (lib/native-audio.ts が、どちらで鳴らしているかを <html data-bunri-audio> に残す)
+        const backend = await app.run(() => document.documentElement.dataset.bunriAudio ?? '');
+        if (output.startsWith('Rust')) expect(backend).toBe('native');
+        expect(await record()).toEqual({ csp: [], errors: [] });
+    });
 });
 
 describe('sidecar から Claude まで', () => {

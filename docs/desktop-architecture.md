@@ -9,9 +9,10 @@ bunri のデスクトップ版が、どういう部品で出来ていて、な�
 bunri.app (Tauri v2)
 ├─ WebView: web-ui (React) をアプリに同梱して表示
 │     ├─ HTTP ──► Python sidecar (FastAPI。127.0.0.1 の空きポート)
-│     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く)
+│     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く / 再生を頼む)
 ├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了、
-│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ
+│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ、
+│                     音の再生 (audio-engine/ の engine を cpal で鳴らす)
 └─ Python sidecar (backend/): demucs / basic-pitch / librosa / fluidsynth / dawdreamer
 ```
 
@@ -195,7 +196,8 @@ API の約束、どのステージで割合が出るか、キャンセルで止�
 - 画面: `cd web-ui && npm run dev`。Vite の開発サーバが画面を出し、`/api` をバックエンドへ中継する
   (中継先のポートは環境変数 `BUNRI_API_PORT`)
 - この経路では、ネイティブ側 (Rust) の機能は動かない: API キーのキーチェーン保存、MIDI のネイティブ入力、
-  別窓、初回セットアップ。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+  別窓、初回セットアップ、Rust の engine での再生。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+  (再生は Web Audio で鳴らす)
 - `scripts/dev-web.mjs` で起動したときは、画面にデスクトップ版と同じ CSP を掛ける (`tauri.conf.json` から
   起動のたびに読む。`scripts/desktop-csp.mjs`)。違いは、Vite が埋め込むスクリプトの nonce、自動再読み込みの
   接続 (`ws:`)、違反の知らせ先 (`report-uri`) を足したことだけ。CSP を変えたら、ブラウザのテスト (`make e2e`) で
@@ -242,6 +244,7 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 | キーチェーン | 起動時に読まない。API キーの保存・削除は、別の項目名 (`<識別子>.e2e`) に向ける | 利用者の本物のキーに触れない。テストは偽のキーを環境変数で渡す |
 | 書き出したファイル | 環境変数 `BUNRI_E2E_DOWNLOAD_DIR` の場所に保存する | `~/Downloads` に書かない |
 | プロジェクトの保存・開くのダイアログ | 出さずに、環境変数 `BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所を使う | WebDriver はネイティブのダイアログを操作できない。`~/Documents` に書かない |
+| 再生の音 | 環境変数 `BUNRI_E2E_AUDIO_SILENT=1` のとき (テストの起動が渡す)、Rust の engine が作った音に 0 を掛けてからデバイスへ渡す。出力デバイスを開くところから位置を送るところまでは、配布物と同じに動く | テストを回している機械のスピーカーから音を出さない |
 | 記録 | CSP の違反と、捕まえられなかった例外を `window.__bunriE2E` に記録する (画面の読み込みより前に入れる) | テストが、起動の途中で起きた違反まで拾えるように |
 | WebView の UI の受け手 | プラグインが WKWebView の UI の受け手 (WKUIDelegate) を自分のものに差し替える | `alert()` などをテストから扱うため。代わりに、別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認は、テスト用のビルドでは配布物と同じには動かない ([ui-testing.md](ui-testing.md) の「確かめられない範囲」) |
 
@@ -258,6 +261,10 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 | MCP の橋渡し (`tauri-plugin-mcp-bridge` など) | 入れていない。窓の画像と JS の実行は WebDriver で足りる (`npm run desktop:inspect`)。もう 1 つ自動操作のサーバをアプリに入れることになり、npm の MCP サーバも第三者製のため |
 
 ## ビルド
+
+アプリは音のエンジン (`src-tauri/audio-engine`) をリンクする。エンジンが使う sfizz は submodule
+(`third_party/sfizz`) で、cargo のビルドの中で cmake にかけるので、`make desktop` / `make desktop-build` /
+`make e2e-desktop` には submodule と cmake が要る (`git submodule update --init --recursive`、`brew install cmake`)。
 
 `npm run tauri build` (または `npm run tauri dev`) の前に、`scripts/prepare-desktop.mjs` が自動で走る。
 
@@ -286,6 +293,26 @@ Rust が OS の MIDI を受けて画面に渡す（`src-tauri/src/midi.rs`）。
 
 音を鳴らすのは今も画面側（Web Audio）。弾いてから鳴るまでの遅れを詰めたくなったら、
 音声エンジンを Rust に移す段階で一緒に扱う。
+
+## 音の再生
+
+デスクトップ版では、再生・停止・位置・区間ループ・メトロノーム・録音前のカウント・鍵盤の試聴を、
+Rust の engine (`src-tauri/audio-engine`、crate `bunri-audio`) が cpal で鳴らす。画面とのつなぎは
+`src-tauri/src/audio.rs` (command は `audio_` で始まる 10 個、event は `audio://position`)。
+画面の側の口は `web-ui/src/lib/native-audio.ts` の 1 か所で、呼ぶのは再生エンジン (`lib/engine.ts`) だけ。
+設計・決めたこと・音の決まりは [instrument-engine-design.md](instrument-engine-design.md)
+(「再生を Rust に移して分かったこと」)。
+
+変えるときは両側を一緒に変える:
+
+- command の名前・引数 (`audio.rs` の `#[tauri::command]`) と、`native-audio.ts` の呼び出し。
+  クリップの音声 (`audio_clip_put`) は、生のバイト列とヘッダで渡す (JSON にしない)
+- 位置の event の中身 (`PositionEvent`)。画面は `token` が今の再生のものだけを使う
+- 音声スレッド (cpal のコールバック) の中では、メモリの確保と解放・ロック・ファイルの読み書き・ログ出力をしない
+- Rust の呼び出しが失敗したら、画面はそのセッションのあいだ Web Audio に切り替える。Rust の側は、
+  正しくない引数を黙って直さず、エラーで返す
+
+書き出し (WAV)・録音 (`MediaRecorder`)・音声のデコードは、画面側のまま。
 
 ## API キー
 
@@ -317,8 +344,8 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 
 ## 今回やっていないこと
 
-- 再生・録音の Rust への移行。いまは Web Audio と `MediaRecorder` のまま（MIDI 入力の受け取りだけは Rust に在る）。
-  移すときは `src-tauri/src/` に `mod audio;` を足し、`invoke_handler` にコマンドを並べる
+- 録音と書き出しの Rust への移行。いまは `MediaRecorder` と Web Audio のまま（再生は Rust に移した。上の「音の再生」）
+- sfizz と依存のライセンス文の同梱（配布する前に要る。[instrument-engine-design.md](instrument-engine-design.md) の「分かっていない点」）
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新

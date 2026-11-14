@@ -164,7 +164,10 @@ export function useMidiInput(): MidiInputController {
             setConnected(true);
             // 音の出力の遅れは、音を出す準備ができてから分かる
             engine.init();
-            setAutoLatency(Math.min(MAX_LATENCY_MS, Math.round(engine.outputLatencySec() * 1000)));
+            const readLatency = () => setAutoLatency(Math.min(MAX_LATENCY_MS, Math.round(engine.outputLatencySec() * 1000)));
+            readLatency();
+            // デスクトップ版では、Rust が出力デバイスを開き終わってから、その遅れに読み直す
+            if (engine.usesNativeAudio()) void engine.audioReady().then(readLatency);
             return true;
         } catch (e) {
             setStatus('MIDI 入力を開けませんでした。鍵盤がつながっているかを確かめて、もう一度押してください（' + describeError(e) + '）', 'error');

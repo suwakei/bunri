@@ -8,9 +8,10 @@
 //! [`Engine::new`] は重い (SFZ を読み、クリップの周波数を変換し、メモリを確保する) ので、
 //! 音声スレッドの外で呼ぶ。出来上がった `Engine` は音声スレッドへ移せる (`Send`)。
 //!
-//! [`Engine::process`]・[`Engine::seek`]・[`Engine::is_sounding`] は、メモリの確保と解放・
-//! ロック・ファイルの読み書き・ログ出力をしない (テスト `tests/realtime.rs` が、Rust の側で
-//! メモリを確保していないことを確かめる)。ただしオフラインのモード
+//! [`Engine::process`]・[`Engine::seek`]・[`Engine::is_sounding`]・[`Engine::silence`] と、
+//! 再生中にトラックを動かす [`Engine::set_track_mix`]・[`Engine::set_track_audible`] は、
+//! メモリの確保と解放・ロック・ファイルの読み書き・ログ出力をしない (テスト
+//! `tests/realtime.rs` が、Rust の側でメモリを確保していないことを確かめる)。ただしオフラインのモード
 //! ([`Engine::set_offline`]) のあいだは、sfizz がディスクからの読み込みを待つので、
 //! リアルタイムの再生では使わない。
 //!
@@ -19,9 +20,10 @@
 
 use crate::audio::{AudioError, SAMPLE_RATE_RANGE};
 use crate::clips::PlacedClip;
-use crate::mixer::{audible, db_to_gain, TrackGains};
+use crate::mixer::{audible, db_to_gain, GainRamp, TrackGains};
 use crate::sampler::{LoadError, Sampler};
 use crate::song::{Instrument, Note, Song};
+use crate::tone::{ToneConfig, ToneSynth};
 use std::fmt;
 
 /// 1 回に作るブロックの上限 (フレーム)。sfizz はノートを鳴らしたブロックの中を、
@@ -29,6 +31,10 @@ use std::fmt;
 /// 頭が足りなくなって声が途中で終わるので、十分に短くしておく
 /// (高い音は速く読み進む。1024 なら 3 オクターブ上まで足りる)
 pub const MAX_BLOCK_LIMIT: usize = 1024;
+
+/// 再生中にトラックの音量・パン・鳴らすかを変えたとき、倍率を移す長さ (秒)。
+/// 急に変えると「ぷつっ」と鳴るので、短い直線で移す
+const MIX_RAMP_SEC: f64 = 0.005;
 
 /// engine の設定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +114,47 @@ struct Span {
     velocity: u8,
 }
 
+/// トラックのノートを鳴らすもの。
+enum Source {
+    /// SFZ の楽器。ステレオの素材として混ぜる
+    Sampler(Sampler),
+    /// 仮の音 (三角波)。モノラルの素材として混ぜる
+    Tone(ToneSynth),
+}
+
+impl Source {
+    fn note_on(&mut self, delay: usize, pitch: u8, velocity: u8) {
+        match self {
+            Source::Sampler(sampler) => sampler.note_on(delay, pitch, velocity),
+            Source::Tone(tone) => tone.note_on(delay, pitch, velocity),
+        }
+    }
+
+    fn note_off(&mut self, delay: usize, pitch: u8) {
+        match self {
+            Source::Sampler(sampler) => sampler.note_off(delay, pitch),
+            Source::Tone(tone) => tone.note_off(delay, pitch),
+        }
+    }
+
+    fn all_sound_off(&mut self) {
+        match self {
+            Source::Sampler(sampler) => sampler.all_sound_off(),
+            Source::Tone(tone) => tone.all_sound_off(),
+        }
+    }
+
+    fn active_voices(&self) -> usize {
+        match self {
+            Source::Sampler(sampler) => sampler.active_voices(),
+            Source::Tone(tone) => tone.active_voices(),
+        }
+    }
+}
+
 /// トラック 1 本ぶんの状態。
 struct TrackState {
-    sampler: Option<Sampler>,
+    source: Option<Source>,
     /// 位置の順に並べた出来事
     events: Vec<Event>,
     /// 次に送る出来事
@@ -118,9 +162,31 @@ struct TrackState {
     spans: Vec<Span>,
     stereo_clips: Vec<PlacedClip>,
     mono_clips: Vec<PlacedClip>,
-    gains: TrackGains,
-    /// ミュートとソロの結果、鳴るトラックか
+    /// 音量とパンから決まる倍率 (鳴らしているときの行き先)
+    mix: TrackGains,
+    /// いま掛けている倍率 (移り変わりの途中のことが在る)
+    ramp: GainRamp,
+    /// 鳴らすトラックか (ミュートとソロの結果。再生中に [`Engine::set_track_audible`] で変わる)
     audible: bool,
+    /// 音を作っているか。鳴らさない側に変えた直後は、倍率が 0 に着くまで作り続ける
+    running: bool,
+}
+
+impl TrackState {
+    /// `frame` から鳴らし始められるようにする: 鳴っている音を止め、次に送る出来事を合わせ、
+    /// `frame` をまたいでいるノート (前から鳴っていて、まだ終わっていないもの) を鳴らし直す。
+    fn restart_at(&mut self, frame: u64) {
+        let Some(source) = self.source.as_mut() else {
+            return;
+        };
+        source.all_sound_off();
+        self.next_event = self.events.partition_point(|e| e.frame < frame);
+        for span in &self.spans {
+            if span.start < frame && frame < span.end {
+                source.note_on(0, span.pitch, span.velocity);
+            }
+        }
+    }
 }
 
 /// 曲 1 つぶんの音を作る engine。
@@ -129,6 +195,8 @@ pub struct Engine {
     max_block: usize,
     tracks: Vec<TrackState>,
     master: f32,
+    /// 倍率を移す長さ (フレーム)
+    ramp_frames: u32,
     /// 次に作るフレームの位置
     position: u64,
     /// 曲の長さ (いちばん後ろのクリップかノートの終わり)
@@ -167,7 +235,7 @@ impl Engine {
             let (events, spans, notes_end) = schedule(song, &track.notes, config.sample_rate);
             length = length.max(notes_end);
 
-            let sampler = match &track.instrument {
+            let source = match &track.instrument {
                 Some(Instrument::Sampler { sfz }) => {
                     let mut sampler = Sampler::new(config.sample_rate as f32, config.max_block);
                     sampler
@@ -176,8 +244,12 @@ impl Engine {
                             track: index,
                             error,
                         })?;
-                    Some(sampler)
+                    Some(Source::Sampler(sampler))
                 }
+                Some(Instrument::Tone) => Some(Source::Tone(ToneSynth::new(
+                    config.sample_rate,
+                    &ToneConfig::NOTE,
+                ))),
                 None => None,
             };
 
@@ -197,20 +269,19 @@ impl Engine {
                 }
             }
 
+            let mix = TrackGains::new(track.gain_db, track.pan);
             tracks.push(TrackState {
                 // 楽器が無いトラックのノートは鳴らさない
-                events: if sampler.is_some() {
-                    events
-                } else {
-                    Vec::new()
-                },
-                spans: if sampler.is_some() { spans } else { Vec::new() },
-                sampler,
+                events: if source.is_some() { events } else { Vec::new() },
+                spans: if source.is_some() { spans } else { Vec::new() },
+                source,
                 next_event: 0,
                 stereo_clips,
                 mono_clips,
-                gains: TrackGains::new(track.gain_db, track.pan),
+                mix,
+                ramp: GainRamp::settled_at(if audible { mix } else { TrackGains::SILENT }),
                 audible,
+                running: audible,
             });
         }
 
@@ -219,6 +290,7 @@ impl Engine {
             max_block: config.max_block,
             tracks,
             master: db_to_gain(song.master_gain_db),
+            ramp_frames: ((config.sample_rate as f64 * MIX_RAMP_SEC).round() as u32).max(1),
             position: 0,
             length,
             bus_left: vec![0.0; config.max_block],
@@ -243,23 +315,88 @@ impl Engine {
         self.length
     }
 
+    /// トラックの数。
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
     /// 位置を `frame` に移す。鳴っている音は止める。
     ///
     /// 移った先をまたいでいるノート (前から鳴っていて、まだ終わっていないもの) は、
-    /// 移った先から鳴らし直す (いまの画面側の再生と同じ)。
+    /// 移った先から鳴らし直す (いまの画面側の再生と同じ)。トラックの音量・パン・鳴らすかの
+    /// 移り変わりの途中だったら、行き先の値にしてから始める。
     pub fn seek(&mut self, frame: u64) {
         self.position = frame;
-        for track in self.tracks.iter_mut().filter(|t| t.audible) {
-            let Some(sampler) = track.sampler.as_mut() else {
-                continue;
-            };
-            sampler.all_sound_off();
-            track.next_event = track.events.partition_point(|e| e.frame < frame);
-            for span in &track.spans {
-                if span.start < frame && frame < span.end {
-                    sampler.note_on(0, span.pitch, span.velocity);
-                }
+        for track in &mut self.tracks {
+            track.ramp = GainRamp::settled_at(if track.audible {
+                track.mix
+            } else {
+                TrackGains::SILENT
+            });
+            track.running = track.audible;
+            if track.running {
+                track.restart_at(frame);
+            } else if let Some(source) = track.source.as_mut() {
+                source.all_sound_off();
             }
+        }
+    }
+
+    /// 鳴っている音 (ノートと、離したあとの余韻) をすべて止める。位置は変えない。
+    /// 再生を止めるときに呼ぶ。続きを鳴らすには [`Engine::seek`] で位置を決め直す。
+    pub fn silence(&mut self) {
+        for source in self.tracks.iter_mut().filter_map(|t| t.source.as_mut()) {
+            source.all_sound_off();
+        }
+    }
+
+    /// トラック (`track` は 0 始まりの番号) の音量 (dB) とパン (-1.0〜1.0) を変える。
+    ///
+    /// 短い直線で移す (急に変えると「ぷつっ」と鳴る)。無い番号と、数値でない値は無視する。
+    pub fn set_track_mix(&mut self, track: usize, gain_db: f32, pan: f32) {
+        let ramp_frames = self.ramp_frames;
+        let Some(track) = self.tracks.get_mut(track) else {
+            return;
+        };
+        if gain_db.is_nan() || pan.is_nan() {
+            return;
+        }
+        let mix = TrackGains::new(gain_db, pan);
+        if mix == track.mix {
+            return;
+        }
+        track.mix = mix;
+        if track.audible {
+            track.ramp.retarget(mix, ramp_frames);
+        }
+    }
+
+    /// トラック (`track` は 0 始まりの番号) を鳴らすかを変える。無い番号は無視する。
+    ///
+    /// 曲を組み立てたときのミュートとソロの結果を、トラックごとに上書きする (ほかのトラックの
+    /// ソロは見ない。どれを鳴らすかは、呼ぶ側が決める)。
+    ///
+    /// - 鳴らす側に変えたら、いまの位置をまたいでいるノートを鳴らし直し、次に送る出来事の
+    ///   位置を合わせて、短い直線で音量を上げる
+    /// - 鳴らさない側に変えたら、短い直線で音量を下げてから、鳴っている音を止める
+    pub fn set_track_audible(&mut self, track: usize, audible: bool) {
+        let (ramp_frames, position) = (self.ramp_frames, self.position);
+        let Some(track) = self.tracks.get_mut(track) else {
+            return;
+        };
+        if track.audible == audible {
+            return;
+        }
+        track.audible = audible;
+        if audible {
+            // 下げている途中 (まだ音を作っている) なら、そのまま上げ直す
+            if !track.running {
+                track.restart_at(position);
+                track.running = true;
+            }
+            track.ramp.retarget(track.mix, ramp_frames);
+        } else {
+            track.ramp.retarget(TrackGains::SILENT, ramp_frames);
         }
     }
 
@@ -268,8 +405,8 @@ impl Engine {
     pub fn is_sounding(&self) -> bool {
         self.tracks
             .iter()
-            .filter(|t| t.audible)
-            .filter_map(|t| t.sampler.as_ref())
+            .filter(|t| t.running)
+            .filter_map(|t| t.source.as_ref())
             .any(|s| s.active_voices() > 0)
     }
 
@@ -278,8 +415,11 @@ impl Engine {
     /// 有効のあいだは、`process` のたびにサンプルの読み込みが終わるのを待つ。実時間より
     /// 速く回しても音の続きが欠けないが、待つので、リアルタイムの再生では無効にしておく。
     pub fn set_offline(&mut self, offline: bool) {
-        for sampler in self.tracks.iter_mut().filter_map(|t| t.sampler.as_mut()) {
-            sampler.set_offline(offline);
+        for source in self.tracks.iter_mut().filter_map(|t| t.source.as_mut()) {
+            // 仮の音は計算で作るので、待つものが無い
+            if let Source::Sampler(sampler) = source {
+                sampler.set_offline(offline);
+            }
         }
     }
 
@@ -309,24 +449,25 @@ impl Engine {
         left.fill(0.0);
         right.fill(0.0);
 
-        for track in self.tracks.iter_mut().filter(|t| t.audible) {
-            let g = track.gains;
-
-            // ステレオの素材: サンプラーと、ステレオのクリップ
-            let mut stereo = false;
-            if let Some(sampler) = track.sampler.as_mut() {
-                // このブロックに入る出来事を、ブロックの中の位置 (フレーム) を付けて送る
+        for track in self.tracks.iter_mut().filter(|t| t.running) {
+            // このブロックに入る出来事を、ブロックの中の位置 (フレーム) を付けて送る
+            if let Some(source) = track.source.as_mut() {
                 while let Some(event) = track.events.get(track.next_event) {
                     if event.frame >= end {
                         break;
                     }
                     let delay = event.frame.saturating_sub(pos) as usize;
                     match event.kind {
-                        EventKind::On(velocity) => sampler.note_on(delay, event.pitch, velocity),
-                        EventKind::Off => sampler.note_off(delay, event.pitch),
+                        EventKind::On(velocity) => source.note_on(delay, event.pitch, velocity),
+                        EventKind::Off => source.note_off(delay, event.pitch),
                     }
                     track.next_event += 1;
                 }
+            }
+
+            // ステレオの素材: サンプラーと、ステレオのクリップ
+            let mut stereo = false;
+            if let Some(Source::Sampler(sampler)) = track.source.as_mut() {
                 sampler.render(bus_left, bus_right);
                 stereo = true;
             }
@@ -341,22 +482,34 @@ impl Engine {
                 }
             }
             if stereo {
-                let bus = bus_left.iter().zip(bus_right.iter());
-                for ((l, r), (bl, br)) in left.iter_mut().zip(right.iter_mut()).zip(bus) {
-                    *l += g.ll * bl + g.lr * br;
-                    *r += g.rl * bl + g.rr * br;
-                }
+                mix_stereo(left, right, bus_left, bus_right, &track.ramp);
             }
 
-            // モノラルの素材: モノラルのクリップ (パンの決まりがステレオと違う。`mixer`)
+            // モノラルの素材: 仮の音と、モノラルのクリップ (パンの決まりがステレオと違う。`mixer`)
+            let mut mono = false;
+            if let Some(Source::Tone(tone)) = track.source.as_mut() {
+                tone.render(bus_mono);
+                mono = true;
+            }
             if !track.mono_clips.is_empty() {
-                bus_mono.fill(0.0);
+                if !mono {
+                    bus_mono.fill(0.0);
+                    mono = true;
+                }
                 for clip in &track.mono_clips {
                     clip.add_mono(pos, bus_mono);
                 }
-                for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(bus_mono.iter()) {
-                    *l += g.ml * m;
-                    *r += g.mr * m;
+            }
+            if mono {
+                mix_mono(left, right, bus_mono, &track.ramp);
+            }
+
+            track.ramp.advance(len);
+            // 鳴らさない側に変えたトラックは、音量が 0 に着いたところで音を止める
+            if !track.audible && track.ramp.is_settled() {
+                track.running = false;
+                if let Some(source) = track.source.as_mut() {
+                    source.all_sound_off();
                 }
             }
         }
@@ -367,6 +520,50 @@ impl Engine {
             }
         }
         self.position = end;
+    }
+}
+
+/// ステレオの素材 (`bus_left` / `bus_right`) を、トラックの倍率を掛けて出力に足す。
+fn mix_stereo(
+    left: &mut [f32],
+    right: &mut [f32],
+    bus_left: &[f32],
+    bus_right: &[f32],
+    ramp: &GainRamp,
+) {
+    let frames = left.iter_mut().zip(right.iter_mut());
+    let bus = bus_left.iter().zip(bus_right.iter());
+    if ramp.is_settled() {
+        let g = ramp.target();
+        for ((l, r), (bl, br)) in frames.zip(bus) {
+            *l += g.ll * bl + g.lr * br;
+            *r += g.rl * bl + g.rr * br;
+        }
+    } else {
+        // 倍率を移している途中は、フレームごとに倍率を求める
+        for (i, ((l, r), (bl, br))) in frames.zip(bus).enumerate() {
+            let g = ramp.at(i);
+            *l += g.ll * bl + g.lr * br;
+            *r += g.rl * bl + g.rr * br;
+        }
+    }
+}
+
+/// モノラルの素材 (`bus`) を、トラックの倍率を掛けて出力に足す。
+fn mix_mono(left: &mut [f32], right: &mut [f32], bus: &[f32], ramp: &GainRamp) {
+    let frames = left.iter_mut().zip(right.iter_mut());
+    if ramp.is_settled() {
+        let g = ramp.target();
+        for ((l, r), m) in frames.zip(bus) {
+            *l += g.ml * m;
+            *r += g.mr * m;
+        }
+    } else {
+        for (i, ((l, r), m)) in frames.zip(bus).enumerate() {
+            let g = ramp.at(i);
+            *l += g.ml * m;
+            *r += g.mr * m;
+        }
     }
 }
 

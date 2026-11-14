@@ -46,7 +46,10 @@ export interface BootStatus {
 
 /** `app.withGlobalTauri` で公開される Tauri の API のうち、ここで使うぶん。 */
 interface TauriGlobal {
-    core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+    core: {
+        /** `args` に生のバイト列を渡すと、本体としてそのまま届く（そのときの付け足しは `options.headers`） */
+        invoke<T>(cmd: string, args?: Record<string, unknown> | Uint8Array, options?: { headers: Record<string, string> }): Promise<T>;
+    };
     event?: { listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> };
 }
 
@@ -79,6 +82,27 @@ export async function invokeDesktop<T>(cmd: string, args?: Record<string, unknow
         return await tauri.core.invoke<T>(cmd, args);
     } catch (e) {
         // Rust 側は理由を文字列で返す
+        throw e instanceof Error ? e : new Error(String(e));
+    }
+}
+
+/**
+ * デスクトップアプリのネイティブ側（Rust）のコマンドに、生のバイト列を渡して呼ぶ。
+ *
+ * 大きなデータ（クリップの音声など）を JSON にせずに送るための口。バイト列はコマンドの本体として届き、
+ * それ以外の値はヘッダで渡す（Rust の側は `tauri::ipc::Request` で受け取る）。
+ *
+ * @param cmd - コマンド名
+ * @param body - 本体のバイト列
+ * @param headers - ヘッダ（値は文字列）
+ * @throws デスクトップアプリの外で呼んだ場合、またはコマンドが失敗した場合
+ */
+export async function invokeDesktopRaw<T>(cmd: string, body: Uint8Array, headers: Record<string, string>): Promise<T> {
+    const tauri = tauriGlobal();
+    if (!tauri) throw new Error('デスクトップアプリの中でしか使えません');
+    try {
+        return await tauri.core.invoke<T>(cmd, body, { headers });
+    } catch (e) {
         throw e instanceof Error ? e : new Error(String(e));
     }
 }

@@ -12,13 +12,14 @@ make install && make install-frontend && make install-desktop   # 初回のみ
 make desktop           # = npm run tauri dev
 ```
 窓が開き、Python は sidecar として空きポートで一緒に起動する。配布物は `make desktop-build`（= `npm run tauri build`）。
+アプリは音のエンジン（sfizz を submodule からビルドする）をリンクするので、submodule と cmake が要る（下の「テスト」）。
 構成と、変えてはいけない約束ごとは [docs/desktop-architecture.md](../docs/desktop-architecture.md)。
 
 ブラウザで開く版と Docker は廃止した。画面をブラウザで開く経路は、開発と自動テスト用にだけ残してある
 （Vite の開発サーバ + `backend/run_web.py`。同文書の「開発用のブラウザ起動」）。
 
 ## テスト
-音のエンジン（`src-tauri/audio-engine`）は sfizz を submodule からビルドするので、`make test` / `make lint` / `make check` の desktop 検証には
+音のエンジン（`src-tauri/audio-engine`）は sfizz を submodule からビルドするので、`make desktop` と、`make test` / `make lint` / `make check` の desktop 検証には
 submodule と cmake が要る（`git submodule update --init --recursive`、`brew install cmake`）。設計は [docs/instrument-engine-design.md](../docs/instrument-engine-design.md)。
 ```bash
 make check-plan   # 変更した領域に必要な検証を表示（実行しない）
@@ -91,9 +92,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 | 場所 | 役割 |
 |---|---|
-| `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）だけを持つ |
-| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、オフライン描画（WAV 書き出し）。アプリからはまだ呼んでいない（設計と PR の並びは `docs/instrument-engine-design.md`） |
+| `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない）。再生は `src/lib/engine.ts` を通す（デスクトップ版では Rust の engine、ブラウザでは Web Audio で鳴らす。Rust に渡す口 `src/lib/native-audio.ts` を部品から直接呼ばない） |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）、音の再生（`audio.rs`。画面の頼みを音のエンジンに渡し、再生位置を知らせる）だけを持つ |
+| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、仮の音（三角波）、再生の状態（transport）、cpal での出力、オフライン描画（WAV 書き出し）。デスクトップ版の再生と鍵盤の試聴はここが鳴らす。書き出しは、まだ画面側（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
