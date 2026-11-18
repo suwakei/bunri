@@ -624,7 +624,7 @@ class TestUsageRecord:
         first, second = guide_usage.read_records()
         assert (first["feature"], first["turn"], first["step"]) == ("assistant", "turn-abc", 0)
         assert (second["feature"], second["turn"], second["step"]) == ("assistant", "turn-abc", 1)
-        assert first["version"] == assistant.ASSISTANT_VERSION == 2
+        assert first["version"] == assistant.ASSISTANT_VERSION == 3
         assert first["ok"] is True and first["error"] is None
         assert first["focus"] is None and first["chart"] is None
         assert first["effort"] == "medium" and first["cache_ttl"] == "5m"
