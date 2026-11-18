@@ -1641,3 +1641,80 @@ def api_coach_explain(payload: dict = Body(...)):
     except reproduction_guide.GuideError as e:
         raise _guide_http_error(e)
     return {**result, "today": guide_usage.today()}
+
+
+# ---- アシスタント（アプリの中のチャット）API ----
+
+@app.post("/api/assistant/step")
+def api_assistant_step(payload: dict = Body(...)):
+    """アシスタントの会話を Claude に 1 回だけ送り、応答を返す。
+
+    ツールを実行するのも、繰り返しを回すのも画面。ここは 1 回の呼び出しごとに完結し、会話の状態を
+    持たない（docs/assistant-design.md）。画面は、応答の ``content`` を変えずに assistant のメッセージ
+    として会話に足し、``stop_reason`` が ``tool_use`` なら、ツールの結果を足して ``step`` を 1 つ進め、
+    もう一度呼ぶ。使用量の記録と 1 日の上限は、再現ガイド・差分コーチと共通（回数は依頼の数で数える）。
+    Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある。ジョブにはしない。
+
+    本文に ``"stream": true`` が在るときだけ、応答を少しずつ返す（``application/x-ndjson``。1 行に JSON 1 つ）。
+
+    - ``{"type": "text", "text": 差分}`` — 見える文の差分
+    - ``{"type": "tool", "name": ツール名}`` — Claude がツールの呼び出しを書き始めた（1 つにつき 1 回）
+    - ``{"type": "done", …}`` — 最後の行。``stream`` が無いときの応答と同じ項目を持つ
+    - ``{"type": "error", "detail": {"message", "code"}, "today"}`` — 途中の失敗（最後の行）
+
+    呼び出しの前に分かる失敗と、Claude への接続を開いた時点で分かる失敗（キー・利用制限・接続）は、
+    ``stream`` が在っても HTTP エラーで返す（ストリームを開いてから ``StreamingResponse`` を作る）。
+    本文を流し始めた後の失敗（モデルが断った、途中で途切れた、など）は、200 のまま ``error`` の行になる。
+    本文も同期のジェネレータで、Claude からの次のぶんを待つ間ほかのリクエストを止めない。
+    画面が途中で切ると、次の行を出すところでジェネレータが閉じられ、Claude へのストリームも閉じる。
+
+    Args:
+        payload: JSON の本文。``messages``（Messages API の ``messages`` そのまま。1〜200 件）、
+            ``turn_id``（この依頼の識別子。英数字とハイフン、64 文字まで）、
+            ``step``（この依頼の何回目の呼び出しか。0 から、12 未満）、
+            ``stream``（true なら、応答を少しずつ返す。省略可）。
+
+    Returns:
+        ``{"content", "stop_reason", "model", "usage", "cost_usd", "today": 今日の使用量}``。
+        ``stop_reason`` は ``end_turn`` ``tool_use`` ``max_tokens``。``cost_usd`` は概算。
+        ``stream`` が true のときは、上の行を流す ``StreamingResponse``。
+
+    Raises:
+        HTTPException: 引数・会話の形が正しくない（400）、会話が大きすぎる（413）、API キーが無い・
+            正しくない（401）、利用制限・1 日の上限（429）、モデルが応答を断った・Claude 側の失敗（502）。
+            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``（再現ガイドと同じ）。
+    """
+    import assistant
+    import guide_usage
+    import reproduction_guide
+
+    args = (payload.get("messages"), payload.get("turn_id"), payload.get("step"))
+    if payload.get("stream") is not True:
+        try:
+            result = assistant.step(*args)
+        except reproduction_guide.GuideError as e:
+            raise _guide_http_error(e)
+        return {**result, "today": guide_usage.today()}
+
+    from fastapi.responses import StreamingResponse
+
+    try:
+        # ここで Claude への接続まで開く。開けなければ、まだ何も返していないので HTTP エラーにできる
+        events = assistant.stream_step(*args)
+    except reproduction_guide.GuideError as e:
+        raise _guide_http_error(e)
+
+    def lines():
+        """イベントを 1 行ずつの JSON にする。最後の行（done・error）には、今日の使用量を足す。"""
+        try:
+            for event in events:
+                if event["type"] in ("done", "error"):
+                    # 使用量の記録は、この行が出る前に済んでいる（今日の使用量に、この呼び出しが入る）
+                    event = {**event, "today": guide_usage.today()}
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        finally:
+            # 画面が途中で切ったときも、Claude へのストリームを閉じて、使用量を記録させる
+            events.close()
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

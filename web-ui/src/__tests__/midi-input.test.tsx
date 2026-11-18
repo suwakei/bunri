@@ -417,6 +417,29 @@ describe('MidiInputBar', () => {
         expect(screen.getByText('次の位置: 1 小節 3 拍')).toBeInTheDocument();
     });
 
+    it('つないだ機器、鍵盤の操作、置いたノート、案内を、動きの記録に残す', async () => {
+        const { activityEntries, resetActivityForTest } = await import('../lib/activity');
+        resetActivityForTest();
+        const midi = stubWebMidi(['Keystation 49']);
+        renderBar([]);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await waitFor(() => expect(screen.getByText('Keystation 49')).toBeInTheDocument());
+        act(() => { midi.send([0x90, 60, 100]); midi.send([0x80, 60, 0]); });
+        // 音域の外 (C1) は置かれず、ステータスバーの案内が記録にも残る
+        act(() => { midi.send([0x90, 24, 80]); });
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力を止める' }));
+
+        expect(activityEntries().map((e) => `${e.tag}: ${e.message}`)).toEqual([
+            'midi: MIDI 入力を開いた（Keystation 49）',
+            'midi: 押した C4（強さ 100）',
+            'midi: ノートを置いた C4（位置 1 小節 1 拍・ステップ 0、長さ 4、強さ 100）',
+            'midi: 離した C4',
+            'midi: 押した C1（強さ 80）',
+            'status: MIDI 入力: この高さはピアノロールの範囲の外です',
+            'midi: MIDI 入力を止めた',
+        ]);
+    });
+
     it('「録らない」にすると、音は鳴るがノートは入らない', async () => {
         const midi = stubWebMidi();
         const notes: PianoNote[] = [];

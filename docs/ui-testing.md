@@ -75,6 +75,8 @@ make e2e
 | `tools.spec.ts` | ツールの画面の WAV 情報、`../` を含むファイル名の拒否、使い方の画面 |
 | `tools-tabs.spec.ts` | ツールの画面の編集、エフェクト、一括編集、音源合成、変換、解析 |
 | `csp.spec.ts` | デスクトップアプリと同じ CSP が掛かっていること、CSP が実際に効いていること、同梱したフォントがすべて読み込めること |
+| `assistant.spec.ts` | アシスタント（偽の Claude がツールを呼ぶ）: 頼むと操作ログの行が出てノートが置かれる、行を開くと動きの記録の行が出る、「元に戻す」1 回で依頼の変更が全部戻る、ツールの失敗が ✕ の行で出る、「新しい会話」、ドックを開いても画面が窓からはみ出さない、応答が少しずつ届く、ノートの変形（移調・くり返し）、場所を示す（タブが開いて部品が光る）、メトロノーム、MIDI の書き出し、練習画面での「比べて」（ノートに色が付く）と区間・速度、頼み方の例が状況で変わる |
+| `activity.spec.ts` | 動きの記録（ステータスバーの「記録」）: 押したボタンとその結果が起きた順に並ぶ、開いているあいだに増える、一覧の中の操作は記録しない、一覧が窓の中に収まる |
 
 音は API サーバが実際に作る。テストは、返ってきた WAV の長さと振幅を読んで「指定どおりの長さで、
 無音ではない」ことまで確かめている（`e2e/helpers.ts` の `readWav`）。
@@ -162,6 +164,9 @@ make e2e-desktop     # = cd web-ui && npm run e2e:desktop
 | WAV をタイムラインに置くとクリップが出て、再生すると再生位置が進み、停止できる | WKWebView の Web Audio が実際に動くか |
 | WAV の書き出しで、ファイルが保存される (長さと振幅も確かめる) | WKWebView の `<a download>` (blob) の保存は、ブラウザとは別の仕組み (Rust の `on_download`) を通る |
 | カルテを作って再現ガイドを頼むと、sidecar が (偽の) Claude を呼んでガイドが返る | `tauri://localhost` → sidecar (トークン、CORS、`connect-src`) → Claude の通し |
+| 押したボタンとその結果が、時刻つきで動きの記録のファイルに残る。エージェントが足した行も同じ並びに入り、「記録」の一覧にも出る。sidecar のトークンは残らない | 記録のファイルは、ネイティブ側 (Rust の `activity.rs`) が書く。ブラウザには無い |
+| アシスタントに頼むと、(偽の) Claude がツールを呼び、操作ログの行が出て、トラックとノートが増える。動きの記録に残り、1 回で元に戻る。再生を頼むと再生位置が進む。WAV の書き出しを頼むとファイルが保存される | `tauri://localhost` → sidecar → Claude の、少しずつ届く応答 (ストリーミング) を WKWebView で読めるか。利用者の操作の外から始めた再生・保存が、本物の窓で通るか |
+| 押せるものを名前で探して操作できる (一覧、見つからないときの説明、キー) | エージェントが窓を操作するときの部品 (`e2e-desktop/controls.ts`) が、本物の窓で動くか |
 | sidecar を止める (テストが起動したアプリの sidecar だけ) と、止まったことの知らせが出て、「再起動」で新しいポートとトークンの sidecar に差し替わる。トラックはそのまま残る | sidecar の起動し直し (Rust の `restart_backend`) と、新しい接続情報の受け渡しは、デスクトップ版にしか無い |
 
 **確かめられない範囲** (テスト用のビルドの事情):
@@ -186,17 +191,98 @@ mac のランナーで走る (`.github/workflows/desktop-e2e.yml`)。ふだん�
 依存は `uv sync --frozen` で全部入れる (sidecar の起動に使う `uv run` が、抜いた依存を入れ直すため)。
 あわせて、配布物の設定に WebDriver サーバが入らないことも確かめる (docs/desktop-architecture.md「窓を自動操作するテスト」)。
 
-### その場で窓を覗く（Claude Code 向け）
+## 4. 頼まれた操作を行い、動きの記録で追う（Claude Code 向け）
 
-```bash
-cd web-ui && npm run desktop:inspect
+利用者がチャットで「こう操作して」「こう操作したらこうなった」と言ったときに、エージェントが本物の窓を操作し、
+**いま何をして、そのあと何が起きたか** を確かめるための仕組み。手順は `.claude/skills/drive/SKILL.md`（`/drive`）。
+
+### 動きの記録
+
+アプリは、起きたことを起きた順に 1 行ずつ残す（`web-ui/src/lib/activity.ts`、`src-tauri/src/activity.rs`）。
+
+```
+18:42:07.311 [agent] 「MIDI 入力」を押す
+18:42:07.318 [click] ボタン「MIDI 入力」
+18:42:07.352 [midi-in] 開いたポート: SINCO SMK25-Master / SMK25V2 Bluetooth
+18:42:07.360 [midi] MIDI 入力を開いた（SINCO SMK25-Master / SMK25V2 Bluetooth）
+18:42:11.904 [midi-in] SINCO SMK25-Master: note-on ch1 60(C4) vel 96
+18:42:11.906 [midi] 押した C4（強さ 96）
 ```
 
-テストと同じく切り離した状態でアプリを起動し、WebDriver のセッションの URL を 1 行の JSON で出す
-(`{"event": "ready", "session": "http://127.0.0.1:<port>/session/<id>", ...}`)。この URL に W3C WebDriver の
-API を送れば、窓の画像 (`GET <session>/screenshot`) や、画面の中での JavaScript の実行
-(`POST <session>/execute/sync`) ができる。Ctrl+C でアプリ・sidecar・偽の Claude サーバをまとめて止める。
-サーバの起動にあたるので、Claude Code は頼まれたときだけ使う。`.mcp.json` には登録していない。
+| 札 | 載るもの |
+|---|---|
+| `app` | 起動（日付と版） |
+| `click` `change` `key` | 画面の操作。どのボタン・どの欄か（画面全体で拾うので、部品ごとに書かなくてよい） |
+| `status` | ステータスバーの文（操作の結果とエラーは、ここに出る） |
+| `api` | 処理を担当する部分の呼び出しと、結果の番号・かかった時間（数秒おきの見張りと進み具合の問い合わせは、失敗したときだけ） |
+| `midi` | MIDI 入力のつなぎ、鍵盤の操作、置いたノート |
+| `midi-in` | 鍵盤から届いたメッセージ。**ポートの名前つき**（ネイティブ側が足す。つまみのように続くものは間引く） |
+| `error` | 捕まえられなかった例外 |
+| `agent` | エージェントが行った操作（「いまから何をするか」） |
+
+- **利用者が見るための記録**でもある。ステータスバーの「記録」で、同じ内容を時刻つきで見られる。
+  エージェントが足した行（`agent`）もそこに出るので、利用者は、いま何を操作されているかを画面で追える
+- デスクトップ版は、同じ内容をファイルにも残す。置き場は、データ置き場の `logs/activity.log`:
+  開発時（`make desktop`）は **リポジトリ直下の `logs/activity.log`**、配布物は
+  `~/Library/Application Support/<識別子>/data/logs/activity.log`、テスト用のビルドは一時ディレクトリの中。
+  1 MB を超えていたら、起動のときに `activity.1.log` へ回す
+- 開発用のブラウザ起動では、画面の中にだけ残る（ファイルは無い）
+- **載せないもの**: 入力欄に打っている途中の文字、API キー、sidecar のトークン、API に送った中身・返ってきた中身、
+  API のクエリの値（`?name=…` のように名前だけ残す。`async` は値も残す）。
+  文字を打つ欄は「値は記録しません」とだけ残し、選択肢・チェック・数値は選んだものを残す
+- **載るもの**: プロジェクト・トラック・ファイルの名前。結果の文（「プロジェクト「〜」を保存しました」）、ボタンの名前
+  （「「〜」のメニュー」）、API のパス（`/api/download/〜.wav`）として載る。何を操作したのかが分からないと、記録として役に立たないため
+- 同じエラーが続けて来たとき（毎フレーム投げられる例外など）は、最初の 1 行と回数にまとめる
+- 別窓（ツール・使い方）での操作は、ファイルには残るが、メインの窓の「記録」の一覧には出ない（一覧は窓ごと）。
+  ツールの画面の結果の文は、ステータスバーを通らないので `status` の行にならない（`click` と `api` の行は残る）
+
+新しい機能を足すとき、操作と、DAW の画面の結果（`setStatus`）と、API の呼び出しは、何もしなくても記録に残る。
+画面にも API にも出ない出来事（MIDI のように外から届くもの）だけ、`recordActivity(札, 文)` を足す。
+
+### 利用者が自分で操作した結果を追う
+
+利用者が自分のターミナルで `make desktop` を動かしていれば、エージェントは `logs/activity.log` を読むだけでよい
+（本物の鍵盤、マイク、利用者のプロジェクトを使う確認は、こちら）。
+
+```bash
+node web-ui/e2e-desktop/drive.ts log --dev                 # 前に読んだところから先
+node web-ui/e2e-desktop/drive.ts wait-log 'midi-in.*note-on' --dev --timeout 120   # その行が出るまで待つ
+```
+
+利用者の `make desktop` の窓を、エージェントが操作することはできない。外から操作する口（WebDriver サーバ）は、
+テスト用のビルドにしか入れていないため（docs/desktop-architecture.md「窓を自動操作するテスト」）。
+
+### エージェントが操作する
+
+```bash
+cd web-ui && npm run desktop:inspect          # 裏で起動する。初回はビルドに数分
+node web-ui/e2e-desktop/drive.ts wait-ready   # 窓の準備ができるまで待つ
+node web-ui/e2e-desktop/drive.ts ui           # いま押せるものの一覧（画面のことば）と、ステータスバーの文
+node web-ui/e2e-desktop/drive.ts click "MIDI 入力"
+node web-ui/e2e-desktop/drive.ts set "録り方" "ステップ入力"
+node web-ui/e2e-desktop/drive.ts key Space
+node web-ui/e2e-desktop/drive.ts shot         # 窓の画像を保存して、場所を出す
+node web-ui/e2e-desktop/drive.ts stop         # 窓を閉じ、アプリ・sidecar・偽の Claude サーバを止める
+```
+
+`npm run desktop:inspect` は、テストと同じく切り離した状態でアプリを起動し、WebDriver のセッションの情報を
+`web-ui/e2e-desktop-results/session.json` に書く（同じ内容を 1 行の JSON でも出す）。`drive.ts` はそれを読んでつなぐ。
+
+`click` `set` `key` は、1 回の呼び出しで次のことをする: 記録に `agent` の行を足す → 操作する → 少し待つ →
+そのあいだに記録に増えた行と、ステータスバーの文を出す。押すものは、セレクタではなく画面のことば（ボタンの文、
+欄の名前）で指す。同じ名前が 2 つ以上あるときは勝手に選ばず、`--nth N` を求める（`e2e-desktop/controls.ts`）。
+操作できなかったとき（名前が見つからない、など）は、その旨の `agent` の行も足す。
+
+`wait-log <正規表現>` は、記録に当てはまる行が出るまで待つ。前に読んだところから先を見る
+（まだ一度も読んでいない記録では、いまより後に出た行だけ）。操作のコマンドは、そのあと増えた行を読んだことにするので、
+操作の結果として出る行を待つときは `--since-action` を付ける（直前の操作の行から先を見る）。
+読んだ位置は、ファイルの頭の行と一緒に覚えている（`e2e-desktop/reader.ts`）。同じ名前のファイルが別の中身に替わったら、頭から読む。
+
+- サーバの起動にあたるので、Claude Code は頼まれたときだけ使う。`.mcp.json` には登録していない
+- 利用者のデータには触れない（データ置き場・書き出し先・キーチェーンの項目は、テストと同じく別のもの）。Claude は偽のサーバ
+- できないことは「確かめられない範囲」と同じ。クリックは画面の中の `element.click()` なので、ドラッグや
+  ピアノロールのキャンバスの上の細かな操作はできない（`drive.ts eval` で JavaScript を実行するか、ブラウザの Playwright MCP を使う）
+- W3C WebDriver の API を直接送ることもできる（`curl -s <session>/screenshot | jq -r .value | base64 -d > window.png`）
 
 ## 見つけた不具合の例
 

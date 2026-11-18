@@ -9,6 +9,7 @@
  * - デスクトップ版（Tauri）: 画面は `tauri://localhost`、API は `http://127.0.0.1:<port>` の
  *   Python sidecar。ポートとトークンは起動ごとに変わるので、Rust 側に問い合わせて受け取る
  */
+import { describeApiPath, recordActivity } from './activity';
 
 /** バックエンドの接続情報。 */
 export interface BackendInfo {
@@ -240,11 +241,36 @@ export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
         // 開発用のブラウザ起動はここを通る。今までの fetch(url, init) とまったく同じ呼び出し
         // (届かなかったときだけ、見張りに知らせる。失敗はそのまま呼び出し側へ返す)
         const response = init === undefined ? fetch(url) : fetch(url, init);
-        return isBackendUrl(url) ? watchNetwork(response) : response;
+        return isBackendUrl(url) ? noteCall(url, init, watchNetwork(response)) : response;
     }
     const headers = new Headers(init?.headers);
     if (backend.token !== null) headers.set(TOKEN_HEADER, backend.token);
-    return watchNetwork(fetch(withBase(url), { ...init, headers }));
+    return noteCall(url, init, watchNetwork(fetch(withBase(url), { ...init, headers })));
+}
+
+/** 動きの記録に残さない呼び出し先。数秒おきの見張りと進み具合の問い合わせで、成功しているあいだは記録を埋めるだけになる。 */
+const QUIET_PATHS = [/^\/api\/health$/, /^\/api\/jobs(\/[^/]+)?$/];
+
+/**
+ * バックエンドの呼び出しと、その結果を、動きの記録に残す（lib/activity.ts）。応答はそのまま返す。
+ *
+ * 残すのは、呼び出し先・結果の番号・かかった時間だけ。送った中身、返ってきた中身、トークンは残さない。
+ * 見張りと進み具合の問い合わせ（`QUIET_PATHS` の GET）は、失敗したときだけ残す。
+ */
+function noteCall(url: string, init: RequestInit | undefined, response: Promise<Response>): Promise<Response> {
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const path = describeApiPath(url);
+    const quiet = method === 'GET' && QUIET_PATHS.some((re) => re.test(path.split('?')[0]));
+    const started = Date.now();
+    const elapsed = () => `${Date.now() - started} ms`;
+    response.then(
+        (resp) => { if (!quiet || !resp.ok) recordActivity('api', `${method} ${path} → ${resp.status}（${elapsed()}）`); },
+        (e: unknown) => {
+            // 呼び出した側が自分でやめたもの（中止、時間切れ）も、何が起きたかとして残す
+            recordActivity('api', `${method} ${path} → 届きませんでした: ${String((e as Error)?.message ?? e)}（${elapsed()}）`);
+        },
+    );
+    return response;
 }
 
 /**

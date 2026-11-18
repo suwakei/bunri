@@ -7,6 +7,7 @@
 //!   配布物では、その前に Python 環境を用意する (初回セットアップ)
 //! - sidecar のポートとトークンを画面に渡す (sidecar が止まったら、画面の求めで起動し直して渡し直す)
 //! - MIDI キーボードの入力を受けて画面に渡す (WebView が Web MIDI を持たないため)
+//! - 動きの記録 (いま何が起きたか) をファイルに残す。利用者が見るためのもので、エージェントも同じものを読む (`activity.rs`)
 //! - プロジェクトのファイル (`.bunri`) を、利用者が選んだ場所とデータ置き場の間で写す。
 //!   保存していない変更が在るときに、窓を閉じる前に画面に尋ねさせる (`project.rs`)
 //!
@@ -22,6 +23,7 @@ compile_error!(
     "機能 e2e (窓を自動操作する WebDriver サーバ) は release ビルドでは使えません。配布物に入れないでください"
 );
 
+mod activity;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod midi;
@@ -85,25 +87,106 @@ fn keychain_service(app: &tauri::AppHandle) -> String {
     e2e::keychain_service(&app.config().identifier)
 }
 
+/// ネイティブ側で起きたことを、動きの記録に残して、画面 (「記録」の一覧) にも渡す。
+fn note_activity(app: &tauri::AppHandle, tag: &str, message: &str) {
+    use tauri::Emitter;
+    let entry = app.state::<activity::ActivityLog>().record(tag, message);
+    let _ = app.emit(activity::EVENT, entry);
+}
+
+/// 画面で起きたこと (操作、ステータスバーの文、API の呼び出しなど) を、動きの記録に 1 行残す。
+///
+/// `echo` が真なら、イベント `activity` で画面にも渡す。画面の外から足す行 (エージェントが窓を操作するときの
+/// 「いまから何をするか」) を、利用者が見ている「記録」の一覧にも出すため。画面が自分で送る行には付けない
+/// (画面はもう自分の一覧に入れている)。
+#[tauri::command]
+fn activity_record(
+    app: tauri::AppHandle,
+    log: State<'_, activity::ActivityLog>,
+    tag: String,
+    message: String,
+    echo: Option<bool>,
+) {
+    use tauri::Emitter;
+    let entry = log.record(&tag, &message);
+    if echo.unwrap_or(false) {
+        let _ = app.emit(activity::EVENT, entry);
+    }
+}
+
+/// 動きの記録について、画面に知らせること。
+#[derive(serde::Serialize)]
+struct ActivityInfo {
+    /// 記録のファイルの場所。記録していなければ `null`。
+    path: Option<String>,
+}
+
+/// 動きの記録のファイルの場所を返す (画面の「記録」の一覧に出す)。
+#[tauri::command]
+fn activity_info(log: State<'_, activity::ActivityLog>) -> ActivityInfo {
+    ActivityInfo {
+        path: log.path().map(|p| p.to_string_lossy().into_owned()),
+    }
+}
+
 /// MIDI 入力を開く。つながっている入力ポートをすべて開き、開けたポートの名前を返す。
 ///
 /// 受けたメッセージは、イベント `midi-message` で画面に送る (中身はバイト列)。
 /// すでに開いていれば開き直すので、機器を挿し直したあとの再検出にも使う。
+///
+/// 開いたポートと、届いたメッセージは、ポートの名前つきで動きの記録に残す (つまみを回したときのように
+/// 同じ種類が続くものは間引く。`midi::RepeatFilter`)。
+///
+/// 記録は、OS の MIDI スレッドでは行わない。MIDI スレッドは、画面へメッセージを送ったあと、記録する文を
+/// 別のスレッドへ渡すだけにする。デスクトップ版は届いた時刻を画面に渡さないので、ここでファイルへの書き込みや
+/// 錠を待つと、そのぶん発音と録る位置が遅れるため。
 #[tauri::command]
 fn midi_start(
     app: tauri::AppHandle,
     inputs: State<'_, midi::MidiInputs>,
 ) -> Result<Vec<String>, String> {
+    use std::sync::{mpsc, Arc, Mutex};
     use tauri::Emitter;
-    inputs.start(move |message| {
-        let _ = app.emit(midi::EVENT, message.to_vec());
-    })
+
+    // 記録を受け持つスレッド。送り手 (MIDI のコールバック) が全部居なくなると (= 入力を閉じると) 終わる
+    let (lines, incoming) = mpsc::channel::<String>();
+    let writer = app.clone();
+    std::thread::Builder::new()
+        .name("midi-activity".into())
+        .spawn(move || {
+            for line in incoming {
+                note_activity(&writer, "midi-in", &line);
+            }
+        })
+        .map_err(|e| format!("MIDI の記録のスレッドを作れません: {e}"))?;
+
+    let repeats = Arc::new(Mutex::new(midi::RepeatFilter::default()));
+    let handle = app.clone();
+    let names = inputs.start(move |port, message| {
+        // 先に画面へ渡す (音を鳴らす・ノートを置くほうを、記録より優先する)
+        let _ = handle.emit(midi::EVENT, message.to_vec());
+        let record = repeats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .should_record(port, message, std::time::Instant::now());
+        if record {
+            let _ = lines.send(format!("{port}: {}", midi::describe(message)));
+        }
+    })?;
+    let opened = if names.is_empty() {
+        "開いたポート: 無し (MIDI の入力ポートが 1 つも見つかりません)".to_string()
+    } else {
+        format!("開いたポート: {}", names.join(" / "))
+    };
+    note_activity(&app, "midi-in", &opened);
+    Ok(names)
 }
 
 /// MIDI 入力を閉じる。
 #[tauri::command]
-fn midi_stop(inputs: State<'_, midi::MidiInputs>) {
+fn midi_stop(app: tauri::AppHandle, inputs: State<'_, midi::MidiInputs>) {
     inputs.stop();
+    note_activity(&app, "midi-in", "ポートを閉じました");
 }
 
 /// アプリを起動する (終了するまで戻らない)。
@@ -117,6 +200,10 @@ pub fn run() {
         .setup(|app| {
             let config = LaunchConfig::for_app(app.handle());
             let data_dir = config.as_ref().ok().map(LaunchConfig::data_dir);
+            app.manage(activity::ActivityLog::open(
+                data_dir.as_deref(),
+                &app.package_info().version.to_string(),
+            ));
             app.manage(project::ProjectFiles::new(data_dir));
             app.manage(Sidecar::spawn(config));
             app.manage(midi::MidiInputs::default());
@@ -131,6 +218,8 @@ pub fn run() {
             delete_api_key,
             midi_start,
             midi_stop,
+            activity_record,
+            activity_info,
             project::project_pick_save,
             project::project_pick_open,
             project::project_commit,

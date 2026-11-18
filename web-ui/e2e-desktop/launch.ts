@@ -8,11 +8,13 @@
  * - Claude は偽のサーバ (e2e/fake-anthropic.mjs) を向かせ、API キーは偽の値を環境変数で渡す
  *   (キーチェーンは読まない。src-tauri/src/sidecar.rs の for_e2e)
  * - WebDriver サーバと偽の Claude サーバのポートは、空いている番号を OS に選ばせる
+ * - 動きの記録 (いま何が起きたか。src-tauri/src/activity.rs) も、一時ディレクトリのデータ置き場に書かれる。
+ *   利用者の記録には混ざらない
  * - 終わらせるときは、窓を閉じて (利用者が閉じたときと同じ終わり方) アプリを終わらせ、
  *   sidecar まで終わったことを確かめる。残っていたら止めて、問題として返す
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -24,6 +26,8 @@ const WEB_UI = resolve(import.meta.dirname, '..');
 export const APP_BINARY = resolve(WEB_UI, '..', 'src-tauri', 'target', 'e2e', 'debug', 'bunri');
 /** アプリのログなどを残す場所。 */
 export const RESULTS_DIR = join(WEB_UI, 'e2e-desktop-results');
+/** その場で操作するために起動した窓 (inspect.ts) の情報の置き場。操作のコマンド (drive.ts) が読む。 */
+export const SESSION_FILE = join(RESULTS_DIR, 'session.json');
 
 /** 起動したアプリ。 */
 export interface LaunchedApp {
@@ -39,6 +43,11 @@ export interface LaunchedApp {
     fakeLlmUrl: string;
     /** アプリの出力 (標準出力と標準エラー) のファイル。 */
     logFile: string;
+    /**
+     * 動きの記録のファイル (アプリが、データ置き場の `logs/activity.log` に書く。src-tauri/src/activity.rs)。
+     * 一時ディレクトリの中なので、終わらせるときに `e2e-desktop-results/activity.log` へ写しを残す。
+     */
+    activityLog: string;
     /** 終わらせる。問題 (窓を閉じても終わらなかった、sidecar が残った) の説明を返す。 */
     stop(options?: { keep?: boolean }): Promise<string[]>;
 }
@@ -136,10 +145,13 @@ export async function launchApp(): Promise<LaunchedApp> {
     app.stdout!.pipe(log, { end: false });
     app.stderr!.pipe(log, { end: false });
 
+    const activityLog = join(dataDir, 'logs', 'activity.log');
     const cleanup = (keep: boolean) => {
         killAll();
         process.removeListener('exit', killAll);
         log.end();
+        // 動きの記録は、一時ディレクトリを消す前に写しておく (終わったあとに、何が起きたかを読めるように)
+        try { copyFileSync(activityLog, join(RESULTS_DIR, 'activity.log')); } catch { /* 起動の途中で失敗したときは、まだ無い */ }
         if (keep) process.stderr.write(`[e2e-desktop] 一時ディレクトリを残しました: ${workDir}\n`);
         else rmSync(workDir, { recursive: true, force: true });
     };
@@ -188,5 +200,5 @@ export async function launchApp(): Promise<LaunchedApp> {
         return problems;
     };
 
-    return { webdriverPort, dataDir, downloadDir, projectPath, fakeLlmUrl, logFile, stop };
+    return { webdriverPort, dataDir, downloadDir, projectPath, fakeLlmUrl, logFile, activityLog, stop };
 }

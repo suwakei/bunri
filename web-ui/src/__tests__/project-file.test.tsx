@@ -38,6 +38,8 @@ const lh = await import('../lib/learn-history');
 const { rememberCompared, comparedOf } = await import('../lib/coach');
 const { DawProvider, useDaw } = await import('../lib/store');
 const { usePracticeProjectSection } = await import('../lib/practice-project');
+const { useAssistantProjectSection } = await import('../lib/assistant-project');
+const { assistantSession } = await import('../lib/assistant');
 type DawContextType = ReturnType<typeof useDaw>;
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
@@ -339,5 +341,59 @@ describe('練習画面の状態 (状態の節 practice)', () => {
         expect(daw!.isDirty).toBe(false);
         act(() => daw!.updatePractice({ loop: { startBar: 3, endBar: 4, enabled: true } }));
         expect(daw!.isDirty).toBe(true);
+    });
+});
+
+describe('アシスタントの会話 (状態の節 assistant)', () => {
+    function Probe() {
+        useAssistantProjectSection();
+        return null;
+    }
+    const SAVED = [
+        { kind: 'user', text: 'ベースを置いて' } as const,
+        { kind: 'tool', name: 'add_notes', state: 'ok', text: 'ノートを 8 個置きました（Track 1、1〜2 小節）' } as const,
+        { kind: 'assistant', text: '置きました。' } as const,
+        { kind: 'turn', calls: 2, costUsd: 0.03 } as const,
+    ];
+    afterEach(() => { pf.resetSections(); assistantSession.reset(); });
+
+    it('保存すると、画面に並ぶ文と操作ログの行が入る。開くと戻り、新しいプロジェクトにすると空になる', async () => {
+        render(<Probe />);
+        // 会話が空なら、節を入れない
+        expect((await pf.buildDocument(baseInput())).doc.state.assistant).toBeUndefined();
+
+        act(() => { assistantSession.restore(SAVED); });
+        const { doc } = await pf.buildDocument(baseInput());
+        expect(doc.state.assistant).toEqual({ version: 1, items: SAVED });
+        // Claude に送る会話 (思考のブロックやツールの結果) は、入れない
+        expect(JSON.stringify(doc.state.assistant)).not.toMatch(/tool_use|tool_result|signature|thinking/);
+
+        // 新しいプロジェクト: 空になる
+        act(() => pf.resetSections());
+        expect(assistantSession.getState()).toMatchObject({ items: [], restored: 0 });
+
+        // 開く: 並びが戻る。送る会話は空 (次の依頼は、記録から始まる)
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+        await act(async () => { await pf.applyDocument(JSON.parse(JSON.stringify(doc)), applyTarget()); });
+        const state = assistantSession.getState();
+        expect(state.restored).toBe(4);
+        expect(state.items.map((item) => item.kind)).toEqual(['user', 'tool', 'assistant', 'turn']);
+        expect(assistantSession.saved()).toEqual(SAVED);
+        expect(assistantSession.conversation()).toEqual([]);
+
+        // 会話の入っていないプロジェクトを開くと、空になる (会話は、プロジェクトごと)
+        const without = JSON.parse(JSON.stringify(doc));
+        delete without.state.assistant;
+        await act(async () => { await pf.applyDocument(without, applyTarget()); });
+        expect(assistantSession.getState().items).toEqual([]);
+    });
+
+    it('壊れた節は、読めるものだけを戻す', async () => {
+        render(<Probe />);
+        const { doc } = await pf.buildDocument(baseInput());
+        doc.state.assistant = { version: 1, items: [{ kind: 'user', text: 'こんにちは' }, { kind: 'tool', name: 'play' }, 'x', { kind: 'assistant', text: 'はい。' }] };
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+        await act(async () => { await pf.applyDocument(doc, applyTarget()); });
+        expect(assistantSession.saved()).toEqual([{ kind: 'user', text: 'こんにちは' }, { kind: 'assistant', text: 'はい。' }]);
     });
 });

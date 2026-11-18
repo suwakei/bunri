@@ -17,7 +17,7 @@ import { useDaw } from './store';
 import engine, { MIDI_PART, cloneNote, type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
 import { modelDownloadNotice } from './models';
-import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
+import { JobBusyError, jobErrorMessage, jobTracker, type Job } from './jobs';
 import { isChartResponse } from './chart';
 import type { ReferenceSource } from './coach';
 import { decodeWithSource } from './audio-sources';
@@ -401,10 +401,17 @@ export function useLearnActions() {
      * 「このパートを練習する」で、そのパートだけ鳴らす。
      *
      * @param sensitivity - 採譜の感度（0.1〜1）
+     * @param onStart - 始められたか（ジョブが受け付けられたか）が分かったときに、1 回だけ呼ぶ。始められなかったら理由つき。
+     *   終わるのを待たずに知りたい呼び手（アシスタント）が使う
      */
-    const separateParts = useCallback(async (sensitivity: number) => {
+    const separateParts = useCallback(async (sensitivity: number, onStart?: (outcome: { started: true } | { started: false; reason: string }) => void) => {
         const file = songFile;
-        if (!file) { setStatus('先に曲を取り込んでください（「曲を取り込む」）', 'error'); return; }
+        if (!file) {
+            const reason = '先に曲を取り込んでください（「曲を取り込む」）';
+            setStatus(reason, 'error');
+            onStart?.({ started: false, reason });
+            return;
+        }
 
         // カルテが在れば、カルテのグリッド (テンポと 1 小節目の位置) に載せて採譜する。
         // カルテとピアノロールの小節番号が同じ時刻を指すように (docs/coach-diff-design.md)。
@@ -419,14 +426,23 @@ export function useLearnActions() {
 
         const notice = await modelDownloadNotice('htdemucs_6s');
         setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
+        // 始める (受け付けられたら、呼び手に知らせる) → 終わるのを待つ
+        let job: Job;
         try {
-            const result = await jobTracker.run<unknown>('learn-parts', '/api/decompose', fd);
-            partsChartId = usedChart;
-            await applyParts(result);
+            job = await jobTracker.start('learn-parts', '/api/decompose', fd);
         } catch (e) {
-            if (e instanceof JobCancelledError) setStatus('パート分離を中止しました。いまのパートはそのままです');
-            else setStatus(describeError(e), 'error');
+            const reason = describeError(e);
+            setStatus(reason, 'error');
+            onStart?.({ started: false, reason });
+            return;
         }
+        onStart?.({ started: true });
+        const final = await jobTracker.wait(job.id);
+        if (final.state === 'done') {
+            partsChartId = usedChart;
+            await applyParts(final.result);
+        } else if (final.state === 'cancelled') setStatus('パート分離を中止しました。いまのパートはそのままです');
+        else setStatus(jobErrorMessage(final), 'error');
     }, [songFile, chart, chartId, applyChartGrid, setStatus, applyParts]);
 
     /**

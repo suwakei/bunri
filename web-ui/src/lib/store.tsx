@@ -12,6 +12,8 @@ import { UndoHistory, type PushOptions } from './history';
 import { HISTORY_BUDGET, HISTORY_LIMIT, applyProject, captureProject, projectsEqual, snapshotCost, type ProjectSnapshot } from './project-snapshot';
 import type { LearnAttempt } from './learn-history';
 import { clampLoop, defaultPracticeState, samePracticeSettings, type PracticeState } from './practice';
+import { recordActivity } from './activity';
+import type { MidiInputController } from './useMidiInput';
 
 /**
  * いま開いているプロジェクト（lib/project-actions.ts）。
@@ -53,7 +55,18 @@ export interface UndoToastState {
 }
 
 /** 編集の記録を始めたときに返す、記録を終える関数。操作で何かが変わっていたら記録して true を返す。 */
-export type CommitEdit = (override?: { label?: string }) => boolean;
+export type CommitEdit = (override?: { label?: string; discard?: boolean }) => boolean;
+
+/** 編集の記録を始めるときの指定。 */
+export interface EditOptions extends PushOptions {
+    /**
+     * 動きの記録（lib/activity.ts）に残すときの、操作の名前。記録の名前（`label`）に、利用者が入力欄に打った文が
+     * 入っているときに指定する（アシスタントの依頼ごとの記録は、名前に依頼の頭の文字を持つ）。
+     * 元に戻した・やり直したときの知らせは、画面には `label` で出し、動きの記録にはこちらの名前で残す
+     * （入力欄に打った文字は、動きの記録に載せない決まり）。
+     */
+    activityLabel?: string;
+}
 
 /** ステータスバーの文の種類。`error` は失敗の知らせで、色を変えて読み上げの対象にする。 */
 export type StatusKind = 'info' | 'error';
@@ -108,8 +121,9 @@ export interface DawContextType {
     /**
      * @param msg - 表示するステータスメッセージ
      * @param kind - 失敗の知らせなら `'error'`（省略時は `'info'`）
+     * @param options.activity - 動きの記録に、画面の文の代わりに残す文（画面の文に、入力欄に打った文が入っているとき）
      */
-    setStatus: (msg: string, kind?: StatusKind) => void;
+    setStatus: (msg: string, kind?: StatusKind, options?: { activity?: string }) => void;
     /**
      * 時間のかかる処理が走っているか（プログレスバーの表示フラグ）。
      * 処理を始めるボタンは、これが true のあいだ押せなくする（二重に始めないため）。
@@ -150,6 +164,17 @@ export interface DawContextType {
     metronomeEnabled: boolean;
     /** @param v - true でメトロノームを有効にする */
     setMetronomeEnabled: (v: boolean) => void;
+    /**
+     * 再生する（ヘッダの ▶、Space キー、アシスタントが使う）。ピアノロールが手元に持っているノートを書き戻してから鳴らす。
+     * @param fromSec - 始める位置（秒）。省略すると、いまの再生位置から
+     */
+    play: (fromSec?: number) => void;
+    /** 一時停止する（再生位置はそのまま） */
+    pause: () => void;
+    /** 再生と一時停止を切り替える（ヘッダの ▶ と Space キー） */
+    togglePlay: () => void;
+    /** 停止して、再生位置を曲の頭に戻す（ヘッダの ■） */
+    stop: () => void;
     /** トラックリスト変更を検知するためのバージョンカウンタ */
     trackVersion: number;
     /** trackVersion をインクリメントしてトラックリストの再レンダリングをトリガーする */
@@ -158,6 +183,20 @@ export interface DawContextType {
     pianoRollRef: React.MutableRefObject<any>;
     /** Timeline コンポーネントへの ref */
     timelineRef: React.MutableRefObject<any>;
+    /**
+     * MIDI 入力の仕組みへの ref（中央エリアが 1 つだけ持つ `useMidiInput()` の、いまの値）。
+     * ほかで `useMidiInput()` を呼ぶと 2 つ目ができてしまうので、中央エリアの外（アシスタント）はここから使う
+     */
+    midiRef: React.MutableRefObject<MidiInputController | null>;
+    /**
+     * 練習画面の「比べる」（components/PracticeView.tsx が、開いているあいだだけ入れる）。アシスタントが、
+     * ボタンを押したのと同じことをするのに使う。比べた結果を返す（比べられなかったら null）
+     */
+    practiceCompareRef: React.MutableRefObject<(() => Promise<DiffResult | null>) | null>;
+    /** アシスタントのドック（画面の右側のチャット。components/AssistantPanel.tsx）を開いているか */
+    assistantOpen: boolean;
+    /** @param v - true でドックを開く */
+    setAssistantOpen: (v: boolean) => void;
     /** 左パネルで開いているタブ */
     leftTab: LeftTab;
     /** @param tab - 開くタブ。解析が終わったときにカルテを開く、といった画面の側からの切り替えにも使う */
@@ -281,6 +320,10 @@ export interface DawContextType {
     undoLabel: string | null;
     /** 次にやり直す操作の名前。無ければ null */
     redoLabel: string | null;
+    /** 次に元に戻す記録の番号（描くときの値）。無ければ null。「この記録が、いちばん上に在るか」を見るのに使う */
+    undoEntryId: number | null;
+    /** 次に元に戻す記録の番号を、いま読む（記録を閉じた直後に、その記録の番号を知るのに使う）。無ければ null */
+    topUndoId: () => number | null;
     /** 最後の操作を元に戻す（ピアノロールのドラッグ中は何もしない） */
     undo: () => void;
     /** 元に戻した操作をやり直す */
@@ -302,7 +345,7 @@ export interface DawContextType {
      * 記録を始める（ドラッグのように、始めと終わりが別のイベントになる操作に使う）。
      * 返す関数を必ず 1 回呼んで終える。
      */
-    beginEdit: (label: string, options?: PushOptions) => CommitEdit;
+    beginEdit: (label: string, options?: EditOptions) => CommitEdit;
     /** 履歴を全部消す */
     clearHistory: () => void;
     /** 「〜を削除しました — 元に戻す」の知らせ。出していなければ null */
@@ -383,6 +426,9 @@ export function DawProvider({ children }: { children: ReactNode }) {
     // PianoRoll / Timeline の参照を保持
     const pianoRollRef = useRef<any>(null);
     const timelineRef = useRef<any>(null);
+    const midiRef = useRef<MidiInputController | null>(null);
+    const practiceCompareRef = useRef<(() => Promise<DiffResult | null>) | null>(null);
+    const [assistantOpen, setAssistantOpen] = useState(false);
 
     const [chart, setChart] = useState<SongChart | null>(null);
     const [chartId, setChartId] = useState<string | null>(null);
@@ -397,8 +443,11 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const bumpTracks = useCallback(() => setTrackVersion(v => v + 1), []);
 
-    const setStatus = useCallback((msg: string, kind: StatusKind = 'info') => {
+    const setStatus = useCallback((msg: string, kind: StatusKind = 'info', options: { activity?: string } = {}) => {
         setStatusState({ text: msg, kind });
+        // 操作の結果やエラーはここに出るので、動きの記録にも残す (lib/activity.ts)
+        const noted = options.activity ?? msg;
+        recordActivity('status', kind === 'error' ? `エラー: ${noted}` : noted);
     }, []);
 
     const setChartResult = useCallback((result: ChartResponse) => {
@@ -434,6 +483,36 @@ export function DawProvider({ children }: { children: ReactNode }) {
         setBeatsPerBarState(val);
         engine.beatsPerBar = val;
     }, []);
+
+    // ---- 再生・一時停止・停止 (ヘッダのボタン、Space キー、アシスタントが同じものを呼ぶ) ----
+    const play = useCallback((fromSec?: number) => {
+        engine.init();
+        // ピアノロールが手元に持っているノートを、鳴らす前にトラックへ書き戻す
+        pianoRollRef.current?._saveToEngine?.();
+        engine.play(fromSec ?? null);
+        setIsPlaying(true);
+        setStatus('再生中…');
+        bumpTracks();
+    }, [setStatus, bumpTracks]);
+
+    const pause = useCallback(() => {
+        engine.init();
+        engine.pause();
+        setIsPlaying(false);
+        setStatus('一時停止');
+        bumpTracks();
+    }, [setStatus, bumpTracks]);
+
+    const togglePlay = useCallback(() => {
+        if (engine.isPlaying) pause(); else play();
+    }, [play, pause]);
+
+    const stop = useCallback(() => {
+        engine.stop();
+        setIsPlaying(false);
+        setStatus('停止');
+        bumpTracks();
+    }, [setStatus, bumpTracks]);
 
     const withProgress = useCallback(async (processingMsg: string, fn: () => Promise<void>) => {
         setProgressCount(n => n + 1);
@@ -550,6 +629,8 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const lastSnapshotRef = useRef<ProjectSnapshot | null>(null);
     // いま開いている記録の深さ (記録の中の記録は、外側にまとめる)
     const editDepthRef = useRef(0);
+    // 動きの記録に残すときの名前を、別に持つ記録 (記録の番号 → 名前。EditOptions の activityLabel)
+    const activityLabelsRef = useRef(new Map<number, string>());
     const [undoToast, setUndoToast] = useState<UndoToastState | null>(null);
     const toastRef = useRef<UndoToastState | null>(null);
     const toastSeq = useRef(0);
@@ -567,7 +648,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
         return snap;
     }, []);
 
-    const beginEdit = useCallback((label: string, options: PushOptions = {}): CommitEdit => {
+    const beginEdit = useCallback((label: string, options: EditOptions = {}): CommitEdit => {
         let done = false;
         if (editDepthRef.current > 0) {
             // 記録の中の記録。外側の記録にまとまるので、ここでは記録しない
@@ -583,8 +664,12 @@ export function DawProvider({ children }: { children: ReactNode }) {
             if (done) return false;
             done = true;
             editDepthRef.current = 0;
+            // 捨てる: 記録を作らずに閉じる (記録を開いているあいだに、プロジェクトが入れ替わった。前と後で別のプロジェクトになる)
+            if (override?.discard) return false;
             const after = capture();
-            const entry = historyRef.current!.push(override?.label ?? label, before, after, options);
+            const { activityLabel, ...push } = options;
+            const entry = historyRef.current!.push(override?.label ?? label, before, after, push);
+            if (entry && activityLabel !== undefined) activityLabelsRef.current.set(entry.id, activityLabel);
             setHistoryVersion(v => v + 1);
             // 別の操作をしたら、前の「元に戻す」の知らせは閉じる (押すと、その別の操作が戻ってしまう)
             if (toastRef.current && (!entry || entry.id !== toastRef.current.entryId)) setToast(null);
@@ -635,7 +720,8 @@ export function DawProvider({ children }: { children: ReactNode }) {
         if (!entry) return;
         restore(entry.before, entry.after);
         if (toastRef.current?.entryId === entry.id) setToast(null);
-        setStatus(`元に戻しました（${entry.label}）`);
+        const noted = activityLabelsRef.current.get(entry.id);
+        setStatus(`元に戻しました（${entry.label}）`, 'info', noted === undefined ? {} : { activity: `元に戻しました（${noted}）` });
     }, [canStep, restore, setToast, setStatus]);
 
     const redo = useCallback(() => {
@@ -644,11 +730,13 @@ export function DawProvider({ children }: { children: ReactNode }) {
         const entry = historyRef.current!.redo();
         if (!entry) return;
         restore(entry.after, entry.before);
-        setStatus(`やり直しました（${entry.label}）`);
+        const noted = activityLabelsRef.current.get(entry.id);
+        setStatus(`やり直しました（${entry.label}）`, 'info', noted === undefined ? {} : { activity: `やり直しました（${noted}）` });
     }, [canStep, restore, setStatus]);
 
     const clearHistory = useCallback(() => {
         historyRef.current!.clear();
+        activityLabelsRef.current.clear();
         lastSnapshotRef.current = null;
         setToast(null);
         setHistoryVersion(v => v + 1);
@@ -660,6 +748,8 @@ export function DawProvider({ children }: { children: ReactNode }) {
     }, [setToast]);
 
     const dismissUndoToast = useCallback(() => setToast(null), [setToast]);
+
+    const topUndoId = useCallback(() => historyRef.current!.peekUndo()?.id ?? null, []);
 
     const undoFromToast = useCallback(() => {
         const toast = toastRef.current;
@@ -746,8 +836,10 @@ export function DawProvider({ children }: { children: ReactNode }) {
         beatsPerBar, setBeatsPerBar,
         isPlaying, setIsPlaying,
         metronomeEnabled, setMetronomeEnabled,
+        play, pause, togglePlay, stop,
         trackVersion, bumpTracks,
-        pianoRollRef, timelineRef,
+        pianoRollRef, timelineRef, midiRef, practiceCompareRef,
+        assistantOpen, setAssistantOpen,
         leftTab, setLeftTab, learnTab, setLearnTab, openLearn, soundTab, setSoundTab,
         leftWidth, setLeftWidth,
         practice, practiceOpen, openPractice, updatePractice, restorePractice, closePractice,
@@ -761,6 +853,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
         showGridEditor, setShowGridEditor,
         canUndo: nextUndo !== null, canRedo: nextRedo !== null,
         undoLabel: nextUndo?.label ?? null, redoLabel: nextRedo?.label ?? null,
+        undoEntryId: nextUndo?.id ?? null, topUndoId,
         undo, redo, record, recordAsync, beginEdit, clearHistory,
         undoToast, showUndoToast, dismissUndoToast, undoFromToast,
         project, setProject, isDirty, captureBaseline, markSaved, touchProject,

@@ -3,15 +3,18 @@
  *
  * ブラウザのテスト (e2e/) では確かめられないものだけを見る:
  * 同梱した画面が tauri://localhost で出ること、CSP、同梱したフォント、sidecar の起動とトークン、
- * WKWebView での音声の読み込み・再生・書き出し、sidecar から (偽の) Claude までの通し。
+ * WKWebView での音声の読み込み・再生・書き出し、sidecar から (偽の) Claude までの通し、
+ * 動きの記録がファイルに残ること (ネイティブ側が書く)、名前での操作 (controls.ts。エージェントが窓を操作するときに使う)。
+ * アシスタント (右側のドックのチャット) が、本物の窓で、sidecar と (偽の) Claude を通して操作を行えること。
  *
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { makeWav, readWav } from '../e2e/helpers.ts';
+import { announce, clickControl, pressKey, setControl, snapshot } from './controls.ts';
 import { WebDriverSession } from './webdriver.ts';
 
 /** テスト用のビルドが画面に入れる記録 (src-tauri/src/e2e.rs)。 */
@@ -24,6 +27,8 @@ interface E2ERecord {
 const PROBE_ORIGIN = 'http://127.0.0.1:9';
 
 let app: WebDriverSession;
+/** テストのあいだに使われた sidecar のトークン (起動し直すと変わる)。最後に、記録に残っていないことを確かめる。 */
+const seenTokens = new Set<string>();
 
 /** 画面の中の記録 (CSP の違反、捕まえられなかった例外)。わざと起こした違反は除く。 */
 async function record(): Promise<E2ERecord> {
@@ -85,6 +90,77 @@ describe('起動', () => {
         await app.click('//*[@role="dialog"]//button[normalize-space()="はじめる"]');
         await app.waitFor('案内が閉じる', () => document.querySelector('[role="dialog"]') === null, []);
         await waitStatus('準備完了');
+    });
+});
+
+describe('動きの記録と、名前での操作', () => {
+    /** 動きの記録のファイル (テストの一時ディレクトリの中。利用者の記録には混ざらない)。 */
+    const activityLog = () => join(inject('dataDir'), 'logs', 'activity.log');
+
+    /** 記録のファイルに、指定の文を含む行が、この順に出るまで待つ。出た行を返す。 */
+    async function waitLines(...wanted: string[]): Promise<string[]> {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+            const lines = existsSync(activityLog()) ? readFileSync(activityLog(), 'utf8').split('\n') : [];
+            let from = 0;
+            const found = wanted.map((text) => {
+                const index = lines.findIndex((line, i) => i >= from && line.includes(text));
+                if (index >= 0) from = index + 1;
+                return index;
+            });
+            if (found.every((index) => index >= 0)) return found.map((index) => lines[index]);
+            if (Date.now() > deadline) throw new Error(`記録に、この順では出ませんでした: ${wanted.join(' → ')}\n${lines.slice(-30).join('\n')}`);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+    }
+
+    it('押したボタンとその結果が、時刻つきでファイルに残る。エージェントが足した行も、同じ並びに入る', async () => {
+        const [started] = await waitLines('[app] ==== ');
+        expect(started).toMatch(/^\d\d:\d\d:\d\d\.\d{3} \[app\] ==== \d{4}-\d\d-\d\d bunri を起動しました \(版 [\d.]+\) ====$/);
+
+        await announce(app, 'テスト: 「MIDI 書き出し」を押す');
+        expect(await clickControl(app, 'MIDI 書き出し')).toBe('ボタン「MIDI 書き出し」');
+        // 結果は、ステータスバーに出る (起動したときの「準備完了」から変わる)
+        await app.waitFor('書き出しの結果が出る', () => {
+            const text = document.querySelector('#status-text')?.textContent ?? '';
+            return text !== '' && text !== '準備完了' ? true : `いまの文: ${text}`;
+        }, []);
+        const status = await app.run(() => document.querySelector('#status-text')?.textContent ?? '');
+        const lines = await waitLines('[agent] テスト: 「MIDI 書き出し」を押す', '[click] ボタン「MIDI 書き出し」', status);
+        for (const line of lines) expect(line).toMatch(/^\d\d:\d\d:\d\d\.\d{3} \[/);
+        // 失敗の知らせは、記録でも失敗と分かる
+        expect(lines[2]).toContain('[status] エラー: ');
+
+        // sidecar のトークンが記録に残っていないことは、全部の操作のあとに確かめる (このファイルの最後)
+        seenTokens.add((await backendInfo()).token);
+    });
+
+    it('「記録」の一覧に、同じ内容と、ファイルの場所が出る', async () => {
+        await clickControl(app, '記録');
+        await app.waitFor('一覧に、押したボタンとエージェントの行が出る', () => {
+            const rows = Array.from(document.querySelectorAll('#activity-panel li')).map((li) => li.textContent ?? '');
+            const ok = rows.some((t) => t.includes('アシスタント') && t.includes('テスト: 「MIDI 書き出し」を押す'))
+                && rows.some((t) => t.includes('操作') && t.includes('ボタン「MIDI 書き出し」'));
+            return ok ? true : rows.join(' | ');
+        }, []);
+        const footer = await app.run(() => document.querySelector('#activity-panel footer')?.textContent ?? '');
+        expect(footer).toContain(join('logs', 'activity.log'));
+        await clickControl(app, '動きの記録を閉じる');
+        await app.waitFor('一覧が閉じる', () => document.querySelector('#activity-panel') === null, []);
+    });
+
+    it('名前で操作できる: 一覧に出る、見つからなければ見えているものを教える、キーも押せる', async () => {
+        const shot = await snapshot(app);
+        expect(shot.status).not.toBeNull();
+        expect(shot.controls).toContainEqual({ kind: 'ボタン', name: '記録', state: '' });
+        expect((await snapshot(app, '記録')).controls.map((c) => c.name)).toEqual(['記録']);
+
+        await expect(clickControl(app, 'このなまえのボタンはありません')).rejects.toThrow(/見つかりません。いま見えているもの/);
+        await expect(setControl(app, '記録', 'x')).rejects.toThrow(/値を入れられません/);
+
+        // キーは、画面の操作として記録に残る (アプリのショートカットと同じ経路)
+        await pressKey(app, 'Shift+F9');
+        await waitLines('[key] Shift+F9');
     });
 });
 
@@ -205,6 +281,120 @@ describe('音声', () => {
         const wav = readWav(readFileSync(target));
         expect(wav.seconds).toBeGreaterThan(1.9);
         expect(wav.peak).toBeGreaterThan(0.1);
+    });
+});
+
+describe('アシスタント', () => {
+    /** ドックの中の様子 (待ちの表示、知らせ、操作ログの行、アシスタントの文)。 */
+    const dockState = () => app.run(() => {
+        const panel = document.querySelector('#assistant-panel');
+        const texts = (selector: string) => Array.from(panel?.querySelectorAll(selector) ?? []).map((el) => el.textContent ?? '');
+        return {
+            open: panel !== null,
+            waiting: panel?.querySelector('.assistant-waiting')?.textContent ?? null,
+            notices: texts('.assistant-notice'),
+            turns: panel?.querySelectorAll('.assistant-turn').length ?? 0,
+            rows: Array.from(panel?.querySelectorAll('.assistant-tool') ?? []).map((el) => ({
+                tool: el.getAttribute('data-tool'), ok: el.classList.contains('ok'),
+                text: el.querySelector('.assistant-tool-text')?.textContent ?? '',
+            })),
+            replies: texts('.assistant-msg.assistant'),
+        };
+    });
+
+    /** 頼んで、答え終わるまで待つ (`turns` は、答え終わったあとの依頼の数)。 */
+    async function ask(text: string, turns: number) {
+        await setControl(app, 'アシスタントに頼むこと', text);
+        await clickControl(app, '送る');
+        await app.waitFor(`アシスタントが答え終わる: ${text}`, (wanted: number) => {
+            const panel = document.querySelector('#assistant-panel');
+            const waiting = panel?.querySelector('.assistant-waiting')?.textContent ?? null;
+            const done = panel?.querySelectorAll('.assistant-turn').length ?? 0;
+            if (waiting === null && done >= wanted) return true;
+            const notices = Array.from(panel?.querySelectorAll('.assistant-notice') ?? []).map((el) => el.textContent).join(' | ');
+            return `待ち: ${waiting} / 終わった依頼: ${done} / 知らせ: ${notices}`;
+        }, [turns], 30_000);
+    }
+
+    const trackCount = () => app.run(() => document.querySelectorAll('#tracks-container .track-row').length);
+    const noteCount = () => app.run(() => document.querySelectorAll('#note-layer .note-block').length);
+    const activityText = () => readFileSync(join(inject('dataDir'), 'logs', 'activity.log'), 'utf8');
+
+    it('頼むと、(偽の) Claude がツールを呼び、操作ログの行が出て、トラックとノートが増える。動きの記録に残り、1 回で元に戻る', async () => {
+        const tracksBefore = await trackCount();
+        await clickControl(app, 'アシスタント');
+        await app.waitFor('ドックが開く', () => document.querySelector('#assistant-panel') !== null, []);
+
+        // tauri://localhost の画面 → sidecar (トークン、CORS) → (偽の) Claude。応答は、少しずつ届く形で読む
+        await ask('トラックを足して、ノートを置いて', 1);
+        const state = await dockState();
+        expect(state.notices, '失敗の知らせは出ていない').toEqual([]);
+        expect(state.rows.map((r) => r.tool)).toEqual(['add_track', 'add_notes', 'set_track_mix']);
+        expect(state.rows.every((r) => r.ok), JSON.stringify(state.rows)).toBe(true);
+        expect(state.rows[0].text).toContain('「アシスタントのベース」を追加しました');
+        expect(state.rows[1].text).toContain('ノートを 8 個置きました');
+        // 少しずつ届いた文は、答え終わると 1 つの文になっている
+        expect(state.replies[state.replies.length - 1]).toContain('トラックを足して、1〜2 小節にベースを置き、音量を下げました。');
+
+        // プロジェクト: トラックが 1 本増え、ピアノロールにノートが 8 個
+        expect(await trackCount()).toBe(tracksBefore + 1);
+        expect(await noteCount()).toBe(8);
+
+        // 動きの記録 (ファイル): 操作の結果が agent の行で残り、利用者が打った依頼の文は残らない
+        const text = activityText();
+        expect(text).toContain('[agent] 「アシスタントのベース」を追加しました');
+        expect(text).toMatch(/\[agent\] ノートを 8 個置きました/);
+        expect(text).toMatch(/\[api\] POST \/api\/assistant\/step → 200/);
+        expect(text).not.toContain('トラックを足して、ノートを置いて');
+        expect(await record()).toEqual({ csp: [], errors: [] });
+
+        // チャットの「元に戻す」1 回で、この依頼の変更 (トラック・ノート・音量) が全部戻る
+        await clickControl(app, 'この依頼の変更を元に戻す');
+        await app.waitFor('トラックの数が戻る', (n: number) => document.querySelectorAll('#tracks-container .track-row').length === n, [tracksBefore]);
+        expect(await noteCount()).toBe(0);
+        // 元に戻したことは記録に残るが、依頼の文は残らない
+        expect(activityText()).not.toContain('トラックを足して、ノートを置いて');
+    });
+
+    it('再生を頼むと、再生位置が進む (アシスタントから始めた再生が、WKWebView で実際に動く)', async () => {
+        await ask('再生して', 2);
+        const state = await dockState();
+        expect(state.notices).toEqual([]);
+        const last = state.rows[state.rows.length - 1];
+        expect(last, JSON.stringify(state.rows)).toMatchObject({ tool: 'play', ok: true });
+
+        const start = await app.run(() => document.querySelector('#time-display')?.textContent ?? '');
+        await app.waitFor('再生位置が進む', (first: string) => {
+            const now = document.querySelector('#time-display')?.textContent ?? '';
+            return now !== first ? true : `止まったまま: ${now}`;
+        }, [start], 5_000);
+        await app.click('//button[@aria-label="停止"]');
+        await waitStatus('停止');
+        expect(await record()).toEqual({ csp: [], errors: [] });
+    });
+
+    it('WAV の書き出しを頼むと、ヘッダのボタンと同じ経路でファイルが保存される', async () => {
+        // ヘッダのボタンのテストが保存したファイルを消してから頼む (同じ名前で保存される)
+        const target = join(inject('downloadDir'), 'bunri_mix.wav');
+        rmSync(target, { force: true });
+        await ask('WAV に書き出して', 3);
+        const state = await dockState();
+        expect(state.notices).toEqual([]);
+        const last = state.rows[state.rows.length - 1];
+        expect(last, JSON.stringify(state.rows)).toMatchObject({ tool: 'export_wav', ok: true });
+        expect(last.text).toContain('WAV ファイルを書き出しました（bunri_mix.wav');
+
+        // 保存は WebView が非同期に行う (Rust の on_download。利用者の操作の外から始めた保存でも通ること)
+        const deadline = Date.now() + 10_000;
+        while (!existsSync(target) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+        expect(existsSync(target), `${target} が保存されていない`).toBe(true);
+        const wav = readWav(readFileSync(target));
+        expect(wav.seconds).toBeGreaterThan(1.9);
+        expect(wav.peak).toBeGreaterThan(0.1);
+
+        await clickControl(app, 'アシスタントを閉じる');
+        await app.waitFor('ドックが閉じる', () => document.querySelector('#assistant-panel') === null, []);
+        expect(await record()).toEqual({ csp: [], errors: [] });
     });
 });
 
@@ -363,5 +553,20 @@ describe('プロジェクトのファイル', () => {
         // 後片付け (窓を閉じて終わる) で止まらないよう、保存しておく
         await press('保存');
         await waitStatus('を保存しました', 60_000);
+    });
+});
+
+describe('動きの記録に残さないもの', () => {
+    it('ここまでの操作 (音声の読み込み、書き出し、ガイド、sidecar の起動し直し、保存と開く) のあとも、sidecar のトークンが記録に無い', async () => {
+        seenTokens.add((await backendInfo()).token);
+        // 起動し直しのテストで、トークンは少なくとも 1 回変わっている
+        expect(seenTokens.size).toBeGreaterThanOrEqual(2);
+        const text = readFileSync(join(inject('dataDir'), 'logs', 'activity.log'), 'utf8');
+        // 記録は、ここまでの操作を実際に含んでいる (空のファイルを見ているのではない)
+        expect(text).toContain('[api] ');
+        expect(text).toContain('[click] ボタン「保存」');
+        for (const token of seenTokens) expect(text).not.toContain(token);
+        // クエリの値は載せない (音声の名前)
+        expect(text).not.toMatch(/\?name=[^…]/);
     });
 });

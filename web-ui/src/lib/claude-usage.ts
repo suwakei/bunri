@@ -1,5 +1,5 @@
 /**
- * bunri DAW — Claude を呼ぶ機能（再現ガイド・差分の説明）で共通の、費用まわりの文。
+ * bunri DAW — Claude を呼ぶ機能（再現ガイド・差分の説明・アシスタント）で共通の、費用まわりの文。
  *
  * どちらも 1 回呼ぶたびに費用がかかるので、1 回ごとのトークン数と概算の費用、今日の累計と 1 日の上限を見せる
  * （docs/reproduction-guide-design.md「費用」。上限は再現ガイドと差分の説明で 1 つの枠）。
@@ -30,4 +30,17 @@ export function todayLine(today: GuideToday): string {
     if (today.limit_usd !== null) limits.push(formatUsd(today.limit_usd));
     const limit = limits.length > 0 ? `上限 ${limits.join('・')}` : '上限なし';
     return `今日 Claude を呼んだ回数: ${today.calls} 回、概算 ${formatUsd(today.cost_usd)}（1 日の${limit}）`;
+}
+
+/**
+ * 1 日の上限に達しているときの、アシスタントのドックに出す文（達していなければ null）。
+ * 上限は、再現ガイド・差分の説明・アシスタントで 1 つの枠。処理を担当する部分の `blocked` の文は再現ガイドの言い方
+ * （「再現ガイドを N 回作りました」）なので、ドックでは、数字からこの文を作る。
+ */
+export function assistantBlockedLine(today: GuideToday): string | null {
+    if (!today.blocked) return null;
+    const reached = today.limit_calls !== null && today.calls >= today.limit_calls
+        ? `今日は Claude を ${today.calls} 回使いました。1 日の上限（${today.limit_calls} 回）に達したので`
+        : `今日の Claude の費用が概算で ${formatUsd(today.cost_usd)} になりました。1 日の上限${today.limit_usd !== null ? `（${formatUsd(today.limit_usd)}）` : ''}に達したので`;
+    return `${reached}、いまは頼めません（再現ガイド・差分の説明・アシスタントの合計です）。明日になるとまた頼めます。上限は、下の「API キーと上限の設定」で変えられます`;
 }

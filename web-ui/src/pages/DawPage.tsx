@@ -13,7 +13,9 @@ import { SongPicker } from '../components/LearnPanel';
 import UndoToast from '../components/UndoToast';
 import MissingAudioBar from '../components/MissingAudioBar';
 import ProjectDialogs from '../components/ProjectDialogs';
+import AssistantDock from '../components/AssistantPanel';
 import { usePracticeProjectSection } from '../lib/practice-project';
+import { useAssistantProjectSection } from '../lib/assistant-project';
 
 /**
  * メイン DAW ページコンポーネント。
@@ -23,22 +25,28 @@ import { usePracticeProjectSection } from '../lib/practice-project';
  * 原曲のファイルを選ぶ欄（SongPicker）は、画面に 1 つだけここに置く。
  * 「〜を削除しました — 元に戻す」の知らせ（UndoToast）と、プロジェクトの操作が尋ねる窓（ProjectDialogs）も、ここに 1 つだけ置く。
  * 音声の無いクリップ（以前の形式から開いた）が在れば、進み具合の下に知らせる（MissingAudioBar）。
- * 練習画面の状態をプロジェクトに入れる節（lib/practice-project.ts）も、ここで 1 つだけ登録する。
+ * 練習画面の状態をプロジェクトに入れる節（lib/practice-project.ts）と、アシスタントの会話を入れる節
+ * （lib/assistant-project.ts）も、ここで 1 つだけ登録する。
+ * アシスタントのドック（AssistantDock）は、本体（#main）の右端に置く。練習画面のあいだも見える。
  * @returns DAW ページ全体の JSX
  */
 export default function DawPage() {
-    const { showProgress, practiceOpen } = useDaw();
+    const { showProgress, practiceOpen, assistantOpen } = useDaw();
     usePracticeProjectSection();
+    useAssistantProjectSection();
+    // assistant-open: ドックを開いているあいだ、動きの記録の一覧をドックの左へ寄せる (CSS)
+    const layoutClass = [practiceOpen ? 'practice-mode' : '', assistantOpen ? 'assistant-open' : ''].filter(Boolean).join(' ');
 
     return (
         // 練習画面のあいだは、左パネルと進み具合の段を隠す (外さない。CSS の .practice-mode)
-        <div id="daw-layout" className={practiceOpen ? 'practice-mode' : undefined}>
+        <div id="daw-layout" className={layoutClass || undefined}>
             <HeaderBar />
             <ProgressSteps />
             <MissingAudioBar />
             <div id="main">
                 <LeftPanel />
                 <CenterArea />
+                <AssistantDock />
             </div>
             <div id="global-progress" className={showProgress ? 'active' : ''}>
                 <div className="bar" />

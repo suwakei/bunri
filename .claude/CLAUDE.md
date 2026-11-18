@@ -41,6 +41,10 @@ CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の�
 （初回はビルドで数分、2 回目からは 20 秒ほど）。テスト用のビルドはアプリの中で WebDriver サーバを動かすので、
 機能 `e2e` は配布物に入れない（[docs/desktop-architecture.md](../docs/desktop-architecture.md)「窓を自動操作するテスト」）。
 エージェントが画面をその場で操作して確かめるときは、Playwright MCP と `make dev-web` を使う。
+利用者に「こう操作して」「こう操作したらこうなった」と言われたときは `/drive`（`.claude/skills/drive`）:
+本物の窓を画面のことばで操作し（`web-ui/e2e-desktop/drive.ts`）、アプリが残す**動きの記録**（押したボタン・結果・API・MIDI。
+利用者も画面の「記録」で見ている。開発時は `logs/activity.log`）を読んで、何が起きたかを確かめる
+（[docs/ui-testing.md](../docs/ui-testing.md)「4. 頼まれた操作を行い、動きの記録で追う」）。
 MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync` で生成する `.codex/config.toml`。
 実 LLM API を使うテストは通常の検証に含めず、ユーザーが明示したときだけ実行する。
 
@@ -83,6 +87,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `coach_explain.py` | 差分コーチ（第3層）の言語化。差分の事実を Claude に渡して「どんな傾向か・なぜと考えられるか・まず何を見直すか」にする。出力は Structured Outputs で形を固定し、事実と突き合わせて検証する。保存・使用量の記録・1 日の上限は第2層と共通 |
 | `model_cache.py` | 音源分離モデル（Demucs）が手元に在るか（初回ダウンロードが要るか）の確認 |
 | `stem_models.py` | Demucs が自分では取りに行けない追加の分離モデル（ドラムの細分化）の置き場とダウンロード。ハッシュを照合してから置く。配るのは safetensors だけ（pickle 形式のモデルを利用者の PC で開かない） |
+| `assistant.py` | アシスタント（アプリの中のチャット）の Claude の呼び出し。1 回の呼び出しごとに完結し、会話の状態を持たない（繰り返しとツールの実行は画面側）。応答は、まとめて返す形（`step`）と、少しずつ返す形（`stream_step`。NDJSON）が在る。使用量の記録・1 日の上限は第2層と共通。設計は [docs/assistant-design.md](../docs/assistant-design.md) |
+| `assistant_tools.json` | アシスタントのツールの台帳（Claude に渡す定義の正本）。画面側は同じ名前の実行する関数を持ち、名前の一致をテストで確かめる |
 | `access_control.py` | デスクトップ版で API にかける鍵（トークン検証）と CORS。`BUNRI_TOKEN` が在るときだけ有効 |
 | `background_jobs.py` | 時間のかかる処理（ジョブ）を 1 つずつ裏で動かし、ステージ・進み具合・経過時間を持ち、キャンセルと書きかけの出力の削除を受け持つ（FastAPI に依存しない）。約束は [docs/jobs.md](../docs/jobs.md) |
 | `demucs_progress.py` | Demucs の子プロセスとのやり取り（子の側で進み具合をイベントとして出し、親の側でジョブに伝える。親が居なくなったら子は自分で終わる） |
@@ -92,12 +98,17 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | 場所 | 役割 |
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない） |
-| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）だけを持つ |
+| `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）、動きの記録のファイル（`activity.rs`）だけを持つ |
 | `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、オフライン描画（WAV 書き出し）。アプリからはまだ呼んでいない（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
-| `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも |
+| `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも。エージェントが頼まれた操作を行うコマンド（`drive.ts`）と、押せるものを画面のことばで探す部品（`controls.ts`）も |
+| `web-ui/src/lib/assistant.ts` / `assistant-tools.ts` | アシスタントの会話と繰り返し、ツールの実行（引数の確かめ、元に戻す履歴へのまとめ、操作ログ）。画面は `components/AssistantPanel.tsx`（右側のドック）。ツールは種類ごとに `assistant-tools-notes.ts`（ノートの変形）・`assistant-tools-learn.ts`（差分・ガイド・練習の設定・場所を示す）・`assistant-tools-app.ts`（パート分離・書き出し・保存・クリップ・エフェクト）、共通の部品と画面の入口の形は `assistant-tool-kit.ts`、本物の入口は `assistant-env.ts` |
+| `web-ui/src/lib/assistant-history.ts` / `assistant-project.ts` | アシスタントの会話の保存（プロジェクトの節 `assistant`。画面に並ぶ文と操作ログの行だけ）と、長くなったとき・開き直したときに送る会話を置き換える「これまでの記録」（決まった規則で作る。Claude は呼ばない） |
+| `web-ui/src/lib/assistant-landmarks.ts` / `assistant-suggestions.ts` | アシスタントが示せる画面の場所の一覧（`show_in_app`）と、ドックが空のときに出す頼み方の例（状況に合わせて選ぶ） |
+| `web-ui/src/lib/fx.ts` / `export-actions.ts` | エフェクトの定義とかける処理、WAV・MIDI の書き出し。画面のボタンとアシスタントのツールが、同じ処理を使う |
+| `web-ui/src/lib/activity.ts` | 動きの記録（いま何が起きたか）。操作・ステータスバーの文・API の呼び出しは自動で残る。入力欄に打っている途中の文字・API キー・トークンは載せない |
 | `scripts/prepare-desktop.mjs` | デスクトップ版に同梱するもの（`uv` のバイナリと `backend/`）を用意する。`npm run tauri dev` / `build` の前に自動で走る |
 
 ## 依存関係
@@ -125,6 +136,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 - 一時ファイルは `tempfile` を使い、結果は `results/` に保存する
 - 新規モジュールの出力先は `audio_utils.results_dir()` 経由で解決する（デスクトップアプリでは環境変数 `BUNRI_DATA_DIR` で置き場を差し替えるため、パス直書きを避ける）
 - 外から受け取ったファイル名は `audio_utils.safe_join()` を通してからパスにする
+- 動きの記録（`recordActivity`）に、入力欄に打っている途中の文字・API キー・トークン・API に送った中身を載せない（プロジェクト・トラック・ファイルの名前は、結果の文として載ってよい）
 
 ## AI統合の方針
 このプロジェクトは「生成しないAIアシスタント」を目指す。取り込んだ楽曲を教材として、ユーザー自身が再現できるよう導く。
@@ -139,6 +151,12 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 グリッド推定（テンポと 1 拍目の位置）を直すときは、[docs/grid-estimation.md](../docs/grid-estimation.md) を読み、
 `uv run python test/back/bench_grid.py` で直す前と後の誤差を比べる（正解の分かっている合成音源 157 件）。
 
+この原則は、原曲を教材にする 3 層のもの。別に **アシスタント**（アプリの中のチャット。右側のドック）が在り、
+利用者に頼まれた操作を、ツールで代わりに行う。ノートを置く・変える操作も持つ（2026-11-18 の利用者の決定）。
+行った操作はチャットの操作ログに出て、1 回の依頼ぶんを 1 回で元に戻せる。お手本との差分は、アシスタントも
+信号処理の側の事実（`check_diff`）から言葉にする（自分で比べない）。会話は、プロジェクトに保存される。利用者が「アシスタント」と言うときは、
+この機能のこと（Claude Code のことではない）。設計は [docs/assistant-design.md](../docs/assistant-design.md)。
+
 詳細は [docs/song-chart-design.md](../docs/song-chart-design.md)（第1層）、[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md)（第2層）、[docs/coach-diff-design.md](../docs/coach-diff-design.md)（第3層。差分と、その言語化）を参照。
 
 Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm_settings` 経由で取る（`os.getenv` を import 時に呼ばない）。
@@ -151,3 +169,14 @@ Claude の呼び出しは費用がかかる。再現ガイドには、無駄に�
 - リクエストの組み立てを変えたら、プロンプトキャッシュが効いているかを、コードを読んで判断せず `scripts/guide_probe.py cache --yes` で確かめる
 - キャッシュの区切りより前（指示文とカルテ）に、時刻・乱数・呼び出しごとに変わる値を入れない。モデル・思考の深さ・出力の形を、呼び出しごとに変えない
 - `max_tokens` は切れたときの歯止めで、節約の手段ではない。出力を短くしたいときは指示文で行う
+- アシスタントの指示文（`assistant.SYSTEM_PROMPT`）・ツールの台帳（`assistant_tools.json`）を変えたら、`ASSISTANT_VERSION` を上げる。
+  台帳のツールを足す・外す・名前を変えるときは、画面側の実行する関数（`assistant-tools.ts`）も一緒に変える
+- アシスタントの会話は、足すだけにする（前のメッセージを書き換えない・間引かない）。応答の `content` は、思考のブロックごと
+  変えずに送り返す。縮めるのは依頼の境目だけで、そのときは送る会話を丸ごと「これまでの記録」1 つに置き換える
+  （`assistant-history.ts`。途中のメッセージだけを抜かない。記録を作るのに Claude を呼ばない）
+- アシスタントの差分チェック（`check_diff`）は、事実を返すだけにする（信号処理の側の差分。言語化の API を呼ばない）。
+  画面の部品に在る処理をツールにするときは、処理を `lib/` の関数に出して、部品とツールの両方から呼ぶ（同じ処理を 2 か所に書かない）
+- アシスタントのツールの失敗は、Claude に返す文（`ToolError` の `message`。ツールや引数の名前で、直し方を書く）と、
+  操作ログに出す文（`shown`。利用者向け。内部の名前を入れない）を分ける。引数の指定の誤りは `ArgError` にする
+- 示せる場所を足す・外すときは、`assistant-landmarks.ts` と台帳の `show_in_app` の `target` を一緒に変える（指示文の
+  「Where things are in bunri」も、画面の構成が変わったら直す）

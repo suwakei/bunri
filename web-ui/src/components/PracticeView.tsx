@@ -82,7 +82,8 @@ interface PracticeContextValue {
     stale: 'notes' | 'range' | null;
     busy: boolean;
     error: string;
-    runCompare: () => Promise<void>;
+    /** 比べる。比べた結果を返す（比べられなかったら null。理由は `error` に入る） */
+    runCompare: () => Promise<DiffResult | null>;
     /** 選んでいる指摘（一覧の指摘か、押したノートの指摘） */
     selectedIssue: DiffIssue | null;
     /** 押したノートの説明（一覧に無い「合っている」ノートも） */
@@ -134,6 +135,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     const {
         practice, practiceOpen, updatePractice, closePractice, pianoRollRef, timelineRef, setStatus, isPlaying, setIsPlaying,
         bumpTracks, trackVersion, ghostChoice, setGhostChoice, bpm, beatsPerBar, gridOffset, setCoachResult, recordLearnAttempt,
+        practiceCompareRef,
     } = useDaw();
     const [compare, setCompare] = useState<CompareState | null>(null);
     const [busy, setBusy] = useState(false);
@@ -379,9 +381,9 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         if (stale) pianoRollRef.current?.setDiffMarks?.(null);
     }, [stale, pianoRollRef]);
 
-    const runCompare = useCallback(async () => {
+    const runCompare = useCallback(async (): Promise<DiffResult | null> => {
         const pr = pianoRollRef.current;
-        if (!practice || !part || !track) return;
+        if (!practice || !part || !track) return null;
         pr?._saveToEngine?.();
         const range = practice.loop.enabled ? loopSteps(practice.loop, engine.grid) : null;
         const reference = part.referenceNotes ?? [];
@@ -389,7 +391,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         const refIn = notesInRange(reference, range);
         if (refIn.length === 0) {
             setError(range ? 'この区間にはお手本のノートがありません。区間を変えてから比べてください' : 'お手本のノートがありません');
-            return;
+            return null;
         }
         setBusy(true);
         setError('');
@@ -415,12 +417,21 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             setCoachResult({ referenceId: part.id, attemptId: track.id, result: full });
             const rate = matchRate(result);
             setStatus(`比べました（${range ? `${practice.loop.startBar}〜${practice.loop.endBar} 小節` : '曲全体'}、一致 ${rate}%）`);
+            return result;
         } catch (e) {
             setError(describeError(e));
+            return null;
         } finally {
             setBusy(false);
         }
     }, [practice, part, track, pianoRollRef, setCoachResult, setStatus, recordLearnAttempt]);
+
+    // アシスタントが「比べる」を通せるように、入口を置く (開いているあいだだけ)
+    useEffect(() => {
+        if (!practiceOpen) return;
+        practiceCompareRef.current = runCompare;
+        return () => { practiceCompareRef.current = null; };
+    }, [practiceOpen, runCompare, practiceCompareRef]);
 
     const selectIssue = useCallback((issue: DiffIssue) => {
         const pr = pianoRollRef.current;

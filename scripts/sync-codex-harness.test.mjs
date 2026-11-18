@@ -14,7 +14,7 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'bunri-harness-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   put(root, 'AGENTS.md', '# 作業ルール\n');
-  for (const skill of ['feature', 'qa']) {
+  for (const skill of ['feature', 'qa', 'drive']) {
     put(root, `.claude/skills/${skill}/SKILL.md`, `---\nname: ${skill}\ndescription: ${JSON.stringify(`${skill}: 日本語の説明 "引用"`)}\n---\n\n# 手順\n`);
   }
   for (const role of ['backend', 'frontend', 'desktop', 'reviewer']) {
@@ -36,7 +36,7 @@ function snapshot(root, base = '') {
 test('生成先のリンクは元ファイルを指し、設定は MCP のみを同期する', (t) => {
   const root = fixture(t);
   const artifacts = buildArtifacts(root);
-  assert.equal(artifacts.size, 7);
+  assert.equal(artifacts.size, 8);
   const skillPath = '.agents/skills/bunri-feature/SKILL.md';
   const skill = artifacts.get(skillPath);
   assert.match(skill, /^name: bunri-feature$/m);
@@ -61,7 +61,7 @@ test('同期は冪等で、--check は不足・編集・不要ファイルを検
   const before = snapshot(root);
   assert.throws(() => syncHarness(root, { check: true }), /ハーネスが古い/);
   assert.deepEqual(snapshot(root), before);
-  assert.equal(syncHarness(root).updates.length, 7);
+  assert.equal(syncHarness(root).updates.length, 8);
   const generated = snapshot(root);
   assert.equal(syncHarness(root).updates.length, 0);
   assert.deepEqual(snapshot(root), generated);
