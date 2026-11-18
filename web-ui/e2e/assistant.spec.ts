@@ -272,8 +272,9 @@ test('開いているトラックにも、開いていないトラックにも�
     await expect(failed).toHaveCount(1);
     await expect(failed.locator('.assistant-tool-mark')).toHaveText('✕');
     await expect(failed).toContainText('ノートを置く: そのトラックが見つかりませんでした');
+    // いま在るトラックの番号の一覧 (Claude が直して呼び直すための材料) も、操作ログには出さない
     await expect(failed).not.toContainText('track_id');
-    await expect(failed).toContainText('1（Track 1）、2（Track 2）');
+    await expect(failed).not.toContainText('1（Track 1）');
     // 失敗の結果を受けて、アシスタントが文で答える
     await expect(chat(page).locator('.assistant-msg.assistant').last()).toContainText('ノートを置けませんでした');
     // 何も変えなかった依頼には、「元に戻す」を出さない。押せるのは、いちばん新しい変更 (2 つ目の依頼) のぶんだけ
