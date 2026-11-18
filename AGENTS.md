@@ -35,6 +35,7 @@ UI の変更はブラウザ E2E も含む。ネイティブ・CSP・フォント
 | --- | --- |
 | `/feature` | `$bunri-feature` |
 | `/qa` | `$bunri-qa` |
+| `/drive` | `$bunri-drive` |
 | Agent / Task ツール | 利用可能なサブエージェント機能 |
 | Read / Grep / Glob | シェルの読み取り・`rg` / `rg --files` |
 | Edit / Write | `apply_patch` 等の編集ツール |

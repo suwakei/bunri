@@ -11,6 +11,8 @@
  *
  * 描画したあとは、処理を担当する部分が止まっていないかを見張り（lib/health.ts。止まったら知らせる）、
  * 動いている時間のかかる処理を探す（lib/jobs.ts。画面を開き直す前に始めた処理につなぎ直す）。
+ *
+ * 動きの記録（lib/activity.ts。いま何が起きたかの記録）は、描画より前に始める。
  */
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -18,6 +20,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { DawProvider } from './lib/store';
 import { initBackend, isDesktop, restartBackend, type BootStatus } from './lib/api';
 import { health } from './lib/health';
+import { startActivity } from './lib/activity-setup';
 import { jobTracker } from './lib/jobs';
 import BootMessage from './components/BootMessage';
 import HealthBanner from './components/HealthBanner';
@@ -67,6 +70,9 @@ function boot(retry: boolean) {
       onRetry={() => boot(true)} />);
   });
 }
+
+// 動きの記録は、起動の途中で起きたことも残せるよう、描画より前に始める (lib/activity.ts)
+startActivity();
 
 if (isDesktop()) {
   boot(false);

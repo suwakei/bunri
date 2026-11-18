@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const GENERATED_MARKER = '@generated scripts/sync-codex-harness.mjs';
-const SKILLS = ['feature', 'qa'];
+const SKILLS = ['feature', 'qa', 'drive'];
 const ROLES = ['backend', 'frontend', 'desktop', 'reviewer'];
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

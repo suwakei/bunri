@@ -9,7 +9,8 @@ import { useDaw } from './store';
 import engine, { type PianoNote } from './engine';
 import { secToStep } from './grid';
 import { describeError, isDesktop } from './api';
-import { MidiNoteRecorder, parseMidiMessage, pickMidiSource, type MidiSource, type RecordMode } from './midi-input';
+import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, pitchToNote, type MidiSource, type RecordMode } from './midi-input';
+import { recordActivity } from './activity';
 
 /** 練習画面が、録る範囲と置き方を差し替えるための口（`useMidiInput` の `setPracticeHooks`）。 */
 export interface MidiPracticeHooks {
@@ -92,6 +93,9 @@ export function useMidiInput(): MidiInputController {
     /** いま効いている遅れの補正（秒）と、処理中のメッセージが届いてから経った時間（秒）。録る部品が見にいく */
     const latencyRef = useRef(0);
     const messageAgeRef = useRef(0);
+    // 動きの記録に、ノートを置いた位置を「小節・拍」で出すため
+    const beatsPerBarRef = useRef(beatsPerBar);
+    beatsPerBarRef.current = beatsPerBar;
     latencyRef.current = (manualLatency ?? autoLatency) / 1000;
 
     // 録り方を決める部品。ピアノロールと再生位置を、呼ばれたときに見にいく
@@ -133,6 +137,9 @@ export function useMidiInput(): MidiInputController {
         // 弾いた音は、録るかどうかに関係なく鳴らす
         if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity);
         else engine.liveNoteOff(event.pitch);
+        // 動きの記録 (lib/activity.ts): 鍵盤の操作と、その結果ノートが置かれたか
+        const { note, octave } = pitchToNote(event.pitch);
+        recordActivity('midi', event.type === 'on' ? `押した ${note}${octave}（強さ ${event.velocity}）` : `離した ${note}${octave}`);
 
         if (recorder.mode === 'off') return;
         if (pianoRollRef.current?.getActiveTrackId?.() == null) {
@@ -141,6 +148,8 @@ export function useMidiInput(): MidiInputController {
         }
         const result = recorder.handle(event);
         if (result.kind === 'added') {
+            const placed = result.note;
+            recordActivity('midi', `ノートを置いた ${placed.note}${placed.octave}（位置 ${cursorLabel(placed.step, Math.max(1, Number(beatsPerBarRef.current) || 4))}・ステップ ${placed.step}、長さ ${placed.length}、強さ ${placed.velocity ?? '無し'}）`);
             bumpTracks();
         } else if (result.kind === 'skipped' && result.reason === 'stopped' && engine.isCountingIn()) {
             // 録音前のカウントの間に弾いた音は、録らない (知らせも出さない。カウントが終われば録り始める)
@@ -159,7 +168,10 @@ export function useMidiInput(): MidiInputController {
         const source = pickMidiSource();
         if (!source) return false;
         try {
-            await source.start(handleMessage, setDevices);
+            await source.start(handleMessage, (names) => {
+                recordActivity('midi', names.length > 0 ? `MIDI 入力を開いた（${names.join(' / ')}）` : 'MIDI 入力を開いたが、鍵盤が見つからない');
+                setDevices(names);
+            });
             sourceRef.current = source;
             setConnected(true);
             // 音の出力の遅れは、音を出す準備ができてから分かる
@@ -178,6 +190,7 @@ export function useMidiInput(): MidiInputController {
         setConnected(false);
         setDevices([]);
         engine.liveAllNotesOff();
+        recordActivity('midi', 'MIDI 入力を止めた');
         try { await source?.stop(); } catch { /* 閉じる途中の失敗は無視する */ }
     }, []);
 

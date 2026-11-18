@@ -58,6 +58,7 @@ const TRACK_HEADER_WIDTH = 200;
  * - `switchToTrack(trackId)` — 表示するトラックを切り替える
  * - `getNotes()` — 現在のノート配列を返す（エンジンへも保存）
  * - `setNotes(notes, label?)` — ノートを一括セットして再描画する（元に戻せる）
+ * - `setTrackNotes(trackId, notes, label?)` — どのトラックでも（開いていても、いなくても）ノートを丸ごと差し替える
  * - `reloadFromEngine()` — 元に戻したあと、トラックのノートを読み直す
  * - `getActiveTrackId()` — アクティブなトラック ID を返す
  * - `selectAll()` / `copySelection()` / `cutSelection()` / `paste()` / `duplicateSelection()`
@@ -982,6 +983,28 @@ class PianoRollEngine {
         this._fitLength(); this._renderNotes(); this._revealNotes();
     }
     /**
+     * どのトラックでも (開いていても、いなくても)、ノートを丸ごと差し替える (元に戻せる)。アシスタントが使う。
+     *
+     * 開いているトラックは、手元の写しごと差し替える (`setNotes`)。トラックの `pianoNotes` だけを直接差し替えると、
+     * 次に控えを取るとき (`_saveToEngine`) に、手元の古い写しで上書きされてしまう。
+     * 開いていないトラックは、トラックの並びを新しい配列に差し替える (ノートの配列は書き換えない約束。lib/project-snapshot.ts)。
+     *
+     * @param trackId - トラック ID
+     * @param notes - 差し替えた後のノート (`note`, `octave`, `step`, `length`, あれば `velocity`)
+     * @param label - 記録の名前 (省略時は「ノートを置き換え」)
+     * @returns 差し替えたら true (トラックが無ければ false)
+     */
+    setTrackNotes(trackId, notes, label = 'ノートを置き換え') {
+        const id = Number(trackId);
+        const track = engine.getTrack(id);
+        if (!track) return false;
+        if (this.activeTrackId === id) { this.setNotes(notes, label); return true; }
+        this.history.record(label, () => { track.pianoNotes = notes.map(cloneNote); });
+        // 開いていないトラックは、見出しのノートの数だけが変わる
+        if (this.onNotesChanged) this.onNotesChanged();
+        return true;
+    }
+    /**
      * お手本として薄く重ねて見せるノートを入れ替える (空の配列か null で消す)。
      * お手本は見るだけで、編集も保存もされない。
      *
@@ -1076,6 +1099,9 @@ class PianoRollEngine {
  * 主なパブリック API:
  * - `init(el)` — DOM 要素を渡して初期化する
  * - `render(pianoRoll)` — 全トラックを再描画する
+ * - `addTrack(name?)` / `selectTrack(id)` / `renameTrack(id, name)` / `deleteTrack(id)`
+ * - `setMute(id, on)` / `setSolo(id, on)` / `setGain(id, dB)` / `setPan(id, v)` — 値を指定して変える。
+ *   見出しのボタンとつまみも、アシスタント（lib/assistant-tools.ts）も、これを呼ぶ
  */
 // ---- Timeline クラス（Canvasベース）----
 class TimelineEngine {
@@ -1418,10 +1444,7 @@ class TimelineEngine {
                 // ボタン・つまみ・名前の入力欄を押したときは、ピアノロールを開かない
                 // (開くとトラックの行が描き直されて、つまみのドラッグが途切れる)
                 if (e.target.closest('button, input, .track-mix, .track-pan')) return;
-                const id = parseInt(h.dataset.trackId);
-                if (pianoRoll) { pianoRoll.switchToTrack(id); this.render(pianoRoll); }
-                const track = engine.getTrack(id);
-                if (this.onStatus) this.onStatus(`ピアノロール: ${track ? track.name : ''}`);
+                this.selectTrack(parseInt(h.dataset.trackId));
             });
         });
         this.container.querySelectorAll('.btn-track-play').forEach(btn => {
@@ -1436,17 +1459,13 @@ class TimelineEngine {
         this.container.querySelectorAll('.btn-mute').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = parseInt(btn.dataset.track), track = engine.getTrack(id);
-                if (!track) return;
-                this.history.record(track.mute ? `「${track.name}」のミュートを解除` : `「${track.name}」をミュート`, () => engine.toggleMute(id));
-                this._renderKeepingFocus(pianoRoll, '.btn-mute', id);
+                if (track) this.setMute(id, !track.mute);
             });
         });
         this.container.querySelectorAll('.btn-solo').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = parseInt(btn.dataset.track), track = engine.getTrack(id);
-                if (!track) return;
-                this.history.record(track.solo ? `「${track.name}」のソロを解除` : `「${track.name}」をソロ`, () => { track.solo = !track.solo; });
-                this._renderKeepingFocus(pianoRoll, '.btn-solo', id);
+                if (track) this.setSolo(id, !track.solo);
             });
         });
         this.container.querySelectorAll('.btn-track-menu').forEach(btn => {
@@ -1455,25 +1474,84 @@ class TimelineEngine {
                 this.openTrackMenu(parseInt(btn.dataset.track), rect.left, rect.bottom + 2);
             });
         });
-        // 音量とパン。動かしているあいだは 1 つの記録にまとめる (元に戻すと、動かす前の値に戻る)。
-        // 行は描き直さない (描き直すと、つまみのドラッグが途切れる)
-        const bindSlider = (selector, read, apply, labelOf, key) => {
+        // 音量とパン。値を変えるのは setGain / setPan (動かしているあいだは 1 つの記録にまとまる)
+        const bindSlider = (selector, read, set) => {
             this.container.querySelectorAll(selector).forEach(input => {
                 const id = parseInt(input.dataset.track);
-                const set = (value) => {
-                    const track = engine.getTrack(id);
-                    if (!track) return;
-                    this.history.record(labelOf(track), () => apply(id, value), { coalesceKey: `${key}:${id}`, coalesceMs: 1500 });
-                    this._showMix(input.closest('.track-header'), track);
-                };
-                input.addEventListener('input', () => set(read(input)));
+                input.addEventListener('input', () => set(id, read(input)));
                 // ダブルクリックで、既定の値 (0 dB・中央) に戻す
-                input.addEventListener('dblclick', () => { input.value = '0'; set(0); });
+                input.addEventListener('dblclick', () => { input.value = '0'; set(id, 0); });
             });
         };
-        bindSlider('.gain-slider', (el) => Number(el.value), (id, v) => engine.updateTrackGain(id, v), (t) => `「${t.name}」の音量を変更`, 'gain');
-        bindSlider('.pan-slider', (el) => Number(el.value) / PAN_STEPS, (id, v) => engine.updateTrackPan(id, v), (t) => `「${t.name}」のパンを変更`, 'pan');
+        bindSlider('.gain-slider', (el) => Number(el.value), (id, v) => this.setGain(id, v));
+        bindSlider('.pan-slider', (el) => Number(el.value) / PAN_STEPS, (id, v) => this.setPan(id, v));
     }
+    /**
+     * 空のトラックを 1 本、いちばん下に足す (元に戻せる)。「+ トラック追加」とアシスタントが使う。
+     * @param name - トラックの名前。省略すると「Track N」
+     * @returns 足したトラック
+     */
+    addTrack(name) {
+        const track = this.history.record('トラックを追加', () => engine.addTrack(name || undefined));
+        if (this.onTracksChanged) this.onTracksChanged();
+        if (this.onStatus) this.onStatus(`「${track.name}」を追加しました`);
+        return track;
+    }
+    /**
+     * トラックをピアノロールで開く (トラックの見出しを押したときと同じ)。
+     * @returns 開いたら true (トラックが無ければ false)
+     */
+    selectTrack(trackId) {
+        const id = Number(trackId), track = engine.getTrack(id), pianoRoll = this._pianoRoll;
+        if (!track) return false;
+        if (pianoRoll) { pianoRoll.switchToTrack(id); this.render(pianoRoll); }
+        if (this.onStatus) this.onStatus(`ピアノロール: ${track.name}`);
+        return true;
+    }
+    /**
+     * ミュートを入れる・外す (元に戻せる)。いまと同じなら何もしない。
+     * @param on - true でミュートする
+     */
+    setMute(trackId, on) {
+        const id = Number(trackId), track = engine.getTrack(id);
+        if (!track || track.mute === !!on) return;
+        this.history.record(track.mute ? `「${track.name}」のミュートを解除` : `「${track.name}」をミュート`, () => engine.toggleMute(id));
+        this._renderKeepingFocus(this._pianoRoll, '.btn-mute', id);
+    }
+    /**
+     * ソロを入れる・外す (元に戻せる)。いまと同じなら何もしない。
+     * @param on - true でソロにする
+     */
+    setSolo(trackId, on) {
+        const id = Number(trackId), track = engine.getTrack(id);
+        if (!track || track.solo === !!on) return;
+        this.history.record(track.solo ? `「${track.name}」のソロを解除` : `「${track.name}」をソロ`, () => { track.solo = !track.solo; });
+        this._renderKeepingFocus(this._pianoRoll, '.btn-solo', id);
+    }
+    /**
+     * 音量かパンを変える (元に戻せる)。つまみを動かしているあいだのように、続けて変えたぶんは 1 つの記録にまとめる
+     * (元に戻すと、動かす前の値に戻る)。行は描き直さない (描き直すと、つまみのドラッグが途切れる)。
+     */
+    _setMix(trackId, key, value) {
+        const id = Number(trackId), track = engine.getTrack(id);
+        if (!track) return;
+        const gain = key === 'gain';
+        this.history.record(`「${track.name}」の${gain ? '音量' : 'パン'}を変更`,
+            () => { if (gain) engine.updateTrackGain(id, value); else engine.updateTrackPan(id, value); },
+            { coalesceKey: `${key}:${id}`, coalesceMs: 1500 });
+        const header = this.container?.querySelector(`.track-header[data-track-id="${id}"]`);
+        if (header) this._showMix(header, track);
+    }
+    /**
+     * 音量を変える (元に戻せる)。
+     * @param db - 音量 (dB。lib/mix.ts の範囲に収める)
+     */
+    setGain(trackId, db) { this._setMix(trackId, 'gain', clampGainDb(Number(db))); }
+    /**
+     * パンを変える (元に戻せる)。
+     * @param pan - パン (-1 = 左 〜 1 = 右)
+     */
+    setPan(trackId, pan) { this._setMix(trackId, 'pan', clampPan(Number(pan))); }
     /**
      * トラックのメニュー (名前の変更・上へ・下へ・削除) を開く。
      * @param trackId - トラック ID
@@ -1518,8 +1596,12 @@ class TimelineEngine {
             ],
         });
     }
-    /** トラックを消す (元に戻せる)。確かめの窓は出さず、「元に戻す」付きの知らせを出す。 */
-    deleteTrack(trackId) {
+    /**
+     * トラックを消す (元に戻せる)。確かめの窓は出さず、「元に戻す」付きの知らせを出す。
+     * @param options.toast - false なら、「元に戻す」付きの知らせを出さない (アシスタントが消したとき。
+     *   依頼ごとの記録がまだ開いていて、知らせの「元に戻す」が指す記録が無いため。戻すのは、チャットの「元に戻す」)
+     */
+    deleteTrack(trackId, options = {}) {
         const track = engine.getTrack(trackId), pianoRoll = this._pianoRoll;
         if (!track) return;
         this.history.record(`「${track.name}」を削除`, () => {
@@ -1529,17 +1611,32 @@ class TimelineEngine {
         this.render(pianoRoll);
         if (this.onTracksChanged) this.onTracksChanged();
         if (this.onStatus) this.onStatus(`「${track.name}」を削除しました`);
-        if (this.onUndoToast) this.onUndoToast(`「${track.name}」を削除しました`);
+        if (this.onUndoToast && options.toast !== false) this.onUndoToast(`「${track.name}」を削除しました`);
     }
-    /** クリップを消す (元に戻せる)。確かめの窓は出さず、「元に戻す」付きの知らせを出す。 */
-    deleteClip(trackId, clipIndex) {
+    /**
+     * クリップを消す (元に戻せる)。確かめの窓は出さず、「元に戻す」付きの知らせを出す。
+     * @param options.toast - false なら、「元に戻す」付きの知らせを出さない (アシスタントが消したとき。`deleteTrack` と同じ理由)
+     */
+    deleteClip(trackId, clipIndex, options = {}) {
         const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
         if (!clip) return;
         this.history.record(`クリップ「${clip.name}」を削除`, () => engine.removeClip(trackId, clipIndex));
         this.render(this._pianoRoll);
         const message = `クリップ「${clip.name}」を「${track.name}」から削除しました`;
         if (this.onStatus) this.onStatus(message);
-        if (this.onUndoToast) this.onUndoToast(message);
+        if (this.onUndoToast && options.toast !== false) this.onUndoToast(message);
+        if (this.onTracksChanged) this.onTracksChanged();
+    }
+    /**
+     * クリップを、タイムラインの上の別の位置へ動かす (元に戻せる)。ドラッグで動かすのと同じ。アシスタントが使う。
+     * @param offsetSec - 新しい始まりの位置 (秒。0 より前にはならない)
+     */
+    moveClip(trackId, clipIndex, offsetSec) {
+        const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
+        if (!clip) return;
+        this.history.record('クリップを移動', () => engine.moveClip(trackId, clipIndex, offsetSec));
+        this.render(this._pianoRoll);
+        if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を ${Math.max(0, offsetSec).toFixed(1)} 秒へ動かしました`);
         if (this.onTracksChanged) this.onTracksChanged();
     }
     /** クリップを複製して、すぐ後ろに置く (同じ音声を指す。元に戻せる)。 */
@@ -1726,12 +1823,17 @@ function EmptyState() {
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
     const {
-        setStatus, bumpTracks, pianoRollRef, timelineRef, trackVersion, bpm, beatsPerBar, gridOffset, followPlayhead,
+        setStatus, bumpTracks, pianoRollRef, timelineRef, midiRef, trackVersion, bpm, beatsPerBar, gridOffset, followPlayhead,
         record, beginEdit, showUndoToast, practiceOpen, openPractice,
     } = useDaw();
     const { practicePart } = useLearnActions();
     // MIDI 入力の仕組みは 1 つだけ持ち、ふだんの見出しと練習画面の「入力」の両方から使う
     const midi = useMidiInput();
+    // 中央エリアの外 (アシスタント) も同じ 1 つを使えるよう、いまの値をストアの ref に載せる
+    useEffect(() => {
+        midiRef.current = midi;
+        return () => { midiRef.current = null; };
+    }, [midi, midiRef]);
     const openPracticeRef = useRef(openPractice);
     useEffect(() => { openPracticeRef.current = openPractice; }, [openPractice]);
     // 開いているメニュー (クリップの右クリック、トラックの「…」)
@@ -1853,11 +1955,7 @@ export default function CenterArea() {
         if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); pr.setPlayhead(engine.getCurrentTime()); }
     }, [bpm, beatsPerBar, gridOffset, timelineRef, pianoRollRef]);
 
-    const handleAddTrack = useCallback(() => {
-        const t = record('トラックを追加', () => engine.addTrack());
-        bumpTracks();
-        setStatus(`「${t.name}」を追加しました`);
-    }, [record, bumpTracks, setStatus]);
+    const handleAddTrack = useCallback(() => { timelineRef.current?.addTrack(); }, [timelineRef]);
 
     // ---- タイムラインとピアノロールの境目 ----
     /** ピアノロールに取れる高さの上限。タイムラインに最低限の高さを残す。 */

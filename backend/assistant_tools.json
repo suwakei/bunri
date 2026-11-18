@@ -1,0 +1,626 @@
+{
+  "_comment": "アシスタントのツールの台帳。Claude に渡すツール定義の正本で、Python 側 (backend/assistant.py) がそのまま渡す。画面側 (web-ui/src/lib/assistant-tools.ts) は、同じ名前の実行する関数を持つ (名前の過不足はテストで止める)。変えたら ASSISTANT_VERSION を上げる。設計は docs/assistant-design.md。",
+  "tools": [
+    {
+      "name": "get_project",
+      "access": "read",
+      "label": "プロジェクトの様子を見る",
+      "description": "Read the current state of the project: tempo, time signature, steps per bar, song length, every track (id, name, role, mute/solo/gain/pan, note count, audio clips with their clip index and position, whether it has reference notes), which track is open in the piano roll, whether playback is running and where, the metronome, whether a song chart exists, the practice view and its settings (loop range, speed, what is heard), the notes the user has selected in the piano roll (selection: when the user says \"here\", \"this part\" or \"the selected notes\", they mean these), how far the user is in the learning flow (learn), the project name and whether it has unsaved changes, and any long-running job. Call this first whenever you need a track id or do not yet know what the project contains. Track ids are only valid for this session; never guess one.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_notes",
+      "access": "read",
+      "label": "ノートを読む",
+      "description": "Read the notes of one track. Positions are in steps: one step is a 16th note, step 0 is the start of bar 1, and steps_per_bar comes from get_project. Each note is {pitch, step, length, velocity}; notes the user has selected in the piano roll also carry selected: true. Use source \"reference\" to read the reference notes (お手本: the transcription of the original song for that part) instead of the user's own notes. Optionally limit to a bar range (1-based, inclusive), or to the selected notes. At most 400 notes are returned; if the result says truncated, narrow the bar range. To find where the user's notes differ from the reference, use check_diff instead of reading both and comparing them yourself.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "source": { "type": "string", "enum": ["notes", "reference"], "description": "\"notes\" (default) for the user's notes, \"reference\" for the reference notes." },
+          "start_bar": { "type": "integer", "description": "First bar to include (1-based). Omit to start from bar 1." },
+          "end_bar": { "type": "integer", "description": "Last bar to include (1-based, inclusive). Omit to read to the end." },
+          "selected_only": { "type": "boolean", "description": "true to return only the notes selected in the piano roll." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_chart",
+      "access": "read",
+      "label": "カルテを読む",
+      "description": "Read the song chart (カルテ) that bunri computed from the imported song: key, chord progression by bar, and sections (intro, verse, chorus...) with their bar ranges. Returns an error if no song has been imported yet. Use it when the user asks about the song's key, chords or structure, or when you need them to place notes that fit the song.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "play",
+      "access": "write",
+      "label": "再生する",
+      "description": "Start playback. With from_bar, playback starts at the beginning of that bar (1-based); without it, playback continues from the current position.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "from_bar": { "type": "integer", "description": "Bar to start from (1-based)." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "stop",
+      "access": "write",
+      "label": "停止する",
+      "description": "Stop playback and return the play position to the start.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "seek",
+      "access": "write",
+      "label": "小節へ移動する",
+      "description": "Move the play position to the start of a bar (1-based) and scroll the timeline and piano roll there. Does not start playback.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bar": { "type": "integer", "description": "Bar to move to (1-based)." }
+        },
+        "required": ["bar"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_tempo",
+      "access": "write",
+      "label": "テンポを変える",
+      "description": "Set the project tempo in BPM (20 to 300). This changes how fast notes play; audio clips are not stretched.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bpm": { "type": "number", "description": "Tempo in beats per minute, 20 to 300." }
+        },
+        "required": ["bpm"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_time_signature",
+      "access": "write",
+      "label": "拍子を変える",
+      "description": "Set the time signature. 4 means 4/4, 3 means 3/4, 6 means 6/8. This changes steps_per_bar, so read get_project again before converting bars to steps.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "beats_per_bar": { "type": "integer", "enum": [3, 4, 6], "description": "4 = 4/4, 3 = 3/4, 6 = 6/8." }
+        },
+        "required": ["beats_per_bar"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_track",
+      "access": "write",
+      "label": "トラックを追加する",
+      "description": "Add a new empty track and open it in the piano roll. Returns the new track's id. Omit name to get the default name (Track N).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Track name, up to 40 characters." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "rename_track",
+      "access": "write",
+      "label": "トラックの名前を変える",
+      "description": "Rename a track.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "name": { "type": "string", "description": "New name, 1 to 40 characters." }
+        },
+        "required": ["track_id", "name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_track",
+      "access": "write",
+      "label": "トラックを削除する",
+      "description": "Delete a track with all of its notes and clips. The user can undo it, but only delete a track when the user asked for that track to be removed.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "select_track",
+      "access": "write",
+      "label": "トラックを開く",
+      "description": "Open a track in the piano roll so the user sees its notes. Note tools work on any track by id, so this is only needed to show the user where you are working.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_track_mix",
+      "access": "write",
+      "label": "ミュート・ソロ・音量・パンを変える",
+      "description": "Change a track's mute, solo, volume or pan. Give only the fields you want to change. gain_db is the volume in decibels from -60 to 6 (0 is unchanged level). pan is -1 (left) to 1 (right).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "mute": { "type": "boolean" },
+          "solo": { "type": "boolean" },
+          "gain_db": { "type": "number", "description": "Volume in dB, -60 to 6." },
+          "pan": { "type": "number", "description": "-1 (left) to 1 (right)." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_notes",
+      "access": "write",
+      "label": "ノートを置く",
+      "description": "Add notes to a track, keeping the notes that are already there. A note is {pitch, step, length, velocity}: pitch is a note name with octave such as \"C4\" or \"F#3\" (C4 is middle C, octaves 0 to 8); step is the start position in 16th-note steps from the start of bar 1 (bar b starts at (b - 1) * steps_per_bar); length is the duration in steps (a quarter note is 4); velocity is 1 to 127 and may be omitted for the default (96). A note identical in pitch and step to an existing one is not added twice. Up to 512 notes per call. To change existing notes, use replace_notes instead.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pitch": { "type": "string", "description": "Note name with octave, e.g. \"C4\", \"F#3\"." },
+                "step": { "type": "integer", "description": "Start in 16th-note steps from the start of bar 1." },
+                "length": { "type": "integer", "description": "Duration in steps (quarter note = 4)." },
+                "velocity": { "type": "integer", "description": "1 to 127. Omit for the default." }
+              },
+              "required": ["pitch", "step", "length"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["track_id", "notes"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "remove_notes",
+      "access": "write",
+      "label": "ノートを消す",
+      "description": "Remove the notes of a track that start inside a step range [start_step, end_step) (end exclusive). With pitches, only notes of those pitches are removed. With selected_only, the notes selected in the piano roll are removed and the range may be omitted. Use get_notes first so you know what the range contains.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only remove these pitches, e.g. [\"C4\", \"E4\"]. Omit to remove every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to remove only the notes selected in the piano roll. start_step and end_step may then be omitted." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "replace_notes",
+      "access": "write",
+      "label": "ノートを置き換える",
+      "description": "Replace the notes of a track inside a step range [start_step, end_step) (end exclusive): every note that starts in the range is removed, then the given notes are added. Notes outside the range are untouched. Use this to rewrite a passage note by note (re-voicing, changing lengths, a different rhythm): read it with get_notes, then write back the changed version of the same range. For a uniform change, use the dedicated tools instead, which need no note list: transpose_notes, shift_notes, quantize_notes, repeat_notes, set_velocity. The given notes must start inside the range. Note format is the same as add_notes.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pitch": { "type": "string", "description": "Note name with octave, e.g. \"C4\", \"F#3\"." },
+                "step": { "type": "integer", "description": "Start in 16th-note steps from the start of bar 1." },
+                "length": { "type": "integer", "description": "Duration in steps (quarter note = 4)." },
+                "velocity": { "type": "integer", "description": "1 to 127. Omit for the default." }
+              },
+              "required": ["pitch", "step", "length"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["track_id", "start_step", "end_step", "notes"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "open_practice",
+      "access": "write",
+      "label": "練習画面を開く",
+      "description": "Open the practice view (練習画面) for a part: the user's practice track for that part opens with the reference notes overlaid, so the user can enter notes and compare. track_id must be a part track (role \"part\" in get_project). Returns an error if the song has not been split into parts yet.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Id of a part track (role \"part\")." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "close_practice",
+      "access": "write",
+      "label": "練習画面を閉じる",
+      "description": "Close the practice view and return to the arrangement.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "midi_input",
+      "access": "write",
+      "label": "MIDI 入力を切り替える",
+      "description": "Connect or disconnect the MIDI keyboard input, and choose how played notes are recorded: \"off\" only sounds the notes, \"step\" places one note per key press and advances, \"realtime\" records what is played while playback runs. The result lists the keyboards that were found. The user plays the keyboard; you cannot play it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["connect", "disconnect"] },
+          "mode": { "type": "string", "enum": ["off", "step", "realtime"], "description": "Recording mode to set after connecting. Omit to keep the current mode." }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "transpose_notes",
+      "access": "write",
+      "label": "ノートを移調する",
+      "description": "Transpose notes by a number of semitones without rewriting them (12 is one octave up, -12 one octave down). Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only). Fails if a note would leave the range C0 to B8.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
+          "semitones": { "type": "integer", "description": "Semitones to move, -48 to 48, not 0." }
+        },
+        "required": ["track_id", "semitones"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "shift_notes",
+      "access": "write",
+      "label": "ノートをずらす",
+      "description": "Move notes earlier or later in time by a number of steps (a beat is 4 steps, a bar is steps_per_bar). Positive moves later. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
+          "steps": { "type": "integer", "description": "Steps to move; positive is later, negative is earlier." }
+        },
+        "required": ["track_id", "steps"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "quantize_notes",
+      "access": "write",
+      "label": "ノートの位置をそろえる",
+      "description": "Snap note starts to a grid: 2 = 8th notes, 4 = quarter notes, 8 = half notes, 16 = whole notes. Positions are already 16th-note steps, so there is no 16th grid. With lengths: true, lengths are also rounded to the grid. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
+          "grid_steps": { "type": "integer", "enum": [2, 4, 8, 16], "description": "Grid size in steps." },
+          "lengths": { "type": "boolean", "description": "true to also round note lengths to the grid." }
+        },
+        "required": ["track_id", "grid_steps"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "repeat_notes",
+      "access": "write",
+      "label": "ノートをくり返して置く",
+      "description": "Copy the notes that start in [start_step, end_step) and place the copies later in the same track, times times in a row. The range length is the repeat period, so give whole bars to repeat a phrase. By default the first copy starts at end_step (right after the range); give to_step to place it elsewhere. Notes already present at the same pitch and step are not duplicated. The original notes stay.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range to copy." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only copy these pitches. Omit for every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to copy only the notes selected in the piano roll." },
+          "times": { "type": "integer", "description": "How many copies, 1 to 32. Default 1." },
+          "to_step": { "type": "integer", "description": "Where the first copy starts. Default: end_step." }
+        },
+        "required": ["track_id", "start_step", "end_step"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_velocity",
+      "access": "write",
+      "label": "ノートの強さを変える",
+      "description": "Change how hard notes are played (velocity, 1 to 127; notes without one play at 96). Give velocity to set them all to that value, velocity with end_velocity for a gradual change from the first note to the last (crescendo or diminuendo), or delta to add to each note's current velocity. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
+          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
+          "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
+          "velocity": { "type": "integer", "description": "Velocity to set, 1 to 127." },
+          "end_velocity": { "type": "integer", "description": "With velocity: the velocity at the last note, for a gradual change." },
+          "delta": { "type": "integer", "description": "Amount to add to each note's velocity (negative to soften). Not together with velocity." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check_diff",
+      "access": "read",
+      "label": "お手本と比べる",
+      "description": "Compare the user's notes in a track with the reference notes (お手本) and get the differences as facts computed by bunri, not by you: the match percentage, counts by kind (missing, pitch, octave, extra, timing, length), the worst bars, and each difference with its bar, beat and notes. Use this whenever the user asks what is wrong, what differs from the original, or how close they are, instead of reading both note lists and comparing them yourself. track_id is the track with the user's notes (a practice track, or a part track whose own notes are being edited); the reference is found automatically, or give reference_track_id. Without a bar range, the practice view's loop range is used when the practice view is open on that track, otherwise the whole song. When the comparison matches what the practice view shows, the differing notes are also coloured on screen. Report what the result says; do not fix the notes unless the user asks you to.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track with the user's notes." },
+          "reference_track_id": { "type": "integer", "description": "Track that holds the reference notes. Omit to use the track's own reference or its part track." },
+          "start_bar": { "type": "integer", "description": "First bar to compare (1-based)." },
+          "end_bar": { "type": "integer", "description": "Last bar to compare (1-based, inclusive)." }
+        },
+        "required": ["track_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_guide",
+      "access": "read",
+      "label": "再現ガイドを読む",
+      "description": "Read the saved reproduction guide (再現ガイド): bunri's explanation of how to recreate the imported song, written from the song chart. It costs nothing to read. If none has been saved yet, the result says so; only the user can create one (学ぶ → ガイド), and you cannot. Use it when the user asks how to build or approach the song or a section.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "section_id": { "type": "string", "description": "Section id from get_chart, for a guide focused on that section. Omit for the whole-song guide." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_practice",
+      "access": "write",
+      "label": "練習の設定を変える",
+      "description": "Change the practice view's settings: the loop range in bars (loop_start_bar, loop_end_bar; giving a range turns looping on, at most 32 bars), whether looping is on (loop), the playback speed in percent (speed_percent; slows down without changing pitch, and only takes effect while looping), what is heard (listen: \"part\" the original part's audio, \"self\" the user's notes, \"both\"), and whether the reference notes are shown (show_reference). Give only what you want to change. The practice view must be open (open_practice). Use this with play for requests like \"loop bars 5 to 8 slowly\"; do not change the project tempo to slow practice down.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "loop": { "type": "boolean", "description": "Turn looping on or off." },
+          "loop_start_bar": { "type": "integer", "description": "First bar of the loop (1-based)." },
+          "loop_end_bar": { "type": "integer", "description": "Last bar of the loop (1-based, inclusive)." },
+          "speed_percent": { "type": "integer", "enum": [50, 60, 75, 90, 100], "description": "Playback speed in percent." },
+          "listen": { "type": "string", "enum": ["part", "self", "both"] },
+          "show_reference": { "type": "boolean", "description": "Show or hide the reference notes." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_metronome",
+      "access": "write",
+      "label": "メトロノームを切り替える",
+      "description": "Turn the metronome click on or off. It sounds during playback.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "on": { "type": "boolean" }
+        },
+        "required": ["on"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "show_in_app",
+      "access": "read",
+      "label": "場所を示す",
+      "description": "Show the user where something is in bunri's window: opens the tab that contains it and makes the control pulse for a few seconds. The result gives a sentence describing where it is (where) and whether it is currently on screen (shown; if not, when says when it appears). Use it when the user asks where something is or how to do something they must do themselves, such as importing a song (import_song): you cannot choose files or press buttons for them. Targets: import_song, separate_parts, practice_part, chart, guide, coach (the diff check panel), synth, drum, fx, file_tab (audio/MIDI file import, microphone recording, data cleanup), play, tempo, time_signature, metronome, undo, save, open_project, project_menu, export_wav, export_midi, tools_page (file conversion tools), help, activity_log, add_track, timeline, piano_roll, midi_input, practice_loop, practice_speed, practice_compare.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target": { "type": "string", "enum": ["import_song", "separate_parts", "practice_part", "chart", "guide", "coach", "synth", "drum", "fx", "file_tab", "play", "tempo", "time_signature", "metronome", "undo", "save", "open_project", "project_menu", "export_wav", "export_midi", "tools_page", "help", "activity_log", "add_track", "timeline", "piano_roll", "midi_input", "practice_loop", "practice_speed", "practice_compare"] }
+        },
+        "required": ["target"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_job",
+      "access": "read",
+      "label": "動いている処理を見る",
+      "description": "Read the long-running job that is in progress, if any (splitting the song into parts, building the song chart): its name, stage, progress and elapsed time. Call it when the user asks how a job is going. Do not call it repeatedly to wait for a job to finish.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "cancel_job",
+      "access": "write",
+      "label": "動いている処理を中止する",
+      "description": "Ask the running long-running job to stop. It stops at the next safe point. Only do this when the user asks.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "separate_parts",
+      "access": "write",
+      "label": "パートに分けて採譜する",
+      "description": "Start splitting the imported song into parts (vocals, drums, bass, guitar, piano, other) and transcribing each one. This creates a track per part with its audio and reference notes. It takes several minutes; this tool returns as soon as the job has started, so tell the user it is running and end your turn rather than waiting. It needs a song imported in this session; if there is none, point the user to the import button with show_in_app. If the song has already been split, splitting again replaces the part tracks and the user's practice tracks: confirm with the user first, then pass replace_existing: true.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "sensitivity": { "type": "number", "description": "Transcription sensitivity, 0.1 to 1. Higher picks up more (and more spurious) notes. Default 0.5." },
+          "replace_existing": { "type": "boolean", "description": "true to replace parts that already exist. Only after the user has agreed." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "export_wav",
+      "access": "write",
+      "label": "WAV に書き出す",
+      "description": "Export what playback sounds like (audio clips and notes of the tracks that are not muted) as one WAV file. The file goes to the Downloads folder.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "export_midi",
+      "access": "write",
+      "label": "MIDI に書き出す",
+      "description": "Export the notes of all tracks as a standard MIDI file, one MIDI track per track. The file goes to the Downloads folder.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_project",
+      "access": "write",
+      "label": "プロジェクトを保存する",
+      "description": "Save the project. The first time, a dialog opens for the user to choose where to save; the tool waits for them. Only save when the user asks.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "move_clip",
+      "access": "write",
+      "label": "クリップを動かす",
+      "description": "Move an audio clip to a new position on the timeline: to the start of a bar (to_bar) or to a time in seconds (to_seconds). Clip indexes come from get_project (tracks[].clips[].index).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." },
+          "to_bar": { "type": "integer", "description": "Bar whose start the clip moves to (1-based)." },
+          "to_seconds": { "type": "number", "description": "Position in seconds. Not together with to_bar." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_clip",
+      "access": "write",
+      "label": "クリップを削除する",
+      "description": "Delete an audio clip from a track. The user can undo it, but only delete a clip when the user asked for it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "duplicate_clip",
+      "access": "write",
+      "label": "クリップを複製する",
+      "description": "Duplicate an audio clip and place the copy right after it on the same track.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "apply_effect",
+      "access": "write",
+      "label": "エフェクトをかける",
+      "description": "Apply an audio effect to an audio clip; the clip is replaced by the processed audio (undoable). It works on audio clips only, not on notes. Effects and their params (all optional, defaults in brackets): eq {low, mid, high: -12 to 12 dB [0]}; compressor {threshold: -40 to 0 dB [-20], ratio: 1 to 20 [4]}; reverb {room_size: 0 to 1 [0.5], wet: 0 to 1 [0.3]}; delay {delay_ms: 50 to 2000 [300], feedback: 0 to 0.9 [0.4], wet: 0 to 1 [0.3]}; normalize {}; pitch_shift {semitones: -12 to 12 [0]}; time_stretch {rate: 0.25 to 3 [1], 2 is twice as fast}. You cannot hear the result, so say what you applied and let the user listen.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based). Default 0." },
+          "effect": { "type": "string", "enum": ["eq", "compressor", "reverb", "delay", "normalize", "pitch_shift", "time_stretch"] },
+          "params": {
+            "type": "object",
+            "description": "Parameters of the effect, by name (only the ones that effect has). Omitted ones use their defaults.",
+            "properties": {
+              "low": { "type": "number" },
+              "mid": { "type": "number" },
+              "high": { "type": "number" },
+              "threshold": { "type": "number" },
+              "ratio": { "type": "number" },
+              "room_size": { "type": "number" },
+              "wet": { "type": "number" },
+              "delay_ms": { "type": "number" },
+              "feedback": { "type": "number" },
+              "semitones": { "type": "number" },
+              "rate": { "type": "number" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["track_id", "effect"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

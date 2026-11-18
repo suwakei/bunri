@@ -5,12 +5,12 @@ import { useCallback, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useDaw } from '../lib/store';
 import engine from '../lib/engine';
-import { describeError } from '../lib/api';
 import { UNTITLED, useProjectActions, useProjectWiring } from '../lib/project-actions';
 import PopupMenu, { type MenuRequest } from './PopupMenu';
 import { historyShortcut, isDialogOpen, isKeyboardFocusedControl, isTypingTarget, modKeyLabel } from '../lib/keys';
-import { notesToMidi } from '../lib/midi';
+import { exportMidiFile, exportMixWav, wavExportBlocker } from '../lib/export-actions';
 import { tip } from '../lib/tooltip';
+import { AssistantToggle } from './AssistantPanel';
 
 /**
  * 再生時間（秒）を `M:SS.d` 形式の文字列に変換する。
@@ -44,7 +44,8 @@ function TimeDisplay() {
 /**
  * ヘッダーバーコンポーネント。
  * トランスポートコントロール（BPM・拍子・再生/停止/録音/メトロノーム）と、
- * 元に戻す・やり直す、プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）を提供する。
+ * 元に戻す・やり直す、プロジェクト操作ボタン（保存・読み込む・WAV 書き出し・MIDI 書き出し）、
+ * アシスタントのドックを開閉するボタンを提供する。
  * Space キーで、再生と一時停止を切り替えられる。Cmd+Z / Cmd+Shift+Z（Ctrl でも）で元に戻す・やり直す。
  *
  * @returns ヘッダー全体の `<div id="header">` 要素
@@ -54,6 +55,7 @@ export default function HeaderBar() {
         bpm, setBpm, beatsPerBar, setBeatsPerBar,
         isPlaying, setIsPlaying, setStatus,
         metronomeEnabled, setMetronomeEnabled,
+        togglePlay, stop,
         withProgress, showProgress, bumpTracks, pianoRollRef,
         canUndo, canRedo, undoLabel, redoLabel, undo, redo, recordAsync, project, isDirty,
     } = useDaw();
@@ -72,21 +74,8 @@ export default function HeaderBar() {
         return () => document.removeEventListener('keydown', onKeyDown);
     }, [undo, redo]);
 
-    const handlePlay = useCallback(() => {
-        engine.init();
-        if (engine.isPlaying) {
-            engine.pause();
-            setIsPlaying(false);
-            setStatus('一時停止');
-        } else {
-            const pr = pianoRollRef.current;
-            if (pr) pr._saveToEngine();
-            engine.play();
-            setIsPlaying(true);
-            setStatus('再生中…');
-        }
-        bumpTracks();
-    }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks]);
+    // 再生・一時停止・停止は、ストアの入口を呼ぶ (アシスタントも同じ入口を使う。lib/store.tsx)
+    const handlePlay = togglePlay;
 
     // Space キーで、再生と一時停止を切り替える (▶ のボタンと同じ)。
     // - 文字を打ち込む欄に居るとき、案内などの窓が開いているときは、切り替えない
@@ -117,12 +106,7 @@ export default function HeaderBar() {
         };
     }, [handlePlay]);
 
-    const handleStop = useCallback(() => {
-        engine.stop();
-        setIsPlaying(false);
-        setStatus('停止');
-        bumpTracks();
-    }, [setIsPlaying, setStatus, bumpTracks]);
+    const handleStop = stop;
 
     const handleRecord = useCallback(async () => {
         if (!engine.isRecording) {
@@ -161,24 +145,13 @@ export default function HeaderBar() {
         engine.init();
         const pr = pianoRollRef.current;
         if (pr) pr._saveToEngine();
-        // 書き出すのは、再生で鳴るもの (クリップと、ピアノロールのノート)。どちらも無ければ書き出さない
-        if (engine.getTotalDuration() === 0) {
-            setStatus('書き出すものがありません。クリップかノートを置いてください', 'error');
-            return;
-        }
-        if (engine.audibleTracks().length === 0) {
-            setStatus('鳴らすトラックがありません。ミュートを外してから書き出してください', 'error');
-            return;
-        }
+        // 書き出すのは、再生で鳴るもの (クリップと、ピアノロールのノート)。どちらも無ければ書き出さない。
+        // 処理は lib/export-actions.ts (アシスタントのツールも、同じ処理を使う)
+        const blocker = wavExportBlocker();
+        if (blocker) { setStatus(blocker, 'error'); return; }
         await withProgress('WAV を書き出しています…', async () => {
-            const blob = await engine.exportWav();
-            if (!blob) { setStatus('WAV を書き出せませんでした。もう一度試してください', 'error'); return; }
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = 'bunri_mix.wav'; a.style.display = 'none';
-            document.body.appendChild(a); a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('WAV ファイルを書き出しました');
+            const outcome = await exportMixWav();
+            setStatus(outcome.message, outcome.ok ? 'info' : 'error');
         });
     }, [withProgress, setStatus, pianoRollRef]);
 
@@ -189,22 +162,8 @@ export default function HeaderBar() {
     const handleExportMidi = useCallback(() => {
         const pr = pianoRollRef.current;
         if (pr) pr._saveToEngine();
-        try {
-            const bytes = notesToMidi(
-                engine.tracks.map(t => ({ name: t.name, notes: t.pianoNotes || [] })),
-                engine.bpm,
-            );
-            const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'audio/midi' }));
-            const a = document.createElement('a');
-            a.href = url; a.download = 'bunri.mid'; a.style.display = 'none';
-            document.body.appendChild(a); a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-            setStatus('MIDI ファイルを書き出しました');
-        } catch (e) {
-            setStatus((e as Error).message === '書き出せるノートがありません'
-                ? '書き出すノートがありません。ピアノロールにノートを置いてください'
-                : 'MIDI ファイルを書き出せませんでした（' + describeError(e) + '）', 'error');
-        }
+        const outcome = exportMidiFile();
+        setStatus(outcome.message, outcome.ok ? 'info' : 'error');
     }, [setStatus, pianoRollRef]);
 
     // プロジェクトの保存・開く (lib/project-actions.ts)。⌘S / ⇧⌘S / ⌘O と、窓を閉じる前の確かめもここで受ける
@@ -295,8 +254,10 @@ export default function HeaderBar() {
                 {/* ヘッダのボタンの見た目 (#header のボタンの決まり) を受けないよう、body の直下に出す */}
                 {createPortal(<PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />, document.body)}
                 <button onClick={handleExport} disabled={showProgress}
+                    id="btn-export-wav"
                     {...tip('再生で鳴る音をまとめて、1 つの WAV ファイルにします')}>WAV 書き出し</button>
-                <button onClick={handleExportMidi} {...tip('ピアノロールのノートを MIDI ファイルにします。ほかの音楽ソフトで開けます')}>MIDI 書き出し</button>
+                <button onClick={handleExportMidi} id="btn-export-midi" {...tip('ピアノロールのノートを MIDI ファイルにします。ほかの音楽ソフトで開けます')}>MIDI 書き出し</button>
+                <AssistantToggle />
                 <a href="/tools" target="_blank" {...tip('パート分離や形式の変換など、ファイルを加工する道具を別の窓で開きます')}>ツール</a>
                 <a href="/help" target="_blank" {...tip('使い方の説明を別の窓で開きます')}>使い方</a>
             </div>
