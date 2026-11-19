@@ -5,7 +5,7 @@
       "name": "get_project",
       "access": "read",
       "label": "プロジェクトの様子を見る",
-      "description": "Read the current state of the project: tempo, time signature, steps per bar, song length, every track (id, name, role, mute/solo/gain/pan, note count, audio clips with their clip index and position, whether it has reference notes), which track is open in the piano roll, whether playback is running and where, the metronome, whether a song chart exists, the practice view and its settings (loop range, speed, what is heard), the notes the user has selected in the piano roll (selection: when the user says \"here\", \"this part\" or \"the selected notes\", they mean these), how far the user is in the learning flow (learn), the project name and whether it has unsaved changes, and any long-running job. Call this first whenever you need a track id or do not yet know what the project contains. Track ids are only valid for this session; never guess one.",
+      "description": "Read the current state of the project: tempo, time signature, steps per bar, song length, every track (id, name, role, mute/solo/gain/pan, note count, audio clips with their clip index, position and length, plus, for a trimmed clip, audio_start_seconds and audio_duration_seconds (where in its audio the clip starts and how long that audio is) and, for a faded clip, fade_in_seconds / fade_out_seconds, whether it has reference notes), which track is open in the piano roll, whether playback is running and where, the metronome, whether a song chart exists, the practice view and its settings (loop range, speed, what is heard), the notes the user has selected in the piano roll (selection: when the user says \"here\", \"this part\" or \"the selected notes\", they mean these), how far the user is in the learning flow (learn), the project name and whether it has unsaved changes, and any long-running job. Call this first whenever you need a track id or do not yet know what the project contains. Track ids are only valid for this session; never guess one.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -16,7 +16,7 @@
       "name": "get_notes",
       "access": "read",
       "label": "ノートを読む",
-      "description": "Read the notes of one track. Positions are in steps: one step is a 16th note, step 0 is the start of bar 1, and steps_per_bar comes from get_project. Each note is {pitch, step, length, velocity}; notes the user has selected in the piano roll also carry selected: true. Use source \"reference\" to read the reference notes (お手本: the transcription of the original song for that part) instead of the user's own notes. Optionally limit to a bar range (1-based, inclusive), or to the selected notes. At most 400 notes are returned; if the result says truncated, narrow the bar range. To find where the user's notes differ from the reference, use check_diff instead of reading both and comparing them yourself.",
+      "description": "Read the notes of one track. Positions are in steps: one step is a 16th note, step 0 is the start of bar 1, and steps_per_bar comes from get_project. step and length can be decimals: 0.5 is a 32nd note, 1.3333 (4/3) an 8th-note triplet, 0.6667 (2/3) a 16th-note triplet; swung notes also sit between 16th notes. Each note is {pitch, step, length, velocity}; notes the user has selected in the piano roll also carry selected: true. Use source \"reference\" to read the reference notes (お手本: the transcription of the original song for that part) instead of the user's own notes. Optionally limit to a bar range (1-based, inclusive), or to the selected notes. At most 400 notes are returned; if the result says truncated, narrow the bar range. To find where the user's notes differ from the reference, use check_diff instead of reading both and comparing them yourself.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -185,7 +185,7 @@
       "name": "add_notes",
       "access": "write",
       "label": "ノートを置く",
-      "description": "Add notes to a track, keeping the notes that are already there. A note is {pitch, step, length, velocity}: pitch is a note name with octave such as \"C4\" or \"F#3\" (C4 is middle C, octaves 0 to 8); step is the start position in 16th-note steps from the start of bar 1 (bar b starts at (b - 1) * steps_per_bar); length is the duration in steps (a quarter note is 4); velocity is 1 to 127 and may be omitted for the default (96). A note identical in pitch and step to an existing one is not added twice. Up to 512 notes per call. To change existing notes, use replace_notes instead.",
+      "description": "Add notes to a track, keeping the notes that are already there. A note is {pitch, step, length, velocity}: pitch is a note name with octave such as \"C4\" or \"F#3\" (C4 is middle C, octaves 0 to 8); step is the start position in steps from the start of bar 1 (1 step = a 16th note; bar b starts at (b - 1) * steps_per_bar); length is the duration in steps (a quarter note is 4); both may be decimals (0.5 = a 32nd note, 4/3 = 1.3333 = an 8th-note triplet, 2/3 = 0.6667 = a 16th-note triplet; the three notes of an 8th-note triplet on beat 1 start at 0, 1.3333 and 2.6667) and are rounded to 1/60 of a step; velocity is 1 to 127 and may be omitted for the default (96). A note identical in pitch and step to an existing one is not added twice. Up to 512 notes per call. To change existing notes, use replace_notes instead.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -196,8 +196,8 @@
               "type": "object",
               "properties": {
                 "pitch": { "type": "string", "description": "Note name with octave, e.g. \"C4\", \"F#3\"." },
-                "step": { "type": "integer", "description": "Start in 16th-note steps from the start of bar 1." },
-                "length": { "type": "integer", "description": "Duration in steps (quarter note = 4)." },
+                "step": { "type": "number", "description": "Start in steps from the start of bar 1. 1 step = a 16th note. Decimals allowed: 0.5 = a 32nd note, 4/3 (1.3333) = an 8th-note triplet." },
+                "length": { "type": "number", "description": "Duration in steps (quarter note = 4). Decimals allowed: 0.5 = a 32nd note, 4/3 (1.3333) = an 8th-note triplet. At least 0.25." },
                 "velocity": { "type": "integer", "description": "1 to 127. Omit for the default." }
               },
               "required": ["pitch", "step", "length"],
@@ -218,8 +218,8 @@
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed)." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only remove these pitches, e.g. [\"C4\", \"E4\"]. Omit to remove every pitch." },
           "selected_only": { "type": "boolean", "description": "true to remove only the notes selected in the piano roll. start_step and end_step may then be omitted." }
         },
@@ -236,16 +236,16 @@
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed)." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "notes": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "pitch": { "type": "string", "description": "Note name with octave, e.g. \"C4\", \"F#3\"." },
-                "step": { "type": "integer", "description": "Start in 16th-note steps from the start of bar 1." },
-                "length": { "type": "integer", "description": "Duration in steps (quarter note = 4)." },
+                "step": { "type": "number", "description": "Start in steps from the start of bar 1. 1 step = a 16th note. Decimals allowed: 0.5 = a 32nd note, 4/3 (1.3333) = an 8th-note triplet." },
+                "length": { "type": "number", "description": "Duration in steps (quarter note = 4). Decimals allowed: 0.5 = a 32nd note, 4/3 (1.3333) = an 8th-note triplet. At least 0.25." },
                 "velocity": { "type": "integer", "description": "1 to 127. Omit for the default." }
               },
               "required": ["pitch", "step", "length"],
@@ -306,8 +306,8 @@
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed). Omit (with end_step) for the whole track." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
           "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
           "semitones": { "type": "integer", "description": "Semitones to move, -48 to 48, not 0." }
@@ -320,16 +320,16 @@
       "name": "shift_notes",
       "access": "write",
       "label": "ノートをずらす",
-      "description": "Move notes earlier or later in time by a number of steps (a beat is 4 steps, a bar is steps_per_bar). Positive moves later. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
+      "description": "Move notes earlier or later in time by a number of steps (a beat is 4 steps, a bar is steps_per_bar; decimals allowed, e.g. 0.5 for a 32nd note or 1.3333 for one 8th-note triplet). Positive moves later. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
       "input_schema": {
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed). Omit (with end_step) for the whole track." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
           "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
-          "steps": { "type": "integer", "description": "Steps to move; positive is later, negative is earlier." }
+          "steps": { "type": "number", "description": "Steps to move; positive is later, negative is earlier. Decimals allowed: 0.5 = a 32nd note, 4/3 (1.3333) = one 8th-note triplet." }
         },
         "required": ["track_id", "steps"],
         "additionalProperties": false
@@ -339,16 +339,16 @@
       "name": "quantize_notes",
       "access": "write",
       "label": "ノートの位置をそろえる",
-      "description": "Snap note starts to a grid: 2 = 8th notes, 4 = quarter notes, 8 = half notes, 16 = whole notes. Positions are already 16th-note steps, so there is no 16th grid. With lengths: true, lengths are also rounded to the grid. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
+      "description": "Snap note starts to a grid, given as the grid size in steps: 0.5 = 32nd notes, 1 = 16th notes, 2 = 8th notes, 4 = quarter notes, 8 = half notes, 16 = whole notes, and for triplets 1.3333 (4/3) = 8th-note triplets, 0.6667 (2/3) = 16th-note triplets. Notes can sit between 16th notes (32nd notes, triplets, swung or freely played notes), so the 16th grid is a real choice: use it to pull such notes onto 16th notes, and use a triplet grid to pull a straight rhythm onto triplets. With lengths: true, lengths are also rounded to the grid. Which notes: those that start in [start_step, end_step) (end exclusive; omit both for the whole track), optionally only certain pitches, or only the notes selected in the piano roll (selected_only).",
       "input_schema": {
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed). Omit (with end_step) for the whole track." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
           "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
-          "grid_steps": { "type": "integer", "enum": [2, 4, 8, 16], "description": "Grid size in steps." },
+          "grid_steps": { "type": "number", "description": "Grid size in steps. One of: 0.5 (32nd notes), 0.6667 (16th-note triplets, 2/3), 1 (16th notes), 1.3333 (8th-note triplets, 4/3), 2 (8th notes), 4 (quarter notes), 8 (half notes), 16 (whole notes)." },
           "lengths": { "type": "boolean", "description": "true to also round note lengths to the grid." }
         },
         "required": ["track_id", "grid_steps"],
@@ -364,12 +364,12 @@
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range to copy." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range to copy (1 step = a 16th note; decimals allowed)." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only copy these pitches. Omit for every pitch." },
           "selected_only": { "type": "boolean", "description": "true to copy only the notes selected in the piano roll." },
           "times": { "type": "integer", "description": "How many copies, 1 to 32. Default 1." },
-          "to_step": { "type": "integer", "description": "Where the first copy starts. Default: end_step." }
+          "to_step": { "type": "number", "description": "Where the first copy starts (decimals allowed). Default: end_step." }
         },
         "required": ["track_id", "start_step", "end_step"],
         "additionalProperties": false
@@ -384,8 +384,8 @@
         "type": "object",
         "properties": {
           "track_id": { "type": "integer", "description": "Track id from get_project." },
-          "start_step": { "type": "integer", "description": "First step of the range. Omit (with end_step) for the whole track." },
-          "end_step": { "type": "integer", "description": "Step after the last step of the range (exclusive)." },
+          "start_step": { "type": "number", "description": "First step of the range (1 step = a 16th note; decimals allowed). Omit (with end_step) for the whole track." },
+          "end_step": { "type": "number", "description": "End of the range (exclusive; decimals allowed). A note that starts exactly here is not in the range." },
           "pitches": { "type": "array", "items": {"type": "string"}, "description": "Only these pitches, e.g. [\"C4\", \"E4\"]. Omit for every pitch." },
           "selected_only": { "type": "boolean", "description": "true to change only the notes selected in the piano roll." },
           "velocity": { "type": "integer", "description": "Velocity to set, 1 to 127." },
@@ -577,7 +577,7 @@
       "name": "duplicate_clip",
       "access": "write",
       "label": "クリップを複製する",
-      "description": "Duplicate an audio clip and place the copy right after it on the same track.",
+      "description": "Duplicate an audio clip and place the copy right after it on the same track. The copy keeps the clip's trimmed range and fades.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -589,10 +589,63 @@
       }
     },
     {
+      "name": "trim_clip",
+      "access": "write",
+      "label": "クリップを縮める",
+      "description": "Trim an audio clip, or bring back what was trimmed, by moving its left and/or right edge. This is non-destructive: the audio is not changed and does not move on the timeline, only the audible range changes, so a trimmed part comes back when the edge is moved out again. Give the new timeline position of an edge: start_seconds or start_bar (the clip then begins at the start of that bar) for the left edge, end_seconds or end_bar (the clip then ends at the end of that bar) for the right edge. An edge you do not give stays where it is. An edge cannot go beyond the audio itself; it stops there and the result says so. To show the whole audio again, use audio_start_seconds and audio_duration_seconds from get_project (left edge = start_seconds - audio_start_seconds, right edge = that + audio_duration_seconds). Fades are shortened if they no longer fit. To move a clip, use move_clip instead.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." },
+          "start_seconds": { "type": "number", "description": "New position of the left edge on the timeline, in seconds. Not together with start_bar." },
+          "end_seconds": { "type": "number", "description": "New position of the right edge on the timeline, in seconds. Not together with end_bar." },
+          "start_bar": { "type": "integer", "description": "Bar at whose start the clip begins (1-based)." },
+          "end_bar": { "type": "integer", "description": "Bar at whose end the clip ends (1-based, inclusive)." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "split_clip",
+      "access": "write",
+      "label": "クリップを分割する",
+      "description": "Split an audio clip into two clips at a position inside it: at_seconds, at_bar (the start of that bar), or, when neither is given, the current playback position. Both clips keep pointing at the same audio, so nothing sounds different until one of them is moved, trimmed, faded or deleted. The right-hand part gets index clip_index + 1 and the clips after it shift by one, so call get_project again before using other clip indexes on that track.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." },
+          "at_seconds": { "type": "number", "description": "Timeline position of the cut, in seconds. Not together with at_bar." },
+          "at_bar": { "type": "integer", "description": "Bar at whose start the clip is cut (1-based)." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fade_clip",
+      "access": "write",
+      "label": "クリップにフェードを付ける",
+      "description": "Set the fade-in and/or fade-out of an audio clip: the volume rises in a straight line over fade_in_seconds at the start of the clip and falls over fade_out_seconds at its end. 0 removes a fade; the one you do not give is left as it is. The two fades cannot overlap, so their sum must not exceed the clip length (duration_seconds in get_project). Fades are clip settings (the audio is not changed) and are heard in playback and in the WAV export. You cannot hear the result, so say what you set and let the user listen.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track id from get_project." },
+          "clip_index": { "type": "integer", "description": "Index of the clip in the track (0-based)." },
+          "fade_in_seconds": { "type": "number", "description": "Length of the fade-in in seconds (0 removes it)." },
+          "fade_out_seconds": { "type": "number", "description": "Length of the fade-out in seconds (0 removes it)." }
+        },
+        "required": ["track_id", "clip_index"],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "apply_effect",
       "access": "write",
       "label": "エフェクトをかける",
-      "description": "Apply an audio effect to an audio clip; the clip is replaced by the processed audio (undoable). It works on audio clips only, not on notes. Effects and their params (all optional, defaults in brackets): eq {low, mid, high: -12 to 12 dB [0]}; compressor {threshold: -40 to 0 dB [-20], ratio: 1 to 20 [4]}; reverb {room_size: 0 to 1 [0.5], wet: 0 to 1 [0.3]}; delay {delay_ms: 50 to 2000 [300], feedback: 0 to 0.9 [0.4], wet: 0 to 1 [0.3]}; normalize {}; pitch_shift {semitones: -12 to 12 [0]}; time_stretch {rate: 0.25 to 3 [1], 2 is twice as fast}. You cannot hear the result, so say what you applied and let the user listen.",
+      "description": "Apply an audio effect to an audio clip; the clip is replaced by the processed audio (undoable). It works on audio clips only, not on notes. On a trimmed clip only the audible range is processed and the result becomes the clip's whole audio (the trimmed-off parts can then only be brought back by undo); fades stay as clip settings. Effects and their params (all optional, defaults in brackets): eq {low, mid, high: -12 to 12 dB [0]}; compressor {threshold: -40 to 0 dB [-20], ratio: 1 to 20 [4]}; reverb {room_size: 0 to 1 [0.5], wet: 0 to 1 [0.3]}; delay {delay_ms: 50 to 2000 [300], feedback: 0 to 0.9 [0.4], wet: 0 to 1 [0.3]}; normalize {}; pitch_shift {semitones: -12 to 12 [0]}; time_stretch {rate: 0.25 to 3 [1], 2 is twice as fast}. You cannot hear the result, so say what you applied and let the user listen.",
       "input_schema": {
         "type": "object",
         "properties": {

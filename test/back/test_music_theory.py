@@ -227,6 +227,39 @@ class TestGlossary:
         assert mt.glossary_entry("bpm", lang="fr") == mt.GLOSSARY["bpm"]["ja"]
 
 
+class TestChordTableSharedWithFrontend:
+    """コードの種類の表は、画面（web-ui/src/lib/pitch-hints.ts）も同じものを持つ。
+
+    画面は、ピアノロールの行にコードの音を色で出すために、コード記号から構成音を引く。
+    両方を test/fixtures/chord-qualities.json と突き合わせる（画面の側は web-ui/src/__tests__/pitch-hints.test.ts）。
+    ここが落ちたら、fixture と画面の表（CHORD_INTERVALS / CHORD_SUFFIX）も一緒に直す。
+    """
+
+    @staticmethod
+    def _fixture():
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "fixtures" / "chord-qualities.json"
+        return json.loads(path.read_text(encoding="utf-8"))["qualities"]
+
+    def test_intervals_match_the_fixture(self):
+        """CHORD_TEMPLATES（種類 → 音程）が、画面と共有する表と一致する"""
+        expected = {quality: entry["intervals"] for quality, entry in self._fixture().items()}
+        assert mt.CHORD_TEMPLATES == expected, (
+            "CHORD_TEMPLATES を変えたら、test/fixtures/chord-qualities.json と "
+            "web-ui/src/lib/pitch-hints.ts の CHORD_INTERVALS も一緒に変える"
+        )
+
+    def test_suffixes_match_the_fixture(self):
+        """CHORD_SUFFIX（種類 → コード記号の後ろの文字）が、画面と共有する表と一致する"""
+        expected = {quality: entry["suffix"] for quality, entry in self._fixture().items()}
+        assert mt.CHORD_SUFFIX == expected, (
+            "CHORD_SUFFIX を変えたら、test/fixtures/chord-qualities.json と "
+            "web-ui/src/lib/pitch-hints.ts の CHORD_SUFFIX も一緒に変える"
+        )
+
+
 class TestDetectChords:
     def test_detects_progression(self, chord_song):
         """合成音源から C→G→Am→F の進行を小節単位で検出できる"""

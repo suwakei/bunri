@@ -100,13 +100,15 @@ export function noteInSegment(segment: LoopSegment, rate: number, start: number,
  * クリップ（曲の時刻 `[offset, offset + duration)`）のうち、1 周ぶんで鳴らすところ。速度 1 のときだけ使う
  * （速度を変えたときは、区間を伸ばした音声を使う）。
  *
- * @returns 鳴らし始める時刻、クリップの中の読み始め（秒）、長さ。重ならなければ null
+ * @param duration - クリップの鳴らす長さ（秒）
+ * @param audioStart - 音声の中の、クリップの頭に当たる位置（秒）。縮めたクリップは、音声の途中から始まる（lib/clip.ts）
+ * @returns 鳴らし始める時刻、音声の中の読み始め（秒。`audioStart` + クリップの頭からの位置）、長さ。重ならなければ null
  */
-export function clipInSegment(segment: LoopSegment, offset: number, duration: number): { when: number; offset: number; duration: number } | null {
+export function clipInSegment(segment: LoopSegment, offset: number, duration: number, audioStart = 0): { when: number; offset: number; duration: number } | null {
     const from = Math.max(offset, segment.from);
     const to = Math.min(offset + duration, segment.to);
     if (to <= from) return null;
-    return { when: segment.when + (from - segment.from), offset: from - offset, duration: to - from };
+    return { when: segment.when + (from - segment.from), offset: audioStart + (from - offset), duration: to - from };
 }
 
 /**

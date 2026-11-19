@@ -2,10 +2,11 @@
  * MIDI ファイルを読み込む (左パネルの「ファイル」タブ)。
  *
  * MIDI のトラックごとに、新しいトラックにするか、お手本として読み込むか、読み込まないかを選ぶ。
- * 読み込みで元のファイルから変わること (16 分音符への丸めなど) は、読み込む前に画面に出る。
+ * 読み込みで元のファイルから変わること (1 拍の 24 分の 1 への丸めなど) は、読み込む前に画面に出る。
+ * 三連と 32 分音符の位置は、丸めずにそのまま入る。
  */
 import { expect, test, type Page } from '@playwright/test';
-import { notesToMidi } from '../src/lib/midi';
+import { notesToMidi, parseMidi } from '../src/lib/midi';
 import { openDaw, openTab, recordOscillators, soundedFrequencies, startFree, statusText } from './helpers';
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
@@ -23,14 +24,14 @@ const ascii = (text: string) => Array.from(text, (c) => c.charCodeAt(0));
 const be32 = (v: number) => [(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff];
 
 /**
- * フォーマット 0 の MIDI ファイル。チャンネル 1 に 3 連符の位置のノート (16 分音符に乗らない)、
- * チャンネル 10 (ドラム) にノートが 1 つ。
+ * フォーマット 0 の MIDI ファイル (分解能 480)。チャンネル 1 に、人が弾いたように少しずれた位置のノート
+ * (1 拍の 24 分の 1 = 20 tick に乗らない)、チャンネル 10 (ドラム) に、とても短いノートが 1 つ。
  */
-const drumsAndTriplets = () => {
+const drumsAndLoose = () => {
     const events = [
-        0x00, 0x90, 60, 100, 0x81, 0x20, 0x80, 60, 0,   // 0〜160 tick (3 連符の長さ)
-        0x00, 0x90, 62, 100, 0x81, 0x20, 0x80, 62, 0,   // 160〜320 tick
-        0x00, 0x99, 36, 110, 0x78, 0x89, 36, 0,         // ドラム
+        0x00, 0x90, 60, 100, 0x81, 0x27, 0x80, 60, 0,   // 0〜167 tick (終わりが乗らない)
+        0x00, 0x90, 62, 100, 0x81, 0x19, 0x80, 62, 0,   // 167〜320 tick (始まりが乗らない)
+        0x00, 0x99, 36, 110, 0x07, 0x89, 36, 0,         // ドラム: 320〜327 tick (32 分音符より短い)
         0x00, 0xff, 0x2f, 0x00,
     ];
     return {
@@ -135,7 +136,7 @@ test('ドラムは既定で読み込まない。丸めたノートの数が出�
     await openDaw(page);
     await startFree(page, 1);
     await openTab(page, 'ファイル');
-    await chooseFile(page, drumsAndTriplets());
+    await chooseFile(page, drumsAndLoose());
 
     const list = page.locator('#midi-track-list li');
     await expect(list).toHaveCount(2);
@@ -146,7 +147,9 @@ test('ドラムは既定で読み込まない。丸めたノートの数が出�
     // ドラムは、お手本にできない
     await expect(drum.locator('option')).toHaveText(['新しいトラックにする', '読み込まない']);
     // 丸めた数は、読み込むトラックのぶんだけ (メロディの 2 個。ドラムの 1 個は、読み込まないので数えない)
-    await expect(page.locator('#midi-loss-list')).toContainText('16 分音符に合わせて、位置か長さを丸めたノートが 2 個あります');
+    await expect(page.locator('#midi-loss-list')).toContainText('位置か長さを、1 拍の 24 分の 1 に丸めたノートが 2 個あります');
+    // 16 分音符には寄せない (三連・32 分は、そのまま入る) ことも伝える
+    await expect(page.locator('#midi-loss-list')).toContainText('16 分・32 分・三連の位置は、そのまま入ります');
     await expect(page.locator('#midi-tempo-notice')).toContainText('テンポが書かれていません');
 
     await list.nth(0).locator('select').selectOption('skip');
@@ -157,6 +160,50 @@ test('ドラムは既定で読み込まない。丸めたノートの数が出�
     await expect(page.locator('#midi-loss-list')).toContainText('丸めたノートが 1 個あります');
     await page.locator('#midi-import').getByRole('button', { name: '読み込む', exact: true }).click();
     await expect(statusText(page)).toContainText('groove.mid から 1 本のトラックを読み込みました');
+});
+
+test('三連と 32 分音符の MIDI ファイルは、位置がそのまま入る (16 分音符に寄らない)。書き出しても、位置は変わらない', async ({ page }) => {
+    // 1 拍目に 8 分の三連が 3 つ、2 拍目に 32 分音符が 2 つ、3 拍目の頭に 4 分音符
+    const SHUFFLE = [
+        note('C', 4, 0, 4 / 3), note('D', 4, 4 / 3, 4 / 3), note('E', 4, 8 / 3, 4 / 3),
+        note('F', 4, 4, 0.5), note('G', 4, 4.5, 0.5), note('A', 4, 8, 4),
+    ];
+    const source = Buffer.from(notesToMidi([{ name: 'Shuffle', notes: SHUFFLE }], 100));
+    await openDaw(page);
+    await startFree(page, 1);
+    await openTab(page, 'ファイル');
+    await chooseFile(page, { name: 'shuffle.mid', mimeType: 'audio/midi', buffer: source });
+    await expect(page.locator('#midi-track-list li')).toHaveCount(1);
+    // 丸めたノートは無い (「読み込みで変わること」に、丸めの行が出ない)
+    await expect(page.locator('#midi-import-plan')).not.toContainText('丸めたノート');
+    await page.locator('#midi-import').getByRole('button', { name: '読み込む', exact: true }).click();
+    await expect(statusText(page)).toContainText('shuffle.mid から 1 本のトラックを読み込みました');
+
+    // ピアノロールで開くと、三連と 32 分の位置のまま (小数のステップは、小数 2 桁で出る)
+    await page.locator('#tracks-container .track-name').filter({ hasText: 'Shuffle' }).click();
+    await expect(page.locator('#note-layer .note-block')).toHaveCount(SHUFFLE.length);
+    const placed = await page.locator('#note-layer .note-block').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.note ?? ''));
+    expect(placed.map((text) => text.replace(/ 強さ:\d+$/, ''))).toEqual([
+        'C4 step:0 len:1.33', 'D4 step:1.33 len:1.33', 'E4 step:2.67 len:1.33',
+        'F4 step:4 len:0.5', 'G4 step:4.5 len:0.5', 'A4 step:8 len:4',
+    ]);
+    // 三連の 2 つ目は、1 拍 (4 ステップ = 80px) の 3 分の 1 の位置に描かれる
+    const first = (await page.locator('#note-layer .note-block').nth(0).boundingBox())!;
+    const second = (await page.locator('#note-layer .note-block').nth(1).boundingBox())!;
+    expect(second.x - first.x).toBeCloseTo(80 / 3, 0);
+
+    // 書き出すと、ノートの位置 (tick) が、読み込んだファイルと同じ (空の Track 1 は書き出されない)
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'MIDI 書き出し', exact: true }).click();
+    const stream = await (await download).createReadStream();
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(chunk as Buffer);
+    const back = parseMidi(new Uint8Array(Buffer.concat(chunks)));
+    const original = parseMidi(new Uint8Array(source));
+    expect(back.tracks).toHaveLength(1);
+    expect(back.tracks[0].notes).toEqual(original.tracks[0].notes);
+    expect(back.tracks[0].notes.map((n) => n.step)).toEqual(SHUFFLE.map((n) => n.step));
+    expect(back.loss.rounded).toBe(0);
 });
 
 test('MIDI ファイルでないものを選ぶと、理由を付けて断る', async ({ page }) => {

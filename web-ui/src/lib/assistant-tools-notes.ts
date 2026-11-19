@@ -13,10 +13,11 @@
  * 変えたノートが、変えていないノートと同じ高さ・同じ位置に重なったら、変えた側を 1 つにまとめる（二重に置かない）。
  */
 import { DEFAULT_VELOCITY, type PianoNote } from './engine';
-import { stepsPerBar } from './grid';
+import { inStepRange, normStep, sameStep, stepsPerBar, toTicks } from './grid';
+import { quantize, spanLabel } from './snap';
 import {
-    ArgError, OCTAVE_MAX, OCTAVE_MIN, SHARP_NAMES, ToolError, barsLabel, copyNote, flag, formatPitch, integer, noteKey, parsePitch, pitchNumber,
-    trackOf,
+    ArgError, OCTAVE_MAX, OCTAVE_MIN, SHARP_NAMES, ToolError, barsLabel, copyNote, flag, formatPitch, integer, noteKey, number, parsePitch, pitchNumber,
+    stepOut, stepValue, trackOf,
     type ToolEnv, type ToolSpec, type ToolTrack,
 } from './assistant-tool-kit';
 
@@ -24,11 +25,26 @@ import {
 export const TRANSPOSE_MAX = 48;
 /** くり返す回数の上限。 */
 export const REPEAT_MAX = 32;
-/** そろえる間隔（ステップ）に使える値。2 = 8 分音符、4 = 4 分音符、8 = 2 分音符、16 = 全音符。 */
-export const QUANTIZE_GRIDS = [2, 4, 8, 16] as const;
+/**
+ * そろえる間隔（ステップ）に使える値と、その呼び名。0.5 = 32 分音符、2/3 = 16 分の三連、1 = 16 分音符、4/3 = 8 分の三連、
+ * 2 = 8 分音符、4 = 4 分音符、8 = 2 分音符、16 = 全音符。三連は、`0.6667` `1.3333` のような小数で渡される
+ * （`quantizeGrid` が、近い値に読む）。
+ */
+export const QUANTIZE_GRIDS: readonly { steps: number; label: string }[] = [
+    { steps: 0.5, label: '32 分音符' },
+    { steps: 2 / 3, label: '16 分の三連' },
+    { steps: 1, label: '16 分音符' },
+    { steps: 4 / 3, label: '8 分の三連' },
+    { steps: 2, label: '8 分音符' },
+    { steps: 4, label: '4 分音符' },
+    { steps: 8, label: '2 分音符' },
+    { steps: 16, label: '全音符' },
+];
 
-/** 間隔（ステップ）の呼び名。 */
-const GRID_LABELS: Record<number, string> = { 2: '8 分音符', 4: '4 分音符', 8: '2 分音符', 16: '全音符' };
+/** `grid_steps` の値から、そろえる間隔を引く（三連の小数は、0.01 ステップまでの違いを同じ値として読む）。無ければ undefined。 */
+export function quantizeGrid(value: number): { steps: number; label: string } | undefined {
+    return QUANTIZE_GRIDS.find((g) => Math.abs(g.steps - value) < 0.01);
+}
 
 /** 変形の結果。 */
 export interface Transformed {
@@ -47,9 +63,9 @@ function fromPitchNumber(midi: number): { note: string; octave: number } {
     return { note: SHARP_NAMES[((midi % 12) + 12) % 12], octave: Math.floor(midi / 12) - 1 };
 }
 
-/** 2 つのノートが、高さ・位置・長さ・強さまで同じか。 */
+/** 2 つのノートが、高さ・位置・長さ・強さまで同じか（位置と長さは、1/60 ステップにそろえて比べる）。 */
 function sameNote(a: PianoNote, b: PianoNote): boolean {
-    return a.note === b.note && a.octave === b.octave && a.step === b.step && a.length === b.length && a.velocity === b.velocity;
+    return a.note === b.note && a.octave === b.octave && sameStep(a.step, b.step) && sameStep(a.length, b.length) && a.velocity === b.velocity;
 }
 
 /**
@@ -105,27 +121,28 @@ export function shiftNotes(existing: readonly PianoNote[], picked: ReadonlySet<n
     const target = existing.filter((_n, i) => picked.has(i));
     const first = Math.min(...target.map((n) => n.step));
     const last = Math.max(...target.map((n) => n.step + n.length));
-    if (first + steps < 0) {
-        throw new ToolError(`いちばん前のノート（step ${first}）が、1 小節目の頭より前に出ます。前へずらせるのは ${first} ステップまでです`,
+    if (normStep(first + steps) < 0) {
+        throw new ToolError(`いちばん前のノート（step ${stepOut(first)}）が、1 小節目の頭より前に出ます。前へずらせるのは ${stepOut(first)} ステップまでです`,
             'いちばん前のノートが、1 小節目の頭より前に出ます');
     }
-    if (last + steps > maxSteps) {
+    if (normStep(last + steps) > maxSteps) {
         throw new ToolError(`いちばん後ろのノートが、ピアノロールの長さの上限（${maxSteps} ステップ）を超えます`);
     }
-    return transformNotes(existing, picked, (n) => ({ ...n, step: n.step + steps }));
+    return transformNotes(existing, picked, (n) => ({ ...n, step: normStep(n.step + steps) }));
 }
 
 /**
  * 位置を、間隔の倍数にそろえる（近いほうへ。ちょうど真ん中は後ろへ）。
  *
- * @param grid - 間隔（ステップ）
+ * @param grid - 間隔（ステップ。小数も可: 0.5 = 32 分音符、4/3 = 8 分の三連）
  * @param lengths - true なら、長さも間隔の倍数にそろえる（間隔より短くはしない）
  */
 export function quantizeNotes(existing: readonly PianoNote[], picked: ReadonlySet<number>, grid: number, lengths = false): Transformed {
-    const snap = (value: number) => Math.floor(value / grid + 0.5) * grid;
+    // 計算は 1/60 ステップの単位で行う (lib/snap.ts の quantize。三連の間隔でも、端数がたまらない)
+    const cell = normStep(grid);
     return transformNotes(existing, picked, (n) => ({
-        ...n, step: snap(n.step),
-        ...(lengths ? { length: Math.max(grid, snap(n.length)) } : {}),
+        ...n, step: quantize(n.step, cell),
+        ...(lengths ? { length: Math.max(cell, quantize(n.length, cell)) } : {}),
     }));
 }
 
@@ -174,7 +191,7 @@ export function repeatNotes(
 ): { notes: PianoNote[]; added: number[]; skipped: number } {
     const source = existing.filter((_n, i) => picked.has(i));
     const period = end - start;
-    const reach = Math.max(...source.map((n) => n.step + n.length)) - start + toStep + (times - 1) * period;
+    const reach = normStep(Math.max(...source.map((n) => n.step + n.length)) - start + toStep + (times - 1) * period);
     if (reach > maxSteps) {
         throw new ToolError(`くり返した先が、ピアノロールの長さの上限（${maxSteps} ステップ）を超えます。times を小さくしてください`,
             'くり返した先が、ピアノロールの長さの上限を超えます');
@@ -185,7 +202,7 @@ export function repeatNotes(
     let skipped = 0;
     for (let k = 0; k < times; k++) {
         for (const n of source) {
-            const copy = { ...copyNote(n), step: n.step - start + toStep + k * period };
+            const copy = { ...copyNote(n), step: normStep(n.step - start + toStep + k * period) };
             const key = noteKey(copy);
             if (seen.has(key)) { skipped += 1; continue; }
             seen.add(key);
@@ -218,10 +235,11 @@ export const PICK_KEYS = ['track_id', 'start_step', 'end_step', 'pitches', 'sele
  * @throws {ToolError}
  */
 export function pickNotes(args: Record<string, unknown>, track: ToolTrack, env: ToolEnv, requireRange = false): Picked {
-    const start = integer(args, 'start_step', { min: 0, required: requireRange });
-    const end = integer(args, 'end_step', { min: 1, required: requireRange });
-    if (start !== undefined && end !== undefined && end <= start) {
-        throw new ArgError(`end_step は start_step より大きくしてください（いまは start_step ${start}、end_step ${end}。end_step は範囲に含みません）`);
+    // 範囲の端は、小数も受ける (三連・32 分のノートを、範囲に入れたり外したりできるように)
+    const start = stepValue(args, 'start_step', { min: 0, required: requireRange });
+    const end = stepValue(args, 'end_step', { min: 0, required: requireRange });
+    if (start !== undefined && end !== undefined && toTicks(end) <= toTicks(start)) {
+        throw new ArgError(`end_step は start_step より大きくしてください（いまは start_step ${stepOut(start)}、end_step ${stepOut(end)}。end_step は範囲に含みません）`);
     }
     let pitches: Set<string> | undefined;
     if (args.pitches !== undefined && args.pitches !== null) {
@@ -247,7 +265,8 @@ export function pickNotes(args: Record<string, unknown>, track: ToolTrack, env: 
     const from = start ?? 0, to = end ?? Infinity;
     const indices = new Set<number>();
     track.pianoNotes.forEach((n, i) => {
-        if (n.step < from || n.step >= to) return;
+        // 範囲に入るかは、刻みの数 (1/60 ステップの整数) で比べる
+        if (!inStepRange(n.step, from, to)) return;
         if (pitches && !pitches.has(formatPitch(n))) return;
         if (selected && !selected.has(i)) return;
         indices.add(i);
@@ -315,17 +334,20 @@ export const NOTE_TOOLS: Record<string, ToolSpec> = {
         label: 'ノートをずらす', running: 'ノートをずらしています…', access: 'write', keys: [...PICK_KEYS, 'steps'],
         run: (args, env) => {
             const track = trackOf(args, env);
-            const steps = integer(args, 'steps', { required: true })!;
-            if (steps === 0) throw new ArgError('steps が 0 です。ずらす幅を、ステップの数で指定してください（後ろへは正、前へは負。1 拍は 4）');
+            // ずらす幅は、小数も受ける (三連 1 つぶん = 4/3、32 分音符 1 つぶん = 0.5)
+            const steps = stepValue(args, 'steps', { required: true })!;
+            if (steps === 0) throw new ArgError('steps が 0 です。ずらす幅を、ステップの数で指定してください（後ろへは正、前へは負。1 拍は 4。小数も可: 8 分の三連 1 つぶんは 1.3333）');
             const picked = pickNotes(args, track, env);
             const result = shiftNotes(track.pianoNotes, picked.indices, steps, env.maxSteps());
             if (result.changed.length > 0) env.setTrackNotes(track.id, result.notes, 'ノートをずらす');
             flash(env, track.id, result.changed);
-            const amount = Math.abs(steps) % 4 === 0 ? `${Math.abs(steps) / 4} 拍` : `${Math.abs(steps)} ステップ`;
+            // 整数のステップは、これまでどおり「1 拍」「3 ステップ」。小数は、音符の数で言う (「8 分の三連符 1 個」)
+            const abs = Math.abs(steps);
+            const amount = abs % 4 === 0 ? `${abs / 4} 拍` : Number.isInteger(abs) ? `${abs} ステップ` : `${spanLabel(abs)}ぶん`;
             return {
                 ok: true,
                 summary: `ノートを ${result.changed.length} 個、${amount}${steps > 0 ? '後ろ' : '前'}へずらしました（${picked.where}${tail(result)}）`,
-                ...data(track, result), steps,
+                ...data(track, result), steps: stepOut(steps),
             };
         },
     },
@@ -334,23 +356,23 @@ export const NOTE_TOOLS: Record<string, ToolSpec> = {
         label: 'ノートの位置をそろえる', running: 'ノートの位置をそろえています…', access: 'write', keys: [...PICK_KEYS, 'grid_steps', 'lengths'],
         run: (args, env) => {
             const track = trackOf(args, env);
-            const grid = integer(args, 'grid_steps', { required: true })!;
-            if (!(QUANTIZE_GRIDS as readonly number[]).includes(grid)) {
-                throw new ArgError(`grid_steps は ${QUANTIZE_GRIDS.map((g) => `${g}（${GRID_LABELS[g]}）`).join('・')} のどれかにしてください（いまは ${grid}）。`
-                    + 'ノートの位置は 16 分音符の単位なので、16 分音符にそろえる必要はありません');
+            const raw = number(args, 'grid_steps', { min: 0, max: 16, required: true })!;
+            const grid = quantizeGrid(raw);
+            if (!grid) {
+                throw new ArgError(`grid_steps は ${QUANTIZE_GRIDS.map((g) => `${stepOut(g.steps)}（${g.label}）`).join('・')} のどれかにしてください（いまは ${raw}）`);
             }
             const lengths = flag(args, 'lengths') === true;
             const picked = pickNotes(args, track, env);
-            const result = quantizeNotes(track.pianoNotes, picked.indices, grid, lengths);
+            const result = quantizeNotes(track.pianoNotes, picked.indices, grid.steps, lengths);
             if (result.changed.length > 0 || result.merged > 0) env.setTrackNotes(track.id, result.notes, 'ノートの位置をそろえる');
             flash(env, track.id, result.changed);
-            const what = `${GRID_LABELS[grid]}の位置${lengths ? 'と長さ' : ''}`;
+            const what = `${grid.label}の位置${lengths ? 'と長さ' : ''}`;
             return {
                 ok: true,
                 summary: result.changed.length === 0 && result.merged === 0
                     ? `対象の ${result.unchanged} 個は、もう${what}に合っています（${picked.where}）`
                     : `ノートを ${result.changed.length} 個、${what}にそろえました（${picked.where}${tail(result)}）`,
-                ...data(track, result), grid_steps: grid,
+                ...data(track, result), grid_steps: stepOut(grid.steps),
             };
         },
     },
@@ -361,7 +383,7 @@ export const NOTE_TOOLS: Record<string, ToolSpec> = {
             const track = trackOf(args, env);
             const times = integer(args, 'times', { min: 1, max: REPEAT_MAX }) ?? 1;
             const picked = pickNotes(args, track, env, true);
-            const toStep = integer(args, 'to_step', { min: 0 }) ?? picked.end;
+            const toStep = stepValue(args, 'to_step', { min: 0 }) ?? picked.end;
             const result = repeatNotes(track.pianoNotes, picked.indices, picked.start, picked.end, toStep, times, env.maxSteps());
             const perBar = stepsPerBar(env.grid());
             const placed = barsLabel(toStep, toStep + times * (picked.end - picked.start), perBar);
@@ -378,7 +400,7 @@ export const NOTE_TOOLS: Record<string, ToolSpec> = {
                 ok: true,
                 summary: `${picked.where}のノート ${picked.indices.size} 個を、${times > 1 ? `${times} 回くり返して` : '写して'}置きました（置いた先は ${placed}、${result.added.length} 個${skipped}）`,
                 track_id: track.id, added: result.added.length, skipped: result.skipped, note_count: result.notes.length,
-                to_step: toStep, end_step: toStep + times * (picked.end - picked.start),
+                to_step: stepOut(toStep), end_step: stepOut(toStep + times * (picked.end - picked.start)),
             };
         },
     },

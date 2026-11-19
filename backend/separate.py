@@ -306,7 +306,10 @@ def separate_drums(
 
     Note:
         ジョブが失敗またはキャンセルで終わったら、このトラックの出力ディレクトリは消される。
+        細分化そのものが失敗したとき（例外を送出するとき）は、ジョブの終わりを待たずに、その場で消す。
     """
+    import shutil
+
     import background_jobs
     import demucs_progress
     import stem_models
@@ -336,10 +339,17 @@ def separate_drums(
 
     # 途中でやめたときに、書きかけのステムを残さない
     job.remove_on_abort(base)
-    # モデルはすでに手元に在るので、モデルを用意するステージは設けない
-    returncode = demucs_progress.run(cmd, model=DRUM_MODEL, job=job, stage=stage, model_stage=None)
-    if returncode != 0:
-        raise RuntimeError("ドラムの細分化（Demucs）の実行に失敗しました。")
+    try:
+        # モデルはすでに手元に在るので、モデルを用意するステージは設けない
+        returncode = demucs_progress.run(cmd, model=DRUM_MODEL, job=job, stage=stage, model_stage=None)
+        if returncode != 0:
+            raise RuntimeError("ドラムの細分化（Demucs）の実行に失敗しました。")
+    except Exception:
+        # 失敗したら、書きかけはその場で消す。呼び出し側が失敗を受け止めてジョブを続けても
+        # （分解の ``deep_separate(on_drum_split_error=...)``）、書きかけを残さないため。
+        # キャンセル（``JobCancelled`` は ``BaseException``）はここを通らず、ジョブの後片付けに任せる
+        shutil.rmtree(base, ignore_errors=True)
+        raise
 
     paths = {}
     for model_stem, key in stem_models.ADDON_MODELS[DRUM_MODEL]["stems"].items():
@@ -358,6 +368,7 @@ def deep_separate(
     recursive_depth: int = 1,
     split_drums: bool = False,
     job=None,
+    on_drum_split_error=None,
 ) -> dict[str, Path]:
     """htdemucs_6s による多段のレイヤー分離を行い、有音ステムのパスを返す。
 
@@ -384,6 +395,10 @@ def deep_separate(
             真のとき、追加のモデルが手元に無ければ最初にダウンロードする（約 160 MB）。
         job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
             ステージは ``deep_separate_stages()`` のキーで進む。None なら報告しない。
+        on_drum_split_error (Callable[[Exception], None] | None, optional): ドラムの細分化
+            （``separate_drums``）が失敗したときに呼ぶ関数。渡すと、失敗にせず、ドラムの部位を
+            結果に入れないで続ける（6 ステムの分離は捨てない。書きかけの細分化の出力は消してある）。
+            キャンセルは受け止めず、そのまま伝える。None なら、失敗をそのまま送出する（デフォルト）。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -392,6 +407,7 @@ def deep_separate(
 
     Raises:
         RuntimeError: Demucs サブプロセスが失敗した場合（``separate_audio`` が送出）。
+            ドラムの細分化の失敗は、``on_drum_split_error`` を渡したときは送出しない。
         stem_models.ModelUnavailableError: ``split_drums`` が真で、モデルを用意できなかった場合。
             分離を始める前に送出する（数分かけて分離したあとで失敗しないように）。
         background_jobs.JobCancelled: ジョブがキャンセルされた場合。
@@ -432,14 +448,24 @@ def deep_separate(
                 result[key] = p
                 if key == "drums" and split_drums:
                     print("\n[深層分離] === ドラムを部位ごとに分離 ===")
-                    parts = separate_drums(
-                        str(p),
-                        output_dir=str(Path(output_dir) / "deep_drums"),
-                        mp3_output=mp3_output,
-                        segment=segment,
-                        jobs=jobs,
-                        job=job,
-                    )
+                    try:
+                        parts = separate_drums(
+                            str(p),
+                            output_dir=str(Path(output_dir) / "deep_drums"),
+                            mp3_output=mp3_output,
+                            segment=segment,
+                            jobs=jobs,
+                            job=job,
+                        )
+                    except Exception as e:
+                        # キャンセル（``JobCancelled`` は ``BaseException``）はここを通らない
+                        if on_drum_split_error is None:
+                            raise
+                        # 失敗とキャンセルが重なったら、キャンセルとして伝える
+                        job.check_cancelled()
+                        print(f"[深層分離] ドラムの細分化に失敗 → 部位に分けずに続ける: {e}")
+                        on_drum_split_error(e)
+                        parts = {}
                     for part_key, part_p in parts.items():
                         if not _is_silent(part_p):
                             result[part_key] = part_p

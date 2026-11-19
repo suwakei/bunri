@@ -83,6 +83,27 @@ impl MidiInputs {
     }
 }
 
+/// つながっている入力ポートの名前を返す (開かない)。
+///
+/// 画面が「鍵盤がつながっていますが、まだ MIDI 入力を始めていません」と知らせるために使う。入力を始めるまでは
+/// 弾いても何も届かないので、アプリの側からは、つながっていることしか分からない。
+/// MIDI を使えない環境では、失敗にせず空のリストを返す (知らせを出さないだけにする)。
+pub fn port_names() -> Vec<String> {
+    let Ok(input) = MidiInput::new(CLIENT_NAME) else {
+        return Vec::new();
+    };
+    input
+        .ports()
+        .iter()
+        .enumerate()
+        .map(|(index, port)| {
+            input
+                .port_name(port)
+                .unwrap_or_else(|_| format!("MIDI 入力 {}", index + 1))
+        })
+        .collect()
+}
+
 /// つながっている入力ポートをすべて開く。
 ///
 /// 1 つのクライアントは 1 つのポートにしか接続できないので、ポートごとにクライアントを作る。
@@ -230,6 +251,15 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::time::Instant;
+
+    #[test]
+    fn ポートの名前は開かずに調べられる() {
+        // つながっている機器は環境で変わるので、中身は決め打ちしない。MIDI を使えない環境でも、失敗せずに返ること
+        let names = port_names();
+        // `cargo test -- --nocapture` で、この機械につながっているポートを見られる
+        eprintln!("MIDI の入力ポート: {names:?}");
+        assert!(names.iter().all(|name| !name.is_empty()));
+    }
 
     #[test]
     fn メッセージを記録用の文にする() {

@@ -257,14 +257,14 @@ describe('parseMidi', () => {
         expect(parseMidi(bytes).tracks[0].notes).toEqual([{ note: 'G', octave: 4, step: 0, length: 1, velocity: 64 }]);
     });
 
-    it('16 分音符に乗らない位置と長さは丸め、丸めた数を返す', () => {
+    it('三連と 32 分音符の位置と長さは、丸めずにそのまま入る（16 分音符に寄せない）', () => {
         // 分解能 480。3 連符の位置（160 tick）と、32 分音符の長さ（60 tick）
         const bytes = new Uint8Array([
             ...header(1, 1, 480),
             ...track([
-                0x00, 0x90, 60, 100, 0x78, 0x80, 60, 0,              // 0〜120: 格子どおり
-                0x28, 0x90, 62, 100, 0x81, 0x20, 0x80, 62, 0,       // 160〜320: 3 連符の 2 つ目
-                0x00, 0x90, 64, 100, 0x3c, 0x80, 64, 0,              // 320〜380: 位置も長さも乗らない
+                0x00, 0x90, 60, 100, 0x78, 0x80, 60, 0,              // 0〜120: 16 分音符
+                0x28, 0x90, 62, 100, 0x81, 0x20, 0x80, 62, 0,       // 160〜320: 8 分の三連の 2 つ目
+                0x00, 0x90, 64, 100, 0x3c, 0x80, 64, 0,              // 320〜380: 三連の 3 つ目から、32 分音符の長さ
                 ...END,
             ]),
         ]);
@@ -272,28 +272,92 @@ describe('parseMidi', () => {
 
         expect(plain(result.tracks[0].notes)).toEqual([
             { note: 'C', octave: 4, step: 0, length: 1 },
-            { note: 'D', octave: 4, step: 1, length: 2 },
-            { note: 'E', octave: 4, step: 3, length: 1 },   // 長さは最短 1 ステップ
+            { note: 'D', octave: 4, step: 4 / 3, length: 4 / 3 },
+            { note: 'E', octave: 4, step: 8 / 3, length: 0.5 },
+        ]);
+        expect(result.loss.rounded).toBe(0);
+        expect(result.tracks[0]).toMatchObject({ rounded: 0, merged: 0, unterminated: 0 });
+    });
+
+    it('1 拍の 24 分の 1 に乗らない位置と、32 分音符より短い長さは丸め、丸めた数を返す', () => {
+        // 分解能 480（1 拍の 24 分の 1 = 20 tick）
+        const bytes = new Uint8Array([
+            ...header(1, 1, 480),
+            ...track([
+                0x00, 0x90, 60, 100, 0x78, 0x80, 60, 0,              // 0〜120: 格子どおり
+                0x07, 0x90, 62, 100, 0x71, 0x80, 62, 0,              // 127〜240: 人が弾いた揺れ（位置が乗らない）
+                0x00, 0x90, 64, 100, 0x14, 0x80, 64, 0,              // 240〜260: 位置は乗るが、長さが 32 分音符より短い
+                ...END,
+            ]),
+        ]);
+        const result = parseMidi(bytes);
+
+        expect(plain(result.tracks[0].notes)).toEqual([
+            { note: 'C', octave: 4, step: 0, length: 1 },
+            { note: 'D', octave: 4, step: 1, length: 1 },       // 127 tick → 120 tick（1 ステップ）
+            { note: 'E', octave: 4, step: 2, length: 0.5 },     // 長さは最短 32 分音符
         ]);
         expect(result.loss.rounded).toBe(2);
         // トラックごとの数も持つ（読み込むトラックのぶんだけを画面で伝えるため）
         expect(result.tracks[0]).toMatchObject({ rounded: 2, merged: 0, unterminated: 0 });
     });
 
+    it('分解能が 24 で割り切れないファイルでも、三連の位置を取り違えない', () => {
+        // 分解能 100（1 拍 = 100 tick）。三連の 2 つ目は 33 tick（割り切れないので、書いた側が丸めている）
+        const bytes = new Uint8Array([
+            ...header(1, 1, 100),
+            ...track([0x21, 0x90, 60, 100, 0x21, 0x80, 60, 0, 0x22, 0x90, 62, 100, 0x19, 0x80, 62, 0, ...END]),   // 33〜66、100〜125
+        ]);
+        const result = parseMidi(bytes);
+        expect(plain(result.tracks[0].notes)).toEqual([
+            { note: 'C', octave: 4, step: 4 / 3, length: 4 / 3 },
+            { note: 'D', octave: 4, step: 4, length: 1 },
+        ]);
+        // 33 tick は、三連の位置ちょうど（33.33…）ではないので、丸めたうちに数える。100〜125 は格子どおり
+        expect(result.loss.rounded).toBe(1);
+    });
+
     it('丸めた結果、同じ高さ・同じ位置に重なったノートは 1 つにまとめる', () => {
-        // 細かい連打（0〜40 tick と 40〜100 tick）。1 ステップ = 120 tick なので、どちらも 0 ステップ目に丸まる
+        // 細かい連打（0〜4 tick と 6〜100 tick）。1 拍の 24 分の 1 = 20 tick なので、どちらも 0 ステップ目に丸まる
         const bytes = new Uint8Array([
             ...header(1, 1, 480),
             ...track([
-                0x00, 0x90, 60, 70, 0x28, 0x80, 60, 0,     // 0〜40
-                0x00, 0x90, 60, 99, 0x3c, 0x80, 60, 0,     // 40〜100
+                0x00, 0x90, 60, 70, 0x04, 0x80, 60, 0,     // 0〜4
+                0x02, 0x90, 60, 99, 0x5e, 0x80, 60, 0,     // 6〜100
                 ...END,
             ]),
         ]);
         const result = parseMidi(bytes);
 
-        expect(result.tracks[0].notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 1, velocity: 99 }]);
+        // 長いほうの長さ（100 tick = 5/6 ステップ）と、強いほうの強さを残す
+        expect(result.tracks[0].notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 5 / 6, velocity: 99 }]);
         expect(result.loss.merged).toBe(1);
+    });
+
+    it('三連・32 分・スウィングの位置を書き出して読み戻すと、位置も長さも変わらない', () => {
+        // 1/60 ステップは 2 tick なので、どの位置も整数の tick になる
+        const notes = [
+            { note: 'C', octave: 3, step: 0, length: 4 / 3 },
+            { note: 'D', octave: 3, step: 4 / 3, length: 4 / 3 },
+            { note: 'E', octave: 3, step: 8 / 3, length: 4 / 3 },      // 8 分の三連
+            { note: 'F', octave: 3, step: 4, length: 0.5 },
+            { note: 'G', octave: 3, step: 4.5, length: 0.5 },          // 32 分音符
+            { note: 'A', octave: 3, step: 26 / 3, length: 2 / 3 },     // 16 分の三連（8 と 2/3 ステップ）
+            { note: 'B', octave: 3, step: 12 + 65 / 60, length: 55 / 60 },     // スウィング 54% の 16 分の裏（1/60 ステップの位置）
+        ];
+        const bytes = notesToMidi([{ name: 't', notes }], 120);
+        // 書き出しは、どの位置も正確な tick になる（スウィングの位置も）
+        const ons = parse(bytes).tracks[1].filter((e) => e.kind === 'on').map((e) => e.tick);
+        expect(ons).toEqual([0, 160, 320, 480, 540, 1040, 1570]);
+
+        const back = parseMidi(bytes);
+        // 読み込みは 1 拍の 24 分の 1 に丸めるので、スウィング 54% の 16 分の裏（1.0833 ステップ）だけは、近い位置に寄る
+        expect(plain(back.tracks[0].notes).slice(0, 6)).toEqual(notes.slice(0, 6));
+        expect(back.tracks[0].rounded).toBe(1);
+        // 読み戻したものを、もう一度書き出して読んでも、同じになる（往復で、位置がずれていかない）
+        const again = parseMidi(notesToMidi([{ name: 't', notes: back.tracks[0].notes }], 120));
+        expect(plain(again.tracks[0].notes)).toEqual(plain(back.tracks[0].notes));
+        expect(again.tracks[0].rounded).toBe(0);
     });
 
     it('止める合図の無いノートは、トラックの終わりで止めて、数を返す', () => {

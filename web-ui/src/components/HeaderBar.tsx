@@ -10,6 +10,7 @@ import PopupMenu, { type MenuRequest } from './PopupMenu';
 import { historyShortcut, isDialogOpen, isKeyboardFocusedControl, isTypingTarget, modKeyLabel } from '../lib/keys';
 import { exportMidiFile, exportMixWav, wavExportBlocker } from '../lib/export-actions';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy } from '../lib/notice';
 import { AssistantToggle } from './AssistantPanel';
 
 /**
@@ -121,16 +122,24 @@ export default function HeaderBar() {
                 setStatus('マイクを使えませんでした。OS の設定で、このアプリにマイクの使用を許可してください', 'error');
             }
         } else {
-            const buffer = await engine.stopRecording();
-            engine.pause();
-            setIsPlaying(false);
-            await recordAsync('録音を追加', async () => {
-                let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-                if (!recTrack) recTrack = engine.addTrack('Rec');
-                await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
-            });
-            bumpTracks();
-            setStatus('録音完了');
+            try {
+                const buffer = await engine.stopRecording();
+                engine.pause();
+                setIsPlaying(false);
+                await recordAsync('録音を追加', async () => {
+                    let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+                    if (!recTrack) recTrack = engine.addTrack('Rec');
+                    await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+                });
+                bumpTracks();
+                setStatus('録音完了');
+            } catch (_e) {
+                // 録った音を読めなかった: 再生を止めて、何が起きたかを知らせる (黙って何も置かれないままにしない)
+                engine.pause();
+                setIsPlaying(false);
+                bumpTracks();
+                setStatus('録音した音を読めませんでした。録音が短すぎたか、マイクから音が届いていない可能性があります。もう一度録音してください', 'error');
+            }
         }
     }, [pianoRollRef, setIsPlaying, setStatus, bumpTracks, recordAsync]);
 
@@ -254,7 +263,7 @@ export default function HeaderBar() {
                 {/* ヘッダのボタンの見た目 (#header のボタンの決まり) を受けないよう、body の直下に出す */}
                 {createPortal(<PopupMenu request={projectMenu} onClose={() => setProjectMenu(null)} />, document.body)}
                 <button onClick={handleExport} disabled={showProgress}
-                    id="btn-export-wav"
+                    id="btn-export-wav" {...blockedBy(showProgress && BUSY_REASON)}
                     {...tip('再生で鳴る音をまとめて、1 つの WAV ファイルにします')}>WAV 書き出し</button>
                 <button onClick={handleExportMidi} id="btn-export-midi" {...tip('ピアノロールのノートを MIDI ファイルにします。ほかの音楽ソフトで開けます')}>MIDI 書き出し</button>
                 <AssistantToggle />

@@ -182,6 +182,17 @@ fn midi_start(
     Ok(names)
 }
 
+/// つながっている MIDI の入力ポートの名前を返す (開かない)。
+///
+/// 画面は、起動したときにこれを見て、鍵盤がつながっているのに MIDI 入力を始めていなければ知らせる
+/// (`web-ui/src/lib/useMidiInput.ts`)。
+///
+/// 起動してすぐ呼ばれる。OS の MIDI の用意に時間がかかっても窓を止めないよう、メインスレッドでは動かさない。
+#[tauri::command(async)]
+fn midi_ports() -> Vec<String> {
+    midi::port_names()
+}
+
 /// MIDI 入力を閉じる。
 #[tauri::command]
 fn midi_stop(app: tauri::AppHandle, inputs: State<'_, midi::MidiInputs>) {
@@ -218,6 +229,7 @@ pub fn run() {
             delete_api_key,
             midi_start,
             midi_stop,
+            midi_ports,
             activity_record,
             activity_info,
             project::project_pick_save,

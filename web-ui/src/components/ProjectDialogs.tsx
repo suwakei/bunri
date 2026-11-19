@@ -1,5 +1,5 @@
 /**
- * bunri DAW — プロジェクトの操作が尋ねる窓（保存していない変更・名前・開く一覧）。画面に 1 つだけ置く（DawPage）。
+ * bunri DAW — プロジェクトの操作が尋ねる窓（保存していない変更・名前・開く一覧・前回の続き）。画面に 1 つだけ置く（DawPage）。
  * 何を尋ねるかは lib/project-prompts.ts、尋ねる操作は lib/project-actions.ts。
  */
 import { useRef, useState, type FormEvent } from 'react';
@@ -111,12 +111,51 @@ function OpenDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'open' 
     );
 }
 
+/** Esc では閉じない窓の、閉じる操作（何もしない）。 */
+const stay = () => { /* 答えるまで閉じない */ };
+
+/** 起動したとき: 前回、保存する前に終わったときの続き（自動保存の写し）を開くか。どちらかを選ぶまで閉じない。 */
+function RecoveryDialog({ prompt }: { prompt: Extract<ProjectPrompt, { kind: 'recovery' }> }) {
+    const ref = useRef<HTMLDivElement>(null);
+    useDialog(ref, true, stay);
+    return (
+        <div className="project-overlay">
+            <div className="project-modal" ref={ref} role="alertdialog" aria-modal="true" aria-labelledby="recovery-title" aria-describedby="recovery-desc" tabIndex={-1}>
+                <h2 id="recovery-title">前回、保存していない変更が残っています</h2>
+                <div id="recovery-desc">
+                    <p>前回は、変更を保存する前に bunri が終わりました。続きを開きますか。</p>
+                    <p><strong id="recovery-name">{prompt.name ?? '無題のプロジェクト'}</strong>（<span id="recovery-time">{shortTime(prompt.savedAt)}</span> の時点）</p>
+                    {prompt.replaces && <p>続きを開くと、いまの画面の変更は消えます。</p>}
+                    <p className="note-text">続きを開いても、保存するまで元のファイルは変わりません。捨てると、この変更は元に戻せません。</p>
+                </div>
+                <div className="project-actions">
+                    <button type="button" className="action-btn primary" data-autofocus onClick={() => prompt.resolve('open')}
+                        {...tip('前回の、保存していなかった変更を含むプロジェクトを開きます。保存していない変更として開くので、残すには保存してください')}>続きを開く</button>
+                    <button type="button" className="action-btn secondary danger" onClick={() => prompt.resolve('discard')}
+                        {...tip('前回の、保存していなかった変更を消します。最後に保存したファイルは、そのまま残ります')}>捨てる</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/** 問いごとの番号（問いが替わったら、窓を作り直すため）。 */
+const promptIds = new WeakMap<ProjectPrompt, number>();
+let nextPromptId = 0;
+function promptId(prompt: ProjectPrompt): number {
+    let id = promptIds.get(prompt);
+    if (id === undefined) { id = ++nextPromptId; promptIds.set(prompt, id); }
+    return id;
+}
+
 /** いまの問いの窓（問いが無ければ何も出さない）。 */
 export default function ProjectDialogs() {
     const prompt = useProjectPrompt();
     if (!prompt) return null;
-    if (prompt.kind === 'unsaved') return <UnsavedDialog prompt={prompt} />;
-    if (prompt.kind === 'name') return <NameDialog prompt={prompt} />;
-    // 問いが替わったら作り直す (前の一覧を残さない)
-    return <OpenDialog key={prompt.entries.map(e => e.key).join('\n')} prompt={prompt} />;
+    // 問いが替わったら作り直す (前の問いの入力や一覧を残さない。後ろへ回した問いを、もう一度出すときも)
+    const key = promptId(prompt);
+    if (prompt.kind === 'unsaved') return <UnsavedDialog key={key} prompt={prompt} />;
+    if (prompt.kind === 'name') return <NameDialog key={key} prompt={prompt} />;
+    if (prompt.kind === 'recovery') return <RecoveryDialog key={key} prompt={prompt} />;
+    return <OpenDialog key={key} prompt={prompt} />;
 }

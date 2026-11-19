@@ -135,7 +135,9 @@ test('ノートを置いて MIDI を書き出すと、標準 MIDI ファイル�
 test('ノートが無いときに MIDI を押すと、書き出さずに理由を出す', async ({ page }) => {
     await openDaw(page);
     await page.getByRole('button', { name: 'MIDI 書き出し', exact: true }).click();
-    await expect(page.getByText('書き出すノートがありません')).toBeVisible();
+    // 理由は、ステータスバーと、画面に浮かぶ知らせの両方に出る
+    await expect(page.locator('#status-text')).toContainText('書き出すノートがありません');
+    await expect(page.locator('#notice-region .notice-toast')).toContainText('書き出すノートがありません');
 });
 
 test('カルテ・ガイド・差分の段は、取り込む前なら案内を出す', async ({ page }) => {

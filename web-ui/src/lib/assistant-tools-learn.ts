@@ -9,12 +9,13 @@
  * - `show_in_app`: 画面の場所を示す（押すのは利用者）
  */
 import { issueText, velocityFindingText, velocitySummaryText, type DiffIssue, type DiffResult } from './coach';
-import { stepsPerBar } from './grid';
+import { DRUM_ROWS, diffModeOf, drumRowOfNote, isLegacyDrumPart, type DiffMode } from './drums';
+import { inStepRange, stepsPerBar } from './grid';
 import type { PianoNote } from './engine';
 import { MAX_LOOP_BARS, SPEEDS, speedLabel, type ListenMode } from './practice';
 import { LANDMARKS } from './assistant-landmarks';
 import {
-    ArgError, ToolError, barsLabel, choice, flag, formatPitch, integer, settle, trackOf,
+    ArgError, ToolError, barsLabel, choice, flag, formatPitch, integer, settle, stepOut, trackOf,
     type ToolEnv, type ToolPracticeSettings, type ToolSpec, type ToolTrack,
 } from './assistant-tool-kit';
 
@@ -27,10 +28,6 @@ const LISTEN_LABELS: Record<ListenMode, string> = { part: 'パート', self: '�
 /** 選べる速度（%）。 */
 const SPEED_PERCENTS = SPEEDS.map((s) => Math.round(s * 100));
 
-/** ドラムのパートか（差分チェックの対象外。種類ごとに決まった高さへ置いた近似のため）。 */
-function isDrum(track: ToolTrack): boolean {
-    return !!track.part && track.part.includes('drum');
-}
 
 /** そのトラックの打ち込みと比べる、お手本を持つトラック。 */
 function referenceFor(args: Record<string, unknown>, track: ToolTrack, env: ToolEnv): ToolTrack {
@@ -45,6 +42,12 @@ function referenceFor(args: Record<string, unknown>, track: ToolTrack, env: Tool
     } else if (track.role === 'practice' && track.practiceOf !== undefined) {
         reference = tracks.find((t) => t.id === track.practiceOf);
     }
+    // 以前の分け方のドラム (お手本を持たず、採譜したリズムが打ち込みに置いてある) は、比べる相手が無い
+    const legacyDrum = reference ?? track;
+    if (isLegacyDrumPart(legacyDrum)) {
+        throw new ToolError(`「${legacyDrum.name}」は、以前の分け方で作ったドラムのパートで、お手本を持っていません。利用者がもう一度パートに分ける（separate_parts。replace_existing の確認が要ります）と、ドラムもお手本になり、比べられます`,
+            `「${legacyDrum.name}」は、以前の分け方のドラムで、お手本を持っていません（もう一度パートに分けると、比べられます）`);
+    }
     if (!reference || !(reference.referenceNotes && reference.referenceNotes.length > 0)) {
         const withReference = tracks.filter((t) => (t.referenceNotes?.length ?? 0) > 0);
         throw new ToolError(withReference.length === 0
@@ -54,36 +57,44 @@ function referenceFor(args: Record<string, unknown>, track: ToolTrack, env: Tool
             ? `「${track.name}」と比べるお手本がありません（お手本は、曲をパートに分けるか、MIDI ファイルをお手本として読み込むとできます）`
             : `「${track.name}」と比べるお手本が、どのトラックか分かりませんでした`);
     }
-    if (isDrum(reference)) throw new ToolError(`「${reference.name}」はドラムのパートです。ドラムは差分チェックの対象外です（採譜したリズムを、決まった高さに置いた近似のため）`);
     return reference;
 }
 
-/** ノートを、Claude に返す形にする。 */
-function noteData(n: PianoNote | null): Record<string, unknown> | null {
-    return n ? { pitch: formatPitch(n), step: n.step, length: n.length } : null;
+/** ノートを、Claude に返す形にする。ドラムの比べ方では、種類の名前（`drum`）も付ける。 */
+function noteData(n: PianoNote | null, mode?: DiffMode): Record<string, unknown> | null {
+    if (!n) return null;
+    const row = mode === 'drums' ? drumRowOfNote(n) : null;
+    return { pitch: formatPitch(n), ...(row ? { drum: row.label } : {}), step: stepOut(n.step), length: stepOut(n.length) };
 }
 
 /** 指摘を、Claude に返す形にする（事実と、決まった型の 1 行の文）。 */
-function issueData(issue: DiffIssue): Record<string, unknown> {
+function issueData(issue: DiffIssue, mode?: DiffMode): Record<string, unknown> {
     return {
-        kind: issue.kind, bar: issue.bar, beat: issue.beat, text: issueText(issue),
-        ...(issue.expected ? { expected: noteData(issue.expected) } : {}),
-        ...(issue.actual ? { actual: noteData(issue.actual) } : {}),
-        ...(issue.offset_steps ? { offset_steps: issue.offset_steps } : {}),
-        ...(issue.length_diff ? { length_diff: issue.length_diff } : {}),
+        kind: issue.kind, bar: issue.bar, beat: issue.beat, text: issueText(issue, mode),
+        ...(issue.expected ? { expected: noteData(issue.expected, mode) } : {}),
+        ...(issue.actual ? { actual: noteData(issue.actual, mode) } : {}),
+        ...(issue.offset_steps ? { offset_steps: stepOut(issue.offset_steps) } : {}),
+        ...(issue.length_diff ? { length_diff: stepOut(issue.length_diff) } : {}),
     };
 }
 
+/** ドラムの差分を返すときに添える、比べ方の説明（Claude が、結果を読み違えないように）。 */
+const DRUM_COMPARISON = 'Drum part: only where each kind of drum is hit is compared. A note\'s pitch stands for the kind of drum '
+    + `(${DRUM_ROWS.map((row) => `${row.note}${row.octave} = ${row.label}`).join(', ')}), not a musical pitch. `
+    + 'Lengths are not compared, and a hit placed on the wrong kind shows up as missing + extra (there are no pitch, octave or length differences). '
+    + 'A hit counts as matching when it is within one 16th note of the reference.';
+
 /** 差分の結果を、Claude に返すデータにする。 */
-function diffData(result: DiffResult): Record<string, unknown> {
+function diffData(result: DiffResult, mode?: DiffMode): Record<string, unknown> {
     const issues = result.bars.flatMap((b) => b.issues);
     const { reference_count, attempt_count, exact, accuracy, ...counts } = result.summary;
     return {
         match_percent: Math.round(accuracy * 100),
         reference_count, attempt_count, exact, counts,
+        ...(mode === 'drums' ? { comparison: DRUM_COMPARISON } : {}),
         worst_bars: result.worst_bars,
         issue_count: issues.length,
-        issues: issues.slice(0, MAX_ISSUES).map(issueData),
+        issues: issues.slice(0, MAX_ISSUES).map((issue) => issueData(issue, mode)),
         ...(issues.length > MAX_ISSUES ? { issues_truncated: true } : {}),
         ...(result.velocity ? {
             velocity: {
@@ -117,7 +128,7 @@ export const LEARN_TOOLS: Record<string, ToolSpec> = {
             const range = startBar === undefined && endBar === undefined
                 ? screenRange
                 : { start: ((startBar ?? 1) - 1) * perBar, end: endBar !== undefined ? endBar * perBar : Infinity };
-            const inRange = (n: PianoNote) => !range || (n.step >= range.start && n.step < range.end);
+            const inRange = (n: PianoNote) => !range || inStepRange(n.step, range.start, range.end);
             const referenceNotes = reference.referenceNotes!.filter(inRange);
             const attemptNotes = track.pianoNotes.filter(inRange);
             const lastStep = Math.max(...reference.referenceNotes!.map((n) => n.step + n.length), ...track.pianoNotes.map((n) => n.step + n.length), 1);
@@ -136,8 +147,10 @@ export const LEARN_TOOLS: Record<string, ToolSpec> = {
                 result = await env.practiceCompare();
                 shown = result !== null;
             }
-            result ??= await env.requestDiff(referenceNotes, attemptNotes, perBar, env.referenceSource(reference.id));
-            const data = diffData(result);
+            // お手本がドラムのパートなら、種類ごとの叩く位置だけを比べる (差分チェックの段・練習画面と同じ決め方)
+            const mode = diffModeOf(reference);
+            result ??= await env.requestDiff(referenceNotes, attemptNotes, perBar, env.referenceSource(reference.id), mode);
+            const data = diffData(result, mode);
             const issueCount = data.issue_count as number;
             return {
                 ok: true,

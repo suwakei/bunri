@@ -156,6 +156,10 @@ describe('画面の文', () => {
         Object.assign(lossy.tracks[2], { rounded: 5, merged: 0, unterminated: 0 });
         const notices = lossNotices(lossy, ['track', 'track', 'skip']);
         expect(notices[0]).toContain('丸めたノートが 3 個');
+        // 16 分音符には寄せない (三連・32 分は、そのまま入る)。丸める細かさを、そのまま言う
+        expect(notices[0]).toContain('1 拍の 24 分の 1 に丸めた');
+        expect(notices[0]).toContain('16 分・32 分・三連の位置は、そのまま入ります');
+        expect(notices[0]).not.toContain('16 分音符に合わせて');
         expect(notices[1]).toContain('1 つにまとめました（1 個）');
         expect(notices[2]).toContain('トラックの終わりまで伸ばしました（2 個）');
         expect(notices[3]).toContain('テンポの変化（4 回）');

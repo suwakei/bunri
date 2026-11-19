@@ -11,6 +11,11 @@ import { secToStep } from './grid';
 import { describeError, isDesktop } from './api';
 import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, pitchToNote, type MidiSource, type RecordMode } from './midi-input';
 import { recordActivity } from './activity';
+import { dismissNotice, notify } from './notice';
+import { isSnapId, realtimeQuantum, stepCell, stepText } from './snap';
+
+/** ステップ入力の長さの値: ピアノロールで選んだ刻みに従う（刻み 1 つぶんのノートを置いて、隣の位置へ進む）。 */
+export const STEP_FOLLOWS_SNAP = 0;
 
 /** 練習画面が、録る範囲と置き方を差し替えるための口（`useMidiInput` の `setPracticeHooks`）。 */
 export interface MidiPracticeHooks {
@@ -32,6 +37,7 @@ export interface MidiInputController {
     devices: string[];
     mode: RecordMode;
     setMode: (mode: RecordMode) => void;
+    /** ステップ入力で置くノートの長さ（ステップ）。`STEP_FOLLOWS_SNAP`（0）なら、ピアノロールで選んだ刻みに従う（既定） */
     stepLength: number;
     setStepLength: (length: number) => void;
     /** ステップ入力の、次に置く位置 */
@@ -53,9 +59,37 @@ export interface MidiInputController {
     setLatencyMs: (ms: number | null) => void;
 }
 
+/** 最後に鍵盤のメッセージ（押した・離した）が届いた時刻（`Date.now()`。まだ届いていなければ 0）。 */
+let lastMessageAt = 0;
+
+/** 鍵盤のメッセージが届いたことを覚える。 */
+export function noteMidiMessage(): void {
+    lastMessageAt = Date.now();
+}
+
+/**
+ * 最後に鍵盤のメッセージが届いてから経った時間（ミリ秒。まだ届いていなければ Infinity）。
+ * 自動保存（lib/autosave.ts）が、リアルタイム録音で弾いている最中を避けるのに使う。
+ */
+export function msSinceMidiMessage(): number {
+    return lastMessageAt === 0 ? Infinity : Date.now() - lastMessageAt;
+}
+
 /** 設定の置き場（ブラウザの保存領域）。 */
 const COUNT_IN_KEY = 'bunri-midi-count-in';
 const LATENCY_KEY = 'bunri-midi-latency-ms';
+/** 「MIDI 機器がつながっています」を、もう知らせたか（アプリを開いているあいだに 1 回だけ出す）。 */
+let portsAnnounced = false;
+/** 出ている「MIDI 機器がつながっています」の知らせの番号（MIDI 入力を始めたら閉じる）。 */
+let portsNoticeId: number | null = null;
+/** MIDI 入力の始め方を、もう知っているか（一度始めた・知らせを閉じた）の置き場。知っていれば、知らせを出さない。 */
+const MIDI_INTRO_KEY = 'bunri-midi-intro-seen';
+/** テスト用: 「MIDI 機器がつながっています」を、もう一度出せるようにする。 */
+export function resetMidiPortsAnnouncement(): void {
+    portsAnnounced = false;
+    portsNoticeId = null;
+    writeSetting(MIDI_INTRO_KEY, null);
+}
 /** 遅れの補正の上限（ミリ秒）。 */
 export const MAX_LATENCY_MS = 500;
 
@@ -78,11 +112,15 @@ export function useMidiInput(): MidiInputController {
     const [connected, setConnected] = useState(false);
     const [devices, setDevices] = useState<string[]>([]);
     const [mode, setModeState] = useState<RecordMode>('step');
-    const [stepLength, setStepLengthState] = useState(4);
+    // ステップ入力の 1 歩。既定は、ピアノロールで選んだ刻みに従う (STEP_FOLLOWS_SNAP)。決まった長さも選べる
+    const [stepLength, setStepLengthState] = useState(STEP_FOLLOWS_SNAP);
+    const stepLengthRef = useRef(STEP_FOLLOWS_SNAP);
     const [cursor, setCursorState] = useState(0);
     const sourceRef = useRef<MidiSource | null>(null);
     const recorderRef = useRef<MidiNoteRecorder | null>(null);
     const hooksRef = useRef<MidiPracticeHooks | null>(null);
+    /** いま知らせてある「ノートを置けない理由」(同じ理由が続くあいだは、もう一度は知らせない) */
+    const blockedHintRef = useRef<string | null>(null);
     const [countIn, setCountInState] = useState(() => readSetting(COUNT_IN_KEY) !== '0');
     // 遅れの補正。null は「任せる」(音の出力の遅れから決める)
     const [manualLatency, setManualLatency] = useState<number | null>(() => {
@@ -123,6 +161,17 @@ export function useMidiInput(): MidiInputController {
             get minOctave() { return pianoRollRef.current?.octaveRange?.[0] ?? 0; },
             get maxOctave() { return pianoRollRef.current?.octaveRange?.[1] ?? 9; },
             bounds: () => hooksRef.current?.bounds() ?? null,
+            // ステップ入力の 1 歩は、選んだ刻み (三連なら三連の位置を 1 つずつ。スウィングなら、ずらした位置)。
+            // 決まった長さを選んでいるあいだは、その長さずつ進む
+            cell: (at) => {
+                const snap = pianoRollRef.current?.snap;
+                return stepLengthRef.current > 0 || !snap ? null : stepCell(snap, at);
+            },
+            // リアルタイム録音は、選んだ刻みが 16 分より細かいか三連のときはその刻みに、そうでなければ 16 分音符にそろえる
+            quantum: () => {
+                const id = pianoRollRef.current?.snapId?.();
+                return isSnapId(id) ? realtimeQuantum(id) : 1;
+            },
         });
     }
 
@@ -130,35 +179,45 @@ export function useMidiInput(): MidiInputController {
         const event = parseMidiMessage(bytes);
         const recorder = recorderRef.current;
         if (!event || !recorder) return;
+        noteMidiMessage();
         // 機器から届いた時刻が分かれば、ここで処理するまでの待ちも、遅れとして差し引く (長すぎる値は信用しない)
         const age = typeof receivedAt === 'number' ? (performance.now() - receivedAt) / 1000 : 0;
         messageAgeRef.current = age > 0 && age < 0.5 ? age : 0;
 
         // 弾いた音は、録るかどうかに関係なく鳴らす
-        if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity);
+        // ドラムのトラックを開いているあいだは、ドラムの行の鍵盤は種類ごとの音で鳴る (再生と同じ音)
+        if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity, { drums: pianoRollRef.current?.drumMode === true });
         else engine.liveNoteOff(event.pitch);
         // 動きの記録 (lib/activity.ts): 鍵盤の操作と、その結果ノートが置かれたか
         const { note, octave } = pitchToNote(event.pitch);
         recordActivity('midi', event.type === 'on' ? `押した ${note}${octave}（強さ ${event.velocity}）` : `離した ${note}${octave}`);
 
         if (recorder.mode === 'off') return;
+        // ノートを置けない理由は、同じ理由が続くあいだは 1 回だけ知らせる (音を探して弾き続けているあいだ、知らせが居座らないように)。
+        // ノートを置けたとき・録り方を変えたとき・つなぎ直したときに、もう一度知らせられるようにする
+        const hintOnce = (reason: string, text: string) => {
+            if (blockedHintRef.current === reason) return;
+            blockedHintRef.current = reason;
+            setStatus(text, 'hint');
+        };
         if (pianoRollRef.current?.getActiveTrackId?.() == null) {
-            if (event.type === 'on') setStatus('MIDI 入力: 先に、ノートを入れるトラックをクリックして選んでください');
+            if (event.type === 'on') hintOnce('no-track', 'MIDI 入力: 先に、ノートを入れるトラックをクリックして選んでください（いまは音が鳴るだけで、ノートは置かれません）');
             return;
         }
         const result = recorder.handle(event);
         if (result.kind === 'added') {
             const placed = result.note;
-            recordActivity('midi', `ノートを置いた ${placed.note}${placed.octave}（位置 ${cursorLabel(placed.step, Math.max(1, Number(beatsPerBarRef.current) || 4))}・ステップ ${placed.step}、長さ ${placed.length}、強さ ${placed.velocity ?? '無し'}）`);
+            recordActivity('midi', `ノートを置いた ${placed.note}${placed.octave}（位置 ${cursorLabel(placed.step, Math.max(1, Number(beatsPerBarRef.current) || 4))}・ステップ ${stepText(placed.step)}、長さ ${stepText(placed.length)}、強さ ${placed.velocity ?? '無し'}）`);
             bumpTracks();
+            blockedHintRef.current = null;
         } else if (result.kind === 'skipped' && result.reason === 'stopped' && engine.isCountingIn()) {
             // 録音前のカウントの間に弾いた音は、録らない (知らせも出さない。カウントが終われば録り始める)
         } else if (result.kind === 'skipped') {
             const inLoop = hooksRef.current?.bounds() != null;
-            setStatus({
-                range: 'MIDI 入力: この高さはピアノロールの範囲の外です',
+            hintOnce(result.reason, {
+                range: 'MIDI 入力: この高さはピアノロールの範囲の外なので、ノートを置けません。鍵盤のオクターブを切り替えて、範囲の中の高さで弾いてください',
                 end: inLoop ? 'MIDI 入力: 区間の終わりまで入力しました（「区間の頭へ」で戻ります）' : 'MIDI 入力: ピアノロールの末尾まで入力しました',
-                stopped: 'MIDI 入力: リアルタイム録音は、再生してから弾いてください',
+                stopped: 'MIDI 入力: リアルタイム録音は、再生してから弾いてください（止まっているあいだは録りません。1 音ずつ置くなら、録り方を「ステップ入力」にします）',
             }[result.reason]);
         }
         setCursorState(recorder.cursor);
@@ -167,10 +226,22 @@ export function useMidiInput(): MidiInputController {
     const connect = useCallback(async () => {
         const source = pickMidiSource();
         if (!source) return false;
+        // 開き直すとき (再検出) は、前の入力を先に閉じる。閉じないと、前の受け口が残って、1 回の打鍵が 2 回届く
+        const previous = sourceRef.current;
+        sourceRef.current = null;
+        if (previous) { try { await previous.stop(); } catch { /* 閉じる途中の失敗は無視する */ } }
+        blockedHintRef.current = null;
         try {
             await source.start(handleMessage, (names) => {
                 recordActivity('midi', names.length > 0 ? `MIDI 入力を開いた（${names.join(' / ')}）` : 'MIDI 入力を開いたが、鍵盤が見つからない');
                 setDevices(names);
+                // つないだあと、何ができるかを出す。鍵盤が無いときは、弾いても何も起きない理由を知らせる
+                if (names.length > 0) {
+                    setStatus(`MIDI 入力を始めました（${names.join(' / ')}）。弾くと音が鳴ります。ノートを置くには、トラックを選んでから弾きます`);
+                    // 始め方は、もう分かっている。「つながっています」の知らせは閉じ、次からは出さない
+                    writeSetting(MIDI_INTRO_KEY, '1');
+                    if (portsNoticeId !== null) { dismissNotice(portsNoticeId); portsNoticeId = null; }
+                } else setStatus('MIDI 鍵盤が見つかりません。鍵盤をつないで電源を入れてから、「再検出」を押してください', 'hint');
             });
             sourceRef.current = source;
             setConnected(true);
@@ -183,6 +254,30 @@ export function useMidiInput(): MidiInputController {
             return false;
         }
     }, [handleMessage, setStatus]);
+
+    // MIDI 機器がつながっているのに、MIDI 入力を始めていないとき: 入力を始めるまでは、弾いても何も届かない (音も鳴らない)。
+    // 「つないだのに何も起きない」の理由を、画面を開いたときに 1 回だけ知らせる (調べられるのは、デスクトップ版だけ)。
+    // 一度でも MIDI 入力を始めたか、知らせを ✕ で閉じたあとは、もう出さない (`MIDI_INTRO_KEY`)
+    const connectedRef = useRef(false);
+    connectedRef.current = connected;
+    useEffect(() => {
+        const source = portsAnnounced || readSetting(MIDI_INTRO_KEY) === '1' ? null : pickMidiSource();
+        if (!source?.ports) return;
+        let cancelled = false;
+        void source.ports().then((names) => {
+            if (cancelled || portsAnnounced || names.length === 0 || connectedRef.current) return;
+            portsAnnounced = true;
+            // 利用者の操作への答えではないので、ステータスバーの文 (「準備完了」など) は変えずに、知らせだけを出す
+            recordActivity('midi', `つながっている MIDI 機器を見つけた（${names.join(' / ')}）。MIDI 入力は、まだ始めていない`);
+            portsNoticeId = notify('hint', `MIDI 機器（${names.join(' / ')}）がつながっています。まだ、鍵盤を弾いても何も起きません。「MIDI 入力」を押すと、弾いて音を鳴らしたり、ノートを置いたりできます`, {
+                live: true,
+                // ✕ で閉じたら、次からは出さない (MIDI を使わない人に、開くたびに出さない)
+                onDismiss: () => writeSetting(MIDI_INTRO_KEY, '1'),
+                action: { label: 'MIDI 入力を始める', run: () => void connect(), tip: 'つないだ MIDI 鍵盤で音を鳴らしたり、ノートを置いたりできるようにします' },
+            });
+        }).catch(() => { /* 調べられなければ、知らせないだけにする */ });
+        return () => { cancelled = true; };
+    }, [connect]);
 
     const disconnect = useCallback(async () => {
         const source = sourceRef.current;
@@ -201,13 +296,17 @@ export function useMidiInput(): MidiInputController {
     }, []);
 
     const setMode = useCallback((next: RecordMode) => {
+        blockedHintRef.current = null;
         setModeState(next);
         recorderRef.current?.setMode(next);
     }, []);
 
     const setStepLength = useCallback((length: number) => {
-        setStepLengthState(length);
-        if (recorderRef.current) recorderRef.current.stepLength = length;
+        const value = Number.isFinite(length) && length > 0 ? length : STEP_FOLLOWS_SNAP;
+        setStepLengthState(value);
+        stepLengthRef.current = value;
+        // 刻みに従うあいだは、録る部品の長さは使われない (刻みが分からないときの控えとして、4 分音符にしておく)
+        if (recorderRef.current) recorderRef.current.stepLength = value > 0 ? value : 4;
     }, []);
 
     const setCursor = useCallback((step: number) => {

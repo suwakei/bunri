@@ -14,15 +14,16 @@
  *   練習画面の開閉・MIDI 入力。lib/assistant-tools-notes.ts: ノートの変形。lib/assistant-tools-learn.ts: 差分チェック・
  *   再現ガイド・練習の設定・場所を示す。lib/assistant-tools-app.ts: パート分離・書き出し・保存・クリップ・エフェクト
  *
- * 位置はステップ（16 分音符。0 が 1 小節目の頭）、小節は 1 から、高さは `"C4"` の形。
+ * 位置はステップ（16 分音符。0 が 1 小節目の頭。小数も可: 0.5 = 32 分音符、4/3 = 8 分の三連）、小節は 1 から、
+ * 高さは `"C4"` の形。
  */
-import { barToSec, secToStep, stepToBar, stepsPerBar, roundBpm } from './grid';
+import { barToSec, inStepRange, secToStep, stepToBar, stepsPerBar, roundBpm } from './grid';
 import { GAIN_MAX_DB, GAIN_MIN_DB, formatGainDb, formatPan } from './mix';
 import type { RecordMode } from './midi-input';
 import {
     ArgError, BPM_MAX, BPM_MIN, MAX_NOTES_READ, ToolError, addNotes, barsLabel, barsOfNotes, byPosition, choice, describeNote, fields, flag,
     formatPitch, integer, meterLabel, number, parsePitch, readNotes, readRange, readTrackName, removeNotes, replaceNotes, roleOf,
-    round, settle, trackOf,
+    round, settle, stepOut, trackOf,
     type ToolEnv, type ToolOutcome, type ToolSpec,
 } from './assistant-tool-kit';
 
@@ -81,7 +82,7 @@ export const TOOLS: Record<string, ToolSpec> = {
                 // ピアノロールで選んでいるノート (利用者が「選んだところ」「ここ」と言ったら、これ)
                 selection: selection && selected.length > 0 ? {
                     track_id: selection.trackId, count: selected.length,
-                    start_step: Math.min(...selected.map((n) => n.step)), end_step: Math.max(...selected.map((n) => n.step + n.length)),
+                    start_step: stepOut(Math.min(...selected.map((n) => n.step))), end_step: stepOut(Math.max(...selected.map((n) => n.step + n.length))),
                     bars: barsOfNotes(selected, perBar),
                 } : null,
                 // 学ぶ流れの進み具合 (曲を取り込む → カルテ → パートに分ける → 打ち込む → 差分で直す)
@@ -121,7 +122,7 @@ export const TOOLS: Record<string, ToolSpec> = {
                     `「${track.name}」には、いま選んでいるノートがありません`);
             }
             const all = (source === 'reference' ? track.referenceNotes! : track.pianoNotes)
-                .filter((n) => n.step >= from && n.step < to && (!selectedOnly || chosen.has(n))).slice().sort(byPosition);
+                .filter((n) => inStepRange(n.step, from, to) && (!selectedOnly || chosen.has(n))).slice().sort(byPosition);
             const notes = all.slice(0, MAX_NOTES_READ);
             const truncated = all.length > notes.length;
             const what = source === 'reference' ? 'お手本' : 'ノート';

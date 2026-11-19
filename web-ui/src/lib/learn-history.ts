@@ -13,13 +13,31 @@
  * 範囲で比べるとき（練習画面のループ）は、範囲の中のノートだけを差分チェックに渡し、その `accuracy` を使う。
  *
  * 練習画面（「一致 72% ▲前回 +8%」）は `useMatchSummary(練習のトラックの ID)` か、`matchSummary` を使う。
+ *
+ * ## 小節ごとの結果（`barStats`）
+ *
+ * 記録は、比べた範囲の中の小節ごとに「お手本のノートの数」と「合っていた数」も持つ（差分チェックの `bar_stats`。
+ * 数え方は上の決まりと同じで、全部足すと `referenceCount` と `matched` になる）。曲のどこを比べ終えたかを、
+ * 小節ごと・構成の区間ごとに出すのに使う（練習の地図。lib/practice-map.ts）。小節ごとの結果を足す前の版が
+ * 残した記録には無い（範囲全体の一致率しか分からない）。
  */
 import { useDaw } from './store';
 import type { DiffResult, IssueKind } from './coach';
 import type { PianoNote } from './engine';
+import { STEP_UNITS, toTicks } from './grid';
 
 /** 差分の種類（件数を持つ順）。 */
 export const HISTORY_KINDS: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing', 'length'];
+
+/** 小節 1 つぶんの結果。 */
+export interface BarStat {
+    /** 小節（1 始まり） */
+    bar: number;
+    /** その小節で始まるお手本のノートの数（1 以上。お手本のノートが無い小節は持たない） */
+    referenceCount: number;
+    /** そのうち、合っていたノートの数 */
+    matched: number;
+}
 
 /** 記録 1 件。 */
 export interface LearnAttempt {
@@ -47,6 +65,11 @@ export interface LearnAttempt {
     counts: Record<IssueKind, number>;
     /** Claude の説明の鍵（説明を作った・保存済みの説明を出したとき。決まった文や、説明が無いときは null） */
     explanationId: string | null;
+    /**
+     * 小節ごとの結果（お手本のノートが在る小節だけ。小節順）。小節ごとの結果を足す前の版が残した記録には無い
+     * （null か、項目そのものが無い。範囲全体の一致率しか分からない記録）。
+     */
+    barStats?: BarStat[] | null;
 }
 
 /** 記録を作るときに渡すもの。 */
@@ -76,7 +99,34 @@ export function barRangeOf(notes: PianoNote[], stepsPerBar: number): { startBar:
         first = Math.min(first, n.step);
         last = Math.max(last, n.step);
     }
-    return { startBar: Math.floor(first / stepsPerBar) + 1, endBar: Math.floor(last / stepsPerBar) + 1 };
+    // 小節は、刻みの数 (1/60 ステップの整数) で数える (小数の位置が、小節の境目で前の小節に落ちないように)
+    const barOf = (step: number) => Math.floor(toTicks(step) / (stepsPerBar * STEP_UNITS)) + 1;
+    return { startBar: barOf(first), endBar: barOf(last) };
+}
+
+/**
+ * 差分チェックの結果の `bar_stats` を、記録に持たせる形にする。形の違う要素は落とす。
+ * 結果に `bar_stats` が無ければ null（以前の版の処理を担当する部分が返した結果。小節ごとの結果を持たない記録になる）。
+ */
+export function barStatsOf(result: DiffResult): BarStat[] | null {
+    if (!Array.isArray(result.bar_stats)) return null;
+    return cleanBarStats(result.bar_stats.map(b => ({ bar: b?.bar, referenceCount: b?.reference_count, matched: b?.matched })));
+}
+
+/**
+ * 小節ごとの結果を、決まった形にそろえる（小節順。整数でない・お手本のノートが無い・合っていた数が多すぎる要素は落とす）。
+ * 配列でなければ null（小節ごとの結果を持たない記録）。保存したプロジェクトから読むときにも使う。
+ */
+export function cleanBarStats(value: unknown): BarStat[] | null {
+    if (!Array.isArray(value)) return null;
+    const byBar = new Map<number, BarStat>();
+    for (const item of value as Partial<BarStat>[]) {
+        const bar = item?.bar, referenceCount = item?.referenceCount, matched = item?.matched;
+        if (!Number.isInteger(bar) || !Number.isInteger(referenceCount) || !Number.isInteger(matched)) continue;
+        if (bar! < 1 || referenceCount! < 1 || matched! < 0 || matched! > referenceCount!) continue;
+        byBar.set(bar!, { bar: bar!, referenceCount: referenceCount!, matched: matched! });
+    }
+    return [...byBar.values()].sort((a, b) => a.bar - b.bar);
 }
 
 /** 差分チェックの結果から、記録 1 件（番号はまだ付けない）を作る。 */
@@ -85,6 +135,11 @@ export function attemptFromDiff(result: DiffResult, input: AttemptInput): Omit<L
     const range = input.range ?? barRangeOf(input.reference, input.stepsPerBar);
     const counts = {} as Record<IssueKind, number>;
     for (const kind of HISTORY_KINDS) counts[kind] = s[kind] ?? 0;
+    const barStats = barStatsOf(result);
+    // 合っていた数は、小節ごとの結果が在ればその合計（一致率の分子そのもの）。無ければ、一致率から戻す（以前と同じ）
+    const matched = barStats && barStats.length > 0 && barStats.reduce((sum, b) => sum + b.referenceCount, 0) === s.reference_count
+        ? barStats.reduce((sum, b) => sum + b.matched, 0)
+        : Math.round(s.accuracy * s.reference_count);
     return {
         recordedAt: (input.now ?? new Date()).toISOString(),
         referenceId: input.referenceId,
@@ -93,10 +148,11 @@ export function attemptFromDiff(result: DiffResult, input: AttemptInput): Omit<L
         startBar: range.startBar,
         endBar: range.endBar,
         referenceCount: s.reference_count,
-        matched: Math.round(s.accuracy * s.reference_count),
+        matched,
         matchRate: matchRateOf(result),
         counts,
         explanationId: null,
+        barStats,
     };
 }
 

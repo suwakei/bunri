@@ -5,12 +5,15 @@
  *   左のパネルの「曲とパート」）。前に分けたパートと練習のトラックは入れ替わるので、在るときは `replace_existing` を求める
  * - `export_wav` / `export_midi` / `save_project`: ヘッダのボタンと同じ処理。ファイルの行き先を選ぶ窓が出るときは、選ぶのは利用者
  * - `move_clip` / `delete_clip` / `duplicate_clip` / `apply_effect`: 音声のクリップの操作。どれも元に戻せる
+ * - `trim_clip` / `split_clip` / `fade_clip`: クリップを縮める（伸ばす）・分割する・フェードを付ける。音声は書き換えない
+ *   （計算は lib/clip.ts。タイムラインの端のドラッグ・メニュー・フェードの窓と同じ処理を通る）
  *
  * 曲のファイルを選ぶこと（取り込み）は、アシスタントにはできない（ファイルを選ぶ窓は、利用者の操作でしか開かない）。
  * 場所を示して（`show_in_app` の `import_song`）、利用者に押してもらう。
  */
 import { barToSec, secToStep, stepToBar } from './grid';
 import { FX_LABELS, FX_PARAMS } from './fx';
+import { MIN_CLIP_SEC, audioStartOf, endLimits, fadeInOf, fadeOutOf, formatSeconds, playLength, setClipFades, setClipRange, sourceDuration, splitLimits, startLimits } from './clip';
 import {
     ArgError, ToolError, choice, fields, flag, integer, number, round, settle, trackOf,
     type ToolClip, type ToolEnv, type ToolJob, type ToolSpec, type ToolTrack,
@@ -219,6 +222,123 @@ export const APP_TOOLS: Record<string, ToolSpec> = {
         },
     },
 
+    trim_clip: {
+        label: 'クリップを縮める', running: 'クリップの範囲を変えています…', access: 'write',
+        keys: ['track_id', 'clip_index', 'start_seconds', 'end_seconds', 'start_bar', 'end_bar'],
+        run: (args, env) => {
+            const track = trackOf(args, env);
+            const { clip, index } = clipOf(args, track);
+            const grid = env.grid();
+            const startSec = number(args, 'start_seconds', { min: 0, max: 36000 }), endSec = number(args, 'end_seconds', { min: 0, max: 36000 });
+            const startBar = integer(args, 'start_bar', { min: 1 }), endBar = integer(args, 'end_bar', { min: 1 });
+            if (startSec !== undefined && startBar !== undefined) throw new ArgError('左の端は、start_seconds か start_bar の、どちらか一方で指定してください');
+            if (endSec !== undefined && endBar !== undefined) throw new ArgError('右の端は、end_seconds か end_bar の、どちらか一方で指定してください');
+            // start_bar はその小節の頭から、end_bar はその小節の終わりまで
+            const start = startBar !== undefined ? Math.max(0, barToSec(startBar, grid)) : startSec;
+            const end = endBar !== undefined ? barToSec(endBar + 1, grid) : endSec;
+            if (start === undefined && end === undefined) {
+                throw new ArgError('動かす端を指定してください: 左の端は start_seconds か start_bar、右の端は end_seconds か end_bar');
+            }
+            const name = clip.name, oldStart = clip.offset, oldLength = playLength(clip), oldEnd = oldStart + oldLength;
+            const wantStart = start ?? oldStart, wantEnd = end ?? oldEnd;
+            if (wantEnd <= wantStart) {
+                throw new ToolError(`右の端（${round(wantEnd, 2)} 秒）は、左の端（${round(wantStart, 2)} 秒）より後ろにしてください。いまのクリップは ${round(oldStart, 2)}〜${round(oldEnd, 2)} 秒です`,
+                    `クリップ「${name}」の終わりが、頭より手前になる指定でした`);
+            }
+            // 音声が在る範囲 (端を伸ばせる限り)。その外だけを指した範囲には、鳴らせる音が無い
+            const audioFrom = startLimits(clip).min, audioTo = endLimits(clip).max;
+            if (wantEnd <= audioFrom || wantStart >= audioTo) {
+                throw new ToolError(`${round(wantStart, 2)}〜${round(wantEnd, 2)} 秒には、クリップ「${name}」の音声がありません（音声が在るのは ${round(audioFrom, 2)}〜${round(audioTo, 2)} 秒）。クリップの位置を変えるなら move_clip を使ってください`,
+                    `その範囲には、クリップ「${name}」の音声がありません（音声が在るのは ${round(audioFrom, 2)}〜${round(audioTo, 2)} 秒）`);
+            }
+            const next = setClipRange(clip, { start, end });
+            const nextEnd = next.offset + next.duration;
+            const data = {
+                track_id: track.id, clip_index: index,
+                start_seconds: round(next.offset, 2), end_seconds: round(nextEnd, 2), duration_seconds: round(next.duration, 2),
+                audio_start_seconds: round(audioStartOf(next), 2),
+            };
+            const range = `${round(next.offset, 2)}〜${round(nextEnd, 2)} 秒`;
+            if (Math.abs(next.offset - oldStart) < 1e-6 && Math.abs(next.duration - oldLength) < 1e-6) {
+                return { ok: true, summary: `クリップ「${name}」は、すでにその範囲です（${range}）`, ...data };
+            }
+            env.trimClip(track.id, index, { start, end });
+            // 頼まれた位置で止まらなかったときは、止まった理由を返す。理由は 2 つ:
+            // 音声の端より外へは伸ばせない・クリップは最短の長さ (MIN_CLIP_SEC) より短くできない (両方のこともある)
+            const stopped = Math.abs(next.offset - wantStart) > 1e-6 || Math.abs(nextEnd - wantEnd) > 1e-6;
+            const atEdge = stopped && ((start !== undefined && start < audioFrom - 1e-6) || (end !== undefined && end > audioTo + 1e-6));
+            const atMin = stopped && Math.abs(next.duration - MIN_CLIP_SEC) < 1e-6
+                && Math.min(wantEnd, audioTo) - Math.max(wantStart, audioFrom) < MIN_CLIP_SEC - 1e-9;
+            const min = formatSeconds(MIN_CLIP_SEC);
+            const why = (atEdge ? '。音声の端より外へは伸ばせないので、端で止めました' : '')
+                + (atMin ? `。クリップは ${min} 秒より短くできないので、${min} 秒で止めました` : '');
+            const verb = next.duration < oldLength - 1e-6 ? '縮めました' : next.duration > oldLength + 1e-6 ? '伸ばしました' : '範囲を変えました';
+            return {
+                ok: true, summary: `クリップ「${name}」を${verb}（${range}。${track.name}）${why}`,
+                ...data, previous_start_seconds: round(oldStart, 2), previous_end_seconds: round(oldEnd, 2),
+                ...(atEdge ? { stopped_at_audio_edge: true } : {}),
+                ...(atMin ? { stopped_at_min_length: true } : {}),
+            };
+        },
+    },
+
+    split_clip: {
+        label: 'クリップを分割する', running: 'クリップを分割しています…', access: 'write', keys: ['track_id', 'clip_index', 'at_seconds', 'at_bar'],
+        run: (args, env) => {
+            const track = trackOf(args, env);
+            const { clip, index } = clipOf(args, track);
+            const atSec = number(args, 'at_seconds', { min: 0, max: 36000 }), atBar = integer(args, 'at_bar', { min: 1 });
+            if (atSec !== undefined && atBar !== undefined) throw new ArgError('分ける位置は、at_seconds か at_bar の、どちらか一方で指定してください（どちらも省くと、再生位置で分けます）');
+            // どちらも無ければ、再生位置で分ける (画面の「再生位置で分割」と同じ)
+            const at = atBar !== undefined ? barToSec(atBar, env.grid()) : atSec !== undefined ? atSec : env.positionSec();
+            const where = atBar !== undefined ? `${atBar} 小節目の頭` : atSec !== undefined ? `${round(at, 2)} 秒` : `再生位置（${round(at, 2)} 秒）`;
+            const name = clip.name, start = clip.offset, end = clip.offset + playLength(clip), count = track.clips.length;
+            const limits = splitLimits(clip);
+            if (!limits || at < limits.min || at > limits.max) {
+                const range = `クリップは ${round(start, 2)}〜${round(end, 2)} 秒`;
+                throw new ToolError(`${where}は、クリップ「${name}」の中に在りません（${range}）。at_seconds か at_bar で、この範囲の内側（端から少し離れた位置）を指定してください`,
+                    `${where}は、クリップ「${name}」の中に在りません（${range}）`);
+            }
+            env.splitClip(track.id, index, at);
+            return {
+                ok: true, summary: `クリップ「${name}」を、${where}で 2 つに分けました（${track.name}）`,
+                track_id: track.id, clip_index: index, new_clip_index: index + 1, at_seconds: round(at, 2), clip_count: count + 1,
+            };
+        },
+    },
+
+    fade_clip: {
+        label: 'クリップにフェードを付ける', running: 'フェードを付けています…', access: 'write', keys: ['track_id', 'clip_index', 'fade_in_seconds', 'fade_out_seconds'],
+        run: (args, env) => {
+            const track = trackOf(args, env);
+            const { clip, index } = clipOf(args, track);
+            const fadeIn = number(args, 'fade_in_seconds', { min: 0, max: 3600 }), fadeOut = number(args, 'fade_out_seconds', { min: 0, max: 3600 });
+            if (fadeIn === undefined && fadeOut === undefined) {
+                throw new ArgError('fade_in_seconds か fade_out_seconds の、少なくとも一方を指定してください（0 で外します）');
+            }
+            const name = clip.name, length = playLength(clip), oldIn = fadeInOf(clip), oldOut = fadeOutOf(clip);
+            const wantIn = fadeIn ?? oldIn, wantOut = fadeOut ?? oldOut;
+            // 2 つのフェードは重ねられない
+            if (wantIn + wantOut > length + 1e-6) {
+                const sum = `フェードイン ${round(wantIn, 2)} 秒とフェードアウト ${round(wantOut, 2)} 秒の合計が、クリップ「${name}」の長さ（${round(length, 2)} 秒）を超えています`;
+                throw new ToolError(`${sum}。合計を ${round(length, 2)} 秒以内にしてください`, sum);
+            }
+            const next = setClipFades(clip, { fadeIn: wantIn, fadeOut: wantOut });
+            const nextIn = fadeInOf(next), nextOut = fadeOutOf(next);
+            const data = { track_id: track.id, clip_index: index, fade_in_seconds: round(nextIn, 2), fade_out_seconds: round(nextOut, 2) };
+            const text = `フェードイン ${round(nextIn, 2)} 秒、フェードアウト ${round(nextOut, 2)} 秒`;
+            if (Math.abs(nextIn - oldIn) < 1e-6 && Math.abs(nextOut - oldOut) < 1e-6) {
+                return { ok: true, summary: `クリップ「${name}」のフェードは、すでにその長さです（${text}）`, ...data };
+            }
+            env.fadeClip(track.id, index, { fadeIn: wantIn, fadeOut: wantOut });
+            return {
+                ok: true,
+                summary: nextIn === 0 && nextOut === 0 ? `クリップ「${name}」のフェードを外しました（${track.name}）` : `クリップ「${name}」にフェードを付けました（${text}。${track.name}）`,
+                ...data,
+            };
+        },
+    },
+
     apply_effect: {
         label: 'エフェクトをかける', running: 'エフェクトをかけています…', access: 'write', keys: ['track_id', 'clip_index', 'effect', 'params'],
         run: async (args, env) => {
@@ -246,10 +366,18 @@ export const APP_TOOLS: Record<string, ToolSpec> = {
 /** クリップを、Claude に返す形にする（`get_project` のトラックに入れる）。 */
 export function describeClips(track: ToolTrack, env: ToolEnv, limit = 20): Record<string, unknown>[] {
     const grid = env.grid();
-    return track.clips.slice(0, limit).map((clip, index) => ({
-        index, name: clip.name,
-        start_seconds: round(clip.offset, 2), duration_seconds: round(clip.duration, 2),
-        start_bar: stepToBar(Math.max(0, Math.floor(secToStep(clip.offset, grid) + 1e-6)), grid),
-        ...(clip.missing ? { missing: true } : {}),
-    }));
+    return track.clips.slice(0, limit).map((clip, index) => {
+        const audioStart = audioStartOf(clip), source = sourceDuration(clip), fadeIn = fadeInOf(clip), fadeOut = fadeOutOf(clip);
+        // 縮めてあるクリップ (隠れている音声が在る) には、音声の中の位置と、音声の全体の長さを添える (どこまで伸ばせるかが分かる)
+        const trimmed = audioStart > 1e-6 || source - audioStart - clip.duration > 1e-6;
+        return {
+            index, name: clip.name,
+            start_seconds: round(clip.offset, 2), duration_seconds: round(clip.duration, 2),
+            start_bar: stepToBar(Math.max(0, Math.floor(secToStep(clip.offset, grid) + 1e-6)), grid),
+            ...(trimmed ? { audio_start_seconds: round(audioStart, 2), audio_duration_seconds: round(source, 2) } : {}),
+            ...(fadeIn > 0 ? { fade_in_seconds: round(fadeIn, 2) } : {}),
+            ...(fadeOut > 0 ? { fade_out_seconds: round(fadeOut, 2) } : {}),
+            ...(clip.missing ? { missing: true } : {}),
+        };
+    });
 }

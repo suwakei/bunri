@@ -19,6 +19,7 @@ import { formatActivityTime, tagLabel } from '../lib/activity';
 import { fetchGuideSettings, formatUsd } from '../lib/guide';
 import { assistantBlockedLine, todayLine } from '../lib/claude-usage';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 import { ClaudeSendNote, ClaudeSettings } from './ClaudeParts';
 
 
@@ -201,6 +202,8 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                     </span>
                 )}
                 <button type="button" className="assistant-new" disabled={state.running || empty}
+                    {...blockedBy(state.running ? 'アシスタントが動いているあいだは、新しい会話にできません。終わるのを待つか、止めてから押してください'
+                        : empty && '会話は、まだ空です。入力欄に頼みたいことを書いて、送ってください')}
                     {...tip('会話と操作ログを空にして、始め直します。行った操作は、そのまま残ります。プロジェクトに保存してある会話も、次の保存で消えます')}
                     onClick={() => { session.reset(); inputRef.current?.focus(); }}>
                     新しい会話
@@ -261,6 +264,7 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                         placeholder="例: 1〜2 小節にベースを置いて" aria-describedby="assistant-keys"
                         onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
                     <button type="submit" className="assistant-send" disabled={!canSend}
+                        {...blockedBy(!canSend && !state.running && '頼みたいことを、入力欄に書いてから押してください')}
                         {...tip(state.running ? 'アシスタントが動いているあいだは、送れません' : 'アシスタントに頼みます', { key: 'Enter' })}>
                         送る
                     </button>
