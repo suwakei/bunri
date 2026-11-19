@@ -7,7 +7,7 @@
 
 mod common;
 
-use bunri_audio::{transport, Clip, CountIn, Grid, PlayOptions, Track};
+use bunri_audio::{transport, Clip, CountIn, DrumVoice, Grid, Instrument, PlayOptions, Track};
 use common::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -67,17 +67,34 @@ fn 音を作るあいだはメモリを確保しない() {
             &dir.a440(),
             vec![note(1000, 9600, 69, 100), note(4800, 9600, 76, 60)],
         ),
-        // ステレオとモノラルのクリップ (モノラルは周波数の変換も通る)
+        // ドラムのトラック (ドラムの音と、ドラムの行でない高さの三角波。途中へ移ると頭を過ぎた打音は鳴らさない)
+        Track {
+            instrument: Some(Instrument::ToneDrums {
+                kit: vec![
+                    (36, DrumVoice::Kick),
+                    (38, DrumVoice::Snare),
+                    (42, DrumVoice::Hat),
+                ],
+            }),
+            notes: vec![
+                note(0, 1200, 36, 100),
+                note(2400, 1200, 38, 90),
+                note(5975, 1200, 42, 80),
+                note(1000, 9600, 60, 100),
+            ],
+            ..Track::default()
+        },
+        // ステレオとモノラルのクリップ (モノラルは周波数の変換も通る)。鳴らす範囲とフェードも
         Track {
             clips: vec![
                 Clip {
-                    audio: stereo(SR, noise(1, 10_000), noise(2, 10_000)),
-                    start_sec: 0.05,
+                    audio_start_sec: 0.01,
+                    duration_sec: Some(0.1),
+                    fade_in_sec: 0.02,
+                    fade_out_sec: 0.03,
+                    ..Clip::new(stereo(SR, noise(1, 10_000), noise(2, 10_000)), 0.05)
                 },
-                Clip {
-                    audio: mono(44_100, noise(3, 10_000)),
-                    start_sec: 0.1,
-                },
+                Clip::new(mono(44_100, noise(3, 10_000)), 0.1),
             ],
             gain_db: -3.0,
             pan: 0.3,
@@ -119,10 +136,10 @@ fn 再生中にトラックを動かしてもメモリを確保しない() {
             note(1000, 9600, 67, 80),
         ]),
         Track {
-            clips: vec![Clip {
-                audio: stereo(SR, noise(1, 40_000), noise(2, 40_000)),
-                start_sec: 0.0,
-            }],
+            clips: vec![Clip::new(
+                stereo(SR, noise(1, 40_000), noise(2, 40_000)),
+                0.0,
+            )],
             ..Track::default()
         },
     ]);
@@ -164,10 +181,10 @@ fn 再生の状態を進めるあいだはメモリを確保しない() {
             sampler_track(&dir.a440(), vec![note(0, 48_000, 69, 100)]),
             tone_track(vec![note(0, 48_000, 60, 100), note(12_000, 9600, 64, 80)]),
             Track {
-                clips: vec![Clip {
-                    audio: stereo(SR, noise(seed, 60_000), noise(seed + 1, 60_000)),
-                    start_sec: 0.0,
-                }],
+                clips: vec![Clip::new(
+                    stereo(SR, noise(seed, 60_000), noise(seed + 1, 60_000)),
+                    0.0,
+                )],
                 ..Track::default()
             },
         ]);
@@ -182,6 +199,7 @@ fn 再生の状態を進めるあいだはメモリを確保しない() {
 
     // 鍵盤の試聴 (止まったまま) → 曲を渡す → カウント付き・区間ループ・メトロノームで再生
     controller.live_note_on(72, 100).unwrap();
+    controller.live_drum(DrumVoice::Snare, 100).unwrap();
     controller.set_song(build(1), &Grid::default()).unwrap();
     controller
         .play(&PlayOptions {

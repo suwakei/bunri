@@ -375,6 +375,10 @@ Rust の engine (`src-tauri/audio-engine`、crate `bunri-audio`) が cpal で鳴
 - command の名前・引数 (`audio.rs` の `#[tauri::command]`) と、`native-audio.ts` の呼び出し。
   クリップの音声 (`audio_clip_put`) は、生のバイト列とヘッダで渡す (JSON にしない)
 - 位置の event の中身 (`PositionEvent`)。画面は `token` が今の再生のものだけを使う
+- 曲の中身 (`audio_set_song`) のクリップの鳴らす範囲とフェード (`audioStartSec` など。画面の `lib/clip.ts` と同じ決まり)、
+  ドラムのトラックの高さと種類 (`drums`。画面の `lib/drums.ts` の `DRUM_ROWS`)、ドラムに向けた試聴 (`audio_live_note` の `drum`)。
+  ドラムの音そのもの (`audio-engine/src/drum.rs`) は画面の `lib/drum-sound.ts` の写しなので、変えるときは両方を変え、
+  `node scripts/webaudio-reference.mjs` で基準の WAV を作り直す (`tests/webaudio_parity.rs`)
 - 音声スレッド (cpal のコールバック) の中では、メモリの確保と解放・ロック・ファイルの読み書き・ログ出力をしない
 - Rust の呼び出しが失敗したら、画面はそのセッションのあいだ Web Audio に切り替える。Rust の側は、
   正しくない引数を黙って直さず、エラーで返す

@@ -112,8 +112,9 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない）。再生は `src/lib/engine.ts` を通す（デスクトップ版では Rust の engine、ブラウザでは Web Audio で鳴らす。Rust に渡す口 `src/lib/native-audio.ts` を部品から直接呼ばない） |
 | `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）、動きの記録のファイル（`activity.rs`）、音の再生（`audio.rs`。画面の頼みを音のエンジンに渡し、再生位置を知らせる）だけを持つ |
-| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、仮の音（三角波）、再生の状態（transport）、cpal での出力、オフライン描画（WAV 書き出し）。デスクトップ版の再生と鍵盤の試聴はここが鳴らす。書き出しは、まだ画面側（設計と PR の並びは `docs/instrument-engine-design.md`） |
+| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、仮の音（三角波）、ドラムの合成音（`drum.rs`）、クリップの鳴らす範囲とフェード（`clips.rs`）、再生の状態（transport）、cpal での出力、オフライン描画（WAV 書き出し）。デスクトップ版の再生と鍵盤の試聴はここが鳴らす。書き出しは、まだ画面側。画面の書き出しと同じ音かは `tests/webaudio_parity.rs` が確かめる（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
+| `scripts/webaudio-reference.mjs` | Web Audio の書き出し（本物の `engine.ts` の `mixdown`）で決まった曲を WebKit と Chromium で WAV にし、Rust の engine と突き合わせる基準（`src-tauri/audio-engine/tests/fixtures/webaudio/`）を作る。サーバは立てない |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
 | `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも。エージェントが頼まれた操作を行うコマンド（`drive.ts`）と、押せるものを画面のことばで探す部品（`controls.ts`）も |
@@ -124,7 +125,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `web-ui/src/lib/practice-map.ts` | 練習の地図（学ぶ → 差分 の段と、練習画面の「構成」の段）の集計。学習の記録から、パートごと・構成の区間ごとの一致率を出す（LLM 不使用。画面は `components/PracticeMap.tsx`。決まりは `docs/coach-diff-design.md`「練習の地図」） |
 | `web-ui/src/lib/autosave.ts` | 自動保存と、落ちたときの復旧。保存していない変更を、データ置き場の `recovery/` に復旧用の写しとして残す（利用者のファイルは自動では書き換えない。置き場と目印は `project_store.py`）。起動したときに残っていれば「続きを開きますか」と尋ねる |
 | `web-ui/src/lib/clip.ts` / `waveform.ts` | クリップの鳴らす範囲とフェード（縮める・分割・フェード。音声は書き換えない）と、クリップに描く波形。再生・区間ループ・書き出し・練習画面の速度・タイムライン・アシスタントのツールが、同じ計算を使う |
-| `web-ui/src/lib/drums.ts` / `drum-sound.ts` | ドラムの決まり（種類 → 高さの対応 `DRUM_ROWS`、ドラムのトラックの見分け方、差分の比べ方 `diffModeOf`）と、ドラムの簡単な合成音（`playDrum`。再生・区間ループ・書き出し・試聴が同じ関数を使う） |
+| `web-ui/src/lib/drums.ts` / `drum-sound.ts` | ドラムの決まり（種類 → 高さの対応 `DRUM_ROWS`、ドラムのトラックの見分け方、差分の比べ方 `diffModeOf`）と、ドラムの簡単な合成音（`playDrum`。再生・区間ループ・書き出し・試聴が同じ関数を使う）。デスクトップ版の再生で鳴らす同じ音は `src-tauri/audio-engine/src/drum.rs`（変えるときは両方を一緒に変え、`node scripts/webaudio-reference.mjs` で基準の WAV を作り直す） |
 | `web-ui/src/lib/snap.ts` / `pitch-hints.ts` | ピアノロールの刻み（4 分〜32 分・三連）とスウィングの計算（画面は `components/SnapBar.tsx`）と、キーの音・コードの音の色づけ（カルテのキーとコード。コードの表は `backend/music_theory.py` とテストで突き合わせる。画面は `components/PitchHintBar.tsx`） |
 | `web-ui/src/lib/activity.ts` | 動きの記録（いま何が起きたか）。操作・ステータスバーの文・API の呼び出しは自動で残る。入力欄に打っている途中の文字・API キー・トークンは載せない |
 | `web-ui/src/lib/notice.ts` | 知らせ（失敗と「いまはできない理由」を、画面に浮かせて出す）。ストアの `setStatus(文, 'error' \| 'hint')` が呼ぶ。押せない部品を押したときの理由（`blockedBy` / `blockedReason`）も。表示は `components/NoticeToast.tsx`（`main.tsx` に 1 つ） |

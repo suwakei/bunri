@@ -19,11 +19,16 @@
  * - **クリップの音声は、先に分けて送っておく。** `AudioBuffer` ごとに番号を振り、同じ音声を 2 度送らない。
  *   再生は、その曲で使う音声が届くのを待ってから始める
  * - **速度は、ここで時間軸を変換して渡す。** Rust は速度を知らない（`toPlayAxis` / `fromPlayAxis`）
+ * - **クリップの鳴らす範囲とフェード、ドラムの音は、Web Audio の再生・書き出しと同じ決まりで渡す。**
+ *   範囲とフェードは lib/clip.ts の関数で出した値を、ドラムの高さと種類は lib/drums.ts の `DRUM_ROWS` を渡す
+ *   （Rust の側は、同じ式で音にする。`src-tauri/audio-engine` の `clips.rs`・`drum.rs`）
  *
  * 開発者が Web Audio に戻したいときは、`localStorage` の `bunri.audioBackend` を `web` にして読み込み直す。
  */
 import { invokeDesktop, invokeDesktopRaw, isDesktop, listenDesktop } from './api';
 import { readStored } from './storage';
+import { audioStartOf, fadeInOf, fadeOutOf, playLength } from './clip';
+import { DRUM_ROWS, type DrumVoice } from './drums';
 import type { LoopRange } from './loop';
 
 /** Web Audio に戻す抜け道の、`localStorage` のキー。値が `web` なら Rust を使わない。 */
@@ -75,8 +80,13 @@ export interface SongTrackPayload {
     audible: boolean;
     /** ティック（1 拍 = 960）、MIDI 番号、強さ 1〜127 */
     notes: { start: number; length: number; pitch: number; velocity: number }[];
-    /** `audio_clip_put` の番号と、置く位置（秒） */
-    clips: { clip: number; startSec: number }[];
+    /**
+     * `audio_clip_put` の番号、置く位置（秒）、音声の中の鳴らし始め（秒）、鳴らす長さ（秒）、フェードの長さ（秒）。
+     * 範囲とフェードは lib/clip.ts で収めたもの（`audioStartOf`・`playLength`・`fadeInOf`・`fadeOutOf`）
+     */
+    clips: { clip: number; startSec: number; audioStartSec: number; durationSec: number; fadeInSec: number; fadeOutSec: number }[];
+    /** ドラムのトラックなら、ドラムの音で鳴らす高さと種類（lib/drums.ts の `DRUM_ROWS`）。ふつうのトラックは付けない */
+    drums?: { pitch: number; voice: DrumVoice }[];
 }
 
 /** `audio_play` に渡す値。時刻は、速度を変換したあとの「鳴らす時間軸」。 */
@@ -124,6 +134,11 @@ interface SourceNote {
 interface SourceClip {
     buffer: AudioBuffer;
     offset: number;
+    /** 鳴らす長さ（秒）。範囲とフェードの意味は lib/clip.ts */
+    duration: number;
+    audioStart?: number;
+    fadeIn?: number;
+    fadeOut?: number;
     missing?: boolean;
 }
 
@@ -133,6 +148,8 @@ export interface PlayTrack extends TrackMix {
     /** 鳴らすノート（`soundingNotes(track)`） */
     notes: readonly SourceNote[];
     clips: readonly SourceClip[];
+    /** ドラムのトラックか（lib/drums.ts の `isDrumTrack`）。ドラムの行の高さのノートを、ドラムの音で鳴らす */
+    drums?: boolean;
 }
 
 /** 再生 1 回ぶんの頼みごと。時刻はどれも曲の時刻（速度を変換する前）。 */
@@ -208,8 +225,10 @@ function velocityOf(velocity: number | undefined): number {
 /**
  * 曲の内容を組み立てる。
  *
- * - ノートは `step × 240` ティック。鳴らない音名のノート、長さの無いノートは入れない
- * - 音声の無いクリップ（`missing`）は入れない
+ * - ノートは `step × 240` ティック。鳴らない音名のノート、長さの無いノートは入れない。
+ *   小数のステップ（三連・32 分。1/60 ステップの倍数）は、4 ティックの倍数になる（丸めは浮動小数の誤差を消すだけ）
+ * - 音声の無いクリップ（`missing`）・鳴らす長さの無いクリップは入れない。範囲とフェードは lib/clip.ts で収めて渡す
+ * - ドラムのトラックには、ドラムの行の高さと種類（`DRUM_ROWS`）を付ける
  * - 速度を変えているとき（区間ループの中で `rate` ≠ 1）は、鳴らす時間軸に直す: テンポに速度を掛け、
  *   1 小節目の位置を区間の頭から測り直し、クリップは伸ばした音声だけを区間の頭に置く
  *
@@ -229,15 +248,25 @@ export function buildSong(request: PlayRequest, clipId: (buffer: AudioBuffer) =>
         }
         const clips: SongTrackPayload['clips'] = [];
         if (!tempo) {
-            for (const c of t.clips) if (!c.missing) clips.push({ clip: clipId(c.buffer), startSec: c.offset });
+            for (const c of t.clips) {
+                const durationSec = playLength(c);
+                if (c.missing || !(durationSec > 0)) continue;
+                clips.push({
+                    clip: clipId(c.buffer), startSec: c.offset,
+                    audioStartSec: audioStartOf(c), durationSec, fadeInSec: fadeInOf(c), fadeOutSec: fadeOutOf(c),
+                });
+            }
         } else {
-            // 伸ばした音声が無いトラックのクリップは鳴らさない (そのまま鳴らすと、ノートとずれる)
+            // 伸ばした音声が無いトラックのクリップは鳴らさない (そのまま鳴らすと、ノートとずれる)。
+            // 伸ばした音声は、区間の中のクリップの範囲とフェードを焼き込んである (lib/stretch.ts の extractRegion) ので、全体をそのまま鳴らす
             const s = request.stretched, loop = request.loop!;
             if (s && s.trackId === t.id && s.rate === tempo.rate && Math.abs(s.start - loop.start) < 1e-6 && Math.abs(s.end - loop.end) < 1e-6) {
-                clips.push({ clip: clipId(s.buffer), startSec: loop.start });
+                clips.push({ clip: clipId(s.buffer), startSec: loop.start, audioStartSec: 0, durationSec: s.buffer.duration, fadeInSec: 0, fadeOutSec: 0 });
             }
         }
-        return { id: t.id, gainDb: t.gainDb, pan: t.pan, audible: t.audible, notes, clips };
+        const track: SongTrackPayload = { id: t.id, gainDb: t.gainDb, pan: t.pan, audible: t.audible, notes, clips };
+        if (t.drums) track.drums = DRUM_ROWS.map((row) => ({ pitch: row.pitch, voice: row.voice }));
+        return track;
     });
     return {
         bpm: tempo ? bpm * tempo.rate : bpm,
@@ -700,12 +729,14 @@ class NativeAudio {
      * 鍵盤の試聴。`velocity` が 0 なら離す。
      * @param pitch - MIDI ノート番号
      * @param velocity - 強さ（1〜127。0 で離す）
+     * @param drum - ドラムのトラックに向けて弾いたとき、鳴らすドラムの種類（打った瞬間の音を 1 回鳴らす。離す指示は要らない）
      */
-    liveNote(pitch: number, velocity: number): void {
-        const args = {
+    liveNote(pitch: number, velocity: number, drum?: DrumVoice): void {
+        const args: { pitch: number; velocity: number; drum?: DrumVoice } = {
             pitch: Math.max(0, Math.min(127, Math.round(pitch))),
             velocity: velocity > 0 ? velocityOf(velocity) : 0,
         };
+        if (drum) args.drum = drum;
         void this.enqueue('liveChain', () => invokeDesktop('audio_live_note', args));
     }
 

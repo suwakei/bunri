@@ -16,10 +16,7 @@ use std::sync::Arc;
 /// 音声を 1 つ置いただけのトラック。
 fn clip_track(audio: &Arc<bunri_audio::AudioData>, start_sec: f64) -> Track {
     Track {
-        clips: vec![Clip {
-            audio: Arc::clone(audio),
-            start_sec,
-        }],
+        clips: vec![Clip::new(Arc::clone(audio), start_sec)],
         ..Track::default()
     }
 }
@@ -289,14 +286,8 @@ fn 重なったクリップは足し合わされる() {
     let s = song(vec![
         Track {
             clips: vec![
-                Clip {
-                    audio: Arc::clone(&a),
-                    start_sec: 0.0,
-                },
-                Clip {
-                    audio: Arc::clone(&b),
-                    start_sec: 1000.0 / SR as f64,
-                },
+                Clip::new(Arc::clone(&a), 0.0),
+                Clip::new(Arc::clone(&b), 1000.0 / SR as f64),
             ],
             ..Track::default()
         },

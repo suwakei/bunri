@@ -731,6 +731,8 @@ class AudioEngine {
             tracks: this.tracks.map((t) => ({
                 id: t.id, gainDb: t.gain, pan: t.pan, audible: this._nativeAudible(t, playing),
                 notes: this.soundingNotes(t), clips: t.clips,
+                // ドラムのトラックのノートは、Rust の側でも種類ごとの音で鳴らす (Web Audio の drumVoiceOf と同じ判定)
+                drums: isDrumTrack(t, (id) => this.getTrack(id)),
             })),
             fromSec: this.playOffset,
             loop,
@@ -1188,6 +1190,13 @@ class AudioEngine {
     liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY, options: { drums?: boolean } = {}): void {
         this.init();
         if (this.usesNativeAudio()) {
+            const drum = options.drums ? drumRowOfPitch(pitch) : null;
+            if (drum) {
+                // ドラムの音は打った瞬間の音。Rust の側で 1 回鳴らし、押したままの音としては持たない (Web Audio と同じ)
+                if (this.nativeHeld.delete(pitch)) nativeAudio.liveNote(pitch, 0);
+                nativeAudio.liveNote(pitch, velocity, drum.voice);
+                return;
+            }
             // 同じ高さをもう一度押したら、Rust の側で鳴らし直す
             this.nativeHeld.set(pitch, velocity);
             nativeAudio.liveNote(pitch, velocity);

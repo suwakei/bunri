@@ -492,6 +492,7 @@ dependencies = [
  "cpal",
  "hound",
  "rtrb",
+ "serde_json",
 ]
 
 [[package]]

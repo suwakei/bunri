@@ -7,7 +7,8 @@
 //! - `engine`: 曲の内容を持ち、ブロックごとに音を作る
 //! - `sampler`: sfizz (SFZ サンプラー) の包み。sfizz とのつなぎはこの中だけ
 //! - `tone`: 仮の音 (三角波)。楽器の素材が入るまで、ノートと鍵盤の試聴をこれで鳴らす
-//! - `clips`: 取り込んだ音声の再生
+//! - `drum`: ドラムの合成音 (キック・スネア・ハイハット・タム)。ドラムのトラックのノートと、ドラムに向けた鍵盤の試聴を鳴らす
+//! - `clips`: 取り込んだ音声の再生 (鳴らす範囲とフェード)
 //! - `mixer`: トラックの音量・パン・ミュート・ソロ
 //! - `render`: engine をオフラインで回す (書き出し)
 //! - `audio`: メモリに置いた音声と、WAV の読み書き
@@ -40,6 +41,7 @@
 
 pub mod audio;
 mod clips;
+pub mod drum;
 pub mod engine;
 pub mod mixer;
 pub mod output;
@@ -51,6 +53,7 @@ pub mod tone;
 pub mod transport;
 
 pub use audio::{AudioData, AudioError, WavFormat};
+pub use drum::{DrumSynth, DrumVoice};
 pub use engine::{Engine, EngineConfig, EngineError};
 pub use output::{Output, OutputDevice, OutputError, OutputHealth, OutputStats, StreamIssue};
 pub use render::{render, RenderOptions};

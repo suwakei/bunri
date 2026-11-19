@@ -33,10 +33,7 @@ fn run(engine: &mut Engine, frames: usize, blocks: &[usize]) -> (Vec<f32>, Vec<f
 /// 一定の値 (1.0) が続くモノラルの音声を置いたトラック。倍率の動きが、そのまま出力に出る。
 fn constant_track(frames: usize) -> Track {
     Track {
-        clips: vec![Clip {
-            audio: mono(SR, vec![1.0; frames]),
-            start_sec: 0.0,
-        }],
+        clips: vec![Clip::new(mono(SR, vec![1.0; frames]), 0.0)],
         ..Track::default()
     }
 }
@@ -141,10 +138,7 @@ fn 仮の音はブロックの区切り方を変えても同じ音になる() {
             note(7_000, 5_000, 72, 96),
         ]),
         Track {
-            clips: vec![Clip {
-                audio: mono(SR, noise(5, 9_000)),
-                start_sec: 0.01,
-            }],
+            clips: vec![Clip::new(mono(SR, noise(5, 9_000)), 0.01)],
             pan: 0.4,
             ..tone_track(vec![note(500, 9_000, 48, 96)])
         },
@@ -328,10 +322,10 @@ fn 位置を移すと移り変わりの途中でも行き先の値から始ま�
 fn 倍率の移り変わりもブロックの区切り方に依らない() {
     let s = song(vec![
         Track {
-            clips: vec![Clip {
-                audio: stereo(SR, noise(1, 20_000), noise(2, 20_000)),
-                start_sec: 0.0,
-            }],
+            clips: vec![Clip::new(
+                stereo(SR, noise(1, 20_000), noise(2, 20_000)),
+                0.0,
+            )],
             ..tone_track(vec![note(0, 20_000, 57, 96)])
         },
         constant_track(20_000),

@@ -55,6 +55,9 @@ type NativePlayback = import('../lib/native-audio').NativePlayback;
 
 const ctx = () => engine.ctx as unknown as MockContext;
 
+/** 曲に入れたクリップの、番号と置く位置だけ（範囲とフェードは、別のテストで確かめる）。 */
+const placements = (clips: { clip: number; startSec: number }[]) => clips.map(({ clip, startSec }) => ({ clip, startSec }));
+
 /** 中身の在る音声 (チャンネルごとのサンプル)。 */
 function audioBuffer(channels: ArrayLike<number>[], sampleRate = 48000): AudioBuffer {
     const data = channels.map((c) => Float32Array.from(c));
@@ -229,15 +232,121 @@ describe('曲の内容の組み立て', () => {
         const asked: AudioBuffer[] = [];
         const song = buildSong(request({
             tracks: [
-                { id: 1, gainDb: 0, pan: 0, audible: false, notes: [], clips: [{ buffer: a, offset: 1.5 }, { buffer: placeholder, offset: 3, missing: true }] },
-                { id: 2, gainDb: 0, pan: -1, audible: true, notes: [], clips: [{ buffer: b, offset: 0 }, { buffer: a, offset: 8 }] },
+                { id: 1, gainDb: 0, pan: 0, audible: false, notes: [], clips: [{ buffer: a, offset: 1.5, duration: 1 }, { buffer: placeholder, offset: 3, duration: 1, missing: true }] },
+                { id: 2, gainDb: 0, pan: -1, audible: true, notes: [], clips: [{ buffer: b, offset: 0, duration: 1 }, { buffer: a, offset: 8, duration: 1 }] },
             ],
         }), (buffer) => { asked.push(buffer); return ids.get(buffer)!; });
-        expect(song.tracks.map((t) => [t.id, t.audible, t.clips])).toEqual([
+        expect(song.tracks.map((t) => [t.id, t.audible, placements(t.clips)])).toEqual([
             [1, false, [{ clip: 11, startSec: 1.5 }]],
             [2, true, [{ clip: 12, startSec: 0 }, { clip: 11, startSec: 8 }]],
         ]);
         expect(asked).not.toContain(placeholder);
+    });
+});
+
+describe('クリップの範囲とフェード・小数のステップ・ドラム (Web Audio の再生と同じ決まりで渡す)', () => {
+    it('クリップは、音声の中の鳴らし始め・鳴らす長さ・フェードを lib/clip.ts で収めて渡す。鳴らす長さの無いクリップは入れない', () => {
+        // 2 秒の音声 (周波数 1Hz で 2 フレーム) を使う
+        const buffer = audioBuffer([[0, 0]], 1);
+        const song = buildSong(request({
+            tracks: [{
+                id: 1, gainDb: 0, pan: 0, audible: true, notes: [],
+                clips: [
+                    // 縮めた・フェードを付けたクリップ
+                    { buffer, offset: 3, audioStart: 0.5, duration: 1, fadeIn: 0.25, fadeOut: 0.5 },
+                    // 長さが音声の残りより長い・フェードが長さを超える → 収める
+                    { buffer, offset: 8, audioStart: 1.5, duration: 9, fadeIn: 2, fadeOut: 2 },
+                    // 項目の無いクリップは、音声の全体をフェード無しで
+                    { buffer, offset: 0, duration: 2 },
+                    // 音声の終わりより後ろから鳴らすクリップ (鳴らす長さが 0) は入れない
+                    { buffer, offset: 5, audioStart: 2, duration: 1 },
+                ],
+            }],
+        }), () => 4);
+        expect(song.tracks[0].clips).toEqual([
+            { clip: 4, startSec: 3, audioStartSec: 0.5, durationSec: 1, fadeInSec: 0.25, fadeOutSec: 0.5 },
+            { clip: 4, startSec: 8, audioStartSec: 1.5, durationSec: 0.5, fadeInSec: 0.5, fadeOutSec: 0 },
+            { clip: 4, startSec: 0, audioStartSec: 0, durationSec: 2, fadeInSec: 0, fadeOutSec: 0 },
+        ]);
+    });
+
+    it('速度を変えているときの伸ばした音声は、範囲とフェードを焼き込んであるので、全体をそのまま渡す', () => {
+        const original = audioBuffer([[0, 0]], 1), stretched = audioBuffer([[0, 0, 0, 0]], 1);
+        const song = buildSong(request({
+            loop: { start: 2, end: 4 }, rate: 0.5,
+            stretched: { trackId: 1, start: 2, end: 4, rate: 0.5, buffer: stretched },
+            tracks: [{ id: 1, gainDb: 0, pan: 0, audible: true, notes: [], clips: [{ buffer: original, offset: 0, duration: 1, fadeIn: 0.5 }] }],
+        }), (b) => (b === stretched ? 2 : 1));
+        expect(song.tracks[0].clips).toEqual([{ clip: 2, startSec: 2, audioStartSec: 0, durationSec: 4, fadeInSec: 0, fadeOutSec: 0 }]);
+    });
+
+    it('小数のステップ (三連・32 分・1/60 ステップ) は、整数のティックになる。浮動小数の誤差も残さない', () => {
+        const song = buildSong(request({
+            tracks: [{
+                id: 1, gainDb: 0, pan: 0, audible: true, clips: [],
+                notes: [
+                    { note: 'C', octave: 4, step: 4 / 3, length: 4 / 3 },      // 8 分の三連
+                    { note: 'C', octave: 4, step: 0.5, length: 0.5 },          // 32 分
+                    { note: 'C', octave: 4, step: 1 / 60, length: 1 / 60 },    // いちばん細かい単位
+                    { note: 'C', octave: 4, step: 0.1 + 0.2, length: 2 / 3 },  // 0.30000000000000004
+                ],
+            }],
+        }), () => 0);
+        const notes = song.tracks[0].notes;
+        expect(notes.map((n) => [n.start, n.length])).toEqual([[320, 320], [120, 120], [4, 4], [72, 160]]);
+        for (const n of notes) {
+            expect(Number.isInteger(n.start)).toBe(true);
+            expect(Number.isInteger(n.length)).toBe(true);
+        }
+    });
+
+    it('ドラムのトラックには、ドラムの行の高さと種類を付ける。ふつうのトラックには付けない', () => {
+        const song = buildSong(request({
+            tracks: [
+                { id: 1, gainDb: 0, pan: 0, audible: true, clips: [], drums: true, notes: [{ note: 'C', octave: 2, step: 0, length: 1 }] },
+                { id: 2, gainDb: 0, pan: 0, audible: true, clips: [], notes: [{ note: 'C', octave: 2, step: 0, length: 1 }] },
+            ],
+        }), () => 0);
+        expect(song.tracks[0].drums).toEqual([
+            { pitch: 36, voice: 'kick' }, { pitch: 38, voice: 'snare' }, { pitch: 42, voice: 'hat' }, { pitch: 45, voice: 'tom' },
+        ]);
+        expect(song.tracks[1]).not.toHaveProperty('drums');
+    });
+
+    it('再生エンジン: ドラムのパートと、その練習のトラックはドラムとして渡す。スウィングは位置を変えない (置いた位置のまま鳴らす)', async () => {
+        const d = desktop();
+        const drums = engine.addTrack('ドラム');
+        drums.role = 'part';
+        drums.part = 'drums';
+        drums.pianoNotes = [{ note: 'C', octave: 2, step: 0, length: 1 }, { note: 'D', octave: 2, step: 4 / 3, length: 1 }];
+        const practice = engine.addTrack('練習');
+        practice.role = 'practice';
+        practice.practiceOf = drums.id;
+        practice.pianoNotes = [{ note: 'F#', octave: 2, step: 2, length: 1 }];
+        const keys = engine.addTrack('鍵盤');
+        keys.pianoNotes = [{ note: 'C', octave: 2, step: 0, length: 1 }];
+        engine.swing = 0.66;
+        engine.play(0);
+        await nativeAudio.idle();
+        const tracks = d.of('audio_set_song')[0].args.song.tracks;
+        expect(tracks.map((t: { drums?: unknown[] }) => (t.drums ? t.drums.length : 0))).toEqual([4, 4, 0]);
+        expect(tracks[0].notes.map((n: { start: number }) => n.start)).toEqual([0, 320]);
+        engine.swing = 0.5;
+    });
+
+    it('鍵盤の試聴: ドラムに向けて弾いた高さは、種類を付けて 1 回鳴らす (押したままの音として持たない)', async () => {
+        const d = desktop();
+        engine.liveNoteOn(36, 100, { drums: true });
+        engine.liveNoteOff(36);
+        // ドラムの行でない高さは、ドラムに向けて弾いても三角波
+        engine.liveNoteOn(61, 90, { drums: true });
+        engine.liveNoteOff(61);
+        await nativeAudio.idle();
+        expect(d.of('audio_live_note').map((c) => c.args)).toEqual([
+            { pitch: 36, velocity: 100, drum: 'kick' },
+            { pitch: 61, velocity: 90 },
+            { pitch: 61, velocity: 0 },
+        ]);
     });
 });
 
@@ -262,14 +371,14 @@ describe('速度の変換', () => {
             stretched: { trackId: 1, start: 2, end: 4, rate: 0.5, buffer: stretched },
             countIn: { beats: 4, beatSec: 0.5 }, metronome: true,
             tracks: [
-                { id: 1, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: original, offset: 0 }], notes: [{ note: 'A', octave: 4, step: 4, length: 2 }] },
-                { id: 2, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: other, offset: 0 }], notes: [] },
+                { id: 1, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: original, offset: 0, duration: 1 }], notes: [{ note: 'A', octave: 4, step: 4, length: 2 }] },
+                { id: 2, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: other, offset: 0, duration: 1 }], notes: [] },
             ],
         });
         const song = buildSong(req, (buffer) => ids.get(buffer)!);
         expect(song.bpm).toBe(60);
         expect(song.offsetSec).toBe(-1);        // 2 + (0.5 − 2) / 0.5
-        expect(song.tracks[0].clips).toEqual([{ clip: 2, startSec: 2 }]);
+        expect(placements(song.tracks[0].clips)).toEqual([{ clip: 2, startSec: 2 }]);
         // 伸ばした音声が無いトラックのクリップは渡さない (そのまま鳴らすと、ノートとずれる)
         expect(song.tracks[1].clips).toEqual([]);
         // ノートのティックは変えない (テンポで伸びる)
@@ -283,7 +392,7 @@ describe('速度の変換', () => {
 
     it('別の区間・別の速度の伸ばした音声は使わない。区間ループが無ければ、速度は効かない', () => {
         const original = audioBuffer([[0, 0]]), stretched = audioBuffer([[0, 0, 0, 0]]);
-        const track = { id: 1, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: original, offset: 0 }], notes: [] };
+        const track = { id: 1, gainDb: 0, pan: 0, audible: true, clips: [{ buffer: original, offset: 0, duration: 1 }], notes: [] };
         const wrong = buildSong(request({
             loop: { start: 2, end: 4 }, rate: 0.5, tracks: [track],
             stretched: { trackId: 1, start: 2, end: 6, rate: 0.5, buffer: stretched },
@@ -292,7 +401,7 @@ describe('速度の変換', () => {
         const req = request({ loop: null, rate: 0.5, fromSec: 3, tracks: [track], stretched: { trackId: 1, start: 2, end: 4, rate: 0.5, buffer: stretched } });
         const plain = buildSong(req, (buffer) => (buffer === original ? 1 : 2));
         expect(plain.bpm).toBe(120);
-        expect(plain.tracks[0].clips).toEqual([{ clip: 1, startSec: 0 }]);
+        expect(placements(plain.tracks[0].clips)).toEqual([{ clip: 1, startSec: 0 }]);
         expect(playArgs(req, 1)).toMatchObject({ fromSec: 3, loop: null });
     });
 });
@@ -495,7 +604,7 @@ describe('クリップの音声を送る', () => {
         engine.play(0);
         await nativeAudio.idle();
         expect(d.of('audio_clip_put')).toHaveLength(2);
-        expect(d.of('audio_set_song')[0].args.song.tracks[0].clips).toEqual([{ clip: 1, startSec: 1.5 }, { clip: 1, startSec: 9 }]);
+        expect(placements(d.of('audio_set_song')[0].args.song.tracks[0].clips)).toEqual([{ clip: 1, startSec: 1.5 }, { clip: 1, startSec: 9 }]);
     });
 
     it('モノラルは 1 チャンネル、3 チャンネル以上は先頭の 2 チャンネルだけを送る', async () => {
@@ -521,7 +630,7 @@ describe('クリップの音声を送る', () => {
         engine.play(0);
         await nativeAudio.idle();
         expect(d.cmds()).toEqual(['audio_init', 'audio_clip_put', 'audio_set_song', 'audio_play']);
-        expect(d.of('audio_set_song')[0].args.song.tracks[0].clips).toEqual([{ clip: 1, startSec: 2 }]);
+        expect(placements(d.of('audio_set_song')[0].args.song.tracks[0].clips)).toEqual([{ clip: 1, startSec: 2 }]);
     });
 
     it('使わなくなった音声は、曲を差し替えたあとで捨てる。また要るようになったら、新しい番号で送り直す', async () => {
@@ -545,7 +654,7 @@ describe('クリップの音声を送る', () => {
         engine.play(0);
         await nativeAudio.idle();
         expect(d.of('audio_clip_put').map((c) => c.headers!['x-clip-id'])).toEqual(['1', '2']);
-        expect(d.last('audio_set_song').args.song.tracks[0].clips).toEqual([{ clip: 2, startSec: 0 }]);
+        expect(placements(d.last('audio_set_song').args.song.tracks[0].clips)).toEqual([{ clip: 2, startSec: 0 }]);
     });
 
     it('一度も鳴らしていない音声は、外した時点で捨てる', async () => {
@@ -634,7 +743,7 @@ describe('再生位置', () => {
         expect(d.of('audio_clip_put').map((c) => c.headers!['x-clip-id'])).toEqual(['1', '2']);
         const song = d.of('audio_set_song')[0].args.song;
         expect(song).toMatchObject({ bpm: 60, offsetSec: -1 });
-        expect(song.tracks[0].clips).toEqual([{ clip: 2, startSec: 2 }]);
+        expect(placements(song.tracks[0].clips)).toEqual([{ clip: 2, startSec: 2 }]);
         expect(d.of('audio_play')[0].args).toEqual({ token: 1, fromSec: 4, loop: { startSec: 2, endSec: 6 }, countIn: null, metronome: false });
         d.emit({ token: 1, positionSec: 5 });
         expect(engine.getCurrentTime()).toBeCloseTo(3.5);
@@ -646,7 +755,7 @@ describe('再生位置', () => {
         engine.setTempo(1, null);
         await nativeAudio.idle();
         expect(d.of('audio_set_song')[1].args.song).toMatchObject({ bpm: 120, offsetSec: 0.5 });
-        expect(d.of('audio_set_song')[1].args.song.tracks[0].clips).toEqual([{ clip: 1, startSec: 0 }]);
+        expect(placements(d.of('audio_set_song')[1].args.song.tracks[0].clips)).toEqual([{ clip: 1, startSec: 0 }]);
         expect(d.of('audio_clip_drop').map((c) => c.args)).toEqual([{ ids: [2] }]);
     });
 
@@ -970,8 +1079,9 @@ describe('失敗したら Web Audio に切り替える', () => {
         const d = desktop();
         d.state.fail = (cmd) => cmd === 'audio_clip_put';
         const t = engine.addTrack('曲');
-        const buffer = audioBuffer([[0.1, 0.2]]);
-        t.clips.push({ buffer, offset: 0, name: 'x', duration: 10 });
+        // 4 秒の音声 (周波数 1Hz で 4 フレーム)。2 秒から鳴らすと、音声の 2 秒目から読む
+        const buffer = audioBuffer([[0.1, 0.2, 0.3, 0.4]], 1);
+        t.clips.push({ buffer, offset: 0, name: 'x', duration: 4 });
         engine.play(2);
         await nativeAudio.idle();
         expect(d.cmds()).not.toContain('audio_play');
@@ -1021,7 +1131,7 @@ describe('ブラウザ (Rust が居ない)', () => {
         expect(engine.usesNativeAudio()).toBe(false);
         engine.metronomeEnabled = true;
         engine.play(0);
-        expect(started).toContainEqual({ kind: 'buffer', when: 1, offset: undefined, buffer });
+        expect(started).toContainEqual({ kind: 'buffer', when: 1, offset: 0, buffer });
         expect(started).toContainEqual({ kind: 'osc', when: 0.5, freq: 440 });
         ctx().currentTime = 0.25;
         expect(engine.getCurrentTime()).toBeCloseTo(0.25);

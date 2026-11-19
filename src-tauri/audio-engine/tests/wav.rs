@@ -119,10 +119,7 @@ fn 曲をwavに書き出せる() {
 
     let s = song(vec![
         Track {
-            clips: vec![Clip {
-                audio: clip,
-                start_sec: 0.5,
-            }],
+            clips: vec![Clip::new(clip, 0.5)],
             ..Track::default()
         },
         // 0.25 秒から 0.5 秒ぶんの A4

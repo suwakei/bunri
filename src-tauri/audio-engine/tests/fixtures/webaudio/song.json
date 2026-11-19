@@ -1,0 +1,47 @@
+{
+  "about": "Web Audio の書き出し (web-ui/src/lib/engine.ts の mixdown) と Rust の engine を突き合わせる曲。scripts/webaudio-reference.mjs が WebKit と Chromium で書き出し、tests/webaudio_parity.rs が Rust の描画と比べる。時刻はどれもフレーム (44100Hz)、ノートの位置と長さは 1/60 ステップ単位",
+  "sampleRate": 44100,
+  "bpm": 105,
+  "gridOffsetFrames": 0,
+  "sources": {
+    "stereo": { "frames": 44100, "left": { "noise": 12345, "level": 0.5 }, "right": { "sineHz": 330, "level": 0.4 } },
+    "mono": { "frames": 44100, "left": { "noise": 777, "level": 0.6 } }
+  },
+  "drumKit": [[36, "kick"], [38, "snare"], [42, "hat"], [45, "tom"]],
+  "tracks": [
+    {
+      "name": "縮めてフェードを付けたステレオのクリップ (分割した 2 つ)",
+      "gainDb": -3,
+      "pan": 0,
+      "clips": [
+        { "source": "stereo", "offset": 4410, "audioStart": 2205, "duration": 17640, "fadeIn": 4410, "fadeOut": 6615 },
+        { "source": "stereo", "offset": 26460, "audioStart": 19845, "duration": 8820, "fadeIn": 0, "fadeOut": 8820 }
+      ],
+      "notes": []
+    },
+    {
+      "name": "左に振ったモノラルのクリップ (フェードインだけ)",
+      "gainDb": 0,
+      "pan": -0.5,
+      "clips": [
+        { "source": "mono", "offset": 11025, "audioStart": 0, "duration": 13230, "fadeIn": 13230, "fadeOut": 0 }
+      ],
+      "notes": []
+    },
+    {
+      "name": "ドラム (三連・32 分・1/60 ステップの位置を含む)",
+      "part": "drums",
+      "gainDb": 0,
+      "pan": 0.3,
+      "clips": [],
+      "notes": [
+        { "note": "C", "octave": 2, "stepUnits": 0, "lengthUnits": 60, "velocity": 110 },
+        { "note": "F#", "octave": 2, "stepUnits": 30, "lengthUnits": 30 },
+        { "note": "D", "octave": 2, "stepUnits": 80, "lengthUnits": 80, "velocity": 90 },
+        { "note": "F#", "octave": 2, "stepUnits": 160, "lengthUnits": 20, "velocity": 70 },
+        { "note": "C", "octave": 2, "stepUnits": 181, "lengthUnits": 60 },
+        { "note": "A", "octave": 2, "stepUnits": 240, "lengthUnits": 60, "velocity": 127 }
+      ]
+    }
+  ]
+}

@@ -65,10 +65,7 @@ fn main() {
     if let Some(clip) = args.get(3) {
         let audio = AudioData::from_wav_file(Path::new(clip)).unwrap_or_else(|e| fail(&e));
         tracks.push(Track {
-            clips: vec![Clip {
-                audio: Arc::new(audio),
-                start_sec: 0.0,
-            }],
+            clips: vec![Clip::new(Arc::new(audio), 0.0)],
             ..Track::default()
         });
     }

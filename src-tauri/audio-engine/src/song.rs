@@ -7,6 +7,7 @@
 //! テンポ (`bpm`) と 1 小節目の位置 (`offset_sec`) で決まり、[`Song::tick_to_frame`] が行う。
 
 use crate::audio::AudioData;
+use crate::drum::DrumVoice;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,15 +37,45 @@ pub enum Instrument {
     Sampler { sfz: PathBuf },
     /// 仮の音 (三角波。`tone`)。楽器の素材が入るまでの代わり。モノラルの素材として扱う
     Tone,
+    /// ドラムのトラック: `kit` に在る高さのノートは、その種類の合成音 (`drum`) を 1 回鳴らし
+    /// (打った瞬間の音。ノートの長さを待たずに鳴り終わる)、ほかの高さは仮の音 (三角波) で鳴らす。
+    /// モノラルの素材として扱う。高さと種類の対応は、渡す側 (画面の `lib/drums.ts` の `DRUM_ROWS`) が決める
+    ToneDrums { kit: Vec<(u8, DrumVoice)> },
 }
 
 /// タイムラインに置いた音声 (取り込んだ原曲・ステム・録音)。
+///
+/// 音声は書き換えずに、その中のどこからどこまでを鳴らすか (`audio_start_sec`・`duration_sec`) と、
+/// 頭と終わりの音量の上げ下げ (`fade_in_sec`・`fade_out_sec`) を持つ (画面の `lib/clip.ts` と同じ決まり)。
+/// 分割した 2 つのクリップは、同じ音声 (`audio`) を指してよい。
 #[derive(Debug, Clone)]
 pub struct Clip {
     /// 音声の中身。同じ音声を複数のクリップや engine で共有できる
     pub audio: Arc<AudioData>,
     /// タイムライン上の開始位置 (秒)。負なら、頭が切れた状態で 0 秒から鳴る
     pub start_sec: f64,
+    /// 音声の中の、鳴らし始める位置 (秒。0 以上)。音声の長さを超えたら何も鳴らさない
+    pub audio_start_sec: f64,
+    /// 鳴らす長さ (秒。0 以上)。`None` は音声の終わりまで。音声の残りより長ければ、残りまで
+    pub duration_sec: Option<f64>,
+    /// フェードインの長さ (秒。0 以上)。頭の 0 から直線で上げる。鳴らす長さに収める
+    pub fade_in_sec: f64,
+    /// フェードアウトの長さ (秒。0 以上)。終わりで 0 になるよう直線で下げる。フェードインと重なるぶんは短くする
+    pub fade_out_sec: f64,
+}
+
+impl Clip {
+    /// 音声の全体を、フェード無しで `start_sec` に置くクリップ。
+    pub fn new(audio: Arc<AudioData>, start_sec: f64) -> Clip {
+        Clip {
+            audio,
+            start_sec,
+            audio_start_sec: 0.0,
+            duration_sec: None,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+        }
+    }
 }
 
 /// トラック 1 本。

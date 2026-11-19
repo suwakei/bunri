@@ -25,7 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bunri_audio::output::OutputDevice;
 use bunri_audio::{
-    AudioData, Clip, Controller, CountIn, Engine, EngineConfig, Grid, Instrument, Note,
+    AudioData, Clip, Controller, CountIn, DrumVoice, Engine, EngineConfig, Grid, Instrument, Note,
     PlayOptions, PlaybackPosition, PositionReader, Song, Track, DEFAULT_VELOCITY,
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -107,6 +107,17 @@ struct TrackPayload {
     notes: Vec<NotePayload>,
     #[serde(default)]
     clips: Vec<ClipPayload>,
+    /// ドラムのトラックなら、ドラムの音で鳴らす高さと種類 (画面の `DRUM_ROWS`)。ふつうのトラックは空
+    #[serde(default)]
+    drums: Vec<DrumPayload>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DrumPayload {
+    /// MIDI ノート番号
+    pitch: f64,
+    /// 種類 (`kick` `snare` `hat` `tom`)
+    voice: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +138,17 @@ struct ClipPayload {
     clip: f64,
     /// 置く位置 (秒)
     start_sec: f64,
+    /// 音声の中の、鳴らし始める位置 (秒)。無ければ 0
+    #[serde(default)]
+    audio_start_sec: f64,
+    /// 鳴らす長さ (秒)。無ければ音声の終わりまで
+    #[serde(default)]
+    duration_sec: Option<f64>,
+    /// フェードイン・フェードアウトの長さ (秒)。無ければ 0
+    #[serde(default)]
+    fade_in_sec: f64,
+    #[serde(default)]
+    fade_out_sec: f64,
 }
 
 /// 区間ループ ([`audio_play`])。
@@ -212,7 +234,9 @@ fn whole(value: f64, what: &str) -> Result<i64, String> {
 
 /// 画面から受け取った曲を、engine に渡す形にする。`clip` は、id から音声を引く。
 ///
-/// - ノートの在るトラックには、仮の音 (三角波) を当てる (楽器の素材が入るまで)
+/// - ノートの在るトラックには、仮の音 (三角波) を当てる (楽器の素材が入るまで)。ドラムのトラック
+///   (`drums` が在る) は、その高さのノートをドラムの合成音で鳴らす
+/// - クリップの鳴らす範囲とフェードは、そのまま engine に渡す (決まりは画面の `lib/clip.ts` と同じ)
 /// - 鳴らすかは画面が決めてあるので、鳴らさないトラックはミュートとして渡す (ソロは使わない)
 /// - 鳴らせないノート (長さが 0、高さが範囲の外) は、engine が飛ばす。ここでは、数値でない値だけを断る
 fn build_song(
@@ -254,14 +278,48 @@ fn build_song(
                 .ok()
                 .and_then(&clip)
                 .ok_or_else(|| format!("クリップ {id} の音声がまだ届いていません"))?;
+            let range = [
+                placed.start_sec,
+                placed.audio_start_sec,
+                placed.duration_sec.unwrap_or(0.0),
+                placed.fade_in_sec,
+                placed.fade_out_sec,
+            ];
+            if range.iter().any(|v| !v.is_finite()) || range[1..].iter().any(|v| *v < 0.0) {
+                return Err(format!(
+                    "{label} のクリップ {id} の位置・範囲・フェードが正しくありません"
+                ));
+            }
             clips.push(Clip {
                 audio,
                 start_sec: placed.start_sec,
+                audio_start_sec: placed.audio_start_sec,
+                duration_sec: placed.duration_sec,
+                fade_in_sec: placed.fade_in_sec,
+                fade_out_sec: placed.fade_out_sec,
             });
         }
 
+        let mut kit = Vec::with_capacity(track.drums.len());
+        for drum in &track.drums {
+            let voice = DrumVoice::from_name(&drum.voice)
+                .ok_or_else(|| format!("{label} のドラムの種類 {:?} を知りません", drum.voice))?;
+            if !(drum.pitch.is_finite() && (0.0..=127.0).contains(&drum.pitch.round())) {
+                return Err(format!(
+                    "{label} のドラムの高さが正しくありません: {}",
+                    drum.pitch
+                ));
+            }
+            kit.push((drum.pitch.round() as u8, voice));
+        }
+        let instrument = match (notes.is_empty(), kit.is_empty()) {
+            (true, _) => None,
+            (false, true) => Some(Instrument::Tone),
+            (false, false) => Some(Instrument::ToneDrums { kit }),
+        };
+
         tracks.push(Track {
-            instrument: (!notes.is_empty()).then_some(Instrument::Tone),
+            instrument,
             notes,
             clips,
             gain_db: track.gain_db as f32,
@@ -1139,11 +1197,15 @@ pub fn audio_set_metronome(state: State<'_, AudioState>, enabled: bool) -> Resul
 }
 
 /// 鍵盤の試聴 (再生していなくても鳴る)。`velocity` が 0 なら離す。
+///
+/// `drum` (`kick` `snare` `hat` `tom`) を付けたら、ドラムのトラックに向けて弾いた音として、その種類の
+/// ドラムの音を 1 回鳴らす (打った瞬間の音なので、離す指示は要らない。画面の Web Audio の試聴と同じ)。
 #[tauri::command(async)]
 pub fn audio_live_note(
     state: State<'_, AudioState>,
     pitch: f64,
     velocity: f64,
+    drum: Option<String>,
 ) -> Result<(), String> {
     if !(pitch.is_finite() && (0.0..=127.0).contains(&pitch.round()) && velocity.is_finite()) {
         return Err(format!(
@@ -1152,6 +1214,20 @@ pub fn audio_live_note(
     }
     let pitch = pitch.round() as u8;
     let velocity = velocity.round().clamp(0.0, 127.0) as u8;
+    if let Some(name) = drum {
+        let voice = DrumVoice::from_name(&name)
+            .ok_or_else(|| format!("ドラムの種類 {name:?} を知りません"))?;
+        if velocity == 0 {
+            // ドラムの音は離す指示を使わない
+            return Ok(());
+        }
+        return state.inner.with_session(|session| {
+            session
+                .controller
+                .live_drum(voice, velocity)
+                .map_err(|e| e.to_string())
+        });
+    }
     if velocity == 0 {
         // 離す: 出力が開いていなければ、鳴っている音も無い
         return state.inner.if_session(|session| {
@@ -1264,6 +1340,79 @@ mod tests {
         // そのまま engine を組み立てられる
         let engine = Engine::new(&built.song, &EngineConfig::default()).unwrap();
         assert_eq!(engine.track_count(), 2);
+    }
+
+    #[test]
+    fn クリップの範囲とフェードとドラムのトラックを渡す() {
+        let p = payload(serde_json::json!({
+            "bpm": 120, "offsetSec": 0, "beatsPerBar": 4,
+            "tracks": [
+                {
+                    "id": 1, "gainDb": 0, "pan": 0, "audible": true,
+                    "notes": [{ "start": 320, "length": 120, "pitch": 36 }],
+                    "clips": [],
+                    "drums": [{ "pitch": 36, "voice": "kick" }, { "pitch": 42, "voice": "hat" }]
+                },
+                {
+                    "id": 2, "gainDb": 0, "pan": 0, "audible": true,
+                    "notes": [],
+                    "clips": [
+                        { "clip": 3, "startSec": 1.5, "audioStartSec": 0.25, "durationSec": 0.5, "fadeInSec": 0.1, "fadeOutSec": 0.2 },
+                        { "clip": 3, "startSec": 4 }
+                    ]
+                }
+            ]
+        }));
+        let clip = audio(48_000, 48_000);
+        let built = build_song(&p, |_| Some(Arc::clone(&clip))).unwrap();
+        // ドラムのトラックは、対応表の高さをドラムの音で鳴らす。小数のステップ (三連 = 320 ティック) もそのまま
+        assert_eq!(
+            built.song.tracks[0].instrument,
+            Some(Instrument::ToneDrums {
+                kit: vec![(36, DrumVoice::Kick), (42, DrumVoice::Hat)]
+            })
+        );
+        assert_eq!(built.song.tracks[0].notes[0].start, 320);
+        // クリップの範囲とフェードは、そのまま渡す。項目の無いクリップは、音声の全体をフェード無しで
+        let [a, b] = &built.song.tracks[1].clips[..] else {
+            panic!("クリップは 2 つのはず");
+        };
+        assert_eq!(
+            (
+                a.start_sec,
+                a.audio_start_sec,
+                a.duration_sec,
+                a.fade_in_sec,
+                a.fade_out_sec
+            ),
+            (1.5, 0.25, Some(0.5), 0.1, 0.2)
+        );
+        assert_eq!(
+            (
+                b.start_sec,
+                b.audio_start_sec,
+                b.duration_sec,
+                b.fade_in_sec,
+                b.fade_out_sec
+            ),
+            (4.0, 0.0, None, 0.0, 0.0)
+        );
+        Engine::new(&built.song, &EngineConfig::default()).unwrap();
+
+        // 負のフェード・知らないドラムの種類は断る
+        let bad_fade = payload(serde_json::json!({
+            "bpm": 120, "offsetSec": 0, "beatsPerBar": 4,
+            "tracks": [{ "id": 1, "gainDb": 0, "pan": 0, "audible": true,
+                "clips": [{ "clip": 3, "startSec": 0, "fadeInSec": -1 }] }]
+        }));
+        assert!(build_song(&bad_fade, |_| Some(Arc::clone(&clip))).is_err());
+        let bad_voice = payload(serde_json::json!({
+            "bpm": 120, "offsetSec": 0, "beatsPerBar": 4,
+            "tracks": [{ "id": 1, "gainDb": 0, "pan": 0, "audible": true,
+                "notes": [{ "start": 0, "length": 240, "pitch": 36 }],
+                "drums": [{ "pitch": 36, "voice": "cowbell" }] }]
+        }));
+        assert!(build_song(&bad_voice, |_| None).is_err());
     }
 
     #[test]
@@ -2338,6 +2487,28 @@ mod tests {
         // 範囲の外の高さは断る
         assert!(note(128.0, 100.0).is_err());
         assert!(note(-1.0, 100.0).is_err());
+    }
+
+    #[test]
+    fn ドラムに向けた鍵盤の試聴はその種類の音を一回鳴らす() {
+        let rig = rig();
+        let hit = |voice: &str, velocity: f64| {
+            rig.invoke(
+                "audio_live_note",
+                serde_json::json!({ "pitch": 36, "velocity": velocity, "drum": voice }),
+            )
+        };
+        assert_eq!(hit("kick", 96.0), Ok(serde_json::Value::Null));
+        assert_eq!(rig.opened_count(), 1);
+        // キックの山は 0.25 × 2.4 = 0.6 ほど (左右に同じ音)
+        let out = rig.process(8);
+        assert!((0.5..=0.6).contains(&peak(&out)), "{}", peak(&out));
+        // 打った瞬間の音なので、離す指示は要らない (送っても何もしない)。決まった長さ (0.29 秒) で鳴り終わる
+        assert_eq!(hit("kick", 0.0), Ok(serde_json::Value::Null));
+        rig.process(60);
+        assert_eq!(peak(&rig.process(8)), 0.0);
+        // 知らない種類は断る
+        assert!(hit("cowbell", 96.0).is_err());
     }
 
     #[test]

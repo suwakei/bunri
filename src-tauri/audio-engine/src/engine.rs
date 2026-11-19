@@ -20,6 +20,7 @@
 
 use crate::audio::{AudioError, SAMPLE_RATE_RANGE};
 use crate::clips::PlacedClip;
+use crate::drum::{DrumSynth, DrumVoice};
 use crate::mixer::{audible, db_to_gain, GainRamp, TrackGains};
 use crate::sampler::{LoadError, Sampler};
 use crate::song::{Instrument, Note, Song};
@@ -31,6 +32,11 @@ use std::fmt;
 /// 頭が足りなくなって声が途中で終わるので、十分に短くしておく
 /// (高い音は速く読み進む。1024 なら 3 オクターブ上まで足りる)
 pub const MAX_BLOCK_LIMIT: usize = 1024;
+
+/// 途中から鳴らすとき、頭を過ぎたドラムの音を、それでも鳴らす幅 (秒)。ドラムは打った瞬間の音なので、
+/// 頭を過ぎた打音は鳴らさない (画面の Web Audio の再生と同じ)。ちょうど頭から鳴らしたつもりの位置が、
+/// 丸めでわずかに後ろへずれても落とさないよう、画面と同じ 5ms を許す
+const DRUM_RESTART_SEC: f64 = 0.005;
 
 /// 再生中にトラックの音量・パン・鳴らすかを変えたとき、倍率を移す長さ (秒)。
 /// 急に変えると「ぷつっ」と鳴るので、短い直線で移す
@@ -120,6 +126,21 @@ enum Source {
     Sampler(Sampler),
     /// 仮の音 (三角波)。モノラルの素材として混ぜる
     Tone(ToneSynth),
+    /// ドラムのトラック: 対応表に在る高さはドラムの合成音、ほかは三角波。モノラルの素材として混ぜる
+    ToneDrums(Box<ToneDrums>),
+}
+
+/// ドラムのトラックの音源 (三角波とドラムの合成音、高さ → 種類の対応表)。
+struct ToneDrums {
+    tone: ToneSynth,
+    drums: DrumSynth,
+    kit: [Option<DrumVoice>; 128],
+}
+
+impl ToneDrums {
+    fn voice_of(&self, pitch: u8) -> Option<DrumVoice> {
+        self.kit.get(pitch as usize).copied().flatten()
+    }
 }
 
 impl Source {
@@ -127,6 +148,10 @@ impl Source {
         match self {
             Source::Sampler(sampler) => sampler.note_on(delay, pitch, velocity),
             Source::Tone(tone) => tone.note_on(delay, pitch, velocity),
+            Source::ToneDrums(d) => match d.voice_of(pitch) {
+                Some(voice) => d.drums.trigger(delay, voice, velocity),
+                None => d.tone.note_on(delay, pitch, velocity),
+            },
         }
     }
 
@@ -134,6 +159,8 @@ impl Source {
         match self {
             Source::Sampler(sampler) => sampler.note_off(delay, pitch),
             Source::Tone(tone) => tone.note_off(delay, pitch),
+            // ドラムの音は離す指示を使わない (決まった長さで鳴り終わる)
+            Source::ToneDrums(d) => d.tone.note_off(delay, pitch),
         }
     }
 
@@ -141,6 +168,10 @@ impl Source {
         match self {
             Source::Sampler(sampler) => sampler.all_sound_off(),
             Source::Tone(tone) => tone.all_sound_off(),
+            Source::ToneDrums(d) => {
+                d.tone.all_sound_off();
+                d.drums.all_sound_off();
+            }
         }
     }
 
@@ -148,6 +179,31 @@ impl Source {
         match self {
             Source::Sampler(sampler) => sampler.active_voices(),
             Source::Tone(tone) => tone.active_voices(),
+            Source::ToneDrums(d) => d.tone.active_voices() + d.drums.active_voices(),
+        }
+    }
+
+    /// その高さが、打った瞬間だけ鳴る音 (ドラム) か。途中から鳴らすとき、頭を過ぎていたら鳴らし直さない。
+    fn is_one_shot(&self, pitch: u8) -> bool {
+        match self {
+            Source::ToneDrums(d) => d.voice_of(pitch).is_some(),
+            _ => false,
+        }
+    }
+
+    /// モノラルの素材の音を `out` に作る (中身は上書きする)。モノラルの素材でなければ何もせず false。
+    fn render_mono(&mut self, out: &mut [f32]) -> bool {
+        match self {
+            Source::Tone(tone) => {
+                tone.render(out);
+                true
+            }
+            Source::ToneDrums(d) => {
+                d.tone.render(out);
+                d.drums.render_add(out);
+                true
+            }
+            Source::Sampler(_) => false,
         }
     }
 }
@@ -155,6 +211,8 @@ impl Source {
 /// トラック 1 本ぶんの状態。
 struct TrackState {
     source: Option<Source>,
+    /// 途中から鳴らすとき、頭を過ぎていても鳴らすドラムの幅 (フレーム。`DRUM_RESTART_SEC`)
+    one_shot_grace: u64,
     /// 位置の順に並べた出来事
     events: Vec<Event>,
     /// 次に送る出来事
@@ -183,6 +241,10 @@ impl TrackState {
         self.next_event = self.events.partition_point(|e| e.frame < frame);
         for span in &self.spans {
             if span.start < frame && frame < span.end {
+                // ドラムは打った瞬間の音。頭を過ぎていたら鳴らさない (過ぎたのが、ごくわずかなら鳴らす)
+                if source.is_one_shot(span.pitch) && frame - span.start > self.one_shot_grace {
+                    continue;
+                }
                 source.note_on(0, span.pitch, span.velocity);
             }
         }
@@ -250,17 +312,29 @@ impl Engine {
                     config.sample_rate,
                     &ToneConfig::NOTE,
                 ))),
+                Some(Instrument::ToneDrums { kit }) => {
+                    let mut map = [None; 128];
+                    for &(pitch, voice) in kit.iter().filter(|(p, _)| *p <= 127) {
+                        map[pitch as usize] = Some(voice);
+                    }
+                    Some(Source::ToneDrums(Box::new(ToneDrums {
+                        tone: ToneSynth::new(config.sample_rate, &ToneConfig::NOTE),
+                        drums: DrumSynth::new(config.sample_rate, DrumSynth::DEFAULT_VOICES),
+                        kit: map,
+                    })))
+                }
                 None => None,
             };
 
             let (mut stereo_clips, mut mono_clips) = (Vec::new(), Vec::new());
             for (clip_index, clip) in track.clips.iter().enumerate() {
-                let placed = PlacedClip::new(&clip.audio, clip.start_sec, config.sample_rate)
-                    .map_err(|error| EngineError::Clip {
+                let placed = PlacedClip::new(clip, config.sample_rate).map_err(|error| {
+                    EngineError::Clip {
                         track: index,
                         clip: clip_index,
                         error,
-                    })?;
+                    }
+                })?;
                 length = length.max(placed.end().max(0) as u64);
                 if placed.is_stereo() {
                     stereo_clips.push(placed);
@@ -271,6 +345,7 @@ impl Engine {
 
             let mix = TrackGains::new(track.gain_db, track.pan);
             tracks.push(TrackState {
+                one_shot_grace: (DRUM_RESTART_SEC * config.sample_rate as f64).round() as u64,
                 // 楽器が無いトラックのノートは鳴らさない
                 events: if source.is_some() { events } else { Vec::new() },
                 spans: if source.is_some() { spans } else { Vec::new() },
@@ -485,12 +560,11 @@ impl Engine {
                 mix_stereo(left, right, bus_left, bus_right, &track.ramp);
             }
 
-            // モノラルの素材: 仮の音と、モノラルのクリップ (パンの決まりがステレオと違う。`mixer`)
-            let mut mono = false;
-            if let Some(Source::Tone(tone)) = track.source.as_mut() {
-                tone.render(bus_mono);
-                mono = true;
-            }
+            // モノラルの素材: 仮の音・ドラムの音と、モノラルのクリップ (パンの決まりがステレオと違う。`mixer`)
+            let mut mono = track
+                .source
+                .as_mut()
+                .is_some_and(|source| source.render_mono(bus_mono));
             if !track.mono_clips.is_empty() {
                 if !mono {
                     bus_mono.fill(0.0);
@@ -585,6 +659,22 @@ fn validate(song: &Song) -> Result<(), EngineError> {
         }
         if track.clips.iter().any(|c| !c.start_sec.is_finite()) {
             return invalid(format!("トラック {} のクリップの位置が数値でない", i + 1));
+        }
+        let range_ok = |c: &crate::song::Clip| {
+            [
+                c.audio_start_sec,
+                c.fade_in_sec,
+                c.fade_out_sec,
+                c.duration_sec.unwrap_or(0.0),
+            ]
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0)
+        };
+        if !track.clips.iter().all(range_ok) {
+            return invalid(format!(
+                "トラック {} のクリップの範囲かフェードが、0 以上の数値でない",
+                i + 1
+            ));
         }
     }
     Ok(())

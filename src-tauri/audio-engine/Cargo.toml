@@ -16,3 +16,7 @@ rtrb = "0.4.1"
 
 [build-dependencies]
 cmake = "0.1"
+
+[dev-dependencies]
+# Web Audio の書き出しと突き合わせるテストの曲 (tests/fixtures/webaudio/song.json) を読む
+serde_json = "1"

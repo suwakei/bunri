@@ -741,6 +741,9 @@ export function DawProvider({ children }: { children: ReactNode }) {
             const { activityLabel, ...push } = options;
             const entry = historyRef.current!.push(override?.label ?? label, before, after, push);
             if (entry && activityLabel !== undefined) activityLabelsRef.current.set(entry.id, activityLabel);
+            // 操作でトラックを直接書き換えたぶん (クリップの差し替え・縮める・分割・エフェクト、ソロなど) を、
+            // デスクトップ版の Rust の engine にも伝える (新しい音声を先に送り始め、再生中なら音量・パン・鳴らすかを合わせる)
+            if (entry) engine.syncNative();
             setHistoryVersion(v => v + 1);
             // 別の操作をしたら、前の「元に戻す」の知らせは閉じる (押すと、その別の操作が戻ってしまう)
             if (toastRef.current && (!entry || entry.id !== toastRef.current.entryId)) setToast(null);

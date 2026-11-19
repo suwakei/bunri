@@ -44,10 +44,7 @@ fn run(transport: &mut Transport, frames: usize, block: usize) -> (Vec<f32>, Vec
 fn noise_song(seed: u32, frames: usize) -> (Song, Arc<bunri_audio::AudioData>) {
     let audio = stereo(SR, noise(seed, frames), noise(seed + 100, frames));
     let s = song(vec![Track {
-        clips: vec![Clip {
-            audio: Arc::clone(&audio),
-            start_sec: 0.0,
-        }],
+        clips: vec![Clip::new(Arc::clone(&audio), 0.0)],
         ..Track::default()
     }]);
     (s, audio)
@@ -821,10 +818,10 @@ fn 周波数の違うengineは受け取らない() {
 #[test]
 fn 再生中にトラックの音量と鳴らすかを変えられる() {
     let constant = |frames: usize| Track {
-        clips: vec![Clip {
-            audio: stereo(SR, vec![1.0; frames], vec![1.0; frames]),
-            start_sec: 0.0,
-        }],
+        clips: vec![Clip::new(
+            stereo(SR, vec![1.0; frames], vec![1.0; frames]),
+            0.0,
+        )],
         ..Track::default()
     };
     let s = song(vec![constant(96_000), Track::default()]);

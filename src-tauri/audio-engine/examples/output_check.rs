@@ -73,10 +73,7 @@ fn demo_song(sample_rate: u32, secs: usize) -> Song {
                 ..Track::default()
             },
             Track {
-                clips: vec![Clip {
-                    audio: Arc::new(audio),
-                    start_sec: 0.0,
-                }],
+                clips: vec![Clip::new(Arc::new(audio), 0.0)],
                 gain_db: -6.0,
                 pan: 0.2,
                 ..Track::default()

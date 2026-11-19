@@ -38,6 +38,7 @@
 //! (テスト `tests/realtime.rs` が確かめる)。時刻は `Instant::now()` で読む (確保もロックもしない)。
 
 use crate::audio::SAMPLE_RATE_RANGE;
+use crate::drum::{DrumSynth, DrumVoice};
 use crate::engine::Engine;
 use crate::tone::{ToneConfig, ToneSynth};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -68,6 +69,8 @@ const COMMAND_CAPACITY: usize = 256;
 const SEGMENT: usize = 2048;
 /// 同時に鳴らせるクリックの数 (1 つは 50ms なので、ふつうは重ならない)
 const CLICK_VOICES: usize = 4;
+/// ドラムに向けて弾いた鍵盤の試聴の、声の数
+const LIVE_DRUM_VOICES: usize = 16;
 /// 扱う位置の上限 (秒)。これより先は、値が壊れているとみなす
 const MAX_POSITION_SEC: f64 = 1_000_000.0;
 /// カウントの拍数の上限。
@@ -238,6 +241,10 @@ enum Command {
         pitch: u8,
     },
     LiveAllOff,
+    LiveDrum {
+        voice: DrumVoice,
+        velocity: u8,
+    },
 }
 
 /// 位置の公開に使う、ロックの無い置き場 (seqlock)。
@@ -315,6 +322,8 @@ pub struct Transport {
 
     clicks: Clicks,
     live: ToneSynth,
+    /// ドラムに向けて弾いた鍵盤の試聴 (打った瞬間の音)
+    live_drums: DrumSynth,
     song_left: Vec<f32>,
     song_right: Vec<f32>,
     mono: Vec<f32>,
@@ -370,6 +379,7 @@ pub fn transport(sample_rate: u32) -> Result<(Controller, Transport), TransportE
         fade_out_left: 0,
         clicks: Clicks::new(sample_rate),
         live: ToneSynth::new(sample_rate, &ToneConfig::LIVE),
+        live_drums: DrumSynth::new(sample_rate, LIVE_DRUM_VOICES),
         song_left: vec![0.0; SEGMENT],
         song_right: vec![0.0; SEGMENT],
         mono: vec![0.0; SEGMENT],
@@ -558,6 +568,12 @@ impl Controller {
         self.send(Command::LiveAllOff)
     }
 
+    /// 鍵盤の試聴 (ドラムのトラックに向けて弾いたとき): その種類のドラムの音を 1 回鳴らす。
+    /// 打った瞬間の音なので、離す指示は要らない (決まった長さで鳴り終わる)。再生していなくても鳴る。
+    pub fn live_drum(&mut self, voice: DrumVoice, velocity: u8) -> Result<(), TransportError> {
+        self.send(Command::LiveDrum { voice, velocity })
+    }
+
     /// 音声スレッドが送り返してきた古い engine を、ここ (呼んだスレッド) で捨てる。
     /// 捨てた数を返す。ときどき呼ぶ (呼ばなくても、次の [`Controller::set_song`] が捨てる)。
     pub fn collect_garbage(&mut self) -> usize {
@@ -739,6 +755,7 @@ impl Transport {
             }
             Command::LiveNoteOff { pitch } => self.live.note_off(0, pitch),
             Command::LiveAllOff => self.live.all_notes_off(0),
+            Command::LiveDrum { voice, velocity } => self.live_drums.trigger(0, voice, velocity),
         }
     }
 
@@ -850,9 +867,10 @@ impl Transport {
         self.clicks.render_add(left, right);
 
         // 鍵盤の試聴 (左右に同じ音)
-        if self.live.active_voices() > 0 {
+        if self.live.active_voices() > 0 || self.live_drums.active_voices() > 0 {
             let mono = &mut self.mono[..len];
             self.live.render(mono);
+            self.live_drums.render_add(mono);
             for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono.iter()) {
                 *l += m;
                 *r += m;
