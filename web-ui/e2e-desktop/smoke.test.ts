@@ -789,4 +789,66 @@ describe('楽器の音源', () => {
             }).__TAURI__.core.invoke('audio_prepare_piano'));
         }
     });
+
+    it('内蔵のゲーム音色を通信せず用意し、違う2音色を同時に書き出せる。素材不足は別音色に置き換えない', async () => {
+        const result = await app.run(async () => {
+            const invoke = (window as unknown as {
+                __TAURI__: { core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> } };
+            }).__TAURI__.core.invoke;
+            const info = await invoke<{ port: number; token: string }>('backend_info');
+            const origin = `http://127.0.0.1:${info.port}`;
+            const response = await fetch(`${origin}/api/instruments/game-lead/install`, {
+                method: 'POST', headers: { 'X-Bunri-Token': info.token },
+            });
+            if (!response.ok) throw new Error('内蔵音色を用意できませんでした');
+            const prepared = await response.json() as { installed: boolean; downloadBytes: number };
+            const library = await fetch(`${origin}/api/instruments`, { headers: { 'X-Bunri-Token': info.token } })
+                .then((r) => r.json()) as { instruments: { id: string; installed: boolean }[] };
+            const track = (id: number, instrumentId: string, pan = 0) => ({
+                id, instrumentId, pan, gainDb: 0, audible: true,
+                notes: [{ start: 0, length: 960, pitch: 60, velocity: 96 }], clips: [],
+            });
+            const song = (tracks: ReturnType<typeof track>[]) => ({ bpm: 120, offsetSec: 0, beatsPerBar: 4, tracks });
+            const context = new AudioContext();
+            try {
+                await invoke('audio_prepare_instrument', { instrumentId: 'game-lead' });
+                await invoke('audio_live_note', { pitch: 60, velocity: 96, instrumentId: 'game-lead' });
+                await invoke('audio_prepare_instrument', { instrumentId: 'game-bell' });
+                await invoke('audio_live_note', { pitch: 60, velocity: 96, instrumentId: 'game-bell' });
+                await invoke('audio_live_note', { pitch: 60, velocity: 0, instrumentId: 'game-lead' });
+                await invoke('audio_live_all_off');
+                const raw = await invoke<ArrayBuffer | number[]>('audio_render_song', {
+                    song: song([track(1, 'game-lead', -1), track(2, 'game-bell', 1)]),
+                });
+                const buffer = raw instanceof ArrayBuffer ? raw : new Uint8Array(raw).buffer;
+                const audio = await context.decodeAudioData(buffer);
+                const left = audio.getChannelData(0), right = audio.getChannelData(1);
+                let leftPeak = 0, rightPeak = 0, difference = 0, count = 0;
+                for (let i = Math.round(audio.sampleRate * 0.05); i < Math.round(audio.sampleRate * 0.25); i++) {
+                    leftPeak = Math.max(leftPeak, Math.abs(left[i]));
+                    rightPeak = Math.max(rightPeak, Math.abs(right[i]));
+                    difference += (left[i] - right[i]) ** 2;
+                    count++;
+                }
+                let missing = '';
+                try {
+                    await invoke('audio_render_song', { song: song([track(3, 'violin')]) });
+                } catch (error) { missing = String(error); }
+                return { installed: prepared.installed, downloadBytes: prepared.downloadBytes,
+                    readyGames: library.instruments.filter((i) => i.id.startsWith('game-') && i.installed).length,
+                    leftPeak, rightPeak, difference: Math.sqrt(difference / count), missing };
+            } finally {
+                await context.close();
+                await invoke('audio_live_all_off');
+            }
+        });
+        expect(result.installed).toBe(true);
+        expect(result.downloadBytes).toBe(0);
+        expect(result.readyGames).toBe(15);
+        expect(result.leftPeak).toBeGreaterThan(0.01);
+        expect(result.rightPeak).toBeGreaterThan(0.01);
+        expect(result.difference).toBeGreaterThan(0.01);
+        expect(result.missing).toContain('BUNRI_INSTRUMENT_UNAVAILABLE:violin:');
+        expect(await record()).toEqual({ csp: [], errors: [] });
+    });
 });

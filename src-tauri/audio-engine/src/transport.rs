@@ -234,7 +234,10 @@ enum Command {
         audible: bool,
     },
     SetMetronome(bool),
-    SetLiveSampler(Option<Box<Sampler>>),
+    SetLiveSampler {
+        sampler: Option<Box<Sampler>>,
+        one_shot: bool,
+    },
     LiveNoteOn {
         pitch: u8,
         velocity: u8,
@@ -331,6 +334,7 @@ pub struct Transport {
     clicks: Clicks,
     live: ToneSynth,
     live_sampler: Option<Box<Sampler>>,
+    live_one_shot: bool,
     /// ドラムに向けて弾いた鍵盤の試聴 (打った瞬間の音)
     live_drums: DrumSynth,
     song_left: Vec<f32>,
@@ -389,6 +393,7 @@ pub fn transport(sample_rate: u32) -> Result<(Controller, Transport), TransportE
         clicks: Clicks::new(sample_rate),
         live: ToneSynth::new(sample_rate, &ToneConfig::LIVE),
         live_sampler: None,
+        live_one_shot: false,
         live_drums: DrumSynth::new(sample_rate, LIVE_DRUM_VOICES),
         song_left: vec![0.0; SEGMENT],
         song_right: vec![0.0; SEGMENT],
@@ -485,6 +490,15 @@ impl Controller {
         &mut self,
         sampler: Option<Box<Sampler>>,
     ) -> Result<(), TransportError> {
+        self.set_live_instrument(sampler, false)
+    }
+
+    /// 打楽器の試聴では、離鍵を待たずに素材の終わりまで鳴らす。
+    pub fn set_live_instrument(
+        &mut self,
+        sampler: Option<Box<Sampler>>,
+        one_shot: bool,
+    ) -> Result<(), TransportError> {
         if sampler
             .as_ref()
             .is_some_and(|s| !s.supports_output(self.sample_rate, SEGMENT))
@@ -494,7 +508,7 @@ impl Controller {
             ));
         }
         self.collect_garbage();
-        self.send(Command::SetLiveSampler(sampler))
+        self.send(Command::SetLiveSampler { sampler, one_shot })
     }
 
     /// いま渡してある曲を鳴らす (鳴っていたら、止めて鳴らし直す)。
@@ -780,15 +794,19 @@ impl Transport {
                 }
             }
             Command::SetMetronome(enabled) => self.metronome = enabled,
-            Command::SetLiveSampler(sampler) => {
+            Command::SetLiveSampler { sampler, one_shot } => {
+                self.live_one_shot = one_shot;
                 self.live.all_notes_off(0);
+                self.live_drums.all_sound_off();
                 if let Some(old) = std::mem::replace(&mut self.live_sampler, sampler) {
                     self.discard(Garbage::Sampler(old));
                 }
             }
             Command::LiveNoteOn { pitch, velocity } => {
                 if let Some(sampler) = self.live_sampler.as_mut() {
-                    sampler.note_off(0, pitch);
+                    if !self.live_one_shot {
+                        sampler.note_off(0, pitch);
+                    }
                     sampler.note_on(0, pitch, velocity);
                 } else {
                     self.live.note_off(0, pitch);
@@ -797,7 +815,9 @@ impl Transport {
             }
             Command::LiveNoteOff { pitch } => {
                 if let Some(sampler) = self.live_sampler.as_mut() {
-                    sampler.note_off(0, pitch);
+                    if !self.live_one_shot {
+                        sampler.note_off(0, pitch);
+                    }
                 } else {
                     self.live.note_off(0, pitch);
                 }

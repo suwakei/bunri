@@ -30,6 +30,7 @@ mod activity;
 mod audio;
 #[cfg(feature = "e2e")]
 mod e2e;
+mod instruments;
 mod midi;
 mod project;
 mod secrets;
@@ -255,6 +256,7 @@ pub fn run() {
             activity_info,
             audio::audio_init,
             audio::audio_prepare_piano,
+            audio::audio_prepare_instrument,
             audio::audio_render_song,
             audio::audio_clip_put,
             audio::audio_clip_drop,

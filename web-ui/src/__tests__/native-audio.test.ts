@@ -80,6 +80,7 @@ function desktop() {
     const state = {
         /** true を返した command は失敗する */
         fail: null as ((cmd: string) => boolean) | null,
+        failMessage: '偽の Rust: 失敗させた',
         /** 再生・停止・曲・ミックスの command が、同時に 2 つ動いたか */
         overlapped: false,
         /** 出力を開いた直後の後始末 (前の画面の再生と試聴を止める) で呼ばれた command。`calls` には入れない */
@@ -103,13 +104,13 @@ function desktop() {
             // 後始末の呼び出しは、どのテストにも出てくるので、順番の確かめの邪魔にならないよう別に覚える
             cleanupLeft.shift();
             state.cleanup.push(cmd);
-            if (state.fail?.(cmd)) throw '偽の Rust: 失敗させた';
+            if (state.fail?.(cmd)) throw state.failMessage;
             return undefined;
         }
         if (cmd !== 'audio_init') cleanupLeft = [];
         if (cmd === 'audio_prepare_piano' && preparingAfterInit) {
             preparingAfterInit = false;
-            if (state.fail?.(cmd)) throw '偽の Rust: 失敗させた';
+            if (state.fail?.(cmd)) throw state.failMessage;
             return { installed: true };
         }
         calls.push(call);
@@ -119,9 +120,10 @@ function desktop() {
             // Rust の処理には時間がかかる。そのあいだに次の command が割り込まないことを確かめる
             await Promise.resolve();
             await Promise.resolve();
-            if (state.fail?.(cmd)) throw '偽の Rust: 失敗させた';
+            if (state.fail?.(cmd)) throw state.failMessage;
             if (cmd === 'audio_init') return { sampleRate: 48000, outputLatencySec: 0.012 };
             if (cmd === 'audio_prepare_piano') return { installed: true };
+            if (cmd === 'audio_prepare_instrument') return { installed: true };
             if (cmd === 'audio_render_song') return new ArrayBuffer(44);
             if (cmd === 'audio_clip_put') {
                 const h = call.headers!;
@@ -158,6 +160,7 @@ beforeEach(() => {
     vi.mocked(invokeDesktopRaw).mockClear();
     vi.mocked(listenDesktop).mockClear();
     nativeAudio.resetForTest();
+    engine.onInstrumentUnavailable = null;
     engine.tracks = [];
     engine.bpm = 120; engine.beatsPerBar = 4; engine.gridOffset = 0;
     engine.loopRange = null; engine.tempoRate = 1; engine.stretched = null; engine.listenOverride = null;
@@ -459,6 +462,190 @@ describe('event からの位置の補い方', () => {
 });
 
 describe('Rust で再生する (デスクトップ版)', () => {
+    it('初めて鳴らす複数トラックを一度に組み直し、再生位置・区間・速度・周回と再生開始時の音色を保つ', async () => {
+        const d = desktop();
+        const a = engine.addTrack('A'), b = engine.addTrack('B'), c = engine.addTrack('C');
+        a.instrumentId = 'game-pad'; b.instrumentId = 'choir-a'; c.instrumentId = 'game-bass';
+        for (const track of [a, b, c]) track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 16 }];
+        b.mute = true; c.mute = true;
+        engine.countInBeats = 4;
+        engine.setLoopRange({ start: 2, end: 6 });
+        engine.setTempo(0.5, null);
+        engine.play(3);
+        await nativeAudio.idle();
+        d.emit({ token: 1, positionSec: 5, countingIn: false, pass: 3 });
+        const initialPlay = d.last('audio_play')!.args;
+        expect(initialPlay.countIn).toEqual({ beats: 4, beatSec: 0.5 });
+        a.instrumentId = 'changed-for-next-play';
+        a.pianoNotes = [...a.pianoNotes, { note: 'E', octave: 4, step: 4, length: 2 }];
+        engine.toggleMute(b.id); engine.toggleMute(c.id);
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(2);
+        expect(d.of('audio_play')).toHaveLength(1);
+        const song = d.last('audio_set_song')!.args.song;
+        expect(song.tracks.map((track: { audible: boolean }) => track.audible)).toEqual([true, true, true]);
+        expect(song.tracks[0].instrumentId).toBe('game-pad');
+        expect(song.tracks[0].notes).toHaveLength(1);
+        expect(song.bpm).toBe(60);
+        expect(engine.getCurrentTime()).toBeCloseTo(3.5);
+        expect(engine.getLoopPass()).toBe(3);
+        expect(engine.isCountingIn()).toBe(false);
+        engine.syncNative();
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(2);
+        // 組み立て済みの音源は、ミュートを入れて外しても作り直さない。
+        engine.toggleMute(b.id); engine.toggleMute(b.id);
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(2);
+    });
+
+    it('ソロを移したとき、最初はソロ対象外だった音源を用意して同じ再生を続ける', async () => {
+        const d = desktop();
+        const a = engine.addTrack('A'), b = engine.addTrack('B');
+        for (const track of [a, b]) track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        b.instrumentId = 'choir-a'; a.solo = true;
+        engine.play(1);
+        await nativeAudio.idle();
+        a.solo = false; b.solo = true; engine.syncNative();
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(2);
+        expect(d.last('audio_set_song')!.args.song.tracks.map((track: { audible: boolean }) => track.audible)).toEqual([false, true]);
+        expect(d.of('audio_play')).toHaveLength(1);
+    });
+
+    it('単体再生で初めてミュートを外しても、ほかのトラックや全体のループを鳴らさない', async () => {
+        const d = desktop();
+        const a = engine.addTrack('A'), b = engine.addTrack('B');
+        a.instrumentId = 'choir-a'; a.mute = true;
+        for (const track of [a, b]) track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        engine.setLoopRange({ start: 2, end: 6 }); engine.setTempo(0.5, null); engine.countInBeats = 4;
+        engine.playSingleTrack(a.id);
+        await nativeAudio.idle();
+        engine.toggleMute(a.id);
+        await nativeAudio.idle();
+        expect(d.last('audio_set_song')!.args.song.tracks.map((track: { audible: boolean }) => track.audible)).toEqual([true, false]);
+        expect(d.of('audio_play')).toHaveLength(1);
+        expect(d.last('audio_play')!.args).toMatchObject({ loop: null, countIn: null });
+        expect(d.last('audio_set_song')!.args.song.bpm).toBe(120);
+        expect(engine.soloTrackId).toBe(a.id);
+    });
+
+    it('ミュート解除で素材が足りないと分かったら、電子音に替えず再生を止めて案内する', async () => {
+        const d = desktop();
+        const a = engine.addTrack('A'), b = engine.addTrack('Missing');
+        b.mute = true; b.instrumentId = 'missing-choir';
+        for (const track of [a, b]) track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        const notice = vi.fn(); engine.onInstrumentUnavailable = notice;
+        d.state.failMessage = 'BUNRI_INSTRUMENT_UNAVAILABLE:missing-choir:声の素材がありません';
+        d.state.fail = (command) => command === 'audio_set_song' && d.of('audio_set_song').length > 1;
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(engine.isPlaying).toBe(true);
+        engine.toggleMute(b.id);
+        await nativeAudio.idle();
+        expect(engine.isPlaying).toBe(false);
+        expect(engine.usesNativeAudio()).toBe(true);
+        expect(notice).toHaveBeenCalledWith(expect.stringContaining('音色の欄から素材を用意してください'));
+        expect(d.of('audio_play')).toHaveLength(1);
+        expect(started).toEqual([]);
+    });
+
+    it('用意する前にミュートへ戻したトラックでは、余分な再組立をしない', async () => {
+        const d = desktop();
+        engine.addTrack('A');
+        const b = engine.addTrack('B'); b.mute = true; b.instrumentId = 'choir-a';
+        b.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        engine.play(0);
+        await nativeAudio.idle();
+        engine.toggleMute(b.id); engine.toggleMute(b.id);
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(1);
+        expect(d.of('audio_play')).toHaveLength(1);
+    });
+
+    it('別の音色を先読みするだけの失敗では、すでに鳴っている曲を止めない', async () => {
+        const d = desktop();
+        const track = engine.addTrack('A'); track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        const notice = vi.fn(); engine.onInstrumentUnavailable = notice;
+        engine.play(0);
+        await nativeAudio.idle();
+        d.state.failMessage = 'BUNRI_INSTRUMENT_UNAVAILABLE:future-voice:音色が一覧にありません';
+        d.state.fail = (command) => command === 'audio_prepare_instrument';
+        await expect(engine.prepareInstrument('future-voice')).rejects.toThrow('音色の欄から素材を用意してください');
+        await nativeAudio.idle();
+        expect(engine.isPlaying).toBe(true);
+        expect(engine.usesNativeAudio()).toBe(true);
+        expect(notice).not.toHaveBeenCalled();
+        expect(d.of('audio_stop')).toHaveLength(0);
+    });
+
+    it('異なる2つの楽器を、再生とWAVの両方でトラックごとに渡す。明示楽器はドラムの音より優先する', async () => {
+        const d = desktop();
+        const choir = engine.addTrack('Choir'), game = engine.addTrack('Game');
+        choir.instrumentId = 'choir-a'; game.instrumentId = 'game-pad'; game.part = 'drums';
+        choir.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        game.pianoNotes = [{ note: 'C', octave: 2, step: 0, length: 4 }];
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(d.last('audio_set_song')!.args.song.tracks.map((track: { instrumentId: string }) => track.instrumentId)).toEqual(['choir-a', 'game-pad']);
+        await engine.exportWav();
+        expect(d.last('audio_render_song')!.args.song.tracks.map((track: { instrumentId: string }) => track.instrumentId)).toEqual(['choir-a', 'game-pad']);
+        expect(engine.drumVoiceOf(game, game.pianoNotes[0])).toBeNull();
+    });
+
+    it('試聴の先読みと打鍵を同じ列で送り、音色切替前の離鍵で次の声を止めない', async () => {
+        const d = desktop();
+        const choir = engine.addTrack('Choir'), game = engine.addTrack('Game');
+        choir.instrumentId = 'choir-a'; game.instrumentId = 'game-pad';
+        const prepared = engine.prepareInstrument('choir-a');
+        const before = engine.liveNoteOn(60, 80, { trackId: choir.id });
+        await prepared;
+        await nativeAudio.idle();
+        const current = engine.liveNoteOn(60, 90, { trackId: game.id });
+        engine.liveNoteOff(60, before);
+        engine.liveNoteOff(60, current);
+        await nativeAudio.idle();
+        expect(d.cmds().indexOf('audio_prepare_instrument')).toBeLessThan(d.cmds().indexOf('audio_live_note'));
+        expect(d.of('audio_live_note').map((call) => call.args)).toEqual([
+            { pitch: 60, velocity: 80, instrumentId: 'choir-a' },
+            { pitch: 60, velocity: 90, instrumentId: 'game-pad' },
+            { pitch: 60, velocity: 0, instrumentId: 'game-pad' },
+        ]);
+    });
+
+    it('未導入の素材で再生できなくても電子音に切り替えず、用意した後は同じエンジンで再生できる', async () => {
+        const d = desktop();
+        const track = engine.addTrack('Choir'); track.instrumentId = 'choir-a';
+        track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        const notice = vi.fn(); engine.onInstrumentUnavailable = notice;
+        d.state.failMessage = 'BUNRI_INSTRUMENT_UNAVAILABLE:choir-a:声の素材がありません';
+        d.state.fail = (command) => command === 'audio_set_song';
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(engine.isPlaying).toBe(false);
+        expect(engine.usesNativeAudio()).toBe(true);
+        expect(notice).toHaveBeenCalledWith(expect.stringContaining('音色の欄から素材を用意してください'));
+        expect(started).toEqual([]);
+        d.state.fail = null;
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(d.of('audio_init')).toHaveLength(1);
+        expect(d.of('audio_play')).toHaveLength(1);
+    });
+
+    it('未導入の素材のWAVは理由を返し、素材の用意後は書き出し直せる', async () => {
+        const d = desktop();
+        const track = engine.addTrack('Game'); track.instrumentId = 'game-pad';
+        track.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        d.state.failMessage = 'BUNRI_INSTRUMENT_UNAVAILABLE:game-pad:音色の素材がありません';
+        d.state.fail = (command) => command === 'audio_render_song';
+        await expect(engine.exportWav()).rejects.toThrow('音色の欄から素材を用意してください');
+        expect(engine.usesNativeAudio()).toBe(true);
+        d.state.fail = null;
+        expect((await engine.exportWav())?.type).toBe('audio/wav');
+        expect(started).toEqual([]);
+    });
+
     it('出力を開いたあとでピアノを準備し、導入後は同じ曲も渡し直す', async () => {
         const d = desktop();
         const t = engine.addTrack('Piano');

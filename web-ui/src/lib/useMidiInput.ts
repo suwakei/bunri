@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDaw } from './store';
-import engine, { type PianoNote } from './engine';
+import engine, { type LiveNoteHandle, type PianoNote } from './engine';
 import { secToStep } from './grid';
 import { describeError, isDesktop } from './api';
 import { MidiNoteRecorder, cursorLabel, parseMidiMessage, pickMidiSource, pitchToNote, type MidiSource, type RecordMode } from './midi-input';
@@ -118,6 +118,7 @@ export function useMidiInput(): MidiInputController {
     const [cursor, setCursorState] = useState(0);
     const sourceRef = useRef<MidiSource | null>(null);
     const recorderRef = useRef<MidiNoteRecorder | null>(null);
+    const liveNotesRef = useRef(new Map<number, LiveNoteHandle>());
     const hooksRef = useRef<MidiPracticeHooks | null>(null);
     /** いま知らせてある「ノートを置けない理由」(同じ理由が続くあいだは、もう一度は知らせない) */
     const blockedHintRef = useRef<string | null>(null);
@@ -190,8 +191,12 @@ export function useMidiInput(): MidiInputController {
 
         // 弾いた音は、録るかどうかに関係なく鳴らす
         // ドラムのトラックを開いているあいだは、ドラムの行の鍵盤は種類ごとの音で鳴る (再生と同じ音)
-        if (event.type === 'on') engine.liveNoteOn(event.pitch, event.velocity, { drums: pianoRollRef.current?.drumMode === true });
-        else engine.liveNoteOff(event.pitch);
+        if (event.type === 'on') liveNotesRef.current.set(event.pitch, engine.liveNoteOn(event.pitch, event.velocity,
+            { drums: pianoRollRef.current?.drumMode === true, trackId: pianoRollRef.current?.getActiveTrackId?.() }));
+        else {
+            engine.liveNoteOff(event.pitch, liveNotesRef.current.get(event.pitch));
+            liveNotesRef.current.delete(event.pitch);
+        }
         // 動きの記録 (lib/activity.ts): 鍵盤の操作と、その結果ノートが置かれたか
         const { note, octave } = pitchToNote(event.pitch);
         recordActivity('midi', event.type === 'on' ? `押した ${note}${octave}（強さ ${event.velocity}）` : `離した ${note}${octave}`);

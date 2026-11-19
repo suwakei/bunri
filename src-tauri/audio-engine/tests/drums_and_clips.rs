@@ -183,3 +183,27 @@ fn 曲の値が正しくなければ断る() {
         assert!(bunri_audio::Engine::new(&s, &bunri_audio::EngineConfig::default()).is_err());
     }
 }
+
+#[test]
+fn 打楽器のサンプラーはノートの長さを無視し途中から過去の打音を鳴らし直さない() {
+    let dir = Workdir::new("sampler-drums");
+    let sfz = dir.a440();
+    let make = |length| {
+        song(vec![Track {
+            instrument: Some(Instrument::SamplerDrums { sfz: sfz.clone() }),
+            notes: vec![note(1000, length, 69, 127)],
+            ..Track::default()
+        }])
+    };
+    let short = render_frames(&make(1000), 24_000);
+    let long = render_frames(&make(20_000), 24_000);
+    assert_eq!(short, long, "離鍵の時刻によって打音を切らない");
+    assert!(peak(&short.left()[8000..16_000]) > 0.01);
+    let skipped = render_from(&make(20_000), 8000, 8000);
+    assert!(
+        peak(skipped.left()) < 1e-7,
+        "頭を過ぎた打音を途中再生で鳴らさない"
+    );
+    let hit = render_from(&make(20_000), 1000, 8000);
+    assert!(peak(hit.left()) > 0.01, "打つ位置ちょうどからは鳴らす");
+}

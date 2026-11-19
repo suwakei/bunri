@@ -124,6 +124,7 @@ struct Span {
 enum Source {
     /// SFZ の楽器。ステレオの素材として混ぜる
     Sampler(Sampler),
+    SamplerDrums(Sampler),
     /// 仮の音 (三角波)。モノラルの素材として混ぜる
     Tone(ToneSynth),
     /// ドラムのトラック: 対応表に在る高さはドラムの合成音、ほかは三角波。モノラルの素材として混ぜる
@@ -146,7 +147,9 @@ impl ToneDrums {
 impl Source {
     fn note_on(&mut self, delay: usize, pitch: u8, velocity: u8) {
         match self {
-            Source::Sampler(sampler) => sampler.note_on(delay, pitch, velocity),
+            Source::Sampler(sampler) | Source::SamplerDrums(sampler) => {
+                sampler.note_on(delay, pitch, velocity)
+            }
             Source::Tone(tone) => tone.note_on(delay, pitch, velocity),
             Source::ToneDrums(d) => match d.voice_of(pitch) {
                 Some(voice) => d.drums.trigger(delay, voice, velocity),
@@ -158,6 +161,7 @@ impl Source {
     fn note_off(&mut self, delay: usize, pitch: u8) {
         match self {
             Source::Sampler(sampler) => sampler.note_off(delay, pitch),
+            Source::SamplerDrums(_) => {}
             Source::Tone(tone) => tone.note_off(delay, pitch),
             // ドラムの音は離す指示を使わない (決まった長さで鳴り終わる)
             Source::ToneDrums(d) => d.tone.note_off(delay, pitch),
@@ -166,7 +170,7 @@ impl Source {
 
     fn all_sound_off(&mut self) {
         match self {
-            Source::Sampler(sampler) => sampler.all_sound_off(),
+            Source::Sampler(sampler) | Source::SamplerDrums(sampler) => sampler.all_sound_off(),
             Source::Tone(tone) => tone.all_sound_off(),
             Source::ToneDrums(d) => {
                 d.tone.all_sound_off();
@@ -177,7 +181,7 @@ impl Source {
 
     fn active_voices(&self) -> usize {
         match self {
-            Source::Sampler(sampler) => sampler.active_voices(),
+            Source::Sampler(sampler) | Source::SamplerDrums(sampler) => sampler.active_voices(),
             Source::Tone(tone) => tone.active_voices(),
             Source::ToneDrums(d) => d.tone.active_voices() + d.drums.active_voices(),
         }
@@ -187,6 +191,7 @@ impl Source {
     fn is_one_shot(&self, pitch: u8) -> bool {
         match self {
             Source::ToneDrums(d) => d.voice_of(pitch).is_some(),
+            Source::SamplerDrums(_) => true,
             _ => false,
         }
     }
@@ -203,7 +208,7 @@ impl Source {
                 d.drums.render_add(out);
                 true
             }
-            Source::Sampler(_) => false,
+            Source::Sampler(_) | Source::SamplerDrums(_) => false,
         }
     }
 }
@@ -298,7 +303,7 @@ impl Engine {
             length = length.max(notes_end);
 
             let source = match &track.instrument {
-                Some(Instrument::Sampler { sfz }) => {
+                Some(Instrument::Sampler { sfz } | Instrument::SamplerDrums { sfz }) => {
                     let mut sampler = Sampler::new(config.sample_rate as f32, config.max_block);
                     sampler
                         .load_file(sfz)
@@ -306,7 +311,13 @@ impl Engine {
                             track: index,
                             error,
                         })?;
-                    Some(Source::Sampler(sampler))
+                    Some(
+                        if matches!(track.instrument, Some(Instrument::SamplerDrums { .. })) {
+                            Source::SamplerDrums(sampler)
+                        } else {
+                            Source::Sampler(sampler)
+                        },
+                    )
                 }
                 Some(Instrument::Tone) => Some(Source::Tone(ToneSynth::new(
                     config.sample_rate,
@@ -492,7 +503,7 @@ impl Engine {
     pub fn set_offline(&mut self, offline: bool) {
         for source in self.tracks.iter_mut().filter_map(|t| t.source.as_mut()) {
             // 仮の音は計算で作るので、待つものが無い
-            if let Source::Sampler(sampler) = source {
+            if let Source::Sampler(sampler) | Source::SamplerDrums(sampler) = source {
                 sampler.set_offline(offline);
             }
         }
@@ -542,7 +553,9 @@ impl Engine {
 
             // ステレオの素材: サンプラーと、ステレオのクリップ
             let mut stereo = false;
-            if let Some(Source::Sampler(sampler)) = track.source.as_mut() {
+            if let Some(Source::Sampler(sampler) | Source::SamplerDrums(sampler)) =
+                track.source.as_mut()
+            {
                 sampler.render(bus_left, bus_right);
                 stereo = true;
             }

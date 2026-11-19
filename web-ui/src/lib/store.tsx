@@ -520,6 +520,12 @@ export function DawProvider({ children }: { children: ReactNode }) {
         if (kind !== 'info') notify(kind, msg, { action: options.action });
     }, []);
 
+    useEffect(() => {
+        const unavailable = (message: string) => { setIsPlaying(false); setStatus(message, 'hint'); };
+        engine.onInstrumentUnavailable = unavailable;
+        return () => { if (engine.onInstrumentUnavailable === unavailable) engine.onInstrumentUnavailable = null; };
+    }, [setStatus]);
+
     const setChartResult = useCallback((result: ChartResponse) => {
         setChart(result.chart);
         setChartId(result.chart_id);

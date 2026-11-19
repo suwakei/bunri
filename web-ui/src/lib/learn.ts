@@ -546,6 +546,7 @@ export function useLearnActions() {
                 target.role = 'practice';
                 target.part = part.part;
                 target.practiceOf = part.id;
+                if (part.instrumentId) target.instrumentId = part.instrumentId;
                 engine.moveTrackAfter(target.id, part.id);
             }
             // パートの音声と、練習のトラックを鳴らす。ソロが在るなら、この 2 本もソロにする

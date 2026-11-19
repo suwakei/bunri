@@ -95,7 +95,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `pitch_time.py` | ピッチシフト/タイムストレッチ（フェーズボコーダー実装） |
 | `metronome.py` | メトロノーム/BPMユーティリティ |
 | `synth.py` | ソフトウェアシンセ + ステップシーケンサー + ドラムマシン（FluidSynth/SoundFont） |
-| `instruments.py` / `instrument_catalog.json` | 楽器の素材の一覧と明示ダウンロード（まず Salamander Grand Piano）。容量・SHA-256 を照合してデータ置き場に展開する。取得 API は `web/instrument_routes.py`。設計は `docs/instrument-engine-design.md` |
+| `instruments.py` / `instrument_catalog.json` | 楽器の素材の一覧と明示ダウンロード（11パック・251音色）。共有パックの容量・SHA-256 を照合してデータ置き場に展開する。取得 API は `web/instrument_routes.py`。設計は `docs/instrument-engine-design.md` |
+| `instrument_presets.py` | 内蔵の16bitゲーム風音色と電子ドラムの波形・SFZを生成する。取得した単独声を重ねるコーラス用の派生SFZも用意する |
 | `analyze.py` | WAV音声解析 → ピアノロール用ノートデータ |
 | `song_chart.py` | 楽曲カルテの組み立て・正規化（第1層のオーケストレーション） |
 | `structure.py` | グリッド推定（BPM/ダウンビート）とセクション検出 |

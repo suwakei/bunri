@@ -7,6 +7,12 @@ from web.job_routes import dispatch
 router = APIRouter()
 
 
+@router.get("/api/instruments")
+async def library_status():
+    """用意できる楽器と、それぞれの素材の準備状況を返す。取得は行わない。"""
+    return instruments.library_status()
+
+
 @router.get("/api/instruments/piano")
 async def piano_status():
     """ピアノの準備状況と容量・出典を返す。取得は行わない。"""
@@ -27,5 +33,28 @@ async def install_piano(run_async: bool = Query(False, alias="async")):
         stages=[("download", "ピアノ音源をダウンロードしています"),
                 ("verify", "音源のファイルを確かめています"),
                 ("extract", "音源を展開しています")],
+        prepare=lambda: None, task=task, run_async=run_async,
+    )
+
+
+@router.post("/api/instruments/{instrument_id}/install")
+async def install_instrument(instrument_id: str, run_async: bool = Query(False, alias="async")):
+    """選んだ楽器の素材を準備する。同じ素材を使う楽器は取得を共有する。"""
+    try:
+        status = instruments.instrument_status(instrument_id)
+    except instruments.InstrumentNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
+
+    def task(job, _prepared):
+        try:
+            return instruments.install_instrument(instrument_id, job=job)
+        except instruments.InstrumentUnavailableError as error:
+            raise HTTPException(503, str(error)) from error
+
+    return await dispatch(
+        "instrument_install", title="楽器の音源の準備", filename=status["name"],
+        stages=[("download", "楽器の音源をダウンロードしています"),
+                ("verify", "音源のファイルを確かめています"),
+                ("extract", "音源を用意しています")],
         prepare=lambda: None, task=task, run_async=run_async,
     )

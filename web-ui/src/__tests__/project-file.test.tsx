@@ -134,6 +134,21 @@ describe('学習の記録', () => {
 });
 
 describe('文書を作る (buildDocument)', () => {
+    it('トラックごとの音色をextraへ保存し、未知のIDも読み直しと再保存で保持する', async () => {
+        const piano = engine.addTrack('Piano'), voice = engine.addTrack('Voice'), game = engine.addTrack('Game');
+        voice.instrumentId = 'choir-a'; game.instrumentId = 'future-game';
+        const { doc } = await pf.buildDocument(baseInput());
+        expect(doc.tracks[0]).not.toHaveProperty('extra');
+        expect(doc.tracks[1].extra).toEqual({ instrumentId: 'choir-a' });
+        expect(doc.tracks[2].extra).toEqual({ instrumentId: 'future-game' });
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+        await pf.applyDocument(JSON.parse(JSON.stringify(doc)), applyTarget());
+        expect(engine.tracks.map((track) => track.instrumentId)).toEqual([undefined, 'choir-a', 'future-game']);
+        const savedAgain = await pf.buildDocument(baseInput());
+        expect(savedAgain.doc.tracks.map((track) => track.extra?.instrumentId)).toEqual([undefined, 'choir-a', 'future-game']);
+        expect(piano.instrumentId).toBeUndefined();
+    });
+
     it('トラックは控えから写し、相手のトラック・重ねるお手本・差分の組・記録は並びの番号で指す。同じ音声は 1 つだけ送る', async () => {
         const song = engine.addTrack('原曲'); song.role = 'song';
         const part = engine.addTrack('ベース'); part.role = 'part'; part.part = 'bass';

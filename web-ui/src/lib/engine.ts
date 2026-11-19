@@ -112,6 +112,9 @@ export interface PianoNote {
     velocity?: number;
 }
 
+/** 押したときの音色と番号。切り替えた後の離鍵で、別の声を止めないために使う。 */
+export interface LiveNoteHandle { voiceId: number; instrumentId?: string }
+
 /**
  * タイムライン上に配置された音声クリップ。
  * デコード済み AudioBuffer とタイムライン上の開始位置を持つ。
@@ -146,6 +149,8 @@ export interface Clip {
  * ゲイン/パン/ミュート/ソロを制御する WebAudio ノードを保持する。
  */
 export interface Track {
+    /** 打ち込んだノートを鳴らす楽器。未指定は既定のピアノ（従来のドラムは合成音）。 */
+    instrumentId?: string;
     /** トラック固有 ID（1始まりの連番） */
     id: number;
     /** トラック表示名 */
@@ -275,7 +280,11 @@ class AudioEngine {
     /** Rust の engine で再生しているあいだの状態（lib/native-audio.ts）。Web Audio で鳴らしているときは null */
     private nativePlayback: NativePlayback | null = null;
     /** Rust の engine で鳴らしている鍵盤の試聴（MIDI ノート番号 → 強さ） */
-    private nativeHeld: Map<number, number> = new Map();
+    private nativeHeld: Map<number, LiveNoteHandle & { velocity: number }> = new Map();
+    private nextLiveVoice = 1;
+    private liveInstrumentId: string | undefined;
+    /** 素材が足りないときの知らせ。画面の状態管理が受け取る。 */
+    onInstrumentUnavailable: ((message: string) => void) | null = null;
 
     constructor() {
         this.isPlaying = false;
@@ -287,6 +296,12 @@ class AudioEngine {
         this.gridOffset = 0;
         this.nextTrackId = 1;
         nativeAudio.onFailure = () => this._onNativeFailure();
+        nativeAudio.onUnavailable = (message) => {
+            this.nativeHeld.clear();
+            nativeAudio.liveAllOff();
+            this.stop();
+            this.onInstrumentUnavailable?.(message);
+        };
         nativeAudio.onInterrupted = () => this._onNativeInterrupted();
         nativeAudio.project = () => this._nativeBuffers();
     }
@@ -373,7 +388,7 @@ class AudioEngine {
         this.nativeHeld.clear();
         const playback = this.nativePlayback;
         this.nativePlayback = null;
-        if (this.ctx) for (const [pitch, velocity] of held) this.liveNoteOn(pitch, velocity);
+        if (this.ctx) for (const [pitch, voice] of held) this.liveNoteOn(pitch, voice.velocity);
         if (!playback || !this.isPlaying) return;
         const at = nativeAudio.position(playback);
         const single = this.soloTrackId;
@@ -731,6 +746,7 @@ class AudioEngine {
             tracks: this.tracks.map((t) => ({
                 id: t.id, gainDb: t.gain, pan: t.pan, audible: this._nativeAudible(t, playing),
                 notes: this.soundingNotes(t), clips: t.clips,
+                ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
                 // ドラムのトラックのノートは、Rust の側でも種類ごとの音で鳴らす (Web Audio の drumVoiceOf と同じ判定)
                 drums: isDrumTrack(t, (id) => this.getTrack(id)),
             })),
@@ -857,6 +873,7 @@ class AudioEngine {
      * null（これまでどおり三角波で鳴らす）。再生・区間ループ・書き出しが、どれもこれで決める。
      */
     drumVoiceOf(track: Track, n: Pick<PianoNote, 'note' | 'octave'>): DrumVoice | null {
+        if (track.instrumentId) return null;
         const row = drumRowOfNote(n);
         return row && isDrumTrack(track, (id) => this.getTrack(id)) ? row.voice : null;
     }
@@ -1187,27 +1204,34 @@ class AudioEngine {
      * @param options.drums - ドラムのトラックに向けて弾いているか。true で、ドラムの行の高さは、種類ごとの音を
      *   1 回鳴らす（再生と同じ音。打った瞬間の音なので、`liveNoteOff` を待たずに鳴り終わる）。ほかの高さは、これまでどおり
      */
-    liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY, options: { drums?: boolean } = {}): void {
+    liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY, options: { drums?: boolean; trackId?: number | null } = {}): LiveNoteHandle {
         this.init();
+        const instrumentId = options.trackId != null ? this.getTrack(options.trackId)?.instrumentId : undefined;
+        const handle = { voiceId: this.nextLiveVoice++, instrumentId };
         if (this.usesNativeAudio()) {
-            const drum = options.drums ? drumRowOfPitch(pitch) : null;
+            if (this.liveInstrumentId !== instrumentId) {
+                nativeAudio.liveAllOff();
+                this.nativeHeld.clear();
+                this.liveInstrumentId = instrumentId;
+            }
+            const drum = options.drums && !instrumentId ? drumRowOfPitch(pitch) : null;
             if (drum) {
                 // ドラムの音は打った瞬間の音。Rust の側で 1 回鳴らし、押したままの音としては持たない (Web Audio と同じ)
                 if (this.nativeHeld.delete(pitch)) nativeAudio.liveNote(pitch, 0);
                 nativeAudio.liveNote(pitch, velocity, drum.voice);
-                return;
+                return handle;
             }
             // 同じ高さをもう一度押したら、Rust の側で鳴らし直す
-            this.nativeHeld.set(pitch, velocity);
-            nativeAudio.liveNote(pitch, velocity);
-            return;
+            this.nativeHeld.set(pitch, { ...handle, velocity });
+            nativeAudio.liveNote(pitch, velocity, undefined, instrumentId);
+            return handle;
         }
         const ctx = this.ctx!;
         this.liveNoteOff(pitch);
-        const row = options.drums ? drumRowOfPitch(pitch) : null;
+        const row = options.drums && !instrumentId ? drumRowOfPitch(pitch) : null;
         if (row) {
             playDrum(ctx, this.masterGain!, row.voice, ctx.currentTime, noteLevel(velocity));
-            return;
+            return handle;
         }
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -1221,15 +1245,19 @@ class AudioEngine {
         gain.connect(this.masterGain!);
         osc.start();
         this.liveVoices.set(pitch, { osc, gain });
+        return handle;
     }
 
     /**
      * `liveNoteOn` で鳴らした音を止める。鳴っていなければ何もしない。
      * @param pitch - MIDI ノート番号
      */
-    liveNoteOff(pitch: number): void {
-        if (this.nativeHeld.delete(pitch)) {
-            if (this.usesNativeAudio()) nativeAudio.liveNote(pitch, 0);
+    liveNoteOff(pitch: number, handle?: LiveNoteHandle): void {
+        const held = this.nativeHeld.get(pitch);
+        if (held) {
+            if (handle && handle.voiceId !== held.voiceId) return;
+            this.nativeHeld.delete(pitch);
+            if (this.usesNativeAudio()) nativeAudio.liveNote(pitch, 0, undefined, held.instrumentId);
             return;
         }
         const voice = this.liveVoices.get(pitch);
@@ -1244,6 +1272,7 @@ class AudioEngine {
 
     /** `liveNoteOn` で鳴らしている音をすべて止める。 */
     liveAllNotesOff(): void {
+        this.liveInstrumentId = undefined;
         if (this.nativeHeld.size > 0) {
             this.nativeHeld.clear();
             if (this.usesNativeAudio()) nativeAudio.liveAllOff();
@@ -1433,6 +1462,21 @@ class AudioEngine {
         return nativeAudio.preparePiano();
     }
 
+    /** 選んだ楽器を試聴に先読みする。曲の音色は次の再生から変わる。 */
+    async prepareInstrument(instrumentId: string): Promise<boolean> {
+        this.liveAllNotesOff();
+        this.nativeHeld.clear();
+        this.liveInstrumentId = instrumentId;
+        return nativeAudio.prepareInstrument(instrumentId);
+    }
+
+    setTrackInstrument(trackId: number, instrumentId: string | undefined): void {
+        const track = this.getTrack(trackId);
+        if (!track) return;
+        if (instrumentId) track.instrumentId = instrumentId;
+        else delete track.instrumentId;
+    }
+
     /** 画面に、実際に用意できた音色と電子音への切り替えを知らせる。 */
     subscribeInstrument = (listener: () => void): (() => void) => nativeAudio.subscribeInstrument(listener);
     instrumentSnapshot = () => nativeAudio.instrumentSnapshot();
@@ -1445,6 +1489,7 @@ class AudioEngine {
             tracks: this.tracks.map((t) => ({
                 id: t.id, gainDb: t.gain, pan: t.pan, audible: audible.has(t.id),
                 notes: this.soundingNotes(t), clips: t.clips,
+                ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
                 drums: isDrumTrack(t, (id) => this.getTrack(id)),
             })),
             fromSec: 0, loop: null, rate: 1, stretched: null, countIn: null, metronome: false,

@@ -99,6 +99,9 @@ pub struct SongPayload {
 struct TrackPayload {
     /// 画面のトラック ID
     id: f64,
+    /// 楽器の台帳の ID。省略した古い曲はピアノまたは従来のドラムで鳴らす。
+    #[serde(default)]
+    instrument_id: Option<String>,
     #[serde(deserialize_with = "db_or_silent")]
     gain_db: f64,
     pan: f64,
@@ -576,7 +579,15 @@ struct Inner {
     silent: bool,
     /// sidecar と共通のデータ置き場。外から SFZ の任意のパスは受け取らない。
     data_dir: Option<PathBuf>,
-    piano: Mutex<Option<PathBuf>>,
+    live_selection: Mutex<LiveSelection>,
+}
+
+/// 試聴の楽器。曲のトラックごとの楽器とは独立して持つ。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LiveSelection {
+    instrument_id: Option<String>,
+    sfz: Option<PathBuf>,
+    one_shot: bool,
 }
 
 /// 音の再生の状態。Tauri の state として管理する。
@@ -613,7 +624,7 @@ impl AudioState {
             opener,
             silent: output_silent(),
             data_dir,
-            piano: Mutex::new(None),
+            live_selection: Mutex::new(LiveSelection::default()),
         });
         // スレッドは Inner を弱く持つ (終了のとき、こちらが先に片付けられるように)
         let weak = Arc::downgrade(&inner);
@@ -704,10 +715,12 @@ impl Inner {
     /// 出力を開く。前に渡された曲が在れば、新しい出力へ渡し直す。
     fn open(&self) -> Result<Session, String> {
         let (output, mut controller) = (self.opener)(self.silent)?;
-        if let Some(path) = lock(&self.piano).as_ref() {
-            let sampler = load_live_sampler(path, controller.sample_rate())?;
+        let selection = lock(&self.live_selection).clone();
+        if let Some(path) = selection.sfz.as_ref() {
+            let sampler = load_live_sampler(path, controller.sample_rate())
+                .map_err(|e| instrument_error(selection.instrument_id.as_deref(), e))?;
             controller
-                .set_live_sampler(Some(sampler))
+                .set_live_instrument(Some(sampler), selection.one_shot)
                 .map_err(|e| e.to_string())?;
         }
         let broken = output.broken();
@@ -789,7 +802,7 @@ impl Inner {
                 self.clip_at_rate(id, rate)?;
             }
         }
-        let piano = lock(&self.piano).clone();
+        let piano = installed_piano(self.data_dir.as_deref());
         self.build_engine_for(payload, rate, piano)
     }
 
@@ -804,9 +817,26 @@ impl Inner {
             let clips = lock(&self.clips);
             build_song(payload, |id| clips.get(id))?
         };
-        if let Some(sfz) = piano.as_ref() {
-            for track in &mut built.song.tracks {
-                if track.instrument == Some(Instrument::Tone) {
+        for (track, input) in built.song.tracks.iter_mut().zip(&payload.tracks) {
+            // ミュート・ソロ外・単体再生の対象外では音源を読まない。曲の長さを保つため、ノートは残す。
+            if !input.audible || track.notes.is_empty() {
+                track.instrument = None;
+                continue;
+            }
+            if let Some(id) = input.instrument_id.as_deref() {
+                let instrument = crate::instruments::installed(id, self.data_dir.as_deref())?
+                    .ok_or_else(|| crate::instruments::missing_message(id))?;
+                track.instrument = Some(if instrument.one_shot {
+                    Instrument::SamplerDrums {
+                        sfz: instrument.sfz,
+                    }
+                } else {
+                    Instrument::Sampler {
+                        sfz: instrument.sfz,
+                    }
+                });
+            } else if track.instrument == Some(Instrument::Tone) {
+                if let Some(sfz) = piano.as_ref() {
                     track.instrument = Some(Instrument::Sampler { sfz: sfz.clone() });
                 }
             }
@@ -815,45 +845,129 @@ impl Inner {
             sample_rate: rate,
             ..EngineConfig::default()
         };
-        let engine = Engine::new(&built.song, &config).map_err(|e| e.to_string())?;
+        let engine = Engine::new(&built.song, &config).map_err(|e| {
+            if let bunri_audio::EngineError::Instrument { track, .. } = &e {
+                if let Some(id) = payload
+                    .tracks
+                    .get(*track)
+                    .and_then(|t| t.instrument_id.as_deref())
+                {
+                    return crate::instruments::unavailable(id, e);
+                }
+            }
+            e.to_string()
+        })?;
         Ok((Box::new(engine), built))
     }
 
-    /// インストール完了を読み直し、試聴と次の曲の組み立てに反映する。
+    /// インストール完了を読み直す。省略した古い呼び出しはピアノを使う。
     fn prepare_piano(&self) -> Result<PianoResult, String> {
-        let piano = installed_piano(self.data_dir.as_deref());
-        if *lock(&self.piano) == piano {
+        self.prepare_live(None, true)
+    }
+
+    /// 音源は音声スレッドの外で読み、変更後の試聴だけに反映する。
+    fn prepare_live(&self, id: Option<&str>, release: bool) -> Result<PianoResult, String> {
+        if !release && id.is_some() {
+            let current = lock(&self.live_selection);
+            if current.instrument_id.as_deref() == id && current.sfz.is_some() {
+                // 連続して弾くたびに、台帳の全ファイルを確かめ直したり読み込んだりしない。
+                return Ok(PianoResult { installed: true });
+            }
+        }
+        let selection = if let Some(id) = id {
+            let Some(instrument) = crate::instruments::installed(id, self.data_dir.as_deref())?
+            else {
+                return Ok(PianoResult { installed: false });
+            };
+            LiveSelection {
+                instrument_id: Some(id.into()),
+                sfz: Some(instrument.sfz),
+                one_shot: instrument.one_shot,
+            }
+        } else {
+            LiveSelection {
+                sfz: installed_piano(self.data_dir.as_deref()),
+                ..LiveSelection::default()
+            }
+        };
+        if *lock(&self.live_selection) == selection {
+            if release {
+                self.if_session(|s| s.controller.live_all_off().map_err(|e| e.to_string()))?;
+            }
             return Ok(PianoResult {
-                installed: piano.is_some(),
+                installed: selection.sfz.is_some(),
             });
         }
-        // SFZ の読み込みは音声スレッドの外。出力の作り直しが起きたら新しい周波数でやり直す。
         for _ in 0..3 {
             let (rate, generation) =
                 self.with_session(|s| Ok((s.controller.sample_rate(), s.generation)))?;
-            let sampler = piano
+            let sampler = selection
+                .sfz
                 .as_ref()
                 .map(|path| load_live_sampler(path, rate))
-                .transpose()?;
+                .transpose()
+                .map_err(|e| instrument_error(id, e))?;
             let sent = self.with_session(|session| {
                 if session.generation != generation {
                     return Ok(false);
                 }
                 session
                     .controller
-                    .set_live_sampler(sampler)
+                    .set_live_instrument(sampler, selection.one_shot)
                     .map_err(|e| e.to_string())?;
                 Ok(true)
             })?;
             if sent {
-                *lock(&self.piano) = piano.clone();
-                *lock(&self.last_song) = None;
+                *lock(&self.live_selection) = selection.clone();
                 return Ok(PianoResult {
-                    installed: piano.is_some(),
+                    installed: selection.sfz.is_some(),
                 });
             }
         }
         Err("音声の出力が変わり続けています。もう一度、音源を読み込んでください".into())
+    }
+
+    fn live_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        drum: Option<DrumVoice>,
+        instrument_id: Option<&str>,
+    ) -> Result<(), String> {
+        if velocity == 0 {
+            // 前の楽器に向けた遅い離鍵で、いまの楽器を止めたり読み戻したりしない。
+            if lock(&self.live_selection).instrument_id.as_deref() != instrument_id {
+                return Ok(());
+            }
+            if instrument_id.is_none() && drum.is_some() {
+                return Ok(());
+            }
+            return self.if_session(|session| {
+                session
+                    .controller
+                    .live_note_off(pitch)
+                    .map_err(|e| e.to_string())
+            });
+        }
+        let prepared = self.prepare_live(instrument_id, false)?;
+        if let Some(id) = instrument_id {
+            if !prepared.installed {
+                return Err(crate::instruments::missing_message(id));
+            }
+        }
+        self.with_session(|session| {
+            if let Some(drum) = drum.filter(|_| instrument_id.is_none()) {
+                session
+                    .controller
+                    .live_drum(drum, velocity)
+                    .map_err(|e| e.to_string())
+            } else {
+                session
+                    .controller
+                    .live_note_on(pitch, velocity)
+                    .map_err(|e| e.to_string())
+            }
+        })
     }
 
     fn render_song(&self, payload: &SongPayload) -> Result<Vec<u8>, String> {
@@ -1121,23 +1235,17 @@ fn report_positions(
     }
 }
 
-/// 固定した版の、導入が完了したピアノだけを返す。
+/// 古いプロジェクトの既定のピアノ。未導入なら従来の仮の音を使う。
 fn installed_piano(data_dir: Option<&std::path::Path>) -> Option<PathBuf> {
-    let root = data_dir?.join("instruments/salamander/3382bf9496bba2486f5ab0de55a264d1dfc38404");
-    let marker: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join(".installed.json")).ok()?).ok()?;
-    if marker.get("version")?.as_str()? != "3382bf9496bba2486f5ab0de55a264d1dfc38404"
-        || marker.get("sha256")?.as_str()?
-            != "4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476"
-    {
-        return None;
-    }
-    let sfz = root.join("Salamander Grand Piano V3.sfz");
-    (sfz.is_file()
-        && root.join("LICENSE").is_file()
-        && root.join("Samples").is_dir()
-        && root.join("Data").is_dir())
-    .then_some(sfz)
+    crate::instruments::installed("salamander", data_dir)
+        .ok()
+        .flatten()
+        .map(|i| i.sfz)
+}
+
+fn instrument_error(id: Option<&str>, error: String) -> String {
+    id.map(|id| crate::instruments::unavailable(id, &error))
+        .unwrap_or(error)
 }
 
 /// 試聴のための、曲と同じ SFZ のサンプラー。
@@ -1149,7 +1257,7 @@ fn load_live_sampler(
     sampler.set_preload_size(16384);
     sampler.load_file(path).map_err(|e| e.to_string())?;
     if sampler.num_regions() == 0 || sampler.preloaded_samples() == 0 {
-        return Err("ピアノの音源を読み込めませんでした。もう一度ダウンロードしてください".into());
+        return Err("楽器の音源を読み込めませんでした。もう一度ダウンロードしてください".into());
     }
     Ok(Box::new(sampler))
 }
@@ -1183,6 +1291,16 @@ pub async fn audio_init(state: State<'_, AudioState>) -> Result<InitResult, Stri
 pub async fn audio_prepare_piano(state: State<'_, AudioState>) -> Result<PianoResult, String> {
     let inner = Arc::clone(&state.inner);
     blocking(move || inner.prepare_piano()).await
+}
+
+/// 台帳から選んだ楽器を試聴に反映する。既知の未導入音源は `installed: false`。
+#[tauri::command]
+pub async fn audio_prepare_instrument(
+    instrument_id: String,
+    state: State<'_, AudioState>,
+) -> Result<PianoResult, String> {
+    let inner = Arc::clone(&state.inner);
+    blocking(move || inner.prepare_live(Some(&instrument_id), true)).await
 }
 
 /// 同じ音源とクリップで曲を描画し、WAV のバイト列を返す。再生中の曲には触れない。
@@ -1339,12 +1457,13 @@ pub fn audio_set_metronome(state: State<'_, AudioState>, enabled: bool) -> Resul
 ///
 /// `drum` (`kick` `snare` `hat` `tom`) を付けたら、ドラムのトラックに向けて弾いた音として、その種類の
 /// ドラムの音を 1 回鳴らす (打った瞬間の音なので、離す指示は要らない。画面の Web Audio の試聴と同じ)。
-#[tauri::command(async)]
-pub fn audio_live_note(
+#[tauri::command]
+pub async fn audio_live_note(
     state: State<'_, AudioState>,
     pitch: f64,
     velocity: f64,
     drum: Option<String>,
+    instrument_id: Option<String>,
 ) -> Result<(), String> {
     if !(pitch.is_finite() && (0.0..=127.0).contains(&pitch.round()) && velocity.is_finite()) {
         return Err(format!(
@@ -1353,35 +1472,16 @@ pub fn audio_live_note(
     }
     let pitch = pitch.round() as u8;
     let velocity = velocity.round().clamp(0.0, 127.0) as u8;
-    if let Some(name) = drum {
-        let voice = DrumVoice::from_name(&name)
-            .ok_or_else(|| format!("ドラムの種類 {name:?} を知りません"))?;
-        if velocity == 0 {
-            // ドラムの音は離す指示を使わない
-            return Ok(());
-        }
-        return state.inner.with_session(|session| {
-            session
-                .controller
-                .live_drum(voice, velocity)
-                .map_err(|e| e.to_string())
-        });
-    }
-    if velocity == 0 {
-        // 離す: 出力が開いていなければ、鳴っている音も無い
-        return state.inner.if_session(|session| {
-            session
-                .controller
-                .live_note_off(pitch)
-                .map_err(|e| e.to_string())
-        });
-    }
-    state.inner.with_session(|session| {
-        session
-            .controller
-            .live_note_on(pitch, velocity)
-            .map_err(|e| e.to_string())
-    })
+    let drum = if instrument_id.is_none() {
+        drum.map(|name| {
+            DrumVoice::from_name(&name).ok_or_else(|| format!("ドラムの種類 {name:?} を知りません"))
+        })
+        .transpose()?
+    } else {
+        None
+    };
+    let inner = Arc::clone(&state.inner);
+    blocking(move || inner.live_note(pitch, velocity, drum, instrument_id.as_deref())).await
 }
 
 /// 鍵盤の試聴で押している音を、すべて離す。
@@ -1557,6 +1657,242 @@ mod tests {
             );
             assert_eq!(stored.sample_rate(), 44_100);
         }
+    }
+
+    /// 台帳どおりの一式を、小さい自作 WAV でそろえる。
+    struct GameFixture(PathBuf);
+    impl GameFixture {
+        fn new(name: &str) -> Self {
+            let catalog: serde_json::Value =
+                serde_json::from_str(include_str!("../../backend/instrument_catalog.json"))
+                    .unwrap();
+            let pack = &catalog["packs"]["game"];
+            let dir =
+                std::env::temp_dir().join(format!("bunri-library-{}-{name}", std::process::id()));
+            let root = dir
+                .join("instruments/game")
+                .join(pack["version"].as_str().unwrap());
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("LICENSE"), "テスト用の自作音源").unwrap();
+            for (id, instrument) in catalog["instruments"].as_object().unwrap() {
+                if instrument["pack"] != "game" {
+                    continue;
+                }
+                let hz = match id.as_str() {
+                    "game-bell" => 660.0,
+                    "game-drums" => 880.0,
+                    _ => 440.0,
+                };
+                let samples: Vec<f32> = (0..48_000)
+                    .map(|i| (i as f32 * hz * std::f32::consts::TAU / 48_000.0).sin() * 0.5)
+                    .collect();
+                AudioData::new(48_000, vec![samples])
+                    .unwrap()
+                    .write_wav_file(
+                        &root.join(format!("{id}.wav")),
+                        bunri_audio::WavFormat::Float32,
+                    )
+                    .unwrap();
+                let sfz = root.join(instrument["sfz"].as_str().unwrap());
+                std::fs::create_dir_all(sfz.parent().unwrap()).unwrap();
+                std::fs::write(
+                    sfz,
+                    format!("<region> sample={id}.wav pitch_keycenter=69 ampeg_release=0.005\n"),
+                )
+                .unwrap();
+            }
+            std::fs::write(
+                root.join(".installed.json"),
+                serde_json::to_vec(
+                    &serde_json::json!({"version":pack["version"],"sha256":pack["sha256"]}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for GameFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn instrument_song(ids: &[&str]) -> SongPayload {
+        payload(
+            serde_json::json!({"bpm":120,"offsetSec":0,"beatsPerBar":4,"tracks":ids.iter().enumerate().map(|(index,id)| serde_json::json!({
+            "id":index,"instrumentId":id,"gainDb":0,"pan":0,"audible":true,
+            "notes":[{"start":0,"length":960,"pitch":69,"velocity":127}],
+            "drums":[{"pitch":69,"voice":"kick"}]
+        })).collect::<Vec<_>>()}),
+        )
+    }
+
+    #[test]
+    fn 明示した楽器をトラックごとに選び旧ドラム指定より優先する() {
+        let fixture = GameFixture::new("tracks");
+        let rig = rig_at(Some(fixture.0.clone()));
+        let state = rig.window.state::<AudioState>();
+        let p = instrument_song(&["game-lead", "game-bell", "game-drums"]);
+        let (_, built) = state.inner.build_engine_for(&p, 48_000, None).unwrap();
+        assert!(
+            matches!(&built.song.tracks[0].instrument, Some(Instrument::Sampler {sfz}) if sfz.ends_with("game-lead.sfz"))
+        );
+        assert!(
+            matches!(&built.song.tracks[1].instrument, Some(Instrument::Sampler {sfz}) if sfz.ends_with("game-bell.sfz"))
+        );
+        assert!(
+            matches!(&built.song.tracks[2].instrument, Some(Instrument::SamplerDrums {sfz}) if sfz.ends_with("game-drums.sfz"))
+        );
+        assert_eq!(rig.opened_count(), 0);
+    }
+
+    #[test]
+    fn 明示した不明な楽器や未導入の音源を別の音色に置き換えない() {
+        let rig = rig();
+        let state = rig.window.state::<AudioState>();
+        for id in ["missing-library-instrument", "game-lead"] {
+            let error = state
+                .inner
+                .render_song(&instrument_song(&[id]))
+                .unwrap_err();
+            assert!(error.starts_with(&format!("BUNRI_INSTRUMENT_UNAVAILABLE:{id}:")));
+        }
+        let not_installed = rig
+            .invoke(
+                "audio_prepare_instrument",
+                serde_json::json!({"instrumentId":"game-lead"}),
+            )
+            .unwrap();
+        assert_eq!(not_installed["installed"], false);
+        assert!(rig
+            .invoke(
+                "audio_prepare_instrument",
+                serde_json::json!({"instrumentId":"missing-library-instrument"})
+            )
+            .unwrap_err()
+            .starts_with("BUNRI_INSTRUMENT_UNAVAILABLE:missing-library-instrument:"));
+        assert_eq!(rig.opened_count(), 0);
+    }
+
+    #[test]
+    fn ミュートやソロ外や単体再生の対象外の音源は読まず曲の長さは保つ() {
+        let fixture = GameFixture::new("inaudible");
+        let rig = rig_at(Some(fixture.0.clone()));
+        let state = rig.window.state::<AudioState>();
+        let mut p = instrument_song(&[
+            "game-lead", // 導入済みでも、鳴らさない楽器は読み込まない。
+            "violin",    // 別の素材の、未導入の楽器。
+            "missing-library-instrument",
+            "game-bell",
+        ]);
+        for track in &mut p.tracks[..3] {
+            track.audible = false;
+        }
+        p.tracks[1].notes[0].length = 3840.0;
+        let (mut engine, built) = state.inner.build_engine(&p, 48_000).unwrap();
+        for track in &built.song.tracks[..3] {
+            assert_eq!(track.instrument, None);
+            assert_eq!(track.notes.len(), 1, "鳴らさないトラックのノートも残す");
+        }
+        assert_eq!(engine.length_frames(), 96_000);
+        let audio = bunri_audio::render(&mut engine, &bunri_audio::RenderOptions::default());
+        assert!(audio.left().iter().any(|value| value.abs() > 0.01));
+        assert!(
+            state.inner.render_song(&p).is_ok(),
+            "書き出しでも、鳴らさない音源の取得を求めない"
+        );
+        p.tracks[1].audible = true;
+        let error = state.inner.render_song(&p).unwrap_err();
+        assert!(error.starts_with("BUNRI_INSTRUMENT_UNAVAILABLE:violin:"));
+        p.tracks[1].audible = false;
+        p.tracks[2].audible = true;
+        let error = state.inner.render_song(&p).unwrap_err();
+        assert!(error.starts_with("BUNRI_INSTRUMENT_UNAVAILABLE:missing-library-instrument:"));
+    }
+
+    #[test]
+    fn 試聴の楽器を切り替え前の楽器の離鍵でいまの音を止めない() {
+        let fixture = GameFixture::new("live");
+        let rig = rig_at(Some(fixture.0.clone()));
+        rig.invoke(
+            "audio_prepare_instrument",
+            serde_json::json!({"instrumentId":"game-lead"}),
+        )
+        .unwrap();
+        let press = |id| serde_json::json!({"instrumentId":id,"pitch":69,"velocity":127,"drum":"存在しない旧ドラム"});
+        rig.invoke("audio_live_note", press("game-lead")).unwrap();
+        assert!(rig.process(4).iter().any(|v| v.abs() > 0.01));
+        rig.invoke("audio_live_note", press("game-bell")).unwrap();
+        rig.process(4);
+        rig.invoke(
+            "audio_live_note",
+            serde_json::json!({"instrumentId":"game-lead","pitch":69,"velocity":0}),
+        )
+        .unwrap();
+        assert!(rig.process(8).iter().any(|v| v.abs() > 0.01));
+        {
+            let state = rig.window.state::<AudioState>();
+            assert_eq!(
+                lock(&state.inner.live_selection).instrument_id.as_deref(),
+                Some("game-bell")
+            );
+        }
+        rig.invoke(
+            "audio_live_note",
+            serde_json::json!({"instrumentId":"game-bell","pitch":69,"velocity":0}),
+        )
+        .unwrap();
+        rig.process(8);
+        let released = rig.process(4);
+        let released_peak = released.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            released_peak < 1e-4,
+            "短いリリース後も音が残っています: {released_peak}"
+        );
+        rig.invoke("audio_live_note", press("game-drums")).unwrap();
+        rig.invoke(
+            "audio_live_note",
+            serde_json::json!({"instrumentId":"game-drums","pitch":69,"velocity":0}),
+        )
+        .unwrap();
+        assert!(
+            rig.process(8).iter().any(|v| v.abs() > 0.01),
+            "打楽器の試聴は離鍵で切らない"
+        );
+        rig.invoke(
+            "audio_prepare_instrument",
+            serde_json::json!({"instrumentId":"game-drums"}),
+        )
+        .unwrap();
+        assert!(
+            rig.process(4).iter().all(|v| v.abs() < 1e-6),
+            "明示的な準備は鳴っている音を離す"
+        );
+    }
+
+    #[test]
+    fn 複数の楽器の初回書き出しもデバイスや試聴に依存しない() {
+        let fixture = GameFixture::new("export");
+        let rig = rig_at(Some(fixture.0.clone()));
+        rig.next_rate.store(0, Ordering::Relaxed);
+        let state = rig.window.state::<AudioState>();
+        let lead = state
+            .inner
+            .render_song(&instrument_song(&["game-lead"]))
+            .unwrap();
+        let bell = state
+            .inner
+            .render_song(&instrument_song(&["game-bell"]))
+            .unwrap();
+        let both = state
+            .inner
+            .render_song(&instrument_song(&["game-lead", "game-bell"]))
+            .unwrap();
+        assert_ne!(lead, bell);
+        assert_ne!(lead, both);
+        assert_ne!(bell, both);
+        assert_eq!(rig.opened_count(), 0);
     }
 
     // ---- 曲の組み立て ----
@@ -2351,6 +2687,7 @@ mod tests {
             .invoke_handler(tauri::generate_handler![
                 audio_init,
                 audio_prepare_piano,
+                audio_prepare_instrument,
                 audio_render_song,
                 audio_clip_put,
                 audio_clip_drop,

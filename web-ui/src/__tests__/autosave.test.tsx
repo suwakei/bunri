@@ -528,6 +528,28 @@ function addTrack(name: string) {
 describe('画面の自動保存', () => {
     beforeEach(() => { autosave.configure({ idle: 20, maxWait: 200, retry: 10 }); });
 
+    it('音色だけの変更も自動保存し、前回の続きから未知の音色IDまで戻せる', async () => {
+        await mount();
+        act(() => daw.record('音色を選ぶ', () => {
+            const choir = engine.addTrack('Choir'), game = engine.addTrack('Game');
+            choir.instrumentId = 'choir-a'; game.instrumentId = 'future-game';
+        }));
+        await waitFor(() => expect(seen('POST', '/api/project/recovery')).toHaveLength(1));
+        const saved = seen('POST', '/api/project/document')[0].body!.document as Parameters<typeof pf.applyDocument>[0];
+        expect(saved.tracks.map((track) => track.extra?.instrumentId)).toEqual(['choir-a', 'future-game']);
+        cleanup();
+        autosave.resetForTest();
+        autosave.configure({ idle: 20, maxWait: 200, retry: 10 });
+        calls = [];
+        engine.tracks = [];
+        intercept = (call) => call.path.startsWith('/api/project/open/')
+            ? Response.json({ ...saved, token: token(0xabc), audioBase: `/api/project/${token(0xabc)}/audio/` }) : undefined;
+        await mount();
+        await screen.findByRole('alertdialog', { name: '前回、保存していない変更が残っています' });
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '続きを開く' })); });
+        await waitFor(() => expect(engine.tracks.map((track) => track.instrumentId)).toEqual(['choir-a', 'future-game']));
+    });
+
     it('変更が落ち着くと、文書を送って復旧用の写しにする。保存していない変更の印も、プロジェクトの情報も、元に戻す履歴も変わらない', async () => {
         await mount();
         act(() => daw.setProject({ ...EMPTY_PROJECT, name: '曲', file: '曲.bunri', token: token(0xf00) }));

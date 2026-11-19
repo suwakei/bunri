@@ -38,6 +38,19 @@ beforeEach(() => {
 });
 
 describe('captureProject / applyProject', () => {
+    it('音色の変更を戻し・やり直せる。未知のIDも保持し、未指定の控えにはIDを足さない', () => {
+        const track = engine.addTrack('Voice');
+        const initial = captureProject(engine);
+        expect(initial.tracks[0]).not.toHaveProperty('instrumentId');
+        engine.setTrackInstrument(track.id, 'future-voice');
+        const changed = captureProject(engine, initial);
+        expect(projectsEqual(initial, changed)).toBe(false);
+        applyProject(engine, initial, changed);
+        expect(track.instrumentId).toBeUndefined();
+        applyProject(engine, changed, initial);
+        expect(track.instrumentId).toBe('future-voice');
+    });
+
     it('ノートの並びは、直前の控えと中身が同じなら同じ配列を共有する (写さない)', () => {
         const a = engine.addTrack('A'), b = engine.addTrack('B');
         a.pianoNotes = [note('C', 4, 0)];

@@ -67,6 +67,11 @@ fn 音を作るあいだはメモリを確保しない() {
             &dir.a440(),
             vec![note(1000, 9600, 69, 100), note(4800, 9600, 76, 60)],
         ),
+        Track {
+            instrument: Some(Instrument::SamplerDrums { sfz: dir.a440() }),
+            notes: vec![note(1000, 9600, 69, 100)],
+            ..Track::default()
+        },
         // ドラムのトラック (ドラムの音と、ドラムの行でない高さの三角波。途中へ移ると頭を過ぎた打音は鳴らさない)
         Track {
             instrument: Some(Instrument::ToneDrums {
@@ -275,7 +280,7 @@ fn 試聴用サンプラーの差し替えと演奏でメモリを確保しな�
         0
     );
     assert!(peak > 0.01, "音源の試聴が鳴っていない");
-    controller.set_live_sampler(Some(make())).unwrap();
+    controller.set_live_instrument(Some(make()), true).unwrap();
     controller.live_note_on(69, 100).unwrap();
     controller.live_note_off(69).unwrap();
     controller.live_all_off().unwrap();

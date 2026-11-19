@@ -35,6 +35,8 @@ pub struct Note {
 pub enum Instrument {
     /// SFZ の楽器 (マルチサンプル)。`sfz` は SFZ ファイルの場所
     Sampler { sfz: PathBuf },
+    /// 打楽器の SFZ。ノートの長さを待たず、サンプルの終わりまで鳴らす。
+    SamplerDrums { sfz: PathBuf },
     /// 仮の音 (三角波。`tone`)。楽器の素材が入るまでの代わり。モノラルの素材として扱う
     Tone,
     /// ドラムのトラック: `kit` に在る高さのノートは、その種類の合成音 (`drum`) を 1 回鳴らし

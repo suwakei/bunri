@@ -1638,6 +1638,10 @@ body:has(#health-banner) #notice-region {
 .piano-instrument-details { padding: 6px 0; }
 .piano-instrument-details p { margin: 4px 0 8px; }
 .piano-instrument-details a { color: var(--accent); }
+.instrument-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+.instrument-picker label, .instrument-field { display: flex; gap: 4px; align-items: center; }
+.instrument-picker input { width: 150px; }
+.instrument-picker select { max-width: 300px; }
 
 #piano-keys {
     width: 52px;

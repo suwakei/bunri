@@ -1,14 +1,2207 @@
 {
-  "salamander": {
-    "id": "salamander",
-    "name": "グランドピアノ",
-    "version": "3382bf9496bba2486f5ab0de55a264d1dfc38404",
-    "url": "https://codeload.github.com/sfzinstruments/SalamanderGrandPiano/zip/3382bf9496bba2486f5ab0de55a264d1dfc38404",
-    "sha256": "4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476",
-    "size": 748522601,
-    "sfz": "Salamander Grand Piano V3.sfz",
-    "license": "CC-BY-3.0",
-    "author": "Alexander Holm",
-    "sourceUrl": "https://github.com/sfzinstruments/SalamanderGrandPiano"
+  "packs": {
+    "salamander": {
+      "id": "salamander",
+      "name": "グランドピアノ",
+      "version": "3382bf9496bba2486f5ab0de55a264d1dfc38404",
+      "url": "https://codeload.github.com/sfzinstruments/SalamanderGrandPiano/zip/3382bf9496bba2486f5ab0de55a264d1dfc38404",
+      "sha256": "4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476",
+      "size": 748522601,
+      "license": "CC-BY-3.0",
+      "author": "Alexander Holm",
+      "sourceUrl": "https://github.com/sfzinstruments/SalamanderGrandPiano",
+      "expandedBytes": 748451483,
+      "requiredPaths": [
+        "LICENSE",
+        "Samples",
+        "Data"
+      ]
+    },
+    "vsco2": {
+      "id": "vsco2",
+      "name": "管弦楽器・VSCO 2 CE",
+      "version": "6dd651d55dde97fd4028699be9d4481f26917891",
+      "url": "https://codeload.github.com/sgossner/VSCO-2-CE/zip/6dd651d55dde97fd4028699be9d4481f26917891",
+      "sha256": "e567710d4f526bc265b5829243e45bc6f9704597f26f2f58129fed35674db655",
+      "size": 2297836380,
+      "expandedBytes": 3238104343,
+      "requiredPaths": [
+        "LICENSE",
+        "Strings",
+        "Brass",
+        "Woodwinds",
+        "Percussion"
+      ],
+      "license": "CC0-1.0",
+      "author": "Versilian Studios / Sam Gossner / Simon Dalzell / Elan Hickler",
+      "sourceUrl": "https://github.com/sgossner/VSCO-2-CE"
+    },
+    "vcsl": {
+      "id": "vcsl",
+      "name": "鍵盤・管・民族楽器・VCSL",
+      "version": "dfcf4a4918771eee884b96ad4493de82ef84daf6",
+      "url": "https://codeload.github.com/sgossner/VCSL/zip/dfcf4a4918771eee884b96ad4493de82ef84daf6",
+      "sha256": "bdbf27c8842c200a665467b83255910ac89c330f78b8ae1fc241d244a7392bbc",
+      "size": 4048214647,
+      "expandedBytes": 6162265513,
+      "requiredPaths": [
+        "README.md",
+        "Aerophones",
+        "Chordophones",
+        "Electrophones",
+        "Idiophones",
+        "Membranophones"
+      ],
+      "license": "CC0-1.0",
+      "author": "Versilian Studios LLC",
+      "sourceUrl": "https://github.com/sgossner/VCSL"
+    },
+    "bass": {
+      "id": "bass",
+      "name": "エレキベース・Black And Blue",
+      "version": "6e7d674cdb41be7a54dbccb15472401ad01099b9",
+      "url": "https://codeload.github.com/sfzinstruments/karoryfer.black-and-blue-basses/zip/6e7d674cdb41be7a54dbccb15472401ad01099b9",
+      "sha256": "6607b1d697a8a19f2f07826ebc6f0435f80a769d76c03f044a64a6b8f34dd562",
+      "size": 1009055691,
+      "expandedBytes": 1134159092,
+      "requiredPaths": [
+        "license",
+        "Samples",
+        "Programs"
+      ],
+      "license": "CC0-1.0",
+      "author": "Karoryfer Samples",
+      "sourceUrl": "https://github.com/sfzinstruments/karoryfer.black-and-blue-basses"
+    },
+    "guitars": {
+      "id": "guitars",
+      "name": "エレキギター・Black And Green",
+      "version": "b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+      "url": "https://codeload.github.com/sfzinstruments/karoryfer.black-and-green-guitars/zip/b3b3249d37dc977a1a297bd2dc053e6d9b6b805c",
+      "sha256": "22de5cb8a5ab7a3d6bb2b6690f17349db237a1c1281ee07acfbf8b2d4b265233",
+      "size": 483816134,
+      "expandedBytes": 583842504,
+      "requiredPaths": [
+        "LICENSE",
+        "Samples",
+        "Programs"
+      ],
+      "license": "CC0-1.0",
+      "author": "Karoryfer Samples",
+      "sourceUrl": "https://github.com/sfzinstruments/karoryfer.black-and-green-guitars"
+    },
+    "electric-pianos": {
+      "id": "electric-pianos",
+      "name": "エレクトリックピアノ",
+      "version": "8c3e581acda3594b553948ff0222d4f84a698376",
+      "url": "https://codeload.github.com/sfzinstruments/GregSullivan.E-Pianos/zip/8c3e581acda3594b553948ff0222d4f84a698376",
+      "sha256": "c36a5c9092688b9419d7d3ab330d9b317856c3752c3696bdc7e0b65dd4d79bdf",
+      "size": 19263422,
+      "expandedBytes": 21484396,
+      "requiredPaths": [
+        "LICENSE",
+        "CP80",
+        "Pianet T",
+        "Wurlitzer EP200"
+      ],
+      "license": "CC-BY-3.0",
+      "author": "Greg Sullivan / kinwie",
+      "sourceUrl": "https://github.com/sfzinstruments/GregSullivan.E-Pianos"
+    },
+    "voice": {
+      "id": "voice",
+      "name": "男声・コーラス用の声素材",
+      "version": "fac6461ee4c7f498b23246eced644616fa58d2ec",
+      "url": "https://codeload.github.com/sfzinstruments/legato_vocal_tutorial/zip/fac6461ee4c7f498b23246eced644616fa58d2ec",
+      "sha256": "87553561fbd969365dd37a0c58b9452fa2ee54dc5a262ba88f8d1c215d770d8a",
+      "size": 163809042,
+      "expandedBytes": 172402782,
+      "requiredPaths": [
+        "LICENSE",
+        "Samples",
+        "Programs"
+      ],
+      "license": "CC0-1.0",
+      "author": "Karoryfer Samples",
+      "sourceUrl": "https://github.com/sfzinstruments/legato_vocal_tutorial"
+    },
+    "drums": {
+      "id": "drums",
+      "name": "生ドラム・Virtuosity Drums",
+      "version": "9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+      "url": "https://codeload.github.com/sfzinstruments/virtuosity_drums/zip/9f04cf9a734527edfbb0a4eee1f674e45bbf71bc",
+      "sha256": "40f14a0ebabfabfe0852f3938dd9660c3f3104dcc2c4da945e20f862ac3de5dc",
+      "size": 1226781472,
+      "expandedBytes": 1488884901,
+      "requiredPaths": [
+        "LICENSE",
+        "Samples",
+        "Programs"
+      ],
+      "license": "CC0-1.0",
+      "author": "Versilian Studios / Karoryfer Samples / Austin McMahon",
+      "sourceUrl": "https://github.com/sfzinstruments/virtuosity_drums"
+    },
+    "acoustic-guitar-nylon": {
+      "id": "acoustic-guitar-nylon",
+      "name": "アコースティックギター・ナイロン弦",
+      "version": "1.0.0",
+      "url": "https://github.com/facebookincubator/Meta-open-sound/releases/download/meta-nylon-guitar-v1.0.0/meta-open-sound-meta-nylon-guitar-wav.zip",
+      "sha256": "e7fa168b97a72ecc1257917f85cb524fe7c2e1f098dfdcaf8f5c0e29cabe768e",
+      "size": 423127309,
+      "expandedBytes": 550016898,
+      "requiredPaths": [
+        "LICENSE",
+        "INSGuitarNylon_StringA_Vel01Finger_A2_01.wav"
+      ],
+      "stripRoot": false,
+      "license": "CC0-1.0",
+      "author": "Meta Creative Audio",
+      "sourceUrl": "https://github.com/facebookincubator/Meta-open-sound/tree/514c926efecdb3c7812bf00eedf8e5c8d61dd681/systems/instruments/meta-nylon-guitar"
+    },
+    "acoustic-guitar-steel": {
+      "id": "acoustic-guitar-steel",
+      "name": "アコースティックギター・スチール弦",
+      "version": "1.0.0",
+      "url": "https://github.com/facebookincubator/Meta-open-sound/releases/download/meta-steel-guitar-v1.0.0/meta-open-sound-meta-steel-guitar-wav.zip",
+      "sha256": "caaa8a9c07217f4a82d1dfd9f5657c286155464b66bf4dd27797811c2558a909",
+      "size": 663385210,
+      "expandedBytes": 845348242,
+      "requiredPaths": [
+        "LICENSE",
+        "INSGuitarSteel_StringA_Vel01_A2_01.wav"
+      ],
+      "stripRoot": false,
+      "license": "CC0-1.0",
+      "author": "Meta Creative Audio",
+      "sourceUrl": "https://github.com/facebookincubator/Meta-open-sound/tree/514c926efecdb3c7812bf00eedf8e5c8d61dd681/systems/instruments/meta-steel-guitar"
+    },
+    "game": {
+      "id": "game",
+      "name": "16bitゲームの音",
+      "version": "1",
+      "builtin": true,
+      "sha256": "b4fc1c30a6d115e26ddbeba2b8ba89c79e4cf57131b5ea7755a7b068a4afbf8e",
+      "size": 0,
+      "expandedBytes": 0,
+      "requiredPaths": [
+        "LICENSE"
+      ],
+      "license": "CC0-1.0",
+      "author": "bunri",
+      "sourceUrl": ""
+    }
+  },
+  "instruments": {
+    "salamander": {
+      "id": "salamander",
+      "name": "グランドピアノ",
+      "category": "鍵盤",
+      "pack": "salamander",
+      "sfz": "Salamander Grand Piano V3.sfz",
+      "oneShot": false
+    },
+    "vsco2.bassoonstac": {
+      "id": "vsco2.bassoonstac",
+      "name": "ファゴット・スタッカート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "BassoonStac.sfz",
+      "oneShot": false
+    },
+    "bassoon": {
+      "id": "bassoon",
+      "name": "ファゴット・持続音",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "BassoonSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.bassoonvib": {
+      "id": "vsco2.bassoonvib",
+      "name": "ファゴット・ビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "BassoonVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.celloenspizz": {
+      "id": "vsco2.celloenspizz",
+      "name": "チェロ合奏・ピチカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "CelloEnsPizz.sfz",
+      "oneShot": false
+    },
+    "vsco2.celloensspic": {
+      "id": "vsco2.celloensspic",
+      "name": "チェロ合奏・スピッカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "CelloEnsSpic.sfz",
+      "oneShot": false
+    },
+    "vsco2.celloenssusvib-quiet": {
+      "id": "vsco2.celloenssusvib-quiet",
+      "name": "チェロ合奏・弱い持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "CelloEnsSusVib-Quiet.sfz",
+      "oneShot": false
+    },
+    "cello": {
+      "id": "cello",
+      "name": "チェロ合奏・持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "CelloEnsSusVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.celloenstrem": {
+      "id": "vsco2.celloenstrem",
+      "name": "チェロ合奏・トレモロ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "CelloEnsTrem.sfz",
+      "oneShot": false
+    },
+    "vsco2.clarinetstac": {
+      "id": "vsco2.clarinetstac",
+      "name": "クラリネット・スタッカート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "ClarinetStac.sfz",
+      "oneShot": false
+    },
+    "clarinet": {
+      "id": "clarinet",
+      "name": "クラリネット・持続音",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "ClarinetSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.contrabasspizz": {
+      "id": "vsco2.contrabasspizz",
+      "name": "コントラバス・ピチカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassPizz.sfz",
+      "oneShot": false
+    },
+    "vsco2.contrabassspic": {
+      "id": "vsco2.contrabassspic",
+      "name": "コントラバス・スピッカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassSpic.sfz",
+      "oneShot": false
+    },
+    "vsco2.contrabasssusnv": {
+      "id": "vsco2.contrabasssusnv",
+      "name": "コントラバス・持続音・ノンビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassSusNV.sfz",
+      "oneShot": false
+    },
+    "vsco2.contrabasssusvb-quiet": {
+      "id": "vsco2.contrabasssusvb-quiet",
+      "name": "コントラバス・弱い持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassSusVB-Quiet.sfz",
+      "oneShot": false
+    },
+    "contrabass": {
+      "id": "contrabass",
+      "name": "コントラバス・持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassSusVB.sfz",
+      "oneShot": false
+    },
+    "vsco2.contrabasstrem": {
+      "id": "vsco2.contrabasstrem",
+      "name": "コントラバス・トレモロ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ContrabassTrem.sfz",
+      "oneShot": false
+    },
+    "vsco2.fhornmute": {
+      "id": "vsco2.fhornmute",
+      "name": "フレンチホルン・ミュート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "FHornMute.sfz",
+      "oneShot": false
+    },
+    "vsco2.fhornstac": {
+      "id": "vsco2.fhornstac",
+      "name": "フレンチホルン・スタッカート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "FHornStac.sfz",
+      "oneShot": false
+    },
+    "french-horn": {
+      "id": "french-horn",
+      "name": "フレンチホルン・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "FHornSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.fluteexpvib": {
+      "id": "vsco2.fluteexpvib",
+      "name": "フルート・表情付きビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "FluteExpVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.flutestac": {
+      "id": "vsco2.flutestac",
+      "name": "フルート・スタッカート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "FluteStac.sfz",
+      "oneShot": false
+    },
+    "vsco2.flutesusnv": {
+      "id": "vsco2.flutesusnv",
+      "name": "フルート・持続音・ノンビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "FluteSusNV.sfz",
+      "oneShot": false
+    },
+    "flute": {
+      "id": "flute",
+      "name": "フルート・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "FluteSusVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.gm-styleperc": {
+      "id": "vsco2.gm-styleperc",
+      "name": "GM打楽器キット",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "GM-StylePerc.sfz",
+      "oneShot": true
+    },
+    "glockenspiel": {
+      "id": "glockenspiel",
+      "name": "グロッケン",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "Glockenspiel.sfz",
+      "oneShot": false
+    },
+    "harp": {
+      "id": "harp",
+      "name": "ハープ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "Harp.sfz",
+      "oneShot": false
+    },
+    "marimba": {
+      "id": "marimba",
+      "name": "マリンバ",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "Marimba.sfz",
+      "oneShot": false
+    },
+    "vsco2.oboestac": {
+      "id": "vsco2.oboestac",
+      "name": "オーボエ・スタッカート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "OboeStac.sfz",
+      "oneShot": false
+    },
+    "vsco2.oboesusnv": {
+      "id": "vsco2.oboesusnv",
+      "name": "オーボエ・持続音・ノンビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "OboeSusNV.sfz",
+      "oneShot": false
+    },
+    "oboe": {
+      "id": "oboe",
+      "name": "オーボエ・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "OboeSusVib.sfz",
+      "oneShot": false
+    },
+    "organ": {
+      "id": "organ",
+      "name": "パイプオルガン・強音",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "OrganLoud.sfz",
+      "oneShot": false
+    },
+    "vsco2.organloudpedal": {
+      "id": "vsco2.organloudpedal",
+      "name": "パイプオルガン・強音・足鍵盤",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "OrganLoudPedal.sfz",
+      "oneShot": false
+    },
+    "vsco2.organquiet": {
+      "id": "vsco2.organquiet",
+      "name": "パイプオルガン・弱音",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "OrganQuiet.sfz",
+      "oneShot": false
+    },
+    "vsco2.organquietpedal": {
+      "id": "vsco2.organquietpedal",
+      "name": "パイプオルガン・弱音・足鍵盤",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "OrganQuietPedal.sfz",
+      "oneShot": false
+    },
+    "vsco2.piccolostac": {
+      "id": "vsco2.piccolostac",
+      "name": "ピッコロ・スタッカート",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "PiccoloStac.sfz",
+      "oneShot": false
+    },
+    "piccolo": {
+      "id": "piccolo",
+      "name": "ピッコロ・持続音",
+      "category": "木管",
+      "pack": "vsco2",
+      "sfz": "PiccoloSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.sviolinpizz": {
+      "id": "vsco2.sviolinpizz",
+      "name": "独奏バイオリン・ピチカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "SViolinPizz.sfz",
+      "oneShot": false
+    },
+    "vsco2.sviolinspic": {
+      "id": "vsco2.sviolinspic",
+      "name": "独奏バイオリン・スピッカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "SViolinSpic.sfz",
+      "oneShot": false
+    },
+    "vsco2.sviolintrem": {
+      "id": "vsco2.sviolintrem",
+      "name": "独奏バイオリン・トレモロ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "SViolinTrem.sfz",
+      "oneShot": false
+    },
+    "vsco2.sviolinvib-quiet": {
+      "id": "vsco2.sviolinvib-quiet",
+      "name": "独奏バイオリン・弱い音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "SViolinVib-Quiet.sfz",
+      "oneShot": false
+    },
+    "violin": {
+      "id": "violin",
+      "name": "独奏バイオリン・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "SViolinVib.sfz",
+      "oneShot": false
+    },
+    "timpani": {
+      "id": "timpani",
+      "name": "ティンパニ",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "Timpani.sfz",
+      "oneShot": false
+    },
+    "vsco2.timpanirolls": {
+      "id": "vsco2.timpanirolls",
+      "name": "ティンパニ・ロール",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "TimpaniRolls.sfz",
+      "oneShot": false
+    },
+    "vsco2.trombonestac": {
+      "id": "vsco2.trombonestac",
+      "name": "トロンボーン・スタッカート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TromboneStac.sfz",
+      "oneShot": false
+    },
+    "trombone": {
+      "id": "trombone",
+      "name": "トロンボーン・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TromboneSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.trombonevib": {
+      "id": "vsco2.trombonevib",
+      "name": "トロンボーン・ビブラート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TromboneVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.trumpetharmonmutesus": {
+      "id": "vsco2.trumpetharmonmutesus",
+      "name": "トランペット・ハーマンミュート・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TrumpetHarmonMuteSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.trumpetstac": {
+      "id": "vsco2.trumpetstac",
+      "name": "トランペット・スタッカート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TrumpetStac.sfz",
+      "oneShot": false
+    },
+    "vsco2.trumpetstraightmutesus": {
+      "id": "vsco2.trumpetstraightmutesus",
+      "name": "トランペット・ストレートミュート・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TrumpetStraightMuteSus.sfz",
+      "oneShot": false
+    },
+    "trumpet": {
+      "id": "trumpet",
+      "name": "トランペット・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TrumpetSus.sfz",
+      "oneShot": false
+    },
+    "vsco2.trumpetsusvib": {
+      "id": "vsco2.trumpetsusvib",
+      "name": "トランペット・持続音・ビブラート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TrumpetSusVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.tubastac": {
+      "id": "vsco2.tubastac",
+      "name": "チューバ・スタッカート",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TubaStac.sfz",
+      "oneShot": false
+    },
+    "tuba": {
+      "id": "tuba",
+      "name": "チューバ・持続音",
+      "category": "金管",
+      "pack": "vsco2",
+      "sfz": "TubaSus.sfz",
+      "oneShot": false
+    },
+    "tubular-bells": {
+      "id": "tubular-bells",
+      "name": "チューブラーベル",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "TubularBells.sfz",
+      "oneShot": false
+    },
+    "upright-piano": {
+      "id": "upright-piano",
+      "name": "アップライトピアノ",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "UprightPiano.sfz",
+      "oneShot": false
+    },
+    "vsco2.vsupright1": {
+      "id": "vsco2.vsupright1",
+      "name": "アップライトピアノ（別音色）",
+      "category": "鍵盤",
+      "pack": "vsco2",
+      "sfz": "VSUpright1.sfz",
+      "oneShot": false
+    },
+    "vsco2.violaenspizz": {
+      "id": "vsco2.violaenspizz",
+      "name": "ビオラ合奏・ピチカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolaEnsPizz.sfz",
+      "oneShot": false
+    },
+    "vsco2.violaensspic": {
+      "id": "vsco2.violaensspic",
+      "name": "ビオラ合奏・スピッカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolaEnsSpic.sfz",
+      "oneShot": false
+    },
+    "vsco2.violaenssusvib-quiet": {
+      "id": "vsco2.violaenssusvib-quiet",
+      "name": "ビオラ合奏・弱い持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolaEnsSusVib-Quiet.sfz",
+      "oneShot": false
+    },
+    "viola": {
+      "id": "viola",
+      "name": "ビオラ合奏・持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolaEnsSusVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.violaenstrem": {
+      "id": "vsco2.violaenstrem",
+      "name": "ビオラ合奏・トレモロ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolaEnsTrem.sfz",
+      "oneShot": false
+    },
+    "vsco2.violinenspizz": {
+      "id": "vsco2.violinenspizz",
+      "name": "バイオリン合奏・ピチカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolinEnsPizz.sfz",
+      "oneShot": false
+    },
+    "vsco2.violinensspic": {
+      "id": "vsco2.violinensspic",
+      "name": "バイオリン合奏・スピッカート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolinEnsSpic.sfz",
+      "oneShot": false
+    },
+    "vsco2.violinenssusvib-quiet": {
+      "id": "vsco2.violinenssusvib-quiet",
+      "name": "バイオリン合奏・弱い持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolinEnsSusVib-Quiet.sfz",
+      "oneShot": false
+    },
+    "vsco2.violinenssusvib": {
+      "id": "vsco2.violinenssusvib",
+      "name": "バイオリン合奏・持続音・ビブラート",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolinEnsSusVib.sfz",
+      "oneShot": false
+    },
+    "vsco2.violinenstrem": {
+      "id": "vsco2.violinenstrem",
+      "name": "バイオリン合奏・トレモロ",
+      "category": "弦楽器",
+      "pack": "vsco2",
+      "sfz": "ViolinEnsTrem.sfz",
+      "oneShot": false
+    },
+    "xylophone": {
+      "id": "xylophone",
+      "name": "シロフォン",
+      "category": "打楽器",
+      "pack": "vsco2",
+      "sfz": "Xylophone.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-ball-whistle": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-ball-whistle",
+      "name": "球形ホイッスル",
+      "category": "効果音",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Ball Whistle.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-staccato": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-staccato",
+      "name": "バロック・アルトリコーダー・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Alto Recorder - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-susvib": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-susvib",
+      "name": "バロック・アルトリコーダー・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Alto Recorder - SusVib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-sustain": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-alto-recorder-sustain",
+      "name": "バロック・アルトリコーダー・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Alto Recorder - Sustain.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-staccato": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-staccato",
+      "name": "バロック・バスリコーダー・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Bass Recorder - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-susvib": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-susvib",
+      "name": "バロック・バスリコーダー・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Bass Recorder - SusVib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-sustain": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-bass-recorder-sustain",
+      "name": "バロック・バスリコーダー・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Bass Recorder - Sustain.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-soprano-recorder-staccato": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-soprano-recorder-staccato",
+      "name": "バロック・ソプラノリコーダー・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Soprano Recorder - Staccato.sfz",
+      "oneShot": false
+    },
+    "recorder": {
+      "id": "recorder",
+      "name": "バロック・ソプラノリコーダー・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Soprano Recorder - Sustain.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-staccato": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-staccato",
+      "name": "バロック・テナーリコーダー・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Tenor Recorder - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-susvib": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-susvib",
+      "name": "バロック・テナーリコーダー・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Tenor Recorder - SusVib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-sustain": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-baroque-tenor-recorder-sustain",
+      "name": "バロック・テナーリコーダー・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Baroque Tenor Recorder - Sustain.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-ocarina-small-staccato": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-ocarina-small-staccato",
+      "name": "小型オカリナ・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Ocarina, Small - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-ocarina-small-sustain": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-ocarina-small-sustain",
+      "name": "小型オカリナ・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Ocarina, Small - Sustain.sfz",
+      "oneShot": false
+    },
+    "ocarina": {
+      "id": "ocarina",
+      "name": "オカリナ・持続音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Ocarina, Typical - Sus.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-ocarina-typical-susvib": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-ocarina-typical-susvib",
+      "name": "オカリナ・持続音・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Ocarina, Typical - SusVib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-pipe-organ-loud-pedal": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-pipe-organ-loud-pedal",
+      "name": "パイプオルガン・強音・足鍵盤（VCSL）",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Pipe Organ - Loud Pedal.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-pipe-organ-loud": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-pipe-organ-loud",
+      "name": "パイプオルガン・強音（VCSL）",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Pipe Organ - Loud.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-pipe-organ-quiet-pedal": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-pipe-organ-quiet-pedal",
+      "name": "パイプオルガン・弱音・足鍵盤（VCSL）",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Pipe Organ - Quiet Pedal.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-pipe-organ-quiet": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-pipe-organ-quiet",
+      "name": "パイプオルガン・弱音（VCSL）",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Pipe Organ - Quiet.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-4-8": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-4-8",
+      "name": "ルネサンス・オルガン・4フィート＋8フィート",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Renaissance Organ - 4'+8'.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-4": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-4",
+      "name": "ルネサンス・オルガン・4フィート",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Renaissance Organ - 4'.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-8": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-8",
+      "name": "ルネサンス・オルガン・8フィート",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Renaissance Organ - 8'.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-full": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-renaissance-organ-full",
+      "name": "ルネサンス・オルガン・全ストップ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Renaissance Organ - Full.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-edge-blown-aerophones-train-whistle-toy": {
+      "id": "vcsl.aerophones-edge-blown-aerophones-train-whistle-toy",
+      "name": "汽笛のおもちゃ",
+      "category": "効果音",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Edge-blown Aerophones/Train Whistle, Toy.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-normal": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-normal",
+      "name": "ハーモニカ・Hohner Special 20（C調）・通常",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-C - Normal.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-soft": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-soft",
+      "name": "ハーモニカ・Hohner Special 20（C調）・弱音",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-C - Soft.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-vib": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-c-vib",
+      "name": "ハーモニカ・Hohner Special 20（C調）・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-C - Vib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-accented": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-accented",
+      "name": "ハーモニカ・Hohner Special 20（F調）・アクセント",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - Accented.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-handvib": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-handvib",
+      "name": "ハーモニカ・Hohner Special 20（F調）・手によるビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - HandVib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-normal": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-normal",
+      "name": "ハーモニカ・Hohner Special 20（F調）・通常",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - Normal.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-stac": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-stac",
+      "name": "ハーモニカ・Hohner Special 20（F調）・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - Stac.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-vib": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-special20-f-vib",
+      "name": "ハーモニカ・Hohner Special 20（F調）・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - Vib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-super64-accented": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-super64-accented",
+      "name": "ハーモニカ・Hohner Super 64・アクセント",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Accented.sfz",
+      "oneShot": false
+    },
+    "harmonica": {
+      "id": "harmonica",
+      "name": "ハーモニカ・Hohner Super 64・通常",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-harmonica-hohner-super64-vib": {
+      "id": "vcsl.aerophones-free-aerophones-harmonica-hohner-super64-vib",
+      "name": "ハーモニカ・Hohner Super 64・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Vib.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-free-aerophones-siren": {
+      "id": "vcsl.aerophones-free-aerophones-siren",
+      "name": "サイレン",
+      "category": "効果音",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Free Aerophones/Siren.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-lip-aerophones-didgeridoo": {
+      "id": "vcsl.aerophones-lip-aerophones-didgeridoo",
+      "name": "ディジュリドゥ",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Lip Aerophones/Didgeridoo.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-reed-aerophones-saxello-non-vibrato": {
+      "id": "vcsl.aerophones-reed-aerophones-saxello-non-vibrato",
+      "name": "サクセロ・ノンビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Saxello - Non-Vibrato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-reed-aerophones-saxello-staccato": {
+      "id": "vcsl.aerophones-reed-aerophones-saxello-staccato",
+      "name": "サクセロ・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Saxello - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-reed-aerophones-saxello-vibrato": {
+      "id": "vcsl.aerophones-reed-aerophones-saxello-vibrato",
+      "name": "サクセロ・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Saxello - Vibrato.sfz",
+      "oneShot": false
+    },
+    "saxophone": {
+      "id": "saxophone",
+      "name": "テナーサックス・ノンビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Tenor Saxophone - Non-Vibrato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-reed-aerophones-tenor-saxophone-staccato": {
+      "id": "vcsl.aerophones-reed-aerophones-tenor-saxophone-staccato",
+      "name": "テナーサックス・スタッカート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Tenor Saxophone - Staccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.aerophones-reed-aerophones-tenor-saxophone-vibrato": {
+      "id": "vcsl.aerophones-reed-aerophones-tenor-saxophone-vibrato",
+      "name": "テナーサックス・ビブラート",
+      "category": "木管",
+      "pack": "vcsl",
+      "sfz": "Aerophones/Reed Aerophones/Tenor Saxophone - Vibrato.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-composite-chordophones-concert-harp": {
+      "id": "vcsl.chordophones-composite-chordophones-concert-harp",
+      "name": "コンサートハープ",
+      "category": "弦楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Composite Chordophones/Concert Harp.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-composite-chordophones-folk-harp": {
+      "id": "vcsl.chordophones-composite-chordophones-folk-harp",
+      "name": "フォークハープ",
+      "category": "弦楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Composite Chordophones/Folk Harp.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-composite-chordophones-strumstick": {
+      "id": "vcsl.chordophones-composite-chordophones-strumstick",
+      "name": "ストラムスティック",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Composite Chordophones/Strumstick.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-dan-tranh-fx": {
+      "id": "vcsl.chordophones-zithers-dan-tranh-fx",
+      "name": "ダン・チャン（ベトナムの筝）・効果音",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Dan Tranh - FX.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-dan-tranh-gliss": {
+      "id": "vcsl.chordophones-zithers-dan-tranh-gliss",
+      "name": "ダン・チャン（ベトナムの筝）・グリッサンド",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Dan Tranh - Gliss.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-dan-tranh-normal": {
+      "id": "vcsl.chordophones-zithers-dan-tranh-normal",
+      "name": "ダン・チャン（ベトナムの筝）・通常",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Dan Tranh - Normal.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-dan-tranh-tremolo": {
+      "id": "vcsl.chordophones-zithers-dan-tranh-tremolo",
+      "name": "ダン・チャン（ベトナムの筝）・トレモロ",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Dan Tranh - Tremolo.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-dan-tranh-vibrato": {
+      "id": "vcsl.chordophones-zithers-dan-tranh-vibrato",
+      "name": "ダン・チャン（ベトナムの筝）・ビブラート",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Dan Tranh - Vibrato.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-grand-piano-kawai": {
+      "id": "vcsl.chordophones-zithers-grand-piano-kawai",
+      "name": "カワイ・グランドピアノ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Grand Piano, Kawai.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-grand-piano-steinway-b": {
+      "id": "vcsl.chordophones-zithers-grand-piano-steinway-b",
+      "name": "スタインウェイ B・グランドピアノ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Grand Piano, Steinway B.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-english-lute": {
+      "id": "vcsl.chordophones-zithers-harpsichord-english-lute",
+      "name": "イングリッシュ・チェンバロ・リュートストップ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, English - Lute.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-english-normal": {
+      "id": "vcsl.chordophones-zithers-harpsichord-english-normal",
+      "name": "イングリッシュ・チェンバロ・通常",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, English - Normal.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-flemish-4": {
+      "id": "vcsl.chordophones-zithers-harpsichord-flemish-4",
+      "name": "フレミッシュ・チェンバロ・4フィート",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, Flemish - 4'.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-flemish-8": {
+      "id": "vcsl.chordophones-zithers-harpsichord-flemish-8",
+      "name": "フレミッシュ・チェンバロ・8フィート",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, Flemish - 8'.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-flemish-full": {
+      "id": "vcsl.chordophones-zithers-harpsichord-flemish-full",
+      "name": "フレミッシュ・チェンバロ・全ストップ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, Flemish - Full.sfz",
+      "oneShot": false
+    },
+    "harpsichord": {
+      "id": "harpsichord",
+      "name": "フレンチ・チェンバロ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, French.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-italian": {
+      "id": "vcsl.chordophones-zithers-harpsichord-italian",
+      "name": "イタリアン・チェンバロ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, Italian.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-harpsichord-unk": {
+      "id": "vcsl.chordophones-zithers-harpsichord-unk",
+      "name": "チェンバロ（形式不明）",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Harpsichord, Unk.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-longbow": {
+      "id": "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-longbow",
+      "name": "プサルテリウム（弓奏・撥弦）・長い弓奏",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Psaltery, Bowed and Plucked - LongBow.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-pluck": {
+      "id": "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-pluck",
+      "name": "プサルテリウム（弓奏・撥弦）・撥弦",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Psaltery, Bowed and Plucked - Pluck.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-spiccato": {
+      "id": "vcsl.chordophones-zithers-psaltery-bowed-and-plucked-spiccato",
+      "name": "プサルテリウム（弓奏・撥弦）・スピッカート",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Psaltery, Bowed and Plucked - Spiccato.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-upright-piano-knight": {
+      "id": "vcsl.chordophones-zithers-upright-piano-knight",
+      "name": "Knight・アップライトピアノ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Upright Piano, Knight.sfz",
+      "oneShot": false
+    },
+    "vcsl.chordophones-zithers-upright-piano-yamaha": {
+      "id": "vcsl.chordophones-zithers-upright-piano-yamaha",
+      "name": "ヤマハ・アップライトピアノ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Chordophones/Zithers/Upright Piano, Yamaha.sfz",
+      "oneShot": false
+    },
+    "vcsl.electrophones-tx81z-clavisynth": {
+      "id": "vcsl.electrophones-tx81z-clavisynth",
+      "name": "TX81Z・クラビシンセ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Electrophones/TX81Z - Clavisynth.sfz",
+      "oneShot": false
+    },
+    "vcsl.electrophones-tx81z-fm-piano": {
+      "id": "vcsl.electrophones-tx81z-fm-piano",
+      "name": "TX81Z・FMピアノ",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Electrophones/TX81Z - FM Piano.sfz",
+      "oneShot": false
+    },
+    "vcsl.electrophones-tx81z-piano-1": {
+      "id": "vcsl.electrophones-tx81z-piano-1",
+      "name": "TX81Z・ピアノ 1",
+      "category": "鍵盤",
+      "pack": "vcsl",
+      "sfz": "Electrophones/TX81Z - Piano 1.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-friction-idiophones-wine-glasses-fast": {
+      "id": "vcsl.idiophones-friction-idiophones-wine-glasses-fast",
+      "name": "ワイングラス・速い奏法",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Friction Idiophones/Wine Glasses - Fast.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-friction-idiophones-wine-glasses-slow": {
+      "id": "vcsl.idiophones-friction-idiophones-wine-glasses-slow",
+      "name": "ワイングラス・遅い奏法",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Friction Idiophones/Wine Glasses - Slow.sfz",
+      "oneShot": false
+    },
+    "kalimba": {
+      "id": "kalimba",
+      "name": "カリンバ（ケニア）",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Plucked Idiophones/Kalimba, Kenya.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-plucked-idiophones-kalimba-tanzania": {
+      "id": "vcsl.idiophones-plucked-idiophones-kalimba-tanzania",
+      "name": "カリンバ（タンザニア）",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Plucked Idiophones/Kalimba, Tanzania.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-plucked-idiophones-mbira-mavembe-gandanga-zimbabwe-low-g": {
+      "id": "vcsl.idiophones-plucked-idiophones-mbira-mavembe-gandanga-zimbabwe-low-g",
+      "name": "ムビラ・マヴェンベ（ジンバブエ・低いG）",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Plucked Idiophones/Mbira Mavembe (Gandanga), Zimbabwe, Low G.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-plucked-idiophones-mbira-dzavadzimu-nyamaropa-zimbabwe-low-b": {
+      "id": "vcsl.idiophones-plucked-idiophones-mbira-dzavadzimu-nyamaropa-zimbabwe-low-b",
+      "name": "ムビラ・ザヴァジム（ジンバブエ・低いB）",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Plucked Idiophones/Mbira dzaVadzimu Nyamaropa, Zimbabwe, Low B.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-plucked-idiophones-nyunga-nyunga-mozambique-low-f": {
+      "id": "vcsl.idiophones-plucked-idiophones-nyunga-nyunga-mozambique-low-f",
+      "name": "ニュンガ・ニュンガ（モザンビーク・低いF）",
+      "category": "民族楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Plucked Idiophones/Nyunga Nyunga, Mozambique, Low F.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-agogo-bells": {
+      "id": "vcsl.idiophones-struck-idiophones-agogo-bells",
+      "name": "アゴゴベル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Agogo Bells.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-anvil": {
+      "id": "vcsl.idiophones-struck-idiophones-anvil",
+      "name": "アンビル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Anvil.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-balafon-hard-mallet": {
+      "id": "vcsl.idiophones-struck-idiophones-balafon-hard-mallet",
+      "name": "バラフォン・硬いマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Balafon - Hard Mallet.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-balafon-soft-mallet": {
+      "id": "vcsl.idiophones-struck-idiophones-balafon-soft-mallet",
+      "name": "バラフォン・柔らかいマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Balafon - Soft Mallet.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-balafon-traditional-mallet": {
+      "id": "vcsl.idiophones-struck-idiophones-balafon-traditional-mallet",
+      "name": "バラフォン・伝統的なマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Balafon - Traditional Mallet.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-bell-tree-individual": {
+      "id": "vcsl.idiophones-struck-idiophones-bell-tree-individual",
+      "name": "ベルツリー・単音",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Bell Tree - Individual.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-bell-tree-stroke": {
+      "id": "vcsl.idiophones-struck-idiophones-bell-tree-stroke",
+      "name": "ベルツリー・ストローク",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Bell Tree - Stroke.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-brake-drum": {
+      "id": "vcsl.idiophones-struck-idiophones-brake-drum",
+      "name": "ブレーキドラム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Brake Drum.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-cabasa": {
+      "id": "vcsl.idiophones-struck-idiophones-cabasa",
+      "name": "カバサ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Cabasa.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-cajon": {
+      "id": "vcsl.idiophones-struck-idiophones-cajon",
+      "name": "カホン",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Cajon.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-claps": {
+      "id": "vcsl.idiophones-struck-idiophones-claps",
+      "name": "手拍子",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Claps.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-clash-cymbals-1": {
+      "id": "vcsl.idiophones-struck-idiophones-clash-cymbals-1",
+      "name": "合わせシンバル 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Clash Cymbals 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-clash-cymbals-2": {
+      "id": "vcsl.idiophones-struck-idiophones-clash-cymbals-2",
+      "name": "合わせシンバル 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Clash Cymbals 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-claves": {
+      "id": "vcsl.idiophones-struck-idiophones-claves",
+      "name": "クラベス",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Claves.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-cowbells": {
+      "id": "vcsl.idiophones-struck-idiophones-cowbells",
+      "name": "カウベル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Cowbells.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-finger-cymbals": {
+      "id": "vcsl.idiophones-struck-idiophones-finger-cymbals",
+      "name": "フィンガーシンバル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Finger Cymbals.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-flexatone": {
+      "id": "vcsl.idiophones-struck-idiophones-flexatone",
+      "name": "フレクサトーン",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Flexatone.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-glockenspiel": {
+      "id": "vcsl.idiophones-struck-idiophones-glockenspiel",
+      "name": "グロッケン（VCSL）",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Glockenspiel.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-gong-1": {
+      "id": "vcsl.idiophones-struck-idiophones-gong-1",
+      "name": "ゴング 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Gong 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-gong-2": {
+      "id": "vcsl.idiophones-struck-idiophones-gong-2",
+      "name": "ゴング 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Gong 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-guiro": {
+      "id": "vcsl.idiophones-struck-idiophones-guiro",
+      "name": "ギロ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Guiro.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-hand-bells-nepalese": {
+      "id": "vcsl.idiophones-struck-idiophones-hand-bells-nepalese",
+      "name": "ネパールのハンドベル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Hand Bells, Nepalese.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-hand-chimes": {
+      "id": "vcsl.idiophones-struck-idiophones-hand-chimes",
+      "name": "ハンドチャイム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Hand Chimes.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-hi-hat-cymbal": {
+      "id": "vcsl.idiophones-struck-idiophones-hi-hat-cymbal",
+      "name": "ハイハット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Hi-Hat Cymbal.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-marimba": {
+      "id": "vcsl.idiophones-struck-idiophones-marimba",
+      "name": "マリンバ（VCSL）",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Marimba.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-mark-trees": {
+      "id": "vcsl.idiophones-struck-idiophones-mark-trees",
+      "name": "ウィンドチャイム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Mark Trees.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-ratchet": {
+      "id": "vcsl.idiophones-struck-idiophones-ratchet",
+      "name": "ラチェット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Ratchet.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-shaker-large": {
+      "id": "vcsl.idiophones-struck-idiophones-shaker-large",
+      "name": "大型シェイカー",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Shaker, Large.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-shaker-small": {
+      "id": "vcsl.idiophones-struck-idiophones-shaker-small",
+      "name": "小型シェイカー",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Shaker, Small.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-slapstick": {
+      "id": "vcsl.idiophones-struck-idiophones-slapstick",
+      "name": "スラップスティック",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Slapstick.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-sleigh-bells": {
+      "id": "vcsl.idiophones-struck-idiophones-sleigh-bells",
+      "name": "スレイベル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Sleigh Bells.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-slit-drum": {
+      "id": "vcsl.idiophones-struck-idiophones-slit-drum",
+      "name": "スリットドラム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Slit Drum.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-suspended-cymbal-1": {
+      "id": "vcsl.idiophones-struck-idiophones-suspended-cymbal-1",
+      "name": "吊りシンバル 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Suspended Cymbal 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-suspended-cymbal-2": {
+      "id": "vcsl.idiophones-struck-idiophones-suspended-cymbal-2",
+      "name": "吊りシンバル 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Suspended Cymbal 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-tambourine-1": {
+      "id": "vcsl.idiophones-struck-idiophones-tambourine-1",
+      "name": "タンバリン 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Tambourine 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-tambourine-2": {
+      "id": "vcsl.idiophones-struck-idiophones-tambourine-2",
+      "name": "タンバリン 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Tambourine 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-triangles": {
+      "id": "vcsl.idiophones-struck-idiophones-triangles",
+      "name": "トライアングル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Triangles.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-tubular-bells-1": {
+      "id": "vcsl.idiophones-struck-idiophones-tubular-bells-1",
+      "name": "チューブラーベル 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Tubular Bells 1.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-tubular-bells-2": {
+      "id": "vcsl.idiophones-struck-idiophones-tubular-bells-2",
+      "name": "チューブラーベル 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Tubular Bells 2.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-tubular-glockenspiel": {
+      "id": "vcsl.idiophones-struck-idiophones-tubular-glockenspiel",
+      "name": "チューブ型グロッケン",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Tubular Glockenspiel.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-vibraphone-bowed": {
+      "id": "vcsl.idiophones-struck-idiophones-vibraphone-bowed",
+      "name": "ビブラフォン・弓奏",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Vibraphone - Bowed.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-vibraphone-hard-mallets": {
+      "id": "vcsl.idiophones-struck-idiophones-vibraphone-hard-mallets",
+      "name": "ビブラフォン・硬いマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Vibraphone - Hard Mallets.sfz",
+      "oneShot": false
+    },
+    "vibraphone": {
+      "id": "vibraphone",
+      "name": "ビブラフォン・柔らかいマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Vibraphone - Soft Mallets.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-vibraslap": {
+      "id": "vcsl.idiophones-struck-idiophones-vibraslap",
+      "name": "ビブラスラップ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Vibraslap.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-woodblock": {
+      "id": "vcsl.idiophones-struck-idiophones-woodblock",
+      "name": "ウッドブロック",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Woodblock.sfz",
+      "oneShot": true
+    },
+    "vcsl.idiophones-struck-idiophones-xylophone-hard-mallets": {
+      "id": "vcsl.idiophones-struck-idiophones-xylophone-hard-mallets",
+      "name": "シロフォン・硬いマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Xylophone - Hard Mallets.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-xylophone-medium-mallets": {
+      "id": "vcsl.idiophones-struck-idiophones-xylophone-medium-mallets",
+      "name": "シロフォン・中程度のマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Xylophone - Medium Mallets.sfz",
+      "oneShot": false
+    },
+    "vcsl.idiophones-struck-idiophones-xylophone-soft-mallets": {
+      "id": "vcsl.idiophones-struck-idiophones-xylophone-soft-mallets",
+      "name": "シロフォン・柔らかいマレット",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Idiophones/Struck Idiophones/Xylophone - Soft Mallets.sfz",
+      "oneShot": false
+    },
+    "vcsl.membranophones-other-membranophones-ocean-drum": {
+      "id": "vcsl.membranophones-other-membranophones-ocean-drum",
+      "name": "オーシャンドラム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Other Membranophones/Ocean Drum.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-bass-drum-1": {
+      "id": "vcsl.membranophones-struck-membranophones-bass-drum-1",
+      "name": "バスドラム 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Bass Drum 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-bass-drum-2": {
+      "id": "vcsl.membranophones-struck-membranophones-bass-drum-2",
+      "name": "バスドラム 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Bass Drum 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-bongos": {
+      "id": "vcsl.membranophones-struck-membranophones-bongos",
+      "name": "ボンゴ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Bongos.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-conga": {
+      "id": "vcsl.membranophones-struck-membranophones-conga",
+      "name": "コンガ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Conga.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-darbuka": {
+      "id": "vcsl.membranophones-struck-membranophones-darbuka",
+      "name": "ダラブッカ",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Darbuka.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-frame-drum": {
+      "id": "vcsl.membranophones-struck-membranophones-frame-drum",
+      "name": "フレームドラム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Frame Drum.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-snare-drum-modern-1": {
+      "id": "vcsl.membranophones-struck-membranophones-snare-drum-modern-1",
+      "name": "スネアドラム 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Snare Drum, Modern 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-snare-drum-modern-2": {
+      "id": "vcsl.membranophones-struck-membranophones-snare-drum-modern-2",
+      "name": "スネアドラム 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Snare Drum, Modern 2.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-snare-drum-modern-3": {
+      "id": "vcsl.membranophones-struck-membranophones-snare-drum-modern-3",
+      "name": "スネアドラム 3",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Snare Drum, Modern 3.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-snare-drum-rope-tension": {
+      "id": "vcsl.membranophones-struck-membranophones-snare-drum-rope-tension",
+      "name": "ロープ締めスネアドラム",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Snare Drum, Rope Tension.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-timpani-1-hit": {
+      "id": "vcsl.membranophones-struck-membranophones-timpani-1-hit",
+      "name": "ティンパニ 1・単打",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Timpani 1 - Hit.sfz",
+      "oneShot": false
+    },
+    "vcsl.membranophones-struck-membranophones-timpani-1-roll": {
+      "id": "vcsl.membranophones-struck-membranophones-timpani-1-roll",
+      "name": "ティンパニ 1・ロール",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Timpani 1 - Roll.sfz",
+      "oneShot": false
+    },
+    "vcsl.membranophones-struck-membranophones-timpani-2-all-samples": {
+      "id": "vcsl.membranophones-struck-membranophones-timpani-2-all-samples",
+      "name": "ティンパニ 2・全サンプル",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Timpani 2 - All Samples.sfz",
+      "oneShot": false
+    },
+    "vcsl.membranophones-struck-membranophones-timpani-2-scale": {
+      "id": "vcsl.membranophones-struck-membranophones-timpani-2-scale",
+      "name": "ティンパニ 2・音階",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Timpani 2 - Scale.sfz",
+      "oneShot": false
+    },
+    "vcsl.membranophones-struck-membranophones-tom-1": {
+      "id": "vcsl.membranophones-struck-membranophones-tom-1",
+      "name": "タム 1",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Tom 1.sfz",
+      "oneShot": true
+    },
+    "vcsl.membranophones-struck-membranophones-tom-2": {
+      "id": "vcsl.membranophones-struck-membranophones-tom-2",
+      "name": "タム 2",
+      "category": "打楽器",
+      "pack": "vcsl",
+      "sfz": "Membranophones/Struck Membranophones/Tom 2.sfz",
+      "oneShot": true
+    },
+    "bass.programs-03-babyblue-all": {
+      "id": "bass.programs-03-babyblue-all",
+      "name": "ベース・ベイビーブルー（全奏法）",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/03-babyblue_all.sfz",
+      "oneShot": false
+    },
+    "bass.programs-04-babyblue-warm": {
+      "id": "bass.programs-04-babyblue-warm",
+      "name": "ベース・ベイビーブルー（暖かい音）",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/04-babyblue_warm.sfz",
+      "oneShot": false
+    },
+    "electric-bass": {
+      "id": "electric-bass",
+      "name": "エレキベース・通常",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/05-darkblack_pluck.sfz",
+      "oneShot": false
+    },
+    "bass.programs-06-darkblack-pluck-warm": {
+      "id": "bass.programs-06-darkblack-pluck-warm",
+      "name": "エレキベース・暖かい音",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/06-darkblack_pluck_warm.sfz",
+      "oneShot": false
+    },
+    "bass.programs-07-darkblack-ghost": {
+      "id": "bass.programs-07-darkblack-ghost",
+      "name": "エレキベース・ゴーストノート",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/07-darkblack_ghost.sfz",
+      "oneShot": false
+    },
+    "bass.programs-08-darkblack-ghost-warm": {
+      "id": "bass.programs-08-darkblack-ghost-warm",
+      "name": "エレキベース・暖かいゴーストノート",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/08-darkblack_ghost_warm.sfz",
+      "oneShot": false
+    },
+    "bass.programs-09-darkblack-stac": {
+      "id": "bass.programs-09-darkblack-stac",
+      "name": "エレキベース・スタッカート",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/09-darkblack_stac.sfz",
+      "oneShot": false
+    },
+    "bass.programs-10-darkblack-btb": {
+      "id": "bass.programs-10-darkblack-btb",
+      "name": "エレキベース・ブリッジ後方",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/10-darkblack_btb.sfz",
+      "oneShot": false
+    },
+    "bass.programs-11-darkblack-btb-open": {
+      "id": "bass.programs-11-darkblack-btb-open",
+      "name": "エレキベース・ブリッジ後方の開放音",
+      "category": "ベース",
+      "pack": "bass",
+      "sfz": "Programs/11-darkblack_btb_open.sfz",
+      "oneShot": false
+    },
+    "electric-guitar": {
+      "id": "electric-guitar",
+      "name": "エレキギター・グリーン（通常）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/04-green_twang.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-05-green-staccato": {
+      "id": "guitars.programs-05-green-staccato",
+      "name": "エレキギター・グリーン（スタッカート）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/05-green_staccato.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-06-green-hammer-on": {
+      "id": "guitars.programs-06-green-hammer-on",
+      "name": "エレキギター・グリーン（ハンマリング）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/06-green_hammer-on.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-07-black-twang": {
+      "id": "guitars.programs-07-black-twang",
+      "name": "エレキギター・ブラック（通常）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/07-black_twang.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-08-black-staccato": {
+      "id": "guitars.programs-08-black-staccato",
+      "name": "エレキギター・ブラック（スタッカート）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/08-black_staccato.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-09-black-behind-the-bridge": {
+      "id": "guitars.programs-09-black-behind-the-bridge",
+      "name": "エレキギター・ブラック（ブリッジ後方）",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/09-black_behind_the_bridge.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-10-combo-twang": {
+      "id": "guitars.programs-10-combo-twang",
+      "name": "エレキギター・2本を重ねた通常音",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/10-combo_twang.sfz",
+      "oneShot": false
+    },
+    "guitars.programs-11-combo-staccato": {
+      "id": "guitars.programs-11-combo-staccato",
+      "name": "エレキギター・2本を重ねたスタッカート",
+      "category": "ギター",
+      "pack": "guitars",
+      "sfz": "Programs/11-combo_staccato.sfz",
+      "oneShot": false
+    },
+    "electric-pianos.cp80-cp80": {
+      "id": "electric-pianos.cp80-cp80",
+      "name": "エレクトリックグランド・CP80",
+      "category": "鍵盤",
+      "pack": "electric-pianos",
+      "sfz": "CP80/CP80.sfz",
+      "oneShot": false
+    },
+    "electric-pianos.pianet-t-pianet-t": {
+      "id": "electric-pianos.pianet-t-pianet-t",
+      "name": "エレクトリックピアノ・Pianet T",
+      "category": "鍵盤",
+      "pack": "electric-pianos",
+      "sfz": "Pianet T/Pianet T.sfz",
+      "oneShot": false
+    },
+    "electric-piano": {
+      "id": "electric-piano",
+      "name": "エレクトリックピアノ・Wurlitzer EP200",
+      "category": "鍵盤",
+      "pack": "electric-pianos",
+      "sfz": "Wurlitzer EP200/Wurlitzer EP200.sfz",
+      "oneShot": false
+    },
+    "solo-voice-ah": {
+      "id": "solo-voice-ah",
+      "name": "男声ソロ・アー",
+      "category": "声・コーラス",
+      "pack": "voice",
+      "sfz": "Programs/01-no_legato_polyphonic_only_no_vibrato_a.sfz",
+      "oneShot": false,
+      "description": "Hadzi-Fia の単独男声を録音した「アー」の素材です。和音でも鳴らせます。"
+    },
+    "choir-ah": {
+      "id": "choir-ah",
+      "name": "コーラス・アー",
+      "category": "声・コーラス",
+      "pack": "voice",
+      "sfz": "Programs/bunri-choir-a.sfz",
+      "oneShot": false,
+      "description": "単独男声の録音素材を重ねた合唱です。合唱団を同時録音した素材ではありません。"
+    },
+    "drum-kit": {
+      "id": "drum-kit",
+      "name": "生ドラム・基本キット",
+      "category": "打楽器",
+      "pack": "drums",
+      "sfz": "Programs/01-basic-kit.sfz",
+      "oneShot": true
+    },
+    "drums.full-kit": {
+      "id": "drums.full-kit",
+      "name": "生ドラム・フルキット",
+      "category": "打楽器",
+      "pack": "drums",
+      "sfz": "Programs/02-full-kit.sfz",
+      "oneShot": true
+    },
+    "acoustic-guitar-nylon": {
+      "id": "acoustic-guitar-nylon",
+      "name": "アコースティックギター・ナイロン弦",
+      "category": "ギター",
+      "pack": "acoustic-guitar-nylon",
+      "sfz": "meta-nylon-guitar.sfz",
+      "oneShot": false
+    },
+    "acoustic-guitar-steel": {
+      "id": "acoustic-guitar-steel",
+      "name": "アコースティックギター・スチール弦",
+      "category": "ギター",
+      "pack": "acoustic-guitar-steel",
+      "sfz": "meta-steel-guitar.sfz",
+      "oneShot": false
+    },
+    "game-lead": {
+      "id": "game-lead",
+      "name": "16bitゲーム・リード",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-lead.sfz",
+      "oneShot": false
+    },
+    "game-square": {
+      "id": "game-square",
+      "name": "16bitゲーム・矩形波",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-square.sfz",
+      "oneShot": false
+    },
+    "game-triangle": {
+      "id": "game-triangle",
+      "name": "16bitゲーム・三角波",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-triangle.sfz",
+      "oneShot": false
+    },
+    "game-saw": {
+      "id": "game-saw",
+      "name": "16bitゲーム・のこぎり波",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-saw.sfz",
+      "oneShot": false
+    },
+    "game-flute": {
+      "id": "game-flute",
+      "name": "16bitゲーム・フルート",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-flute.sfz",
+      "oneShot": false
+    },
+    "game-strings": {
+      "id": "game-strings",
+      "name": "16bitゲーム・ストリングス",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-strings.sfz",
+      "oneShot": false
+    },
+    "game-brass": {
+      "id": "game-brass",
+      "name": "16bitゲーム・ブラス",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-brass.sfz",
+      "oneShot": false
+    },
+    "game-pad": {
+      "id": "game-pad",
+      "name": "16bitゲーム・パッド",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-pad.sfz",
+      "oneShot": false
+    },
+    "game-bass": {
+      "id": "game-bass",
+      "name": "16bitゲーム・ベース",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-bass.sfz",
+      "oneShot": false
+    },
+    "game-pluck": {
+      "id": "game-pluck",
+      "name": "16bitゲーム・プラック",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-pluck.sfz",
+      "oneShot": false
+    },
+    "game-bell": {
+      "id": "game-bell",
+      "name": "16bitゲーム・ベル",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-bell.sfz",
+      "oneShot": false
+    },
+    "game-organ": {
+      "id": "game-organ",
+      "name": "16bitゲーム・オルガン",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-organ.sfz",
+      "oneShot": false
+    },
+    "game-voice": {
+      "id": "game-voice",
+      "name": "16bitゲーム・ボイス",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-voice.sfz",
+      "oneShot": false
+    },
+    "game-piano": {
+      "id": "game-piano",
+      "name": "16bitゲーム・ピアノ",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-piano.sfz",
+      "oneShot": false
+    },
+    "game-drums": {
+      "id": "game-drums",
+      "name": "16bitゲーム・ドラム",
+      "category": "16bitゲーム",
+      "pack": "game",
+      "sfz": "game-drums.sfz",
+      "oneShot": true
+    }
   }
 }

@@ -67,6 +67,7 @@ function snapshotClip(c: Clip | ClipSnapshot): ClipSnapshot {
 
 /** トラック 1 本の控え。 */
 export interface TrackSnapshot {
+    instrumentId?: string;
     /** トラックそのもの（再生のつなぎを持つ）。消したトラックを戻すときは、これを並びに戻す */
     ref: Track;
     name: string;
@@ -154,6 +155,7 @@ export function captureProject(source: SnapshotSource, prev?: ProjectSnapshot | 
             ref: t,
             name: t.name, gain: t.gain, pan: t.pan, mute: t.mute, solo: t.solo,
             role: t.role, part: t.part, practiceOf: t.practiceOf,
+            ...(t.instrumentId ? { instrumentId: t.instrumentId } : {}),
             notes: old && sameNotes(old.notes, notes) ? old.notes : notes,
             reference: old && sameNotes(old.reference, t.referenceNotes) ? old.reference : t.referenceNotes,
             clips: old && sameClips(old.clips, clips)
@@ -170,7 +172,7 @@ export function captureProject(source: SnapshotSource, prev?: ProjectSnapshot | 
 function sameTrack(a: TrackSnapshot, b: TrackSnapshot): boolean {
     return a.ref === b.ref && a.name === b.name && a.gain === b.gain && a.pan === b.pan
         && a.mute === b.mute && a.solo === b.solo && a.role === b.role && a.part === b.part
-        && a.practiceOf === b.practiceOf && sameNotes(a.notes, b.notes) && sameNotes(a.reference, b.reference)
+        && a.practiceOf === b.practiceOf && a.instrumentId === b.instrumentId && sameNotes(a.notes, b.notes) && sameNotes(a.reference, b.reference)
         && sameClips(a.clips, b.clips);
 }
 
@@ -217,6 +219,10 @@ function writeTrack(track: Track, target: TrackSnapshot, other?: TrackSnapshot):
     if (changed('role')) track.role = target.role;
     if (changed('part')) track.part = target.part;
     if (changed('practiceOf')) track.practiceOf = target.practiceOf;
+    if (changed('instrumentId')) {
+        if (target.instrumentId) track.instrumentId = target.instrumentId;
+        else delete track.instrumentId;
+    }
     // 並びは写して渡す (控えの配列を、エンジンの側で書き換えられないように)
     if (!other || !sameNotes(target.notes, other.notes)) track.pianoNotes = target.notes.slice();
     if (!other || !sameNotes(target.reference, other.reference)) track.referenceNotes = target.reference?.slice();

@@ -116,6 +116,7 @@ interface ArrangeView {
     activeTrackId: number | null;
     pianoLeft: number;
     pianoTop: number;
+    pianoAnchorRow: number | null;
     stepWidth: number;
     noteHeight: number;
     timelineLeft: number;
@@ -159,13 +160,14 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     // ノートを変えたら描き直す (「もう一度比べて」を出す)
     const [notesVersion, setNotesVersion] = useState(0);
     const arrangeRef = useRef<ArrangeView | null>(null);
-    const lastScrollRef = useRef({ pianoLeft: 0, pianoTop: 0, timelineLeft: 0, timelineTop: 0 });
+    const lastScrollRef = useRef({ pianoLeft: 0, pianoTop: 0, pianoAnchorRow: null as number | null, timelineLeft: 0, timelineTop: 0 });
     const openRef = useRef(practiceOpen);
     /** ふだんの画面 (アレンジ) の、いまのスクロール位置を読む。 */
     const readScroll = useCallback(() => {
         const pr = pianoRollRef.current, tl = timelineRef.current;
         return {
             pianoLeft: pr?.wrap?.scrollLeft ?? 0, pianoTop: pr?.wrap?.scrollTop ?? 0,
+            pianoAnchorRow: pr?.verticalView?.().anchorRow ?? null,
             timelineLeft: tl?.scroller?.scrollLeft ?? 0, timelineTop: tl?.scroller?.scrollTop ?? 0,
         };
     }, [pianoRollRef, timelineRef]);
@@ -254,7 +256,10 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             // タイムラインを出し直した後 (CSS が戻った後) に、大きさとスクロールの位置を戻す
             requestAnimationFrame(() => {
                 pr?.setZoom?.(saved.stepWidth, saved.noteHeight);
-                if (pr?.wrap) { pr.wrap.scrollLeft = saved.pianoLeft; pr.wrap.scrollTop = saved.pianoTop; }
+                if (pr?.wrap) {
+                    pr.wrap.scrollLeft = saved.pianoLeft;
+                    pr.restoreVerticalView(saved.pianoTop, saved.pianoAnchorRow);
+                }
                 const scroller = tl?.scroller;
                 if (scroller) { scroller.scrollLeft = saved.timelineLeft; scroller.scrollTop = saved.timelineTop; }
             });

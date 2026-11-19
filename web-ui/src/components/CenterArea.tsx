@@ -460,6 +460,35 @@ class PianoRollEngine {
         this.keysDiv.scrollTop = this.wrap.scrollTop;
         this._drawGrid();
     }
+    /** 縦の位置は、手で動かした位置か、自動で中央に据えた高さかを区別して控える。 */
+    verticalView() {
+        const top = this.wrap?.scrollTop ?? 0;
+        return { top, anchorRow: this._anchorRow != null && Math.abs(top - this._anchorTop) <= 1 ? this._anchorRow : null };
+    }
+    /** 見える高さが変わった後も、自動で見せていたノートを隠さない。手で動かした位置はそのまま戻す。 */
+    restoreVerticalView(top, anchorRow) {
+        if (!this.wrap) return;
+        if (anchorRow == null) {
+            this._anchorRow = null;
+            this.wrap.scrollTop = top;
+            this.keysDiv.scrollTop = this.wrap.scrollTop;
+            return;
+        }
+        this._centerOnRow(anchorRow);
+        const rows = this.notes.concat(this.ghostNotes).map(n => this._noteToRow(n.note, n.octave))
+            .filter(row => row >= 0 && row < this.totalRows);
+        if (!rows.length) return;
+        let low = this.totalRows, high = 0;
+        for (const row of rows) { low = Math.min(low, row); high = Math.max(high, row); }
+        const first = low * this.noteHeight;
+        const end = (high + 1) * this.noteHeight;
+        const visible = this.wrap.clientHeight;
+        // 音域が見える高さに収まるなら、端のノートも欠けない位置に収める。
+        if (end - first <= visible) {
+            const fitted = Math.max(end - visible, Math.min(first, this.wrap.scrollTop));
+            this._centerOnRow((fitted + visible / 2) / this.noteHeight - 0.5);
+        }
+    }
     /**
      * ノート (打ち込んだものと、お手本) が 1 つも見えていなければ、ノートの在る高さへ縦にスクロールする。
      * 1 つでも見えていれば動かさない (見ている場所を勝手に変えない)。
@@ -738,9 +767,9 @@ class PianoRollEngine {
             const pitch = Number(key.dataset.pitch);
             this._clearAudition(pitch);
             // ドラムのトラックでは、ドラムの行は種類ごとの音で鳴る (再生と同じ音)
-            engine.liveNoteOn(pitch, 96, { drums: this.drumMode });
+            const voice = engine.liveNoteOn(pitch, 96, { drums: this.drumMode, trackId: this.activeTrackId });
             key.classList.add('sounding');
-            this._heldKey = { pitch, el: key };
+            this._heldKey = { pitch, el: key, voice };
         });
         this.noteLayer.addEventListener('mousedown', (e) => {
             if (e.button !== 0 || this.activeTrackId === null) return;
@@ -979,16 +1008,16 @@ class PianoRollEngine {
     _audition(name, octave) {
         const pitch = this._pitchOf(name, octave);
         this._clearAudition(pitch);
-        engine.liveNoteOn(pitch, 96, { drums: this.drumMode });
+        const voice = engine.liveNoteOn(pitch, 96, { drums: this.drumMode, trackId: this.activeTrackId });
         this._auditionTimers.set(pitch, setTimeout(() => {
             this._auditionTimers.delete(pitch);
-            engine.liveNoteOff(pitch);
+            engine.liveNoteOff(pitch, voice);
         }, AUDITION_MS));
     }
     /** 押していた鍵盤を離す (音を止める)。 */
     _releaseKey() {
         if (!this._heldKey) return;
-        engine.liveNoteOff(this._heldKey.pitch);
+        engine.liveNoteOff(this._heldKey.pitch, this._heldKey.voice);
         this._heldKey.el.classList.remove('sounding');
         this._heldKey = null;
     }

@@ -17,6 +17,7 @@ const undoTitle = (page: Page) => page.locator('#btn-undo').getAttribute('data-t
 /** ピアノロールの 1 ステップの幅と、横のスクロール位置。 */
 const pianoView = (page: Page) => page.locator('#piano-grid-wrap').evaluate((el) => ({
     left: el.getBoundingClientRect().left, scrollLeft: el.scrollLeft,
+    scrollTop: el.scrollTop,
     stepWidth: (document.querySelector('#note-layer .note-ghost') as HTMLElement).getBoundingClientRect().width / 4 + 0.25,
 }));
 const xOf = (page: Page, selector: string) => page.locator(selector).first().evaluate((el) => el.getBoundingClientRect().left);
@@ -60,7 +61,7 @@ test('練習画面に入るとタイムラインと左パネルが隠れ、Esc �
 
     // アレンジで表示を広げてスクロールしておく
     await page.getByRole('button', { name: '横に広げる' }).click();
-    await page.locator('#piano-grid-wrap').evaluate((el) => { el.scrollLeft = 200; });
+    await page.locator('#piano-grid-wrap').evaluate((el) => { el.scrollLeft = 200; el.scrollTop += 28; });
     const before = await pianoView(page);
 
     // 練習のトラックの見出しから、もう一度練習画面へ。中で表示を変え、区間も変える
@@ -74,6 +75,7 @@ test('練習画面に入るとタイムラインと左パネルが隠れ、Esc �
     await page.getByRole('button', { name: '← アレンジに戻る' }).click();
     await expect(page.locator('#timeline-area')).toBeVisible();
     await expect.poll(async () => (await pianoView(page)).scrollLeft).toBe(before.scrollLeft);
+    await expect.poll(async () => (await pianoView(page)).scrollTop).toBe(before.scrollTop);
     expect(Math.abs((await pianoView(page)).stepWidth - before.stepWidth)).toBeLessThan(0.5);
     // 練習の区間は、タイムラインの小節番号の段にも描く (上の端の金色の帯)
     const band = await page.locator('#timeline-header-canvas').evaluate((c: HTMLCanvasElement) => {

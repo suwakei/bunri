@@ -235,6 +235,7 @@ export async function buildDocument(input: BuildInput): Promise<{ doc: ProjectDo
             gain: t.gain, pan: t.pan, mute: t.mute, solo: t.solo,
             notes: t.notes.map(cloneNote),
             referenceNotes: t.reference ? t.reference.map(cloneNote) : null,
+            ...(t.instrumentId ? { extra: { instrumentId: t.instrumentId } } : {}),
             clips,
         });
     }
@@ -487,6 +488,7 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
         const track = engine.addTrack(dt.name || undefined);
         if (dt.role) track.role = dt.role;
         if (dt.part) track.part = dt.part;
+        if (typeof dt.extra?.instrumentId === 'string' && dt.extra.instrumentId.length > 0) track.instrumentId = dt.extra.instrumentId;
         engine.updateTrackGain(track.id, Number(dt.gain) || 0);
         engine.updateTrackPan(track.id, Number(dt.pan) || 0);
         if (dt.mute && !track.mute) engine.toggleMute(track.id);

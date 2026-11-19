@@ -74,6 +74,7 @@ export interface SongPayload {
 /** 曲の中のトラック 1 本。 */
 export interface SongTrackPayload {
     id: number;
+    instrumentId?: string;
     gainDb: number;
     pan: number;
     /** ミュート・ソロ・「聴く」・トラック単体の再生を、画面が判定した結果 */
@@ -145,6 +146,7 @@ interface SourceClip {
 /** 曲を組み立てる材料のうち、トラック 1 本ぶん。 */
 export interface PlayTrack extends TrackMix {
     id: number;
+    instrumentId?: string;
     /** 鳴らすノート（`soundingNotes(track)`） */
     notes: readonly SourceNote[];
     clips: readonly SourceClip[];
@@ -265,6 +267,7 @@ export function buildSong(request: PlayRequest, clipId: (buffer: AudioBuffer) =>
             }
         }
         const track: SongTrackPayload = { id: t.id, gainDb: t.gainDb, pan: t.pan, audible: t.audible, notes, clips };
+        if (t.instrumentId) track.instrumentId = t.instrumentId;
         if (t.drums) track.drums = DRUM_ROWS.map((row) => ({ pitch: row.pitch, voice: row.voice }));
         return track;
     });
@@ -367,6 +370,13 @@ function mixKey(mix: TrackMix): string {
     return `${mix.gainDb}|${mix.pan}|${mix.audible}`;
 }
 
+/** 素材不足は再準備できる失敗。出力デバイスの失敗と区別する。 */
+export function instrumentUnavailable(reason: unknown): string | null {
+    const text = reason instanceof Error ? reason.message : String(reason);
+    const match = text.match(/BUNRI_INSTRUMENT_UNAVAILABLE:([^:]+):([\s\S]*)/);
+    return match ? `${match[2]}（音色: ${match[1]}）。音色の欄から素材を用意してください` : null;
+}
+
 /** Rust の音のエンジンとのやり取り。 */
 class NativeAudio {
     private instrumentState: 'unprepared' | 'piano' | 'tone' | 'failed' = 'unprepared';
@@ -404,6 +414,13 @@ class NativeAudio {
     private sentSong: string | null = null;
     /** Rust に渡してある曲の、トラックごとの音量・パン・鳴らすか */
     private sentMix = new Map<number, string>();
+    /** 再生開始時の音色・ノート・クリップ。ミックスの変更では音色の選び直しを反映しない。 */
+    private playingSong: SongPayload | null = null;
+    /** いまの engine が音源を用意済みのトラック。ミュートだけなら音源はそのまま残る。 */
+    private preparedTracks = new Set<number>();
+    /** まだ音源を持たないトラックを鳴らす変更は、曲をまとめて一度だけ組み直す。 */
+    private pendingMix = new Map<number, TrackMix>();
+    private mixScheduled = false;
     /** Rust に渡してある曲が使っている音声の番号 */
     private songClips = new Set<number>();
 
@@ -412,6 +429,8 @@ class NativeAudio {
 
     /** 失敗して Web Audio に切り替えるときに呼ぶ関数（再生エンジンが登録する）。 */
     onFailure: (() => void) | null = null;
+    /** 楽器の素材が足りないとき。電子音に切り替えず、再生を止めて案内する。 */
+    onUnavailable: ((message: string) => void) | null = null;
     /**
      * 頼んでいないのに再生が止まった（出力デバイスが外れたなど）ときに呼ぶ関数（再生エンジンが登録する）。
      * 再生エンジンは、いまの位置から鳴らし直す（Rust が出力を開き直す）。
@@ -473,6 +492,14 @@ class NativeAudio {
 
     /** 失敗を記録して、このセッションのあいだ Web Audio に切り替える。 */
     private fail(reason: unknown): void {
+        const unavailable = instrumentUnavailable(reason);
+        if (unavailable) {
+            this.current = null;
+            this.unwatch();
+            this.sentSong = null;
+            this.onUnavailable?.(unavailable);
+            return;
+        }
         if (this.failed) return;
         this.failed = true;
         this.markInstrument('failed');
@@ -685,6 +712,8 @@ class NativeAudio {
         await invokeDesktop('audio_set_song', { song });
         this.sentSong = key;
         this.sentMix = new Map(song.tracks.map((t) => [t.id, mixKey(t)]));
+        this.playingSong = song;
+        this.preparedTracks = new Set(song.tracks.filter((track) => track.audible).map((track) => track.id));
         this.songClips = new Set(song.tracks.flatMap((t) => t.clips.map((c) => c.clip)));
     }
 
@@ -697,6 +726,28 @@ class NativeAudio {
         this.sentSong = null;
         this.markInstrument(result.installed ? 'piano' : 'tone');
         return result.installed;
+    }
+
+    /** 選んだ音源を、鍵盤の指示と同じ列で先読みする。曲は次の再生で渡し直す。 */
+    prepareInstrument(instrumentId: string): Promise<boolean> {
+        const task = this.liveChain.then(async () => {
+            await this.ready();
+            if (this.failed) throw new Error('音のエンジンを使えません。アプリを開き直してください');
+            await invokeDesktop('audio_live_all_off');
+            const result = await invokeDesktop<{ installed: boolean }>('audio_prepare_instrument', { instrumentId });
+            this.sentSong = null;
+            return result.installed;
+        });
+        this.liveChain = task.then(() => undefined, (error) => {
+            // 先読みだけで素材が見つからなくても、別のトラックの再生は止めない。
+            // 実際にその楽器を鳴らす指示が失敗したときに、止めて案内する。
+            if (!instrumentUnavailable(error)) this.fail(error);
+        });
+        return task.catch((reason) => {
+            const unavailable = instrumentUnavailable(reason);
+            if (unavailable) throw new Error(unavailable, { cause: reason });
+            throw reason;
+        });
     }
 
     /** 再生と同じ楽器・クリップで WAV を作る。出力デバイスを開かず、再生中の曲も変えない。 */
@@ -714,6 +765,10 @@ class NativeAudio {
             const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Uint8Array.from(raw);
             if (bytes.length < 44) throw new Error('書き出した WAV を受け取れませんでした');
             return new Blob([bytes], { type: 'audio/wav' });
+        } catch (reason) {
+            const unavailable = instrumentUnavailable(reason);
+            if (unavailable) throw new Error(unavailable, { cause: reason });
+            throw reason;
         } finally {
             for (const entry of pinned) entry.pins--;
         }
@@ -726,6 +781,8 @@ class NativeAudio {
      * @returns この再生の状態。再生位置を出すのに使う（`position`）
      */
     play(request: PlayRequest): NativePlayback {
+        this.pendingMix = new Map();
+        this.mixScheduled = false;
         const pinned: ClipEntry[] = [];
         const song = buildSong(request, (buffer) => {
             const entry = this.register(buffer);
@@ -773,12 +830,40 @@ class NativeAudio {
      * 送ったら、次の再生では曲を渡し直す（再生し直したときに、Rust の側の値がどちらになるかに頼らない）。
      */
     setTrack(id: number, mix: TrackMix): void {
-        const key = mixKey(mix);
+        const value = { ...mix }, key = mixKey(value);
+        const playback = this.current;
         void this.enqueue('chain', async () => {
+            if (this.pendingMix.has(id)) this.pendingMix.set(id, value);
             if (!this.sentMix.has(id) || this.sentMix.get(id) === key) return;
-            await invokeDesktop('audio_set_track', { id, gainDb: mix.gainDb, pan: mix.pan, audible: mix.audible });
+            if (value.audible && !this.preparedTracks.has(id)) {
+                if (playback !== this.current) return;
+                this.pendingMix.set(id, value);
+                this.rebuildForMix();
+                return;
+            }
+            await invokeDesktop('audio_set_track', { id, ...value });
             this.sentMix.set(id, key);
+            if (this.playingSong) this.playingSong = { ...this.playingSong,
+                tracks: this.playingSong.tracks.map((track) => track.id === id ? { ...track, ...value } : track) };
             this.sentSong = null;
+        });
+    }
+
+    /** 同じ操作で増えたトラックを、保ってある曲の音色・ノートでまとめて用意する。 */
+    private rebuildForMix(): void {
+        if (this.mixScheduled) return;
+        this.mixScheduled = true;
+        const changes = this.pendingMix, playback = this.current;
+        void this.enqueue('chain', async () => {
+            if (changes === this.pendingMix) { this.mixScheduled = false; this.pendingMix = new Map(); }
+            if (!playback || this.current !== playback || !this.playingSong) return;
+            if (![...changes].some(([id, mix]) => mix.audible && !this.preparedTracks.has(id))) return;
+            const song = { ...this.playingSong, tracks: this.playingSong.tracks.map((track) => {
+                const mix = changes.get(track.id);
+                return mix ? { ...track, ...mix } : track;
+            }) };
+            // 曲だけを差し替える。Transport の現在位置・区間・速度・カウントはそのまま進む。
+            await this.sendSong(song);
         });
     }
 
@@ -793,12 +878,13 @@ class NativeAudio {
      * @param velocity - 強さ（1〜127。0 で離す）
      * @param drum - ドラムのトラックに向けて弾いたとき、鳴らすドラムの種類（打った瞬間の音を 1 回鳴らす。離す指示は要らない）
      */
-    liveNote(pitch: number, velocity: number, drum?: DrumVoice): void {
-        const args: { pitch: number; velocity: number; drum?: DrumVoice } = {
+    liveNote(pitch: number, velocity: number, drum?: DrumVoice, instrumentId?: string): void {
+        const args: { pitch: number; velocity: number; drum?: DrumVoice; instrumentId?: string } = {
             pitch: Math.max(0, Math.min(127, Math.round(pitch))),
             velocity: velocity > 0 ? velocityOf(velocity) : 0,
         };
         if (drum) args.drum = drum;
+        if (instrumentId) args.instrumentId = instrumentId;
         void this.enqueue('liveChain', () => invokeDesktop('audio_live_note', args));
     }
 
@@ -827,6 +913,10 @@ class NativeAudio {
         this.current = null;
         this.sentSong = null;
         this.sentMix = new Map();
+        this.playingSong = null;
+        this.preparedTracks = new Set();
+        this.pendingMix = new Map();
+        this.mixScheduled = false;
         this.songClips = new Set();
         this.interruptions = [];
     }
