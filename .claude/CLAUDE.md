@@ -48,6 +48,17 @@ CSP・フォント・同梱物・`tauri.conf.json`・`src-tauri/`・sidecar の�
 MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync` で生成する `.codex/config.toml`。
 実 LLM API を使うテストは通常の検証に含めず、ユーザーが明示したときだけ実行する。
 
+## Git の運用
+**変更は main に直接 commit して push する**（ブランチも PR も作らない。2026-11-19 の利用者の指示）。
+頼まれた実装・修正が終わり、検証が通ったら、聞かずに main へ commit・push してよい。
+
+- push の前に `make check` を通す。落ちたまま push しない（CI はリント・型・ビルドだけで、テストは回さない）
+- 作業の前に `git switch main && git pull --ff-only` で最新にする。push が拒まれたら `git pull --rebase` で取り込み直す
+- 同じ作業ツリーを複数のセッションが使うことがある。`git add -A` の前に `git status --short` を見て、
+  自分の作業でない変更が混ざっていないか確かめる（混ざっていたら、相手か利用者に確かめる）
+- force push・履歴の書き換え（`reset --hard` で push 済みのものを消す、`rebase` で push 済みの commit を書き換える）はしない
+- commit の文は日本語。1 つの commit に 1 つの話題を基本にする
+
 ## ファイル構成
 Python のコードはすべて `backend/` に在る（フラットな構成のまま、置き場だけまとめてある）。
 下の表のファイル名は `backend/` からの相対。
