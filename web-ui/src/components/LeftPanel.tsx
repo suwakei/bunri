@@ -103,6 +103,16 @@ function SynthPanel() {
             .then((data: GmInstrument[]) => setGmInstruments(data)).catch(() => {});
     }, []);
 
+    const openTrackInstrument = () => {
+        const picker = document.querySelector<HTMLDetailsElement>('details#piano-instrument');
+        if (!picker) {
+            setStatus('タイムラインでトラック名を選んでから、再生する音色を選んでください', 'hint');
+            return;
+        }
+        picker.open = true;
+        picker.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+    };
+
     const handleRender = useCallback(async () => {
         const pr = pianoRollRef.current;
         if (!pr) return;
@@ -153,6 +163,8 @@ function SynthPanel() {
     return (
         <div id="synth-panel" className="panel-content active">
             <h3>シンセサイザー</h3>
+            <button type="button" className="action-btn secondary" onClick={openTrackInstrument}
+                {...tip('鍵盤の試聴と曲の再生に使う音色を、ピアノロールで選びます')}>再生する音色を選ぶ</button>
             <p className="panel-desc">下のピアノロールにノートを置いてから「シーケンスをレンダリング」を押すと、ノートが音声のクリップになってトラックに入ります。</p>
             <label htmlFor="synth-gm">楽器（GM 音源）</label>
             <select id="synth-gm" value={gmProgram} onChange={e => setGmProgram(e.target.value)}
@@ -585,7 +597,7 @@ const TABS: TabDef<LeftTab>[] = [
 
 /** 「音作り」タブの中の段。 */
 const SOUND_TABS: TabDef<SoundTab>[] = [
-    { key: 'synth', label: 'シンセ', tip: 'ピアノロールのノートを、選んだ楽器の音にします' },
+    { key: 'synth', label: 'シンセ', tip: '再生する音色を選んだり、ノートを音声のクリップにしたりします' },
     { key: 'drum', label: 'ドラム', tip: '決まったリズムのドラムを作って、トラックに置きます' },
     { key: 'fx', label: 'FX', tip: 'トラックの音に、響きや音の高さの変更などの効果をかけます' },
 ];

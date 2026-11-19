@@ -1,6 +1,6 @@
 /** 開発用ブラウザでは、ピアノ音源を使わないことを音色の欄で伝える。 */
 import { expect, test } from '@playwright/test';
-import { openDaw, startFree, openProject, saveProject } from './helpers';
+import { openDaw, startFree, openProject, saveProject, openTab, statusText } from './helpers';
 
 const catalog = [
     { id: 'salamander', name: 'グランドピアノ', category: 'ピアノ', kind: 'sampler', packId: 'piano', installed: false, downloadBytes: 748522601, author: 'Alexander Holm', license: 'CC-BY-3.0', sourceUrl: 'https://example.com/piano' },
@@ -25,10 +25,15 @@ test('音色を検索して選ぶ操作を元に戻し・やり直し、保存�
     let downloads = 0;
     await page.route('**/api/instruments/*/install*', (route) => { downloads++; return route.abort(); });
     await openDaw(page);
+    await openTab(page, 'シンセ');
+    const openPicker = page.getByRole('button', { name: '再生する音色を選ぶ' });
+    await openPicker.click();
+    await expect(statusText(page)).toContainText('タイムラインでトラック名を選んでから');
     await startFree(page);
     await page.locator('#tracks-container .track-name').first().click();
     const instrument = page.locator('.piano-instrument');
-    await instrument.locator('summary').click();
+    await openPicker.press('Enter');
+    await expect(page.getByLabel('音色を探す')).toBeFocused();
     const select = page.getByLabel('このトラックの音色');
     await expect(select).toHaveAccessibleName('このトラックの音色');
     await expect(select).toHaveValue('salamander');

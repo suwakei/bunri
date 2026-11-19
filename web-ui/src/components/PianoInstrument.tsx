@@ -90,7 +90,7 @@ export default function PianoInstrument({ activeTrackId }: { activeTrackId: numb
     const sound = legacyDrums ? 'ドラム（従来の合成音）' : selected?.name ?? (catalog ? `見つからない音色（${selectedId}）` : '音色を確認中…');
     return (
         <div className="piano-instrument">
-            <details>
+            <details id="piano-instrument">
                 <summary>音色: {sound}{!desktop ? ' — 電子音（開発用のブラウザ）' : backend === 'failed' ? ' — 電子音（音の再生に失敗）' : selected && !selected.installed ? ' — 素材の準備が必要' : ''}</summary>
                 <div className="piano-instrument-details">
                     <div className="instrument-picker">
