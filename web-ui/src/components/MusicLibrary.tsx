@@ -1,5 +1,5 @@
 /** music/ に置いた曲を、ファイル選択画面を開かずに取り込みます。 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { listMusic, readMusic, type MusicEntry } from '../lib/music';
 import { useDaw } from '../lib/store';
 import { useLearnActions } from '../lib/learn';
@@ -7,6 +7,7 @@ import { tip } from '../lib/tooltip';
 import { describeError } from '../lib/api';
 
 export default function MusicLibrary() {
+    const titleId = useId();
     const { autoBpm, openLearn, setStatus } = useDaw();
     const { importSong } = useLearnActions();
     const [entries, setEntries] = useState<MusicEntry[]>([]);
@@ -46,9 +47,9 @@ export default function MusicLibrary() {
     }
 
     return (
-        <section className="music-library" aria-labelledby="music-library-title" aria-busy={loading || busy}>
+        <section className="music-library" aria-labelledby={titleId} aria-busy={loading || busy}>
             <div className="music-library-heading">
-                <h3 id="music-library-title">music の曲</h3>
+                <h3 id={titleId}>music の曲</h3>
                 <button type="button" className="action-btn secondary" disabled={loading || busy} onClick={() => void refresh()}
                     {...tip('music フォルダに追加した曲を、一覧に読み直します')}>一覧を更新</button>
             </div>

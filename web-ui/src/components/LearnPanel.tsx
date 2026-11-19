@@ -30,6 +30,7 @@ import { BUSY_REASON, blockedBy } from '../lib/notice';
 import GuidePanel from './GuidePanel';
 import CoachPanel from './CoachPanel';
 import PracticeMap from './PracticeMap';
+import MusicLibrary from './MusicLibrary';
 
 const LEARN_TABS: TabDef<LearnTab>[] = [
     { key: 'song', label: '曲とパート', tip: '曲を取り込み、パートに分けます' },
@@ -75,6 +76,7 @@ function SongPanel() {
     // 重い処理は同時に 1 つ。どこかで動いている間は、始めるボタンを押せなくする
     const blocked = showProgress || songJob.heavyBusy;
     const [sensitivity, setSensitivity] = useState(0.5);
+    const [showMusicLibrary, setShowMusicLibrary] = useState(false);
     // ドラムを種類ごとに分ける追加のモデルが、手元に在るか (null は、まだ分からない・聞けなかった)。
     // パート分離が終わるたびに聞き直す (初回のダウンロードが済むと、案内の文が変わる)
     const [drumModel, setDrumModel] = useState<boolean | null>(null);
@@ -117,6 +119,12 @@ function SongPanel() {
                     : '教材にする曲のファイル（MP3・WAV など）を選びます。取り込むと、カルテを自動で作ります')}>
                 {songFile ? '別の曲を取り込む' : '曲を取り込む'}
             </button>
+            <button type="button" className="action-btn secondary" aria-expanded={showMusicLibrary}
+                aria-controls="song-music-library" onClick={() => setShowMusicLibrary(value => !value)}
+                {...tip('music フォルダの曲一覧を開きます。曲名を押すと原曲として取り込みます')}>
+                曲の一覧
+            </button>
+            {showMusicLibrary && <div id="song-music-library"><MusicLibrary /></div>}
             <label htmlFor="file-auto-bpm" style={{ marginTop: 8 }}>
                 <input id="file-auto-bpm" type="checkbox" checked={autoBpm}
                     onChange={e => setAutoBpm(e.target.checked)} style={{ marginRight: 4 }}
