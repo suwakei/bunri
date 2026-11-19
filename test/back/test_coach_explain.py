@@ -232,6 +232,81 @@ class TestBuildFacts:
             ce.build_facts(REFERENCE, ATTEMPT, chart=chart, bpm=bad)
 
 
+class TestFractionalSteps:
+    """位置と長さが小数のノート（三連符・32 分音符）でも、事実を組み立てて、応答と突き合わせられる
+
+    整数だけのノートでは、事実は小数を許す前とバイト単位で同じ（保存の鍵も変わらない）。
+    """
+
+    # 8 分の三連（1 拍を 3 つ）は、1 拍 = 4 ステップなので、4/3 ステップおき。
+    # お手本: シャッフルのベース（拍の頭と、三連の 3 つ目 = 8/3）を 2 小節
+    SHUFFLE = [n("C", 2, beat * 4 + offset, 4 / 3) for beat in range(8) for offset in (0, 8 / 3)]
+    # 打ち込み: 1 小節目だけ。裏を、8 分音符の位置（ステップ 2・6・10・14）に置いた
+    STRAIGHT = [n("C", 2, beat * 4 + offset, 4 / 3) for beat in range(4) for offset in (0, 2)]
+
+    def test_小節と拍は整数で_ずれは小数2桁で渡す(self):
+        facts = ce.build_facts(self.SHUFFLE, self.STRAIGHT)
+        assert facts["summary"]["timing"] == 4 and facts["summary"]["missing"] == 8
+        timing = [row for row in _rows(facts, "id", "bar", "beat", "kind", "offset_steps", "length_diff") if row[3] == "timing"]
+        # ずれは 2 − 8/3 = −2/3 ステップ。0.6666666666666666 ではなく 0.67 で渡す
+        assert timing == [[f"i{beat}", 1, beat, "timing", -0.67, 0] for beat in (1, 2, 3, 4)]
+        assert facts["tendencies"]["timing"] == {"late": 0, "early": 4, "mean_offset_steps": -0.67}
+        # 拍の頭か裏かは、小数の位置でも数えられる（三連の 3 つ目は裏）
+        assert facts["tendencies"]["missing"] == {"on_beat": 4, "off_beat": 4,
+                                                  "by_beat": {"1": 2, "2": 2, "3": 2, "4": 2}}
+        assert facts["grid"]["bar_count"] == 2 and isinstance(facts["grid"]["bar_count"], int)
+        for row in _rows(facts, "bar", "beat"):
+            assert all(isinstance(value, int) for value in row)
+        # JSON にできて、小数は 2 桁まで（0.6666666666666666 のような長い小数が入らない）
+        import re
+        text = ce.prompt_facts(facts)
+        assert json.loads(text) == facts and not re.search(r"\d\.\d{3,}", text)
+
+    def test_応答と突き合わせられる(self):
+        facts = ce.build_facts(self.SHUFFLE, self.STRAIGHT)
+        first = facts["issues"]["rows"][0][0]
+        raw = _raw(summary="お手本と比べて、裏の位置が早くなっています。",
+                   points=[_point(title="裏の位置", observation="1 小節目で、裏の C2 が早く入っています。",
+                                  cause="8 分音符の位置に置いたのかもしれません。", fix="お手本を重ねて、裏の位置を見比べます。",
+                                  issue_ids=[first], bars=[1, 2])],
+                   next_step="まず 1 小節目を開いて、裏の位置を見比べます。", next_step_bar=1)
+        result = ce.validate_explanation(raw, facts)
+        assert result["dropped_points"] == 0 and result["replaced"] == []
+        refs = result["points"][0]["refs"]
+        assert refs[0]["issue_id"] == first and refs[0]["bar"] == 1 and isinstance(refs[0]["beat"], int)
+        assert refs[-1] == {"issue_id": None, "bar": 2, "beat": None, "kind": None}
+
+    def test_カルテのコードも_小数の位置で引ける(self, chart):
+        # カルテの 1 拍目は 2.0 秒。ピアノロールの 2 小節目（ステップ 16〜）が、カルテの 1 小節目（G7）
+        facts = ce.build_facts(self.SHUFFLE, self.STRAIGHT, chart=chart, bpm=120)
+        missing = [row for row in _rows(facts, "bar", "kind", "chord", "expected_role") if row[1] == "missing"]
+        assert missing == [[2, "missing", "G7", "コード外・キー内"]] * 8
+
+    def test_整数になる小数で渡しても_事実は整数のときとバイト単位で同じ(self):
+        def as_float(notes):
+            return [{**note, "step": float(note["step"]), "length": float(note["length"])} for note in notes]
+
+        plain = ce.build_facts(REFERENCE, ATTEMPT)
+        floats = ce.build_facts(as_float(REFERENCE), as_float(ATTEMPT))
+        assert ce.prompt_facts(floats) == ce.prompt_facts(plain)
+        assert ce.explanation_key(floats, "m", "low") == ce.explanation_key(plain, "m", "low")
+        # 1/60 ステップより細かい違いは、同じノート（同じ事実）
+        nudged = [{**note, "step": note["step"] + 0.001} for note in ATTEMPT]
+        assert ce.prompt_facts(ce.build_facts(REFERENCE, nudged)) == ce.prompt_facts(plain)
+
+    def test_整数だけのノートの事実に_小数は入らない(self, facts):
+        # 割合と平均のほかは、どれも整数（小数を許す前と同じ文字列になる）
+        text = ce.prompt_facts(facts)
+        assert '"mean_offset_steps":1.0' in text
+        assert "." not in text.replace('"mean_offset_steps":1.0', "")
+
+    def test_決まった文の経路も落ちない(self, data_dir):
+        # 三連どうしがぴったり合っている → Claude を呼ばずに「違いが無い」
+        client = FakeClient()
+        result = ce.explain_for(ce.build_facts(self.SHUFFLE, [dict(x) for x in self.SHUFFLE]), client=client)
+        assert client.calls == [] and result["source"] == "rule" and result["reason"] == "no_diff"
+
+
 class TestIssueCap:
     """渡す指摘は上限まで。多いときは一部だけを渡し、全体は件数の集計で伝える"""
 
@@ -1126,3 +1201,21 @@ class TestApi:
         resp = await client.post("/api/coach/explain", json=body)
         assert resp.status_code == 200 and "velocity" not in _sent_facts(fake.calls[1])
         assert len(fake.calls[1]["system"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_小数の位置と長さのノートでも_説明を作れる(self, client, fake):
+        # お手本はシャッフル（拍の頭と三連の 3 つ目）。打ち込みは、1 小節目の裏を 8 分音符の位置に置いた
+        body = {"reference": TestFractionalSteps.SHUFFLE, "attempt": TestFractionalSteps.STRAIGHT}
+        point = _point(issue_ids=["i1", "i2"], bars=[1], title="裏の位置", observation="1 小節目の裏の C2 が早く入っています。",
+                       cause="8 分音符の位置に置いたのかもしれません。", fix="お手本を重ねて、裏の位置を見比べます。")
+        fake._payload = _raw(points=[point], summary="裏の位置が早くなっています。",
+                             next_step="まず 1 小節目を開きます。", next_step_bar=1)
+        resp = await client.post("/api/coach/explain", json=body)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["explanation"]["points"][0]["refs"][0] == {"issue_id": "i1", "bar": 1, "beat": 1, "kind": "timing"}
+        # Claude に渡した事実: 小節と拍は整数、ずれは小数 2 桁
+        sent = _sent_facts(fake.calls[0])
+        assert _rows(sent, "bar", "beat", "offset_steps")[0] == [1, 1, -0.67]
+        # 保存済みの問い合わせも通り、同じ説明に当たる
+        saved = (await client.post("/api/coach/explain/saved", json=body)).json()
+        assert saved["saved"] is True and saved["key"] == resp.json()["key"]

@@ -16,11 +16,14 @@ import { useCallback } from 'react';
 import { useDaw } from './store';
 import engine, { MIDI_PART, cloneNote, type PianoNote, type Track } from './engine';
 import { apiFetch, describeError, errorDetail } from './api';
-import { modelDownloadNotice } from './models';
-import { JobBusyError, JobCancelledError, jobErrorMessage, jobTracker, type Job } from './jobs';
+import { LEGACY_DRUM_REASON, drumEventsToNotes, isDrumPart, isLegacyDrumPart, type DrumEvent } from './drums';
+import { DRUM_MODEL, MODEL_DOWNLOAD_NOTICE, modelCached, modelDownloadNotice } from './models';
+import { JobBusyError, jobErrorMessage, jobTracker, type Job } from './jobs';
 import { isChartResponse } from './chart';
 import type { ReferenceSource } from './coach';
 import { decodeWithSource } from './audio-sources';
+import { loopSteps, notesInRange, type PracticeLoop } from './practice';
+import { gridFeelOf, isSnapId, snapDef, type SnapId } from './snap';
 
 /** カルテの作成のジョブが終わったのに、結果にカルテが入っていなかったときの知らせ。 */
 export const CHART_RESULT_INVALID = 'カルテの作成は終わりましたが、結果にカルテが入っていませんでした。もう一度取り込んでください';
@@ -63,10 +66,11 @@ export const PART_LABELS: Record<string, string> = {
     other: 'その他',
 };
 
-/** ドラムのパートか。ドラムは差分チェックの対象外（種類ごとに決まった高さへ置いた近似のため）。 */
-export function isDrumPart(part: string | undefined): boolean {
-    return !!part && part.includes('drum');
-}
+// ドラムのパートの見分け方は lib/drums.ts に在る（種類と高さの対応と一緒に）。これまでの呼び手のために、ここからも出す
+export { isDrumPart };
+
+/** ドラムの採譜の作り方。`stems`: 種類ごとに分けた音から / `spectral`: 1 本の音を、音の明るさで振り分けた。 */
+export type DrumSource = 'stems' | 'spectral';
 
 /**
  * `/api/decompose` の結果の 1 パート。API の側では「ステム」と呼んでいる。
@@ -74,7 +78,15 @@ export function isDrumPart(part: string | undefined): boolean {
 export interface DecomposeStem {
     audio_url?: string;
     notes?: Array<{ note: string; octave: number; step: number; length: number; velocity?: number }>;
-    drum_events?: Array<{ type: string; step: number; velocity: number }>;
+    /** ドラムの打音。`type` は `kick` `snare` `toms` `cymbals`（種類ごとに分けたとき）か `kick` `snare` `hihat` */
+    drum_events?: DrumEvent[];
+    /** ドラムのパートだけ。打音の作り方（以前の版の結果には無い） */
+    drum_source?: DrumSource;
+    /**
+     * 採譜したグリッド。`triplet` なら、ノートと打音の位置・長さが三連の位置（小数のステップ）になっている
+     * （以前の版の結果には無い）。画面は、お手本のノートの位置から見分ける（`alignSnapToReference`）ので、覚えない
+     */
+    grid_feel?: 'straight' | 'triplet';
     gm_program: number | null;
     mix: { volume_db: number; pan: number; reverb_wet: number };
 }
@@ -83,6 +95,12 @@ export interface DecomposeStem {
 export interface DecomposeResult {
     bpm: number;
     grid_offset_sec?: number;
+    /** ドラムのパート（`drums`）の打音の作り方。ドラムのパートが無ければ null（以前の版の結果には無い） */
+    drum_source?: DrumSource | null;
+    /** ドラムを種類ごとに分けるよう頼んだのに、分けずに採譜したときの理由（利用者に見せられる文）。そうでなければ null */
+    drum_fallback?: string | null;
+    /** 曲のグリッド。`triplet` なら、三連のグリッドで採譜した（以前の版の結果には無い） */
+    grid_feel?: 'straight' | 'triplet';
     stems: Record<string, DecomposeStem>;
 }
 
@@ -91,6 +109,35 @@ export function isDecomposeResult(value: unknown): value is DecomposeResult {
     if (!value || typeof value !== 'object') return false;
     const stems = (value as { stems?: unknown }).stems;
     return !!stems && typeof stems === 'object' && !Array.isArray(stems);
+}
+
+/** 刻みをお手本に合わせ済みのパート（アプリを開いているあいだ、パートごとに 1 回だけ合わせる）。 */
+const snapAligned = new WeakSet<Track>();
+
+/**
+ * お手本が三連のグリッドに載っているパートの練習を始めるとき、ピアノロールの刻みを「8 分の三連」に合わせる。
+ *
+ * - 三連かどうかは、お手本のノートの位置から見分ける（lib/snap.ts の `gridFeelOf`。処理を担当する部分の `grid_feel` を
+ *   トラックに覚えなくても、開き直したプロジェクトや、MIDI から読み込んだお手本でも同じに働く）
+ * - 合わせるのは、そのパートで 1 回だけ。そのあと利用者が刻みを変えたら、それに従う（入り直しても、戻さない）
+ * - すでに三連の刻み（8 分・16 分の三連）を選んでいるときは、変えない
+ * - 利用者が覚えさせた刻みは書き換えない（`remember: false`。開き直すと、利用者が最後に選んだ刻みに戻る）
+ *
+ * @param pianoRoll - ピアノロール（練習のトラックを開いたあと）
+ * @param part - お手本を持つパートのトラック
+ * @returns 合わせたときは、その旨の文（文の終わりの「。」は無し）。合わせなかったら空
+ */
+export function alignSnapToReference(
+    pianoRoll: { snapId?: () => unknown; setSnapId?: (id: SnapId, options?: { remember?: boolean }) => boolean } | null | undefined,
+    part: Track,
+): string {
+    if (!pianoRoll?.setSnapId || snapAligned.has(part)) return '';
+    if (gridFeelOf(part.referenceNotes) !== 'triplet') return '';
+    snapAligned.add(part);
+    const current = pianoRoll.snapId?.();
+    if (isSnapId(current) && snapDef(current).triplet) return '';
+    pianoRoll.setSnapId('1/8T', { remember: false });
+    return 'お手本が三連の曲なので、刻みを「8 分の三連」に合わせました（ピアノロールの上の「刻み」で変えられます）';
 }
 
 /** パートのトラック（パート分離で作ったもの）。トラックの並び順。 */
@@ -205,7 +252,7 @@ export function useLearnActions() {
     const {
         setStatus, bumpTracks, pianoRollRef, bpm, setBpm, beatsPerBar,
         setChartResult, openLearn, applyChartGrid, setGridOffset, songFile, setSongFile,
-        setGhostChoice, setCoachPair, setLeftTab, chart, chartId, record, recordAsync, openPractice,
+        setGhostChoice, setCoachPair, setLeftTab, chart, chartId, record, recordAsync, openPractice, updatePractice,
     } = useDaw();
 
     /**
@@ -332,6 +379,7 @@ export function useLearnActions() {
         // パートのトラックの入れ替えは、まとめて元に戻せる。記録を開くのは結果が届いてから
         // (ジョブの間ずっと開いておくと、その間のほかの操作がこの記録に混ざるため)
         let created = 0, withReference = 0;
+        const noAudio: string[] = [];
         await recordAsync('パートに分ける', async () => {
             if (result.bpm && Math.abs(result.bpm - engine.bpm) > 1e-6) setBpm(result.bpm);
             if (typeof result.grid_offset_sec === 'number') setGridOffset(result.grid_offset_sec);
@@ -361,6 +409,7 @@ export function useLearnActions() {
                         await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
                     } catch (e) {
                         console.warn(`${stemName} の音声を読み込めませんでした:`, e);
+                        noAudio.push(label);
                     }
                 }
                 if (stem.notes && stem.notes.length > 0) {
@@ -371,13 +420,14 @@ export function useLearnActions() {
                     withReference++;
                 }
                 if (stem.drum_events && stem.drum_events.length > 0) {
-                    // ドラムは以前どおり、種類ごとに決まった高さのノートとして置く (お手本にはしない)
-                    const drumMap: Record<string, { note: string; octave: number }> = {
-                        kick: { note: 'C', octave: 2 },
-                        snare: { note: 'D', octave: 2 },
-                        hihat: { note: 'F#', octave: 2 },
-                    };
-                    track.pianoNotes = stem.drum_events.map(e => ({ ...(drumMap[e.type] || drumMap.kick), step: e.step, length: 1 }));
+                    // ドラムも、ほかのパートと同じ形にする: 打音を、種類ごとに決まった高さのお手本として控え、打ち込みは空のまま。
+                    // 種類 → 高さの対応は lib/drums.ts (以前は、打音をそのまま打ち込みに置いていて、差分で比べられなかった)
+                    const drumNotes = drumEventsToNotes(stem.drum_events);
+                    if (drumNotes.length > 0) {
+                        track.referenceNotes = drumNotes;
+                        track.pianoNotes = [];
+                        withReference++;
+                    }
                 }
                 // 原曲と重なると音が大きくなるので、パートは最初はミュートしておく
                 if (engine.tracks.some(t => t.role === 'song')) {
@@ -388,23 +438,47 @@ export function useLearnActions() {
         setCoachPair({ referenceId: null, attemptId: null });
         bumpTracks();
         openLearn('song');
-        setStatus(`パートに分けました（${created} パート、お手本 ${withReference} パート）。練習するパートの「このパートを練習する」を押してください`);
+        // 三連の曲は、お手本が三連の位置 (小数のステップ) に載る。練習を始めると、刻みを合わせる (alignSnapToReference)
+        const triplet = result.grid_feel === 'triplet' ? '三連の曲なので、お手本は三連の位置に載っています（練習を始めると、刻みを 8 分の三連に合わせます）。' : '';
+        const done = `パートに分けました（${created} パート、お手本 ${withReference} パート）。${triplet}`;
+        // ドラムを種類ごとに分けるよう頼んだのに、分けずに採譜したときは、その旨を黙って済ませない
+        const drumFallback = typeof result.drum_fallback === 'string' && result.drum_fallback
+            ? `ドラムは、種類ごとに分けずに採譜しました（${result.drum_fallback.replace(/[。\s]+$/, '')}）。同時に鳴った種類は、1 つにまとまっています。`
+            : '';
+        // 音声を読み込めなかったパートが在れば、黙って成功にしない (トラックは在るのに、再生しても鳴らないため)
+        if (noAudio.length > 0) setStatus(`${done}${drumFallback}ただし、${noAudio.map((name) => `「${name}」`).join('')}の音声を読み込めなかったので、そのパートの元の音は再生しても鳴りません。もう一度「パートに分ける」を押すと、直ることがあります`, 'error');
+        else if (drumFallback) setStatus(`${done}${drumFallback}練習するパートの「このパートを練習する」を押してください`, 'hint');
+        else setStatus(`${done}${result.drum_source === 'stems' ? 'ドラムは、種類ごとに分けて採譜しました。' : ''}練習するパートの「このパートを練習する」を押してください`);
     }, [setBpm, setGridOffset, pianoRollRef, setCoachPair, bumpTracks, openLearn, setStatus, recordAsync]);
 
     /**
      * 原曲をパートに分けて採譜する（時間のかかる処理。進み具合は「パートに分ける」の下に出る）。
      * パートごとに、パートの音声とお手本を持つトラックを作る（`applyParts`）。
      * 打ち込み（ピアノロールのノート）は空のまま。お手本は水色で重ねて見せる。
-     * ドラムは以前どおり、採譜したリズムをノートとして置く（差分チェックの対象外）。
+     * ドラムも同じ形（打音を、種類ごとに決まった高さのお手本にする。lib/drums.ts）。
      *
      * パートのトラックはミュートして作る（原曲と重なって音が大きくなるため）。
      * 「このパートを練習する」で、そのパートだけ鳴らす。
      *
      * @param sensitivity - 採譜の感度（0.1〜1）
+     * @param onStart - 始められたか（ジョブが受け付けられたか）が分かったときに、1 回だけ呼ぶ。始められなかったら理由つき。
+     *   終わるのを待たずに知りたい呼び手（アシスタント）が使う
+     * @param options.splitDrums - ドラムを種類ごと（キック / スネア / タム / シンバル）に分けてから採譜するか。
+     *   true なら、追加のモデルが手元に無ければダウンロードする（約 160 MB。利用者が選んだときだけ渡す）。
+     *   省略すると、追加のモデルが手元に在るときだけ分ける（勝手にはダウンロードしない。アシスタントから始めたとき）
      */
-    const separateParts = useCallback(async (sensitivity: number) => {
+    const separateParts = useCallback(async (
+        sensitivity: number,
+        onStart?: (outcome: { started: true } | { started: false; reason: string }) => void,
+        options: { splitDrums?: boolean } = {},
+    ) => {
         const file = songFile;
-        if (!file) { setStatus('先に曲を取り込んでください（「曲を取り込む」）', 'error'); return; }
+        if (!file) {
+            const reason = '先に曲を取り込んでください（「曲を取り込む」）';
+            setStatus(reason, 'error');
+            onStart?.({ started: false, reason });
+            return;
+        }
 
         // カルテが在れば、カルテのグリッド (テンポと 1 小節目の位置) に載せて採譜する。
         // カルテとピアノロールの小節番号が同じ時刻を指すように (docs/coach-diff-design.md)。
@@ -415,18 +489,31 @@ export function useLearnActions() {
         fd.append('bpm', chart ? String(engine.bpm) : '0');
         fd.append('grid_offset', chart ? String(engine.gridOffset) : '0');
         fd.append('sensitivity', String(sensitivity));
+        // ドラムを種類ごとに分けるか。選ばれていなければ、追加のモデルが手元に在るときだけ (ダウンロードは、選んだときだけ)
+        const drumModelCached = await modelCached(DRUM_MODEL);
+        const splitDrums = options.splitDrums ?? drumModelCached === true;
+        fd.append('split_drums', splitDrums ? 'true' : 'false');
         const usedChart = chart ? chartId : null;
 
-        const notice = await modelDownloadNotice('htdemucs_6s');
+        const notice = (await modelDownloadNotice('htdemucs_6s')) || (splitDrums && drumModelCached === false ? MODEL_DOWNLOAD_NOTICE : '');
         setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
+        // 始める (受け付けられたら、呼び手に知らせる) → 終わるのを待つ
+        let job: Job;
         try {
-            const result = await jobTracker.run<unknown>('learn-parts', '/api/decompose', fd);
-            partsChartId = usedChart;
-            await applyParts(result);
+            job = await jobTracker.start('learn-parts', '/api/decompose', fd);
         } catch (e) {
-            if (e instanceof JobCancelledError) setStatus('パート分離を中止しました。いまのパートはそのままです');
-            else setStatus(describeError(e), 'error');
+            const reason = describeError(e);
+            setStatus(reason, 'error');
+            onStart?.({ started: false, reason });
+            return;
         }
+        onStart?.({ started: true });
+        const final = await jobTracker.wait(job.id);
+        if (final.state === 'done') {
+            partsChartId = usedChart;
+            await applyParts(final.result);
+        } else if (final.state === 'cancelled') setStatus('パート分離を中止しました。いまのパートはそのままです');
+        else setStatus(jobErrorMessage(final), 'error');
     }, [songFile, chart, chartId, applyChartGrid, setStatus, applyParts]);
 
     /**
@@ -438,10 +525,18 @@ export function useLearnActions() {
      * - パートの音声と練習のトラックを鳴るようにする（原曲のミュート・ソロは利用者に任せる）
      * - 練習画面（components/PracticeView.tsx）を開く
      *
+     * 区間を渡すと（練習の地図の升を押したとき。components/PracticeMap.tsx）、練習画面の区間ループをその区間にし、
+     * ピアノロールもその区間の頭と、その区間のお手本の高さまで動かす。区間の設定は、練習画面の中で区間を変えるのと
+     * 同じ入口（ストアの `updatePractice`）を通す。
+     *
      * @param partId - パートのトラックの ID
+     * @param options.loop - 練習画面を開いたときの区間ループ（省略すると、前に開いたときの区間。初めてなら既定の区間）
+     * @param options.where - 区間の呼び名（「サビ」など。ステータスバーの文に使う）
      */
-    const practicePart = useCallback((partId: number) => {
+    const practicePart = useCallback((partId: number, options: { loop?: PracticeLoop; where?: string } = {}) => {
         const part = engine.getTrack(partId);
+        // 以前の分け方のドラムは、お手本を持たない。黙って戻さず、どうすれば練習できるかを知らせる
+        if (part && isLegacyDrumPart(part)) setStatus(LEGACY_DRUM_REASON, 'hint');
         if (!part || !part.referenceNotes?.length) return;
         // 練習のトラックを作ること、ミュート・ソロを変えることは、まとめて元に戻せる
         const practice = record(`「${part.name}」を練習する`, () => {
@@ -466,16 +561,26 @@ export function useLearnActions() {
         if (pr) {
             pr.switchToTrack(practice.id);
             pr.setGhostNotes(part.referenceNotes);
-            // お手本の在る高さと、最初のノートの小節まで動かす
-            const middle = middleNote(part.referenceNotes);
+            // お手本の在る高さと、最初のノートの小節まで動かす (区間を渡されたら、その区間のお手本の高さと、区間の頭)
+            const range = options.loop ? loopSteps(options.loop, engine.grid) : null;
+            const inRange = notesInRange(part.referenceNotes, range);
+            const middle = middleNote(inRange.length > 0 ? inRange : part.referenceNotes);
             if (middle) pr.scrollToPitch?.(middle.note, middle.octave, true);
-            const first = Math.min(...part.referenceNotes.map(n => n.step));
+            const first = range ? range.start : Math.min(...part.referenceNotes.map(n => n.step));
             pr.scrollToStep(Math.max(0, first));
         }
+        // お手本が三連のグリッドなら、刻みを 8 分の三連に合わせる (そのままの刻みでは、お手本の位置に置けない)
+        const aligned = alignSnapToReference(pr, part);
         bumpTracks();
         openPractice(part.id, practice.id);
-        setStatus(`「${part.name}」を練習します。水色のお手本を見ながら「${practice.name}」にノートを置き、「比べる」で確かめてください`);
-    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus, record, openPractice]);
+        if (options.loop) {
+            updatePractice({ loop: options.loop });
+            const bars = `${options.loop.startBar}〜${options.loop.endBar} 小節`;
+            setStatus(`「${part.name}」の${options.where ? `「${options.where}」（${bars}）` : bars}を練習します。区間ループをこの区間にしました${aligned ? `。${aligned}` : ''}`);
+            return;
+        }
+        setStatus(`「${part.name}」を練習します。水色のお手本を見ながら「${practice.name}」にノートを置き、「比べる」で確かめてください${aligned ? `。${aligned}` : ''}`);
+    }, [setGhostChoice, setCoachPair, pianoRollRef, bumpTracks, setStatus, record, openPractice, updatePractice]);
 
     /**
      * お手本を、そのパートのトラックの打ち込みとして写す（採譜を自由に直したい人向け）。

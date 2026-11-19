@@ -29,6 +29,8 @@ nul
 uploads/
 results/
 projects/
+# 保存していない変更の、復旧用の写し (BUNRI_DATA_DIR を付けずに起動したとき、リポジトリ直下にできる)
+/recovery/
 
 # Soundfonts (large binary files)
 soundfonts/
@@ -72,3 +74,6 @@ web-ui/e2e-desktop-results/
 
 # エージェントが作る別チェックアウト（このリポジトリの探索・検証からも除外する）
 .claude/worktrees/
+
+# 動きの記録（開発時の make desktop が書く。src-tauri/src/activity.rs）
+/logs/

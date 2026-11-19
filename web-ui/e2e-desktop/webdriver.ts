@@ -8,6 +8,9 @@
  * (docs/ui-testing.md「本物の窓を操作するテスト」)。
  *
  * 注意: クリックは、画面の中で `element.click()` を呼ぶ形で行われる (OS のマウス操作ではない)。
+ *
+ * 画面の中で起きた例外は、文 (message) を先に、呼び出しの並び (stack) を後ろに付けて返す。
+ * WKWebView の stack には文が入らないので、stack だけを返すと、何が起きたのかが分からない。
  */
 
 /** WebDriver の応答のエラー。 */
@@ -47,6 +50,16 @@ export class WebDriverSession {
         return session;
     }
 
+    /**
+     * すでに在るセッションにつなぐ (別のプロセスが始めたものを、続けて使う。drive.ts)。
+     *
+     * @param port - WebDriver サーバのポート (127.0.0.1)
+     * @param id - セッションの識別子
+     */
+    static attach(port: number, id: string): WebDriverSession {
+        return new WebDriverSession(`http://127.0.0.1:${port}`, id);
+    }
+
     private request<T>(method: string, path: string, body?: unknown): Promise<T> {
         return call<T>(this.base, method, `/session/${this.id}${path}`, body);
     }
@@ -61,8 +74,25 @@ export class WebDriverSession {
             const args = Array.prototype.slice.call(arguments, 0, -1);
             Promise.resolve().then(() => (${fn.toString()}).apply(null, args))
                 .then((value) => done({ ok: value === undefined ? null : value }),
-                      (e) => done({ error: String((e && e.stack) || e) }));`;
+                      (e) => done({ error: e && e.message ? String(e.message) + (e.stack ? '\\n' + e.stack : '') : String(e) }));`;
         const outcome = await this.request<Outcome<T>>('POST', '/execute/async', { script, args });
+        if ('error' in outcome) throw new Error(`画面の中で失敗しました: ${outcome.error}`);
+        return outcome.ok;
+    }
+
+    /**
+     * 画面の中で、文字列で渡したスクリプトを実行し、戻り値を返す (その場で確かめるとき用。drive.ts の `eval`)。
+     *
+     * `body` は async 関数の中身として実行する (`await` が使える。値を返すには `return` を書く)。
+     */
+    async execute<T>(body: string): Promise<T> {
+        const script = `
+            const done = arguments[arguments.length - 1];
+            Promise.resolve().then(async () => { ${body}
+ })
+                .then((value) => done({ ok: value === undefined ? null : value }),
+                      (e) => done({ error: e && e.message ? String(e.message) + (e.stack ? '\\n' + e.stack : '') : String(e) }));`;
+        const outcome = await this.request<Outcome<T>>('POST', '/execute/async', { script, args: [] });
         if ('error' in outcome) throw new Error(`画面の中で失敗しました: ${outcome.error}`);
         return outcome.ok;
     }

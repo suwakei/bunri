@@ -7,6 +7,8 @@ import { jobTracker, slotOf, stageCount, type Job } from '../lib/jobs';
 import { hasDawCard, useShowJob } from '../lib/job-focus';
 import { formatElapsed } from '../lib/time';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
+import ActivityButton from './ActivityPanel';
 
 /**
  * 動いている時間のかかる処理（ジョブ）の小さな表示。押すと、その処理のカード（始めた場所）を開く。
@@ -21,6 +23,7 @@ function JobIndicator({ job }: { job: Job }) {
     return (
         <span id="job-indicator">
             <button type="button" className="job-indicator-open" disabled={!where}
+                {...blockedBy(!where && `${job.title}は、ツールの画面で始めた処理なので、ここからは進み具合を開けません。やめるときは、右の「中止」を押してください`)}
                 {...tip(where ? `${job.title}の進み具合を開きます` : `${job.title}（${job.stage ?? '準備しています…'}）`)}
                 aria-label={`実行中: ${text}${where ? '。押すと進み具合を表示します' : ''}`}
                 onClick={() => showJob(job)}>
@@ -29,6 +32,7 @@ function JobIndicator({ job }: { job: Job }) {
             </button>
             {!where && (
                 <button type="button" className="job-cancel" disabled={job.cancel_requested}
+                    {...blockedBy(job.cancel_requested && '中止を頼んであります。処理が止まるまで、少し待ってください')}
                     {...tip('この処理を途中でやめます')}
                     onClick={() => void jobTracker.cancel(job.id)}>
                     {job.cancel_requested ? 'キャンセル中…' : '中止'}
@@ -42,6 +46,7 @@ function JobIndicator({ job }: { job: Job }) {
  * 画面下部に表示するステータスバーコンポーネント。
  * `useDaw()` から `status`（操作状況）を取得して表示する。
  * 時間のかかる処理が動いている間は、その小さな表示も出す（`JobIndicator`）。
+ * 右端の「記録」は、動きの記録（いま何が起きたか）の一覧を開く（`ActivityPanel`）。
  *
  * 失敗の知らせ（`statusKind` が `error`）は、色を変えて、読み上げの対象（`role="alert"`）にする。
  * 文が長いときは 1 行に収めて末尾を … にするので、切れているときだけ、マウスを載せると全文がツールチップで出る。
@@ -56,6 +61,7 @@ export default function StatusBar() {
             <span id="status-text" className={isError ? 'error' : undefined}
                 role={isError ? 'alert' : 'status'} {...tip(status, { overflow: true })}>{status}</span>
             {active && <JobIndicator job={active} />}
+            <ActivityButton />
         </div>
     );
 }

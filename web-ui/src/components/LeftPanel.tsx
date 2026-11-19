@@ -26,6 +26,8 @@ import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
 import DataCleanup from './DataCleanup';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy } from '../lib/notice';
+import { FX_LABELS, FX_PARAMS, defaultFxParams, effectedClip } from '../lib/fx';
 
 /**
  * GM（General MIDI）音源の単一楽器エントリーを表すインターフェース。
@@ -39,27 +41,6 @@ interface GmInstrument {
     name: string;
 }
 
-/**
- * FX パネルで表示・操作する単一パラメータの定義。
- * `FX_PARAMS` 定数の各エントリーに対応する。
- *
- * @property id - API に送信するパラメータキー（例: `"threshold"`）
- * @property label - UI 上に表示するラベル文字列（例: `"しきい値 (dB)"`）
- * @property hint - つまみにマウスを載せたときに出す説明（ツールチップ）
- * @property min - スライダーの最小値
- * @property max - スライダーの最大値
- * @property step - スライダーのステップ幅
- * @property def - デフォルト値（エフェクト切り替え時に適用される）
- */
-interface FxParamDef {
-    id: string;
-    label: string;
-    hint: string;
-    min: number;
-    max: number;
-    step: number;
-    def: number;
-}
 
 /**
  * GM 楽器をカテゴリ名 → GM プログラム番号配列にまとめた定数。
@@ -81,53 +62,6 @@ const GM_CATEGORIES: Record<string, number[]> = {
     'エスニック/その他': [104,105,108,110,114],
 };
 
-/**
- * エフェクト種別ごとのパラメータ定義マップ。
- * キーは `/api/effects/{name}` のパス部分（`"eq"`, `"reverb"` など）と一致する。
- * 値は空配列の場合、追加パラメータなし（例: `"normalize"`）。
- */
-// ---- FXパラメータ定義 ----
-const FX_PARAMS: Record<string, FxParamDef[]> = {
-    eq: [
-        { id: 'low', label: '低域 (dB)', hint: '低い音（ベースやキックのあたり）を強める・弱める', min: -12, max: 12, step: 1, def: 0 },
-        { id: 'mid', label: '中域 (dB)', hint: '真ん中の高さの音（歌やギターのあたり）を強める・弱める', min: -12, max: 12, step: 1, def: 0 },
-        { id: 'high', label: '高域 (dB)', hint: '高い音（シンバルや息の音のあたり）を強める・弱める', min: -12, max: 12, step: 1, def: 0 },
-    ],
-    compressor: [
-        { id: 'threshold', label: 'しきい値 (dB)', hint: 'この大きさを超えた音を抑えます。下げるほど、多くの音が抑えられます', min: -40, max: 0, step: 1, def: -20 },
-        { id: 'ratio', label: '圧縮比', hint: '超えたぶんをどれだけ抑えるか。大きいほど強く抑えます', min: 1, max: 20, step: 0.5, def: 4 },
-    ],
-    reverb: [
-        { id: 'room_size', label: '部屋の広さ', hint: '響きの長さ。大きいほど、広い部屋のように長く響きます', min: 0, max: 1, step: 0.05, def: 0.5 },
-        { id: 'wet', label: 'エフェクト音の量', hint: '響きをどれだけ混ぜるか。0 で元の音だけになります', min: 0, max: 1, step: 0.05, def: 0.3 },
-    ],
-    delay: [
-        { id: 'delay_ms', label: '遅れの時間 (ms)', hint: 'やまびこが返ってくるまでの時間（ミリ秒）', min: 50, max: 2000, step: 10, def: 300 },
-        { id: 'feedback', label: '繰り返しの量', hint: 'やまびこが何度も繰り返す度合い。大きいほど長く続きます', min: 0, max: 0.9, step: 0.05, def: 0.4 },
-        { id: 'wet', label: 'エフェクト音の量', hint: 'やまびこをどれだけ混ぜるか。0 で元の音だけになります', min: 0, max: 1, step: 0.05, def: 0.3 },
-    ],
-    normalize: [],
-    pitch_shift: [
-        { id: 'semitones', label: '半音', hint: '音の高さを半音単位で上げ下げします（12 で 1 オクターブ）', min: -12, max: 12, step: 1, def: 0 },
-    ],
-    time_stretch: [
-        { id: 'rate', label: '速度', hint: '音の高さを変えずに速さを変えます（2 で 2 倍速、長さは半分）', min: 0.25, max: 3, step: 0.05, def: 1 },
-    ],
-};
-
-/**
- * エフェクトの日本語の名前。キーは `FX_PARAMS` と同じ。
- * 選択肢と、適用したときの知らせに使う（識別子の `pitch_shift` などを画面に出さない）。
- */
-const FX_LABELS: Record<string, string> = {
-    eq: 'EQ（3 バンド）',
-    compressor: 'コンプレッサー',
-    reverb: 'リバーブ',
-    delay: 'ディレイ',
-    normalize: 'ノーマライズ',
-    pitch_shift: 'ピッチシフト',
-    time_stretch: 'タイムストレッチ',
-};
 
 /** マイクを使えなかったときの知らせ。 */
 /** エフェクトの種類を選んだときに出す説明 */
@@ -286,7 +220,7 @@ function SynthPanel() {
             <label htmlFor="synth-track">追加先トラック</label>
             <TrackSelector id="synth-track" value={synthTrack} onChange={setSynthTrack} emptyLabel="ピアノロールで開いているトラック"
                 tipText="できた音を置くトラック" />
-            <button className="action-btn" onClick={handleRender} disabled={showProgress}
+            <button className="action-btn" onClick={handleRender} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('ピアノロールのノートを音声にして、トラックにクリップとして置きます')}>シーケンスをレンダリング</button>
         </div>
     );
@@ -361,7 +295,7 @@ function DrumPanel() {
             <label htmlFor="drum-track">追加先トラック</label>
             <TrackSelector id="drum-track" value={drumTrack} onChange={setDrumTrack} includeNew
                 tipText="ドラムを置くトラック。「新規作成」なら、新しいトラックを作ります" />
-            <button className="action-btn" onClick={handleGenerate} disabled={showProgress}
+            <button className="action-btn" onClick={handleGenerate} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('選んだパターンでドラムの音声を作り、1 小節目から置きます')}>ドラム生成 → トラックに追加</button>
         </div>
     );
@@ -379,11 +313,7 @@ function FxPanel() {
     const { setStatus, withProgress, showProgress, bumpTracks, record } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
-    const defaultParams = useCallback(() => {
-        const defs: Record<string, number> = {};
-        (FX_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
-        return defs;
-    }, [fxType]);
+    const defaultParams = useCallback(() => defaultFxParams(fxType), [fxType]);
     const [params, setParams] = useState<Record<string, number>>(defaultParams);
 
     useEffect(() => {
@@ -399,21 +329,10 @@ function FxPanel() {
         const label = FX_LABELS[fxType] ?? fxType;
         // 最初のクリップをWAVに変換して送信
         await withProgress(`「${label}」を適用しています…`, async () => {
-            const clip = track.clips[0];
-            const wavBlob = engine._audioBufferToWav(clip.buffer);
-            const fd = new FormData();
-            fd.append('file', wavBlob, 'clip.wav');
-            fd.append('params', JSON.stringify(params));
-            const resp = await apiFetch(`/api/effects/${fxType}`, { method: 'POST', body: fd });
-            if (!resp.ok) throw new Error(await errorDetail(resp));
-            const blob = await resp.blob();
-            const buf = await blob.arrayBuffer();
-            // 元のバイト列を覚えておく (プロジェクトの保存で、そのまま入れる。lib/audio-sources.ts)
-            const buffer = await decodeWithSource(engine.ctx!, buf, `${clip.name}[${fxType}].wav`);
+            // かける処理は lib/fx.ts (アシスタントのツールも、同じ処理を使う)
+            const next = await effectedClip(track.clips[0], fxType, params);
             // エフェクトをかけたクリップに差し替える (元に戻すと、かける前のクリップに戻る)
-            record(`「${label}」を適用`, () => {
-                track.clips[0] = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
-            });
+            record(`「${label}」を適用`, () => { track.clips[0] = next; });
             bumpTracks();
             // 識別子 (pitch_shift など) ではなく、日本語の名前で知らせる
             setStatus(`「${label}」を適用しました`);
@@ -442,7 +361,7 @@ function FxPanel() {
                     </div>
                 ))}
             </div>
-            <button className="action-btn" onClick={handleApply} disabled={showProgress}
+            <button className="action-btn" onClick={handleApply} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('効果をかけて、クリップをかけた後の音に置き換えます。元に戻すで戻せます')}>エフェクト適用</button>
         </div>
     );
@@ -495,7 +414,7 @@ function FilePanel() {
     // 単音メロディの解析は時間のかかる処理 (ジョブ)。進み具合は解析のボタンの下に出す
     const analyzeJob = useJob('file-analyze', (job) => {
         // 画面を開き直す前に始めた解析は、置く先のピアノロールが分からないので、終わったことだけ知らせる
-        if (job.state === 'done') setStatus('前に始めた単音メロディの解析が終わりました。結果を置くには、トラックを開いてもう一度解析してください');
+        if (job.state === 'done') setStatus('前に始めた単音メロディの解析が終わりました。結果を置くには、トラックを開いてもう一度解析してください', 'hint');
         else if (job.state === 'error') setStatus(jobErrorMessage(job), 'error');
     });
 
@@ -531,15 +450,21 @@ function FilePanel() {
     }, [setStatus]);
 
     const handleMicStop = useCallback(async () => {
-        const buffer = await engine.stopRecording();
-        setIsRecording(false);
-        await recordAsync('録音を追加', async () => {
-            let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-            if (!recTrack) recTrack = engine.addTrack('Rec');
-            await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
-        });
-        bumpTracks();
-        setStatus('録音をトラックに追加しました');
+        try {
+            const buffer = await engine.stopRecording();
+            setIsRecording(false);
+            await recordAsync('録音を追加', async () => {
+                let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+                if (!recTrack) recTrack = engine.addTrack('Rec');
+                await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            });
+            bumpTracks();
+            setStatus('録音をトラックに追加しました');
+        } catch (_e) {
+            // 録った音を読めなかった: ボタンを「録音停止」のままにせず、何が起きたかを知らせる
+            setIsRecording(false);
+            setStatus('録音した音を読めませんでした。録音が短すぎたか、マイクから音が届いていない可能性があります。もう一度録音してください', 'error');
+        }
     }, [bumpTracks, setStatus, recordAsync]);
 
     return (
@@ -568,6 +493,7 @@ function FilePanel() {
                 onChange={e => setSensitivity(+e.target.value)}
                 {...tip('上げると小さな音まで拾います。余分なノートが多いときは下げてください')} />
             <button className="action-btn" onClick={handleAnalyze} disabled={showProgress || analyzeJob.heavyBusy}
+                {...blockedBy((showProgress || analyzeJob.heavyBusy) && BUSY_REASON)}
                 {...tip('音の高さを読み取って、開いているピアノロールにノートを並べます')}>解析してピアノロールに配置</button>
             <JobCard slot="file-analyze" job={analyzeJob.job} busyJob={analyzeJob.busyJob} onCancel={() => void analyzeJob.cancel()}
                 onShowBusy={showJob} hint="解析は途中では止められません。中止すると、終わったあとに結果を捨てます。" />

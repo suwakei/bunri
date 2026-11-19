@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 import { SECTION_LABEL_JA } from '../lib/chart';
 import { chartBarToSec } from '../lib/grid';
 import {
@@ -120,6 +121,7 @@ export default function GuidePanel() {
             <div>
                 <label htmlFor="guide-focus">対象</label>
                 <select id="guide-focus" value={focus} onChange={(e) => setFocus(e.target.value)} disabled={busy}
+                    {...blockedBy(busy && '手順を作っているあいだは、対象を変えられません。できあがってから選び直してください')}
                     {...tip('手順を作る範囲。曲全体か、サビなどの区間を選びます')}>
                     <option value="">曲全体</option>
                     {chart.sections.map((s) => {

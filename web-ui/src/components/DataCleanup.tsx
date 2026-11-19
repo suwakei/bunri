@@ -11,6 +11,7 @@ import { useDaw } from '../lib/store';
 import { apiFetch, describeError, errorDetail } from '../lib/api';
 import { formatBytes } from '../lib/project-actions';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 
 interface Usage {
     data_dir: string;
@@ -76,6 +77,7 @@ export default function DataCleanup() {
                 </table>
             )}
             <button type="button" className="action-btn" onClick={cleanup} disabled={busy}
+                {...blockedBy(busy && 'いま整理しています。終わるまで待ってください')}
                 {...tip('たまった一時ファイルを消して、空きを増やします。保存したプロジェクトは消えません')}>
                 {busy ? '整理しています…' : '一時ファイルを整理する'}
             </button>

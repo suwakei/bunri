@@ -17,7 +17,7 @@
 - 担当は `backend` / `frontend` / `desktop` / `reviewer`（[.codex/agents/](.codex/agents/)）。カスタムロールを選べないクライアントでは、組み込みエージェントへ対応する `.claude/agents/*.md` を読むよう渡す。
 - 小さな修正は自分で完結してよい。親は統合、契約の整合、必要な検証、結果の報告を担当する。
 - レビューだけの依頼では編集しない。ロールの担当範囲は指示であり、独立した権限の境界ではない。
-- コミット・push・公開は依頼の範囲に従う。ハーネス導入自体は自動コミットしない。
+- 変更は main に直接 commit して push する（ブランチも PR も作らない）。検証が通ったら聞かずに push してよい。決まりは `.claude/CLAUDE.md`「Git の運用」。ハーネス導入自体は自動コミットしない。
 
 ## 検証
 
@@ -35,6 +35,7 @@ UI の変更はブラウザ E2E も含む。ネイティブ・CSP・フォント
 | --- | --- |
 | `/feature` | `$bunri-feature` |
 | `/qa` | `$bunri-qa` |
+| `/drive` | `$bunri-drive` |
 | Agent / Task ツール | 利用可能なサブエージェント機能 |
 | Read / Grep / Glob | シェルの読み取り・`rg` / `rg --files` |
 | Edit / Write | `apply_patch` 等の編集ツール |

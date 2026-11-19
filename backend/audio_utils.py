@@ -32,7 +32,7 @@ def load_audio(file_obj):
 
 
 def data_dir():
-    """利用者のデータ (uploads/ results/ projects/ work/ soundfonts/ models/) を置く親ディレクトリを返す。
+    """利用者のデータ (uploads/ results/ projects/ work/ recovery/ soundfonts/ models/) を置く親ディレクトリを返す。
 
     データ置き場を一箇所で決めるための関数。環境変数 ``BUNRI_DATA_DIR`` が
     設定されていればそこを使い、無ければリポジトリ直下 (``backend/`` の親) を使う。
@@ -119,6 +119,18 @@ def work_dir(*parts):
         pathlib.Path: 解決済みの絶対パス。
     """
     return _data_subdir("work", *parts)
+
+
+def recovery_dir():
+    """落ちたときの復旧用の写し（``recovery/``）の置き場を返す (無ければ作成する)。
+
+    保存していない変更を、画面が自動で残す先。写し 1 つと、その目印（``recovery.json``）が入る。
+    利用者が選んだ場所の `.bunri` は、自動では書き換えない（``project_store`` の「落ちたときの復旧」）。
+
+    Returns:
+        pathlib.Path: 解決済みの絶対パス。
+    """
+    return _data_subdir("recovery")
 
 
 def soundfonts_dir():

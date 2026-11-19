@@ -147,6 +147,31 @@ describe('指摘とノートの色 (markNotes)', () => {
         const { own } = markNotes(result([issue('extra', null, twice[1])], 1, 1), twice, [n('C', 2, 0)]);
         expect(own.map((m) => m?.kind)).toEqual(['extra', 'ok']);
     });
+    it('小数の位置 (三連・32 分) のノートも、指摘と取り違えない。API を通って桁の変わった値でも、同じノートに結ぶ', () => {
+        // お手本は 8 分の三連。打ち込みは、2 つ目が 1 つ後ろの三連にずれ、3 つ目が抜け、32 分の位置に余分なノート
+        const ref = [n('C', 2, 0, 4 / 3), n('C', 2, 4 / 3, 4 / 3), n('C', 2, 8 / 3, 4 / 3), n('C', 2, 4, 4 / 3)];
+        const own = [n('C', 2, 0, 4 / 3), n('C', 2, 8 / 3, 4 / 3), n('C', 2, 4, 4 / 3), n('D', 2, 4.5, 0.5)];
+        // 処理を担当する部分から返ってきたノート (同じ位置を、4 桁に丸めた小数や、端数の付いた値で持っている)
+        const fromApi = (note: PianoNote, step: number, length: number): PianoNote => ({ ...note, step, length });
+        const found = [
+            issue('timing', fromApi(ref[1], 1.3333, 1.3333), fromApi(own[1], 2.6667, 1.3333), { offset_steps: 1.3333 }),
+            issue('missing', fromApi(ref[2], 2.6666666666666665, 1.3333333333333333), null),
+            issue('extra', null, fromApi(own[3], 4.500000001, 0.5)),
+        ];
+        const marks = markNotes(result(found, 0.75, 4), own, ref);
+        expect(marks.own.map((m) => m?.kind)).toEqual(['ok', 'rhythm', 'ok', 'extra']);
+        expect(marks.ghost.map((m) => m?.kind)).toEqual(['ok', 'ok', 'missing', 'ok']);
+        // 同じ位置 (2.67) に在る「ずれた打ち込み」と「抜けたお手本」を、取り違えない
+        expect(notesOfIssue(found[0], marks)).toEqual({ own: [1], ghost: [1] });
+        expect(notesOfIssue(found[1], marks)).toEqual({ own: [], ghost: [2] });
+        expect(noteMarkLabel(own[1], marks.own[1]!)).toBe('C2: 位置か長さがずれている。1 小節 1 拍目: C2 が8 分の三連符 1 個ぶん遅い');
+        // 範囲の端が小数でも、範囲の中のノートにだけ印を付ける
+        const inRange = markNotes(result([], 1, 2), own, ref, { start: 4 / 3, end: 4 });
+        expect(inRange.own.map((m) => m?.kind ?? null)).toEqual([null, 'ok', null, null]);
+        expect(inRange.ghost.map((m) => m?.kind ?? null)).toEqual([null, 'ok', 'ok', null]);
+        expect(issuesInOrder(result(found, 0.75, 4)).map((i) => i.kind)).toEqual(['timing', 'missing', 'extra']);
+    });
+
     it('指摘から、結び付くノートを引ける。読み上げの名前に指摘の文が入る', () => {
         const marks = markNotes(diff, attempt, reference);
         expect(notesOfIssue(issues[0], marks)).toEqual({ own: [1], ghost: [1] });

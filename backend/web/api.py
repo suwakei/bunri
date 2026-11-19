@@ -986,6 +986,7 @@ async def api_decompose(
     bpm: float = Form(0),
     grid_offset: float = Form(0),
     sensitivity: float = Form(0.5),
+    split_drums: str = Form("false"),
     run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
@@ -996,26 +997,39 @@ async def api_decompose(
         grid_offset: ノートのステップ 0 を置く位置（秒）。楽曲カルテの 1 拍目の位置を渡すと、
             カルテとピアノロールの小節番号がそろう（``decompose.seconds_to_step``）。
         sensitivity: ノート検出感度（0.0〜1.0）。
+        split_drums: ``"true"`` で、ドラムをキック / スネア / タム / シンバルに分けてから採譜する
+            （同時に鳴った種類が、両方ともイベントになる）。追加のモデルが手元に無ければ、最初にダウンロードする
+            （約 160 MB）。用意できなければ失敗にせず、これまでの振り分けで採譜する（結果の ``drum_fallback`` に理由）。
+            付けなければ、ダウンロードもドラムの分離もしない。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         分解結果の ``JSONResponse``。各ステムに ``audio_url`` と
         ノートデータ・楽器推定結果が含まれる。``audio_path`` は除去済み。
+        ``drum_source`` は、ドラムのイベントの作り方（``"stems"``: 種類ごとに分けた音から /
+        ``"spectral"``: スペクトル重心の振り分け / null: ドラムのパートが無い）。
+        ``grid_feel`` は、ノートとドラムのイベントを丸めたグリッド（``"straight"``: 16 分音符 /
+        ``"triplet"``: 8 分の三連）。曲全体で 1 つで、各ステムにも同じ値が付く。``"triplet"`` のとき、
+        ノートの ``step`` ``length`` とドラムのイベントの ``step`` は 4/3 の倍数（16 分音符単位の小数。
+        整数になる値は整数）。``"straight"`` のときは、これまでどおり整数。
         ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 処理中に例外が発生した場合（HTTP 500）。
     """
+    import stem_models
     from decompose import decompose_stages
+    from separate import DRUM_MODEL
 
     filename = file.filename
     detected_bpm = bpm if bpm > 0 else None
+    with_drums = split_drums.lower() in ("true", "1", "yes")
 
     def task(job, src):
         from decompose import decompose
         result = decompose(
             str(src), bpm=detected_bpm, sensitivity=sensitivity,
-            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset),
+            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset), split_drums=with_drums,
         )
 
         # 音声ファイルのパスをダウンロードURLに変換
@@ -1033,7 +1047,11 @@ async def api_decompose(
 
     return await job_routes.dispatch(
         "decompose", title="パート分離と採譜", filename=filename,
-        stages=decompose_stages(detect_bpm=detected_bpm is None),
+        # 通らないステージ（テンポを調べない、ドラムを分けない、モデルが手元に在る）は並びに入れない
+        stages=decompose_stages(
+            detect_bpm=detected_bpm is None, split_drums=with_drums,
+            download_drum_model=with_drums and not stem_models.is_cached(DRUM_MODEL),
+        ),
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )
 
@@ -1527,20 +1545,31 @@ async def api_coach_diff(payload: dict = Body(...)):
 
     Args:
         payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みの
-            ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意。
+            ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（どれも整数）。
+            ノートは ``{"note", "octave", "step", "length", "velocity"?}``。``step`` と ``length`` は
+            16 分音符単位で、小数も受け付ける（0.5 = 32 分音符、4/3 = 8 分の三連。``step`` は 0 以上、
+            ``length`` は 0 より大きい有限の数）。1/60 ステップの倍数に丸めてから比べる。
             ``reference_source``（お手本の出どころ）が ``"midi"``（MIDI ファイルから読み込んだお手本）の
             ときだけ、強さ（ベロシティ）も比べる。無い・そのほかの値（``"transcription"`` など）では比べない。
+            ``mode`` が ``"drums"`` なら、ドラムの比べ方（同じ高さ = 同じ種類どうしの位置だけを比べ、長さは見ない。
+            ``timing_tolerance`` を省くと 16 分音符 1 個）。無い・``"notes"`` なら、ふつうの比べ方（省くと 2 個）。
 
     Returns:
-        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars`` ``velocity``）。
-        ``velocity`` は、強さを比べないお手本では null。
+        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars`` ``velocity`` ``bar_stats``）。
+        ``velocity`` は、強さを比べないお手本では null。``bar_stats`` は、小節ごとのお手本のノートの数と
+        合っていた数（画面が、学習の記録に小節ごとの結果を残すのに使う）。
+        指摘の ``bar`` ``beat`` は、位置が小数でも整数。ノートの ``step`` ``length`` と、指摘の ``offset_steps``
+        ``length_diff`` は、1/60 ステップの倍数で、整数になる値は整数のまま返る（整数だけのノートに対する
+        結果は、小数を受け付ける前と同じ）。位置のずれ・長さの違いは、差が 0.5 ステップ以上のときだけ指摘になる。
 
     Raises:
-        HTTPException: 入力の形が正しくない、またはお手本が空の場合（HTTP 400）。
+        HTTPException: 入力の形が正しくない（数でない・NaN や無限・負の位置・0 以下の長さを含む）、
+            またはお手本が空の場合（HTTP 400）。
     """
     import coach_diff
 
-    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance") if key in payload}
+    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance", "mode")
+               if key in payload}
     try:
         return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"),
                                      reference_source=_reference_source(payload), **options)
@@ -1613,7 +1642,8 @@ def api_coach_explain(payload: dict = Body(...)):
 
     Args:
         payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みのノート列）は必須。
-            ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ）。
+            ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ。
+            ノートの ``step`` ``length`` が小数でもよいのも同じ）。
             ``chart_id``（お手本と同じ曲のカルテ）を付けると、キーを事実に足す。さらに ``bpm``
             （お手本を採譜したときのテンポ）も付けると、その場のコードとセクションも足す。
             ``grid_offset_sec``（ピアノロールのステップ 0 の位置。画面ではカルテの 1 拍目の位置）を
@@ -1641,3 +1671,80 @@ def api_coach_explain(payload: dict = Body(...)):
     except reproduction_guide.GuideError as e:
         raise _guide_http_error(e)
     return {**result, "today": guide_usage.today()}
+
+
+# ---- アシスタント（アプリの中のチャット）API ----
+
+@app.post("/api/assistant/step")
+def api_assistant_step(payload: dict = Body(...)):
+    """アシスタントの会話を Claude に 1 回だけ送り、応答を返す。
+
+    ツールを実行するのも、繰り返しを回すのも画面。ここは 1 回の呼び出しごとに完結し、会話の状態を
+    持たない（docs/assistant-design.md）。画面は、応答の ``content`` を変えずに assistant のメッセージ
+    として会話に足し、``stop_reason`` が ``tool_use`` なら、ツールの結果を足して ``step`` を 1 つ進め、
+    もう一度呼ぶ。使用量の記録と 1 日の上限は、再現ガイド・差分コーチと共通（回数は依頼の数で数える）。
+    Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある。ジョブにはしない。
+
+    本文に ``"stream": true`` が在るときだけ、応答を少しずつ返す（``application/x-ndjson``。1 行に JSON 1 つ）。
+
+    - ``{"type": "text", "text": 差分}`` — 見える文の差分
+    - ``{"type": "tool", "name": ツール名}`` — Claude がツールの呼び出しを書き始めた（1 つにつき 1 回）
+    - ``{"type": "done", …}`` — 最後の行。``stream`` が無いときの応答と同じ項目を持つ
+    - ``{"type": "error", "detail": {"message", "code"}, "today"}`` — 途中の失敗（最後の行）
+
+    呼び出しの前に分かる失敗と、Claude への接続を開いた時点で分かる失敗（キー・利用制限・接続）は、
+    ``stream`` が在っても HTTP エラーで返す（ストリームを開いてから ``StreamingResponse`` を作る）。
+    本文を流し始めた後の失敗（モデルが断った、途中で途切れた、など）は、200 のまま ``error`` の行になる。
+    本文も同期のジェネレータで、Claude からの次のぶんを待つ間ほかのリクエストを止めない。
+    画面が途中で切ると、次の行を出すところでジェネレータが閉じられ、Claude へのストリームも閉じる。
+
+    Args:
+        payload: JSON の本文。``messages``（Messages API の ``messages`` そのまま。1〜200 件）、
+            ``turn_id``（この依頼の識別子。英数字とハイフン、64 文字まで）、
+            ``step``（この依頼の何回目の呼び出しか。0 から、12 未満）、
+            ``stream``（true なら、応答を少しずつ返す。省略可）。
+
+    Returns:
+        ``{"content", "stop_reason", "model", "usage", "cost_usd", "today": 今日の使用量}``。
+        ``stop_reason`` は ``end_turn`` ``tool_use`` ``max_tokens``。``cost_usd`` は概算。
+        ``stream`` が true のときは、上の行を流す ``StreamingResponse``。
+
+    Raises:
+        HTTPException: 引数・会話の形が正しくない（400）、会話が大きすぎる（413）、API キーが無い・
+            正しくない（401）、利用制限・1 日の上限（429）、モデルが応答を断った・Claude 側の失敗（502）。
+            本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``（再現ガイドと同じ）。
+    """
+    import assistant
+    import guide_usage
+    import reproduction_guide
+
+    args = (payload.get("messages"), payload.get("turn_id"), payload.get("step"))
+    if payload.get("stream") is not True:
+        try:
+            result = assistant.step(*args)
+        except reproduction_guide.GuideError as e:
+            raise _guide_http_error(e)
+        return {**result, "today": guide_usage.today()}
+
+    from fastapi.responses import StreamingResponse
+
+    try:
+        # ここで Claude への接続まで開く。開けなければ、まだ何も返していないので HTTP エラーにできる
+        events = assistant.stream_step(*args)
+    except reproduction_guide.GuideError as e:
+        raise _guide_http_error(e)
+
+    def lines():
+        """イベントを 1 行ずつの JSON にする。最後の行（done・error）には、今日の使用量を足す。"""
+        try:
+            for event in events:
+                if event["type"] in ("done", "error"):
+                    # 使用量の記録は、この行が出る前に済んでいる（今日の使用量に、この呼び出しが入る）
+                    event = {**event, "today": guide_usage.today()}
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        finally:
+            # 画面が途中で切ったときも、Claude へのストリームを閉じて、使用量を記録させる
+            events.close()
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

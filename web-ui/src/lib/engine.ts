@@ -14,7 +14,10 @@
 import { apiFetch } from './api';
 import { nativeAudio, type NativePlayback } from './native-audio';
 import { rememberSource } from './audio-sources';
-import { stepSeconds, type ProjectGrid } from './grid';
+import { audioStartOf, clipPortion, fadeEnvelope, playLength } from './clip';
+import { playDrum } from './drum-sound';
+import { drumRowOfNote, drumRowOfPitch, isDrumTrack, type DrumVoice } from './drums';
+import { SWING_NONE, normLength, normStep, stepSeconds, type ProjectGrid } from './grid';
 import { beatsInSegment, clampToLoop, clipInSegment, loopLength, loopPosition, loopSegment, noteInSegment, type LoopRange, type LoopSegment } from './loop';
 
 /**
@@ -82,9 +85,13 @@ export function noteLevel(velocity?: number): number {
 /**
  * ノートを写す。強さは、持っているときだけ写す（持たないノートに `velocity: undefined` を付けない。
  * 保存したものや、元に戻すための控えと、項目の有無まで同じにするため）。
+ *
+ * 位置と長さは、1/60 ステップの倍数にそろえる（lib/grid.ts の `normStep` / `normLength`。整数は整数のまま。
+ * 正の長さは、1/60 ステップより短くしない）。
+ * ノートを作る・貼る・読み込む場所はここを通るので、端数の付いた値がトラックに入らない。
  */
 export function cloneNote(n: PianoNote): PianoNote {
-    const copy: PianoNote = { note: n.note, octave: n.octave, step: n.step, length: n.length };
+    const copy: PianoNote = { note: n.note, octave: n.octave, step: normStep(n.step), length: normLength(n.length) };
     if (typeof n.velocity === 'number') copy.velocity = n.velocity;
     return copy;
 }
@@ -94,9 +101,9 @@ export interface PianoNote {
     note: string;
     /** オクターブ番号（0〜8） */
     octave: number;
-    /** 開始ステップ（16分音符単位） */
+    /** 開始ステップ（16分音符単位。小数も可: 0.5 = 32 分、4/3 = 8 分の三連。1/60 ステップの倍数にそろえて持つ） */
     step: number;
-    /** 音長（ステップ数） */
+    /** 音長（ステップ数。小数も可） */
     length: number;
     /**
      * 強さ（ベロシティ。1〜127）。MIDI 鍵盤で弾いたノート、MIDI ファイルから読み込んだノート、
@@ -108,6 +115,9 @@ export interface PianoNote {
 /**
  * タイムライン上に配置された音声クリップ。
  * デコード済み AudioBuffer とタイムライン上の開始位置を持つ。
+ *
+ * 音声は書き換えずに、その中のどこからどこまでを鳴らすか（`audioStart`・`duration`）と、頭と終わりの音量の
+ * 上げ下げ（`fadeIn`・`fadeOut`）を持つ。計算と操作は lib/clip.ts。項目の無いクリップは、音声の全体をそのまま鳴らす。
  */
 export interface Clip {
     /** デコード済み PCM バッファ */
@@ -116,8 +126,14 @@ export interface Clip {
     offset: number;
     /** クリップの表示名 */
     name: string;
-    /** クリップの長さ（秒） */
+    /** 鳴らす長さ（秒）。`audioStart` から数えて、音声の残りを超えない */
     duration: number;
+    /** 音声の中の、鳴らし始める位置（秒）。無ければ 0（音声の頭から） */
+    audioStart?: number;
+    /** フェードインの長さ（秒）。無ければ 0 */
+    fadeIn?: number;
+    /** フェードアウトの長さ（秒）。無ければ 0 */
+    fadeOut?: number;
     /**
      * 音声が無いクリップ（以前の形式のプロジェクトは音声を持っていない）。`buffer` は無音の置き場所で、
      * 画面は「音声を読み込み直す」を出す（components/MissingAudioBar.tsx）。
@@ -205,6 +221,11 @@ class AudioEngine {
      * 曲を取り込むとカルテの 1 拍目の位置になる（lib/grid.ts）。自由に作るときは 0
      */
     gridOffset: number;
+    /**
+     * スウィング（0.5 = ずらさない 〜 0.75）。刻みが 8 分か 16 分のときの、ノートを置く・動かす位置と
+     * グリッドの線に効く（lib/snap.ts）。再生には使わない（ノートは、ずらした位置のまま持っている）
+     */
+    swing: number = SWING_NONE;
     /** メトロノームを鳴らすか（`metronomeEnabled` の中身。画面は `metronomeEnabled` を書き換える） */
     private _metronomeEnabled = false;
     metronomeInterval: ReturnType<typeof setInterval> | null = null;
@@ -780,8 +801,10 @@ class AudioEngine {
         for (const t of playback.tracks) {
             if (rate === 1) {
                 for (const clip of t.clips) {
-                    const part = clipInSegment(segment, clip.offset, clip.duration);
-                    if (part) this._startLoopSource(t, clip.buffer, part.when, part.offset, part.duration);
+                    // 縮めたクリップは、見えている範囲だけを鳴らす。フェードは、クリップの中の位置で決まる
+                    const audioStart = audioStartOf(clip);
+                    const part = clipInSegment(segment, clip.offset, playLength(clip), audioStart);
+                    if (part) this._startLoopSource(t, clip.buffer, part.when, part.offset, part.duration, { clip, into: part.offset - audioStart });
                 }
             } else {
                 // 速度を変えたときは、高さを変えずに伸ばした音声を鳴らす。伸ばした音声が無いトラックのクリップは鳴らさない
@@ -804,8 +827,12 @@ class AudioEngine {
         }
     }
 
-    /** 区間ループの音声を 1 つ鳴らす。つなぎ目で、ぷつっと鳴らないよう、頭と終わりをごく短く上げ下げする。 */
-    _startLoopSource(track: Track, buffer: AudioBuffer, when: number, offset: number, duration: number): void {
+    /**
+     * 区間ループの音声を 1 つ鳴らす。つなぎ目で、ぷつっと鳴らないよう、頭と終わりをごく短く上げ下げする。
+     * クリップにフェードが在れば、それも掛ける（つなぎ目の上げ下げと、クリップのフェードの両方が効く）。
+     * @param faded - クリップと、その頭から数えた鳴らし始めの位置（秒）。伸ばした音声（フェードは焼き込み済み）では渡さない
+     */
+    _startLoopSource(track: Track, buffer: AudioBuffer, when: number, offset: number, duration: number, faded?: { clip: Clip; into: number }): void {
         const ctx = this.ctx!;
         if (duration <= 0) return;
         const source = ctx.createBufferSource();
@@ -816,15 +843,32 @@ class AudioEngine {
         fade.gain.linearRampToValueAtTime(1, when + edge);
         fade.gain.setValueAtTime(1, when + duration - edge);
         fade.gain.linearRampToValueAtTime(0, when + duration);
-        source.connect(fade);
+        if (faded) this._connectClipSource(ctx, source, faded.clip, faded.into, duration, when, fade);
+        else source.connect(fade);
         fade.connect(track.panNode);
         source.start(when, Math.max(0, offset), duration);
         this._trackSource(source);
     }
 
+    /**
+     * ドラムのトラックのノートなら、鳴らす音の種類を返す。ドラムのトラックでない、またはドラムの行でない高さなら
+     * null（これまでどおり三角波で鳴らす）。再生・区間ループ・書き出しが、どれもこれで決める。
+     */
+    drumVoiceOf(track: Track, n: Pick<PianoNote, 'note' | 'octave'>): DrumVoice | null {
+        const row = drumRowOfNote(n);
+        return row && isDrumTrack(track, (id) => this.getTrack(id)) ? row.voice : null;
+    }
+
     /** 区間ループのノートを 1 つ鳴らす (エンベロープは、ふだんの再生と同じ)。 */
     _startLoopNote(track: Track, n: PianoNote, when: number, duration: number, partial: boolean): void {
         const ctx = this.ctx!;
+        const voice = this.drumVoiceOf(track, n);
+        if (voice) {
+            // ドラムは打った瞬間の音。頭を過ぎたノート (周の途中から始まるもの) は鳴らさない
+            if (partial || duration <= 0) return;
+            for (const source of playDrum(ctx, track.panNode, voice, when, noteLevel(n.velocity))) this._trackSource(source);
+            return;
+        }
         const freq = NOTE_FREQ[`${n.note}${n.octave}`];
         if (!freq || duration <= 0) return;
         const attack = partial ? 0 : 0.01;
@@ -843,6 +887,25 @@ class AudioEngine {
         osc.start(when);
         osc.stop(when + duration + 0.01);
         this._trackSource(osc);
+    }
+
+    /**
+     * クリップの音源を、行き先につなぐ。フェードが掛かる範囲を鳴らすときは、あいだに音量の上げ下げを挟む。
+     * 掛からないとき (フェードの無いクリップ、フェードの外だけを鳴らすとき) は、これまでどおり直につなぐ。
+     *
+     * ふだんの再生・区間ループ・書き出しが、どれもこれを使う (聴く音と書き出す音を食い違わせない)。
+     * @param into - クリップの頭から数えた、鳴らし始めの位置 (秒)。再生の途中から鳴らすときは、フェードの途中の音量から始まる
+     * @param length - 鳴らす長さ (秒)
+     * @param when - 鳴らし始める時刻 (その AudioContext の時計)
+     */
+    _connectClipSource(ctx: BaseAudioContext, source: AudioBufferSourceNode, clip: Clip, into: number, length: number, when: number, destination: AudioNode): void {
+        const envelope = fadeEnvelope(clip, into, into + length);
+        if (!envelope) { source.connect(destination); return; }
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(envelope[0].gain, when);
+        for (const point of envelope.slice(1)) gain.gain.linearRampToValueAtTime(point.gain, when + point.at);
+        source.connect(gain);
+        gain.connect(destination);
     }
 
     /** 鳴らした音源を覚えておき (止めるとき用)、鳴り終わったら忘れる (長く回しても溜めない)。 */
@@ -992,17 +1055,14 @@ class AudioEngine {
      */
     _scheduleTrack(track: Track): void {
         for (const clip of track.clips) {
+            // 鳴らすのは、クリップの見えている範囲のうち、再生位置より後ろ。再生位置がクリップの途中なら、そこから
+            const part = clipPortion(clip, this.playOffset);
+            if (!part) continue;
             const source = this.ctx!.createBufferSource();
             source.buffer = clip.buffer;
-            source.connect(track.panNode);
-            const clipStart = clip.offset - this.playOffset;
-            if (clipStart >= 0) {
-                source.start(this.startTime + clipStart);
-            } else if (-clipStart < clip.duration) {
-                source.start(this.startTime, -clipStart);
-            } else {
-                continue;
-            }
+            const when = this.startTime + (part.at - this.playOffset);
+            this._connectClipSource(this.ctx!, source, clip, part.into, part.length, when, track.panNode);
+            source.start(when, part.bufferOffset, part.length);
             this.activeSources.push(source);
         }
         this._scheduleTrackNotes(track);
@@ -1024,6 +1084,15 @@ class AudioEngine {
             const noteDur = n.length * stepSec;
             const relStart = noteStart - this.playOffset;
             if (relStart + noteDur <= 0) continue;
+
+            // ドラムのトラックのノートは、種類ごとの音で鳴らす (lib/drum-sound.ts)。打った瞬間の音なので、
+            // 再生位置がノートの頭を過ぎていたら鳴らさない
+            const voice = this.drumVoiceOf(track, n);
+            if (voice) {
+                // (ちょうどノートの頭から再生したときに、丸めの誤差で落とさないよう、ごく小さな幅を許す)
+                if (relStart > -0.005) this.activeSources.push(...playDrum(this.ctx!, track.panNode, voice, this.startTime + Math.max(0, relStart), noteLevel(n.velocity)));
+                continue;
+            }
 
             const attack = 0.01;
             const release = Math.min(0.15, noteDur * 0.3);
@@ -1113,8 +1182,10 @@ class AudioEngine {
      * `liveNoteOff` を呼ぶまで鳴り続ける。同じ高さをもう一度呼ぶと鳴らし直す。
      * @param pitch - MIDI ノート番号（60 = C4）
      * @param velocity - 強さ（1〜127）
+     * @param options.drums - ドラムのトラックに向けて弾いているか。true で、ドラムの行の高さは、種類ごとの音を
+     *   1 回鳴らす（再生と同じ音。打った瞬間の音なので、`liveNoteOff` を待たずに鳴り終わる）。ほかの高さは、これまでどおり
      */
-    liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY): void {
+    liveNoteOn(pitch: number, velocity = DEFAULT_VELOCITY, options: { drums?: boolean } = {}): void {
         this.init();
         if (this.usesNativeAudio()) {
             // 同じ高さをもう一度押したら、Rust の側で鳴らし直す
@@ -1124,6 +1195,11 @@ class AudioEngine {
         }
         const ctx = this.ctx!;
         this.liveNoteOff(pitch);
+        const row = options.drums ? drumRowOfPitch(pitch) : null;
+        if (row) {
+            playDrum(ctx, this.masterGain!, row.voice, ctx.currentTime, noteLevel(velocity));
+            return;
+        }
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.type = 'triangle';
@@ -1226,6 +1302,7 @@ class AudioEngine {
 
     /**
      * トラック内の全クリップ・ノートの終端時刻の最大値を返す内部メソッド。
+     * クリップの終わりは、位置 + 鳴らす長さ（縮めたクリップは、見えている範囲の終わり）。
      * @param track - 対象トラック
      * @param stepSec - 1 ステップの秒数（60 / bpm / 4）。ノートは 1 小節目の位置（gridOffset）から数える
      * @returns 最終終端時刻（秒）
@@ -1312,19 +1389,33 @@ class AudioEngine {
     /**
      * 録音を停止し、録音データをデコードして AudioBuffer を返す。
      * @returns デコード済みの録音データを含む AudioBuffer
+     * @throws 録った音を読めなかった場合
      */
     stopRecording(): Promise<AudioBuffer> {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             this.mediaRecorder!.onstop = async () => {
                 this.isRecording = false;
                 this.mediaStream!.getTracks().forEach(t => t.stop());
-                const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
-                const arrayBuf = await blob.arrayBuffer();
-                const buffer = await this.ctx!.decodeAudioData(arrayBuf);
-                rememberSource(buffer, blob, 'recording.webm');
-                resolve(buffer);
+                // 録った音を読めなかったとき (短すぎて空、など) は、待たせたままにせず、失敗として返す
+                try {
+                    const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
+                    const arrayBuf = await blob.arrayBuffer();
+                    const buffer = await this.ctx!.decodeAudioData(arrayBuf);
+                    rememberSource(buffer, blob, 'recording.webm');
+                    resolve(buffer);
+                } catch (e) {
+                    reject(e);
+                }
             };
-            this.mediaRecorder!.stop();
+            // すでに止まっている録音 (途中でマイクが外れた、など) を止めようとすると、ここで失敗する。
+            // 録音中のままにしない (次に押したときに、また止めようとして同じ失敗を繰り返さないように)
+            try {
+                this.mediaRecorder!.stop();
+            } catch (e) {
+                this.isRecording = false;
+                this.mediaStream?.getTracks().forEach(t => t.stop());
+                reject(e);
+            }
         });
     }
 
@@ -1352,10 +1443,13 @@ class AudioEngine {
             gainNode.connect(master);
 
             for (const clip of track.clips) {
+                // 再生と同じ範囲・同じフェードで鳴らす
+                const part = clipPortion(clip, 0);
+                if (!part) continue;
                 const src = offCtx.createBufferSource();
                 src.buffer = clip.buffer;
-                src.connect(panNode);
-                src.start(clip.offset);
+                this._connectClipSource(offCtx, src, clip, part.into, part.length, part.at, panNode);
+                src.start(part.at, part.bufferOffset, part.length);
             }
 
             for (const n of this.soundingNotes(track)) {
@@ -1363,6 +1457,12 @@ class AudioEngine {
                 if (!freq) continue;
                 const noteStart = this.gridOffset + n.step * stepSec;
                 const noteDur = n.length * stepSec;
+                // ドラムのトラックのノートは、再生と同じ音で書き出す
+                const voice = this.drumVoiceOf(track, n);
+                if (voice) {
+                    playDrum(offCtx, panNode, voice, noteStart, noteLevel(n.velocity));
+                    continue;
+                }
                 const attack = 0.01;
                 const release = Math.min(0.15, noteDur * 0.3);
                 const sustainDur = Math.max(0, noteDur - attack - release);

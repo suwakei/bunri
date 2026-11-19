@@ -82,7 +82,8 @@ export function lossNotices(result: MidiImportResult, modes: MidiImportMode[]): 
     const sum = (key: 'rounded' | 'merged' | 'unterminated') => chosen.reduce((total, track) => total + track[key], 0);
     const rounded = sum('rounded'), merged = sum('merged'), unterminated = sum('unterminated');
     const { tempoChanges } = result.loss;
-    if (rounded > 0) notices.push(`16 分音符に合わせて、位置か長さを丸めたノートが ${rounded} 個あります（3 連符や細かい音符は、近い位置に寄ります）`);
+    // 読み込みは、1 拍の 24 分の 1 に丸める (lib/midi.ts)。16 分・32 分・三連は、そのまま入る。丸めるのは、それより細かい位置だけ
+    if (rounded > 0) notices.push(`位置か長さを、1 拍の 24 分の 1 に丸めたノートが ${rounded} 個あります（16 分・32 分・三連の位置は、そのまま入ります。人が弾いた細かな揺れと、32 分音符より短い長さは、近い値に寄ります）`);
     if (merged > 0) notices.push(`丸めると同じ位置に重なるノートを、1 つにまとめました（${merged} 個）`);
     if (unterminated > 0) notices.push(`止める合図の無いノートを、トラックの終わりまで伸ばしました（${unterminated} 個）`);
     if (tempoChanges > 0) notices.push(`途中のテンポの変化（${tempoChanges} 回）は反映されません。最初のテンポを使います`);

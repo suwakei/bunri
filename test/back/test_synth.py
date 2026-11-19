@@ -74,6 +74,28 @@ class TestStepSequencer:
         data, sr = load_audio(result)
         assert len(data) > 0
 
+    def test_三連と32分の位置を切り捨てずに鳴らす(self):
+        """小数のステップ (8 分の三連 4/3、32 分 0.5) が、16 分の位置に丸まらず、長さ 0 にもならない。"""
+        import json
+        import numpy as np
+        from synth import step_sequencer
+        bpm = 120
+        step_sec = 60.0 / bpm / 4
+        notes = [
+            {"note": "A", "octave": 4, "step": 0, "length": 0.5},
+            {"note": "A", "octave": 4, "step": 4 / 3, "length": 4 / 3},
+        ]
+        result = step_sequencer(json.dumps(notes), bpm, 'sine', 0.5, 0.001, 0.01, 1.0, 0.01)
+        data, sr = load_audio(result)
+        mono = np.abs(data if data.ndim == 1 else data.mean(axis=1))
+        # 32 分音符 (0.5 ステップ) は鳴っている
+        assert mono[: int(0.4 * step_sec * sr)].max() > 0.05
+        # 0.5〜1.33 ステップのあいだは鳴っていない (切り捨てていたら、2 つ目は 1 ステップから鳴る)
+        gap = mono[int(0.7 * step_sec * sr): int(1.25 * step_sec * sr)]
+        assert gap.max() < 0.02
+        # 2 つ目は 4/3 ステップから鳴る
+        assert mono[int(1.45 * step_sec * sr): int(2.4 * step_sec * sr)].max() > 0.05
+
     def test_空ノートでValueError(self):
         from synth import step_sequencer
         with pytest.raises(ValueError):

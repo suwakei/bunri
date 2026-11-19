@@ -77,6 +77,23 @@ describe('issueText', () => {
         expect(issueText(issue({ kind: 'length', actual: note('E', 4, 24, 8), length_diff: 4 }))).toBe('2 小節 3 拍目: E4 が1 拍ぶん長い');
         expect(issueText(issue({ kind: 'length', actual: note('E', 4, 24, 1), length_diff: -3 }))).toBe('2 小節 3 拍目: E4 が16 分音符 3 個ぶん短い');
     });
+
+    it('三連・32 分のずれは、その音符の数で言う（「16 分音符 0.67 個」とは言わない）', () => {
+        // お手本は三連の 2 つ目 (25.33)、打ち込みは 1 つ後ろの三連 (26.67)
+        const late = issue({ kind: 'timing', expected: note('E', 4, 24 + 4 / 3, 4 / 3), actual: note('E', 4, 24 + 8 / 3, 4 / 3), offset_steps: 4 / 3 });
+        expect(issueText(late)).toBe('2 小節 3 拍目: E4 が8 分の三連符 1 個ぶん遅い');
+        expect(issueText(issue({ kind: 'timing', offset_steps: -2 / 3 }))).toBe('2 小節 3 拍目: E4 が16 分の三連符 1 個ぶん早い');
+        expect(issueText(issue({ kind: 'timing', offset_steps: 0.5 }))).toBe('2 小節 3 拍目: E4 が32 分音符 1 個ぶん遅い');
+        expect(issueText(issue({ kind: 'timing', offset_steps: -1.5 }))).toBe('2 小節 3 拍目: E4 が32 分音符 3 個ぶん早い');
+        expect(issueText(issue({ kind: 'length', length_diff: -8 / 3 }))).toBe('2 小節 3 拍目: E4 が8 分の三連符 2 個ぶん短い');
+        // API を通った小数 (1.3333333333333333) でも、4 桁に丸めた小数でも、同じ文になる
+        expect(issueText(issue({ kind: 'timing', offset_steps: 1.3333 }))).toBe(issueText(late));
+        // 三連 3 つぶんは、1 拍
+        expect(issueText(issue({ kind: 'length', length_diff: 4 / 3 * 3 }))).toBe('2 小節 3 拍目: E4 が1 拍ぶん長い');
+        // どの音符の倍数でもない幅 (人が弾いた MIDI のお手本) は、およその数で言う
+        expect(issueText(issue({ kind: 'timing', offset_steps: 5 / 6 }))).toBe('2 小節 3 拍目: E4 が16 分音符でおよそ 0.8 個ぶん遅い');
+        for (const steps of [4 / 3, 2 / 3, 0.5, 8 / 3]) expect(issueText(issue({ kind: 'timing', offset_steps: steps }))).not.toMatch(/\d\.\d/);
+    });
 });
 
 describe('requestDiff', () => {
@@ -100,6 +117,15 @@ describe('requestDiff', () => {
         const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
         expect(bodies[0].reference_source).toBe('midi');
         expect(bodies[1]).toEqual({ reference: [note('C', 4, 0)], attempt: [note('C', 4, 0)], steps_per_bar: 16 });
+    });
+
+    it('比べ方は、ドラムのときだけ送る。位置の許容は送らない (比べ方に応じて、API の側が決める)', async () => {
+        stubFetch(async () => Response.json({ summary: {}, bars: [], worst_bars: [] }));
+        await requestDiff([note('C', 2, 0)], [note('C', 2, 0)], 16, 'transcription', 'drums');
+        await requestDiff([note('C', 2, 0)], [note('C', 2, 0)], 16, 'transcription', undefined);
+        const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0]).toEqual({ reference: [note('C', 2, 0)], attempt: [note('C', 2, 0)], steps_per_bar: 16, mode: 'drums' });
+        expect(bodies[1]).toEqual({ reference: [note('C', 2, 0)], attempt: [note('C', 2, 0)], steps_per_bar: 16 });
     });
 });
 
