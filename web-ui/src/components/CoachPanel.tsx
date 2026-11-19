@@ -25,7 +25,7 @@
  * このパネルは Claude を呼ばない（設定の欄も持たない）。
  */
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { useDaw } from '../lib/store';
+import { useDaw, type CoachPair } from '../lib/store';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
 import engine from '../lib/engine';
@@ -46,6 +46,18 @@ const MAX_ISSUES = 40;
 const KIND_ORDER: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing', 'length'];
 
 /**
+ * いま比べる組 (お手本のトラックと、打ち込みのトラック)。描画のたびに、トラックの一覧から選び直す
+ * (決め方は lib/coach.ts の `resolveCoachPair`)。
+ *
+ * フックにしてある。描画の中で `engine.tracks` (React の外の、書き換わる値) を直接読むと、選んだトラックを使う
+ * `useCallback` / `useMemo` を React Compiler が保てず、lint (react-hooks/preserve-manual-memoization) が落ちる。
+ * 選んだトラックは、描画のあいだに書き換えない (比べる・移動するときに、そのまま使う)。
+ */
+function useCoachTracks(coachPair: CoachPair) {
+    return resolveCoachPair(engine.tracks, coachPair);
+}
+
+/**
  * 差分コーチのパネル。お手本を持つトラックが無いときは、使い方の案内だけを出す。
  */
 export default function CoachPanel() {
@@ -61,7 +73,7 @@ export default function CoachPanel() {
     void trackVersion;
 
     // 打ち込みの既定は、そのパートの練習のトラック。無ければお手本のトラック自身 (アシスタントの explain_diff も同じ決め方)
-    const { reference, attempt, withReference } = resolveCoachPair(engine.tracks, coachPair);
+    const { reference, attempt, withReference } = useCoachTracks(coachPair);
     // 結果は、いま選んでいる組で比べたものだけを出す
     const result = coachResult && reference && attempt
         && coachResult.referenceId === reference.id && coachResult.attemptId === attempt.id ? coachResult.result : null;
