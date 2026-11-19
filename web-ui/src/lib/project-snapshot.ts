@@ -29,7 +29,7 @@
  * テンポ・拍子・1 小節目の位置も、その操作で変わったときだけ戻す。
  */
 import type { Clip, PianoNote, Track } from './engine';
-import type { ProjectGrid } from './grid';
+import { SWING_NONE, type ProjectGrid } from './grid';
 
 /** 元に戻せる記録の数の上限。 */
 export const HISTORY_LIMIT = 100;
@@ -39,12 +39,30 @@ export const HISTORY_LIMIT = 100;
  */
 export const HISTORY_BUDGET = 200_000;
 
-/** クリップの控え。音声は同じ AudioBuffer を指す（写さない）。 */
+/**
+ * クリップの控え。音声は同じ AudioBuffer を指す（写さない）。
+ * 鳴らす範囲とフェード（lib/clip.ts）は、持っているクリップだけが持つ（項目の無いクリップに、0 の項目を付けない）。
+ */
 export interface ClipSnapshot {
     buffer: AudioBuffer;
     offset: number;
     name: string;
     duration: number;
+    audioStart?: number;
+    fadeIn?: number;
+    fadeOut?: number;
+    /** 音声の無いクリップの印（engine.ts の `Clip.missing`）。元に戻したときに、印が落ちないように持つ */
+    missing?: boolean;
+}
+
+/** クリップを控えに写す。 */
+function snapshotClip(c: Clip | ClipSnapshot): ClipSnapshot {
+    const copy: ClipSnapshot = { buffer: c.buffer, offset: c.offset, name: c.name, duration: c.duration };
+    if (c.audioStart) copy.audioStart = c.audioStart;
+    if (c.fadeIn) copy.fadeIn = c.fadeIn;
+    if (c.fadeOut) copy.fadeOut = c.fadeOut;
+    if (c.missing) copy.missing = true;
+    return copy;
 }
 
 /** トラック 1 本の控え。 */
@@ -79,6 +97,13 @@ export interface SnapshotSource {
     bpm: number;
     beatsPerBar: number;
     gridOffset: number;
+    /** スウィング（無ければ 0.5 = ずらさない） */
+    swing?: number;
+    /**
+     * トラックを書き換えたあとで、再生のつなぎの外（デスクトップ版の Rust の engine）にも伝える
+     * （engine.ts の `syncNative`）。無ければ呼ばない
+     */
+    syncNative?: () => void;
 }
 
 /** ノートの並びが同じか（同じ配列なら中身を見ない）。 */
@@ -99,14 +124,17 @@ function sameClips(a: readonly (Clip | ClipSnapshot)[], b: readonly (Clip | Clip
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i], y = b[i];
-        if (x.buffer !== y.buffer || x.offset !== y.offset || x.name !== y.name || x.duration !== y.duration) return false;
+        if (x.buffer !== y.buffer || x.offset !== y.offset || x.name !== y.name || x.duration !== y.duration
+            || (x.audioStart ?? 0) !== (y.audioStart ?? 0) || (x.fadeIn ?? 0) !== (y.fadeIn ?? 0)
+            || (x.fadeOut ?? 0) !== (y.fadeOut ?? 0)) return false;
     }
     return true;
 }
 
-/** グリッドが同じか。 */
+/** グリッドが同じか（スウィングは、無ければ 0.5 として比べる）。 */
 function sameGrid(a: ProjectGrid, b: ProjectGrid): boolean {
-    return a.bpm === b.bpm && a.beatsPerBar === b.beatsPerBar && a.offsetSec === b.offsetSec;
+    return a.bpm === b.bpm && a.beatsPerBar === b.beatsPerBar && a.offsetSec === b.offsetSec
+        && (a.swing ?? SWING_NONE) === (b.swing ?? SWING_NONE);
 }
 
 /**
@@ -130,10 +158,12 @@ export function captureProject(source: SnapshotSource, prev?: ProjectSnapshot | 
             reference: old && sameNotes(old.reference, t.referenceNotes) ? old.reference : t.referenceNotes,
             clips: old && sameClips(old.clips, clips)
                 ? old.clips
-                : clips.map(c => ({ buffer: c.buffer, offset: c.offset, name: c.name, duration: c.duration })),
+                : clips.map(snapshotClip),
         };
     });
-    return { tracks, grid: { bpm: source.bpm, beatsPerBar: source.beatsPerBar, offsetSec: source.gridOffset } };
+    // スウィングは、ずらしているときだけ持つ (以前の控えや、テストの期待と、項目の有無まで同じにする)
+    const swing = source.swing !== undefined && source.swing !== SWING_NONE ? { swing: source.swing } : {};
+    return { tracks, grid: { bpm: source.bpm, beatsPerBar: source.beatsPerBar, offsetSec: source.gridOffset, ...swing } };
 }
 
 /** トラックの控えが同じか。 */
@@ -167,7 +197,10 @@ export function snapshotCost(before: ProjectSnapshot, after: ProjectSnapshot): n
     return cost;
 }
 
-/** 音量・パン・ミュートを、再生のつなぎに当てる（再生中でもすぐ効く）。 */
+/**
+ * 音量・パン・ミュートを、再生のつなぎに当てる（再生中でもすぐ効く）。
+ * デスクトップ版で Rust の engine が鳴らしているときは、`applyProject` の最後の `syncNative` で伝える。
+ */
 function applyMix(track: Track): void {
     if (track.gainNode) track.gainNode.gain.value = track.mute ? 0 : Math.pow(10, track.gain / 20);
     if (track.panNode) track.panNode.pan.value = track.pan;
@@ -224,5 +257,7 @@ export function applyProject(engine: SnapshotSource, target: ProjectSnapshot, ot
         const extras = engine.tracks.filter(t => !orderedSet.has(t) && !removed.has(t));
         engine.tracks = [...ordered, ...extras];
     }
+    // 戻した音量・パン・ミュート・ソロとクリップを、Rust の engine にも伝える (再生中ならすぐ効く)
+    engine.syncNative?.();
     return sameGrid(target.grid, other.grid) ? null : { ...target.grid };
 }

@@ -158,15 +158,15 @@ test('パートに分けると、お手本は重ねて見せるだけで、打�
     expect((await trackSummary(page)).map((t) => t.name)).toEqual(['原曲', 'ボーカル', 'ドラム', 'ベース']);
     // パートは、原曲と重ならないようミュートしてある
     await expect(page.getByRole('button', { name: '「ベース」をミュート' })).toHaveAttribute('aria-pressed', 'true');
-    // お手本は打ち込みに入れない (ノートの数の印が出ない)。ドラムは以前どおり、採譜したリズムを置く
+    // お手本は打ち込みに入れない (ノートの数の印が出ない)。ドラムも同じ (打音はお手本になり、打ち込みは空)
     const row = (name: string) => page.locator('#tracks-container .track-row')
         .filter({ has: page.locator('.track-name', { hasText: new RegExp(`^${name}\\s*\\d*$`) }) });
     await expect(row('ベース').locator('.notes-badge')).toHaveCount(0);
-    await expect(row('ドラム').locator('.notes-badge')).toHaveText('3');
-    // お手本を持つパートには「練習する」が出る (ドラムには出ない)
+    await expect(row('ドラム').locator('.notes-badge')).toHaveCount(0);
+    // お手本を持つパートには「練習する」が出る (ドラムにも出る。トラックの見出しと、パートの一覧の 2 か所)
     await expect(page.getByRole('button', { name: '「ベース」を練習する' })).toHaveCount(2);
-    await expect(page.getByRole('button', { name: '「ドラム」を練習する' })).toHaveCount(0);
-    await expect(page.locator('#part-list')).toContainText('ドラム（差分チェックの対象外）');
+    await expect(page.getByRole('button', { name: '「ドラム」を練習する' })).toHaveCount(2);
+    await expect(page.locator('#part-list .part-item[data-part="drums"]')).toContainText('お手本 3 ノート');
     expect(await stepState(page, 'separate')).toBe('done');
     expect(await stepState(page, 'practice')).toBe('current');
 

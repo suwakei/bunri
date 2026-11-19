@@ -12,9 +12,14 @@
  *
  * 読み込み:
  * - フォーマット 0 と 1。ランニングステータス、強さ 0 のノートオン（= ノートオフ）、テンポ、拍子、トラック名を扱う
- * - 位置と長さは、ピアノロールの単位（16 分音符）に丸める。丸めで変わった数は `loss` で返す
+ * - 位置と長さは、1 拍の 24 分の 1（1/6 ステップ）に丸める（三連・32 分は、そのまま入る）。丸めで変わった数は `loss` で返す
+ *
+ * 小数のステップ（三連・32 分・スウィング）: ノートの位置と長さは 1/60 ステップの倍数（lib/grid.ts）で、
+ * 1 ステップは 120 tick なので、1/60 ステップは 2 tick。どの位置も、整数の tick になる
+ * （読み込んで、そのまま書き出しても、位置は変わらない）。
  */
 import { DEFAULT_VELOCITY, type PianoNote } from './engine';
+import { normStep } from './grid';
 
 /** 4 分音符あたりの tick 数。 */
 export const TICKS_PER_QUARTER = 480;
@@ -147,6 +152,15 @@ export function notesToMidi(tracks: MidiTrackInput[], bpm: number): Uint8Array {
 // ── 読み込み ─────────────────────────────────────────────────
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+/**
+ * 読み込みで、位置と長さを丸める細かさ: 1 ステップ（16 分音符）を 6 つに分ける = 1 拍の 24 分の 1。
+ * 16 分（6）・32 分（3）・8 分の三連（8）・16 分の三連（4）が、どれも整数になる。
+ * 16 分音符に丸めていたときは、三連や 32 分の曲が、近い 16 分の位置に寄って、別のリズムになっていた。
+ */
+const IMPORT_PER_STEP = 6;
+const IMPORT_PER_QUARTER = IMPORT_PER_STEP * 4;
+/** 読み込むノートの長さの下限（1/6 ステップの数。3 = 32 分音符）。これより短いと、ピアノロールで見えず、つかめない */
+const IMPORT_MIN_LENGTH = 3;
 /** ドラム用のチャンネル（10 番 = 添字 9）。ノート番号は音の高さではなく、打楽器の種類を表す。 */
 const DRUM_CHANNEL = 9;
 
@@ -163,7 +177,7 @@ export interface MidiImportTrack {
     notes: ImportedNote[];
     /** ドラム用のチャンネルのノートか。ノートの高さは打楽器の種類なので、音程としては読めない。 */
     isDrum: boolean;
-    /** このトラックで、位置か長さを 16 分音符に丸めたノートの数。 */
+    /** このトラックで、位置か長さを丸めたノートの数（1 拍の 24 分の 1 に乗っていなかった、または最短の長さより短かった）。 */
     rounded: number;
     /** このトラックで、丸めた結果重なったので 1 つにまとめたノートの数。 */
     merged: number;
@@ -173,7 +187,7 @@ export interface MidiImportTrack {
 
 /** 読み込みで、元のファイルから変わったこと・落ちたことの数（ファイル全体）。トラックごとの数は、各トラックが持つ。 */
 export interface MidiImportLoss {
-    /** 位置か長さが 16 分音符の格子に乗っておらず、丸めたノートの数（3 連符、32 分音符、人の演奏の揺れなど）。 */
+    /** 位置か長さが、1 拍の 24 分の 1 の格子に乗っておらず、丸めたノートの数（人の演奏の揺れ、64 分音符より細かい音符など）。 */
     rounded: number;
     /** 丸めた結果、同じ高さ・同じ位置に重なったので、1 つにまとめたノートの数。 */
     merged: number;
@@ -311,7 +325,8 @@ function readTrack(bytes: Uint8Array, begin: number, end: number) {
  * - フォーマット 1 は、MTrk 1 本を 1 トラックにする
  * - フォーマット 0（全部が 1 本に入っている）は、チャンネルごとに分けて 1 トラックにする
  * - ドラム用のチャンネル（10 番）のノートは、同じ MTrk の中でも別のトラックに分け、`isDrum` を立てる
- * - 位置と長さは 16 分音符に丸める（最短 1 ステップ）。丸めで変わった数などは `loss` で返す
+ * - 位置と長さは、1 拍の 24 分の 1（1/6 ステップ）に丸める。16 分・32 分・8 分と 16 分の三連が、ずれずに入る
+ *   （長さの最短は 32 分音符 = 0.5 ステップ）。丸めで変わった数などは `loss` で返す
  * - ピアノロールのテンポは 1 つなので、最初のテンポだけを返す
  *
  * @param bytes - MIDI ファイルの中身
@@ -328,7 +343,6 @@ export function parseMidi(bytes: Uint8Array): MidiImportResult {
     const format = u16(8), division = u16(12);
     if (format !== 0 && format !== 1) throw new Error(`この形式の MIDI ファイルは読めません（フォーマット ${format}）`);
     if (division & 0x8000 || division === 0) throw new Error('この形式の MIDI ファイルは読めません（時間の単位が拍ではありません）');
-    const ticksPerStep = division / 4;
 
     const chunks: ReturnType<typeof readTrack>[] = [];
     let pos = 8 + headerLength;
@@ -360,10 +374,14 @@ export function parseMidi(bytes: Uint8Array): MidiImportResult {
             const counts = { rounded: 0, merged: 0, unterminated: 0 };
             for (const note of raw.sort((a, b) => a.start - b.start || a.pitch - b.pitch)) {
                 if (!note.closed) counts.unterminated += 1;
-                const step = Math.round(note.start / ticksPerStep);
-                const length = Math.max(1, Math.round(note.end / ticksPerStep) - step);
-                if (step * ticksPerStep !== note.start || (step + length) * ticksPerStep !== note.end) counts.rounded += 1;
-                const slot = `${note.pitch}:${step}`;
+                // 位置と長さは、1 拍の 24 分の 1 (1/6 ステップ) の単位で数える (整数で計算して、端数を作らない)
+                const startSixths = Math.round(note.start * IMPORT_PER_QUARTER / division);
+                const endSixths = Math.round(note.end * IMPORT_PER_QUARTER / division);
+                const lengthSixths = Math.max(IMPORT_MIN_LENGTH, endSixths - startSixths);
+                if (startSixths * division !== note.start * IMPORT_PER_QUARTER
+                    || (startSixths + lengthSixths) * division !== note.end * IMPORT_PER_QUARTER) counts.rounded += 1;
+                const step = normStep(startSixths / IMPORT_PER_STEP), length = normStep(lengthSixths / IMPORT_PER_STEP);
+                const slot = `${note.pitch}:${startSixths}`;
                 const existing = placed.get(slot);
                 if (existing) {
                     // 丸めたら同じ高さ・同じ位置に重なった。長いほうを残して 1 つにする

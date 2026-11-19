@@ -22,18 +22,20 @@
  *
  * 「比べる」たびに、学習の記録（lib/learn-history.ts）に 1 件足す（比べた区間つき）。見出しの「前回より +8%」は、
  * 同じお手本・同じ練習のトラック・同じ区間の 1 つ前の記録との差。
+ * 「構成」の段の区間には、いま練習しているパートの、その区間の一致率を小さく出す（まだ比べていなければ空の枠。
+ * 集計は練習の地図と同じ lib/practice-map.ts。比べた直後に変わる）。
  *
  * 画面の部品は 4 つ（見出し・段・右の一覧・下の操作）に分かれ、中央エリアの中の別々の場所に置く。
  * 状態は `PracticeProvider` が持ち、部品はそこから読む。
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Component, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 import engine, { type PianoNote, type Track } from '../lib/engine';
 import { describeError } from '../lib/api';
 import { KIND_LABEL, hasVelocityDiff, issueText, requestDiff, velocityNotesOf, type DiffIssue, type DiffResult, type VelocityFinding } from '../lib/coach';
-import { SECTION_LABEL_JA } from '../lib/chart';
-import { secToStep, stepsPerBar } from '../lib/grid';
+import { sameStep, secToStep, stepsPerBar } from '../lib/grid';
 import { isDialogOpen, isTypingTarget, modKeyLabel } from '../lib/keys';
 import { sameNotes } from '../lib/project-snapshot';
 import { clearStretchCache, peekStretched, prepareStretched } from '../lib/practice-audio';
@@ -43,7 +45,9 @@ import {
     type InputMode, type ListenMode, type NoteMark, type PracticeLoop, type StepRange,
 } from '../lib/practice';
 import { PART_LABELS, referenceSourceOf } from '../lib/learn';
+import { DRUM_DIFF_NOTE, diffModeOf } from '../lib/drums';
 import { attemptFromDiff, barRangeOf, deltaText, useMatchSummary } from '../lib/learn-history';
+import { cellStateText, cellText, mapRow, mapSections, sectionName } from '../lib/practice-map';
 import { RealtimeSettings, StepLengthSelect } from './MidiInputBar';
 import VelocityFindings from './VelocityFindings';
 import { midiUnavailableText, type MidiInputController } from '../lib/useMidiInput';
@@ -120,11 +124,19 @@ interface ArrangeView {
     midiMode: MidiInputController['mode'];
 }
 
-/** 構成の区間の名前（確定した名前、無ければ提案に「？」、それも無ければ記号）。 */
-function sectionName(section: { label: string | null; suggested_label: string | null; repeat_group: string }): string {
-    if (section.label) return section.label;
-    if (section.suggested_label) return `${SECTION_LABEL_JA[section.suggested_label] ?? section.suggested_label}？`;
-    return section.repeat_group;
+/**
+ * 練習画面に入る瞬間を、画面を組み替える直前 (DOM を変える前) に知らせる。何も描かない。
+ * 描画のあいだに DOM を読まずに「組み替える前のスクロール位置」を読めるのは、ここ (getSnapshotBeforeUpdate) だけなので、クラスで書く。
+ */
+class BeforeOpen extends Component<{ open: boolean; onOpen: () => void }> {
+    getSnapshotBeforeUpdate(prev: Readonly<{ open: boolean }>): null {
+        if (this.props.open && !prev.open) this.props.onOpen();
+        return null;
+    }
+
+    componentDidUpdate(): void { /* getSnapshotBeforeUpdate には、これが要る */ }
+
+    render(): null { return null; }
 }
 
 /**
@@ -161,8 +173,8 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     // お手本の高さへ動かす。その scroll イベントが届くのは次の描画のときで、そのときにはもう練習画面なので
     // 下の onScroll は控えない。イベントだけに頼ると、動かす前の位置が残り、アレンジに戻ったときに、
     // お手本の見えない高さへ戻ることがあった (WebKit で 2 回に 1 回ほど)
-    if (practiceOpen && !openRef.current) lastScrollRef.current = readScroll();
-    openRef.current = practiceOpen;
+    const captureOnOpen = useCallback(() => { lastScrollRef.current = readScroll(); }, [readScroll]);
+    useLayoutEffect(() => { openRef.current = practiceOpen; }, [practiceOpen]);
     void trackVersion;
 
     const part = practice ? engine.getTrack(practice.partId) : undefined;
@@ -206,7 +218,8 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             pr.onNotePressed = (index: number, mark: NoteMark | null) => {
                 const note = pr.notes?.[index];
                 if (!note) return;
-                setPressedNote(mark ? noteMarkLabel(note, mark) : null);
+                // ドラムのパートでは、音名の代わりに種類の名前で出す
+                setPressedNote(mark ? noteMarkLabel(note, mark, false, diffModeOf(engine.getTrack(practice.partId))) : null);
                 setSelectedIssue(mark?.issues[0] ?? null);
             };
         }
@@ -254,7 +267,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     useEffect(() => {
         if (practiceOpen && practice && (!part || !track)) {
             closePractice();
-            setStatus('練習のトラックが無くなったので、練習画面を閉じました');
+            setStatus('練習のトラックが無くなったので、練習画面を閉じました', 'hint');
         }
     }, [practiceOpen, practice, part, track, closePractice, setStatus]);
 
@@ -290,6 +303,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     useEffect(() => {
         if (!practiceOpen || !practice) return;
         const rate = practice.speed;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 表示は、再生エンジンと伸ばした音声の控え (React の外) にこの effect で合わせた結果。描画中に求めると、決め直す条件が変わる
         if (rate === 1) { engine.setTempo(1, null); setSpeedStatus({ kind: 'normal' }); return; }
         if (!practice.loop.enabled) { engine.setTempo(1, null); setSpeedStatus({ kind: 'needs-loop' }); return; }
         const partTrack = engine.getTrack(practice.partId);
@@ -336,8 +350,9 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
                 if (mode !== 'realtime') return false;
                 const pr = pianoRollRef.current;
                 if (!pr) return false;
-                // 重ねて録る。同じ高さ・同じ位置のノートは重ねない (同じ所を何度弾いても、余分なノートが増えない)
-                if ((pr.notes as PianoNote[]).some((n) => n.note === note.note && n.octave === note.octave && n.step === note.step)) return true;
+                // 重ねて録る。同じ高さ・同じ位置のノートは重ねない (同じ所を何度弾いても、余分なノートが増えない)。
+                // 「同じ位置」は、1/60 ステップにそろえてから比べる (三連などの小数の位置でも、取り違えない)
+                if ((pr.notes as PianoNote[]).some((n) => n.note === note.note && n.octave === note.octave && sameStep(n.step, note.step))) return true;
                 // 1 周ごとに記録を分ける (元に戻すと、最後の 1 周ぶんが消える)
                 const pass = engine.getLoopPass() ?? 0;
                 pr._addNote(note.note, note.octave, note.step, note.length, {
@@ -399,7 +414,9 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             const per = stepsPerBar(engine.grid);
             // 強さを比べるのは、MIDI ファイルから読み込んだお手本のときだけ (採譜したお手本の強さは当てにならない)
             const source = referenceSourceOf(part);
-            const result = await requestDiff(refIn, notesInRange(attempt, range), per, source);
+            // お手本がドラムのパートなら、種類ごとの叩く位置だけを比べる (差分チェックの段・アシスタントと同じ決め方)
+            const mode = diffModeOf(part);
+            const result = await requestDiff(refIn, notesInRange(attempt, range), per, source, mode);
             const marks = markNotes(result, attempt, reference, range);
             const bars = range ? { startBar: practice.loop.startBar, endBar: practice.loop.endBar } : barRangeOf(reference, per);
             setCompare({ result, range, bars, attempt, reference, marks });
@@ -411,9 +428,9 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
             setSelectedIssue(null);
             setSelectedFinding(null);
             setPressedNote(null);
-            pr?.setDiffMarks?.({ ...marks, label: noteMarkLabel });
+            pr?.setDiffMarks?.({ ...marks, label: (note: PianoNote, mark: NoteMark, ghost?: boolean) => noteMarkLabel(note, mark, ghost, mode) });
             // 差分チェック (左パネル) と進み具合には、曲全体で比べた結果を渡す (区間だけの結果を全体のものとして見せない)
-            const full = range ? await requestDiff(reference, attempt, per, source) : result;
+            const full = range ? await requestDiff(reference, attempt, per, source, mode) : result;
             setCoachResult({ referenceId: part.id, attemptId: track.id, result: full });
             const rate = matchRate(result);
             setStatus(`比べました（${range ? `${practice.loop.startBar}〜${practice.loop.endBar} 小節` : '曲全体'}、一致 ${rate}%）`);
@@ -508,7 +525,12 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         selectedFinding, selectFinding,
         speedStatus, playing: isPlaying, togglePlay, stopPlay, setLoop,
     };
-    return <PracticeContext.Provider value={value}>{children}</PracticeContext.Provider>;
+    return (
+        <PracticeContext.Provider value={value}>
+            <BeforeOpen open={practiceOpen} onOpen={captureOnOpen} />
+            {children}
+        </PracticeContext.Provider>
+    );
 }
 
 // ---- 見出し ----
@@ -591,8 +613,8 @@ interface PianoView {
  * 小節の段をドラッグすると、区間ループの範囲が決まる。構成の区間を押すと、その区間が区間ループになる。
  */
 export function PracticeBands() {
-    const { pianoRollRef, chart, practice, bpm, beatsPerBar, gridOffset, setStatus } = useDaw();
-    const { setLoop } = usePractice();
+    const { pianoRollRef, chart, practice, bpm, beatsPerBar, gridOffset, setStatus, learnHistory } = useDaw();
+    const { setLoop, part, track } = usePractice();
     const [view, setView] = useState<PianoView>({ stepWidth: 20, scrollLeft: 0, totalSteps: 128, clientWidth: 0, keysWidth: 52 });
     const bandsRef = useRef<HTMLDivElement | null>(null);
     const dragRef = useRef<{ from: number; to: number } | null>(null);
@@ -653,6 +675,14 @@ export function PracticeBands() {
         setStatus(`区間: ${next.startBar}〜${next.endBar} 小節`);
     };
 
+    // いま練習しているパートの、構成の区間ごとの一致率 (練習の地図と同じ集計。比べるたびに、記録が増えて変わる)
+    const reference = part?.referenceNotes;
+    const partId = part?.id, trackId = track?.id;
+    const progress = useMemo(() => {
+        if (!chart || !reference || partId === undefined || trackId === undefined) return null;
+        return mapRow(learnHistory, { referenceId: partId, attemptId: trackId }, reference, per, mapSections(chart, grid, 0));
+    }, [chart, reference, partId, trackId, learnHistory, per, grid]);
+
     const shown = drag ? { startBar: Math.min(drag.from, drag.to), endBar: Math.max(drag.from, drag.to) } : loop;
     const labelStyle = { width: view.keysWidth, minWidth: view.keysWidth };
     const trackStyle = view.clientWidth ? { width: view.clientWidth } : undefined;
@@ -663,16 +693,28 @@ export function PracticeBands() {
             <div className="band-row" data-band="section">
                 <div className="band-label" style={labelStyle}>構成</div>
                 <div className="band-track" style={trackStyle}>
-                    {inner(chart ? chart.sections.map((s) => {
+                    {inner(chart ? chart.sections.map((s, i) => {
                         const loopOf = secondsToLoop(s.start_sec, s.end_sec, grid);
                         const name = sectionName(s);
+                        const cell = progress?.[i];
+                        const state = cell ? cellStateText(cell) : '';
                         return (
                             <button key={s.id} type="button" className="band-cell band-section"
                                 style={{ left: x(s.start_sec), width: Math.max(2, x(s.end_sec) - x(s.start_sec)) }}
                                 aria-label={`「${name}」（${loopOf.startBar}〜${loopOf.endBar} 小節）を区間にする`}
-                                {...tip(`${name}（${loopOf.startBar}〜${loopOf.endBar} 小節）\n押すと、この区間をくり返し練習できるようにします`)}
+                                aria-describedby={cell ? `band-progress-${s.id}` : undefined}
+                                {...tip(`${name}（${loopOf.startBar}〜${loopOf.endBar} 小節）${state ? `: ${state}` : ''}\n押すと、この区間をくり返し練習できるようにします`)}
                                 onClick={() => { setLoop(loopOf); setStatus(`区間: 「${name}」（${loopOf.startBar}〜${loopOf.endBar} 小節）`); }}>
                                 {name}<span className="band-sub">（{loopOf.startBar}–{loopOf.endBar}）</span>
+                                {cell && (
+                                    <>
+                                        <span className="band-progress" aria-hidden="true" data-state={cell.state} data-level={cell.level ?? undefined}
+                                            data-testid="band-progress">
+                                            {cellText(cell)}{cell.state === 'partial' && <span className="band-progress-mark">途中</span>}
+                                        </span>
+                                        <span id={`band-progress-${s.id}`} className="visually-hidden">{state}</span>
+                                    </>
+                                )}
                             </button>
                         );
                     }) : null)}
@@ -740,7 +782,9 @@ function Legend() {
 /** 右の一覧（この区間の指摘・押したノートの説明・凡例・ガイドを読む）。 */
 export function PracticeSide() {
     const { practice, closePractice, openLearn, setStatus } = useDaw();
-    const { compare, stale, error, selectedIssue, pressedNote, selectIssue, selectedFinding, selectFinding, runCompare, busy } = usePractice();
+    const { part, compare, stale, error, selectedIssue, pressedNote, selectIssue, selectedFinding, selectFinding, runCompare, busy } = usePractice();
+    // お手本がドラムのパートなら、指摘を種類の名前で書き、比べ方の説明を添える
+    const diffMode = diffModeOf(part);
     const listRef = useRef<HTMLUListElement | null>(null);
     const issues = useMemo(() => (compare ? issuesInOrder(compare.result) : []), [compare]);
 
@@ -759,7 +803,7 @@ export function PracticeSide() {
             {stale && (
                 <div className="practice-stale" role="status">
                     <p>{stale === 'notes' ? 'ノートを変えたので、もう一度比べてください' : '区間を変えたので、もう一度比べてください'}</p>
-                    <button type="button" className="action-btn" onClick={() => void runCompare()} disabled={busy}
+                    <button type="button" className="action-btn" onClick={() => void runCompare()} disabled={busy} {...blockedBy(busy && 'いま比べています。終わるまで待ってください')}
                         {...tip('いまのノートで、もう一度お手本と比べます')}>もう一度比べる</button>
                 </div>
             )}
@@ -768,6 +812,7 @@ export function PracticeSide() {
                     お手本（水色）を見ながらノートを置き、下の「比べる」を押すと、違うところに色が付きます。
                 </p>
             )}
+            {diffMode === 'drums' && <p className="note-text practice-drum-note" id="practice-drum-note">{DRUM_DIFF_NOTE}</p>}
             {pressedNote && <p className="practice-pressed" role="status">選んだノート: {pressedNote}</p>}
             {compare && !stale && (issues.length === 0 ? (
                 <p className="body-text">
@@ -784,7 +829,7 @@ export function PracticeSide() {
                             <li key={i}>
                                 <button type="button" className={`issue-btn issue-${issue.kind}`} aria-current={issue === selectedIssue ? 'true' : undefined}
                                     onClick={() => selectIssue(issue)} {...tip('ピアノロールで、このノートを選んで光らせます')}>
-                                    {issueText(issue)}
+                                    {issueText(issue, diffMode)}
                                 </button>
                             </li>
                         ))}
@@ -863,7 +908,8 @@ export function PracticeControls() {
                         onCommit={(v) => setLoop({ ...loop, endBar: Math.max(loop.startBar, v) })} />
                     <span className="area-hint">小節</span>
                     <button type="button" className="practice-mini" aria-label="区間を 1 小節前へ" {...tip('区間を 1 小節前へずらします', { key: '[' })} aria-keyshortcuts="["
-                        onClick={() => setLoop(shiftLoop(loop, -1))} disabled={loop.startBar <= 1}>‹</button>
+                        onClick={() => setLoop(shiftLoop(loop, -1))} disabled={loop.startBar <= 1}
+                        {...blockedBy(loop.startBar <= 1 && '区間は、もう曲の頭（1 小節）から始まっています。これより前へは動かせません')}>‹</button>
                     <button type="button" className="practice-mini" aria-label="区間を 1 小節後ろへ" {...tip('区間を 1 小節後ろへずらします', { key: ']' })} aria-keyshortcuts="]"
                         onClick={() => setLoop(shiftLoop(loop, 1))}>›</button>
                 </span>
@@ -911,7 +957,7 @@ export function PracticeControls() {
                         <label key={it.key} className="practice-radio"
                             {...tip(it.key === 'mouse' ? 'ピアノロールをダブルクリックして、ノートを置きます'
                                 : !midi.available ? midiUnavailableText()
-                                    : it.key === 'midi-step' ? '鍵盤を弾くたびに、区間の頭から 1 つずつノートを置きます'
+                                    : it.key === 'midi-step' ? '鍵盤を弾くたびに、区間の頭から 1 つずつノートを置きます（1 歩は、上で選んだ刻み）'
                                         : '再生しながら弾いたとおりに置きます。区間ループ中は 1 周ごとに重ねて録り、元に戻すと最後の 1 周ぶんが消えます')}>
                             <input type="radio" name="practice-input" checked={practice.input === it.key}
                                 disabled={it.key !== 'mouse' && !midi.available}
@@ -938,6 +984,7 @@ export function PracticeControls() {
                 </span>
 
                 <button type="button" className="action-btn primary practice-compare" onClick={() => void runCompare()} disabled={busy || !part}
+                    {...blockedBy(busy ? 'いま比べています。終わるまで待ってください' : !part && '比べるお手本のパートが見つかりません。アレンジに戻って、「このパートを練習する」から入り直してください')}
                     {...tip(loop.enabled ? '区間の中のノートをお手本と比べて、違うところに色を付けます' : '曲全体のノートをお手本と比べて、違うところに色を付けます')}>
                     {busy ? '比べています…' : '比べる'}
                 </button>

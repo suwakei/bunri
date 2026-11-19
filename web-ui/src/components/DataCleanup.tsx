@@ -11,6 +11,7 @@ import { useDaw } from '../lib/store';
 import { apiFetch, describeError, errorDetail } from '../lib/api';
 import { formatBytes } from '../lib/project-actions';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 
 interface Usage {
     data_dir: string;
@@ -24,13 +25,11 @@ export default function DataCleanup() {
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState('');
 
-    const load = useCallback(async () => {
-        try {
-            const resp = await apiFetch('/api/storage');
-            if (resp.ok) setUsage(await resp.json());
-        } catch { /* 使用量が出ないだけ */ }
+    useEffect(() => {
+        apiFetch('/api/storage')
+            .then(async (resp) => { if (resp.ok) setUsage(await resp.json()); })
+            .catch(() => { /* 使用量が出ないだけ */ });
     }, []);
-    useEffect(() => { void load(); }, [load]);
 
     const cleanup = useCallback(async () => {
         setBusy(true);
@@ -76,6 +75,7 @@ export default function DataCleanup() {
                 </table>
             )}
             <button type="button" className="action-btn" onClick={cleanup} disabled={busy}
+                {...blockedBy(busy && 'いま整理しています。終わるまで待ってください')}
                 {...tip('たまった一時ファイルを消して、空きを増やします。保存したプロジェクトは消えません')}>
                 {busy ? '整理しています…' : '一時ファイルを整理する'}
             </button>

@@ -12,6 +12,8 @@
  */
 import { invokeDesktop, isDesktop, listenDesktop } from './api';
 import type { PianoNote } from './engine';
+import { inStepRange, normLength, normStep, stepToBar, stepToBeat, toTicks } from './grid';
+import { quantize } from './snap';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -45,10 +47,10 @@ export function pitchToNote(pitch: number): { note: string; octave: number } {
     return { note: NOTE_NAMES[((pitch % 12) + 12) % 12], octave: Math.floor(pitch / 12) - 1 };
 }
 
-/** ステップ位置を「2 小節 3 拍」の形にする。 */
+/** ステップ位置を「2 小節 3 拍」の形にする。小数の位置（三連の 2 つ目・3 つ目など）は、その拍に数える。 */
 export function cursorLabel(step: number, beatsPerBar: number): string {
-    const stepsPerBar = Math.max(1, beatsPerBar) * 4;
-    return `${Math.floor(step / stepsPerBar) + 1} 小節 ${Math.floor((step % stepsPerBar) / 4) + 1} 拍`;
+    const grid = { beatsPerBar: Math.max(1, beatsPerBar) };
+    return `${stepToBar(step, grid)} 小節 ${stepToBeat(step, grid)} 拍`;
 }
 
 /** 録り方。off: 録らない（音を鳴らすだけ）/ step: ステップ入力 / realtime: リアルタイム録音 */
@@ -79,6 +81,16 @@ export interface RecorderOptions {
      * 押していたノートを、区間の終わりまでの長さにする（再生位置が区間の頭に戻るため）。
      */
     bounds?: () => { start: number; end: number } | null;
+    /**
+     * ステップ入力の 1 歩を、選んだ刻みから決める（lib/snap.ts の `stepCell`）。カーソルの位置を受けて、
+     * 置く位置・長さ・次のカーソルを返す。null を返すか、渡さなければ、`stepLength` ずつ進む。
+     */
+    cell?: (cursor: number) => { step: number; length: number; next: number } | null;
+    /**
+     * リアルタイム録音で、位置と長さをそろえる間隔（ステップ）。渡さなければ 1（16 分音符）。
+     * 選んだ刻みが 16 分より細かいか三連のときは、その刻み（lib/snap.ts の `realtimeQuantum`）。
+     */
+    quantum?: () => number;
 }
 
 /**
@@ -86,16 +98,20 @@ export interface RecorderOptions {
  *
  * - ステップ入力: 鍵盤を押すと、カーソルの位置に決まった長さのノートを置く。
  *   押している鍵盤を全部離すと、カーソルがその長さぶん進む。同時に押せば和音になる。
- *   リズムを取れなくても、音の高さだけ追って打ち込める
+ *   リズムを取れなくても、音の高さだけ追って打ち込める。1 歩は、選んだ刻み（`options.cell`。三連なら三連の位置を
+ *   1 つずつ進む）か、決めた長さ（`stepLength`）
  * - リアルタイム録音: 再生中に鍵盤を押した位置から離した位置までを、ノートにする。
- *   位置と長さは 16 分音符に丸める。再生していないときは録らない
+ *   位置と長さは 16 分音符に丸める（選んだ刻みが 16 分より細かいか三連のときは、その刻みに。`options.quantum`）。
+ *   再生していないときは録らない
  */
 export class MidiNoteRecorder {
     mode: RecordMode = 'off';
-    /** ステップ入力で置くノートの長さ（ステップ。4 = 4 分音符）。 */
+    /** ステップ入力で置くノートの長さ（ステップ。4 = 4 分音符）。`options.cell` が 1 歩を返すあいだは使わない。 */
     stepLength = 4;
     /** ステップ入力の、次に置く位置（ステップ）。 */
     cursor = 0;
+    /** ステップ入力で、押している鍵盤を全部離したときに進む先（いまの和音を置いたときに決める）。 */
+    private stepNext = 0;
 
     private options: RecorderOptions;
     /** リアルタイム録音で、押している鍵盤と、押した位置・強さ。 */
@@ -134,7 +150,7 @@ export class MidiNoteRecorder {
         if (event.type === 'off') {
             this.stepHeld.delete(event.pitch);
             if (this.stepHeld.size === 0 && this.stepPlaced) {
-                this.cursor += this.stepLength;
+                this.cursor = this.stepNext;
                 this.stepPlaced = false;
             }
             return { kind: 'ignored' };
@@ -143,11 +159,17 @@ export class MidiNoteRecorder {
         if (!this.inRange(event.pitch)) return { kind: 'skipped', reason: 'range' };
         const bounds = this.options.bounds?.() ?? null;
         // 範囲の外にカーソルが在れば、範囲の頭から始める (和音の途中では動かさない)
-        if (bounds && !this.stepPlaced && (this.cursor < bounds.start || this.cursor >= bounds.end)) this.cursor = bounds.start;
-        if (this.cursor + this.stepLength > (bounds ? bounds.end : this.options.totalSteps)) return { kind: 'skipped', reason: 'end' };
-        const note = { ...pitchToNote(event.pitch), step: this.cursor, length: this.stepLength, velocity: event.velocity };
+        // (位置は、刻みの数で比べる。三連を 3 つ置いた先が、区間の終わりちょうどなら、区間の外)
+        if (bounds && !this.stepPlaced && !inStepRange(this.cursor, bounds.start, bounds.end)) this.cursor = bounds.start;
+        // 1 歩: 選んだ刻み (在れば) か、決めた長さ。和音の 2 つ目からも、同じカーソルから同じ 1 歩になる
+        const target = this.options.cell?.(this.cursor)
+            ?? { step: this.cursor, length: this.stepLength, next: this.cursor + this.stepLength };
+        const step = normStep(target.step), length = normLength(target.length);
+        if (toTicks(step) + toTicks(length) > toTicks(bounds ? bounds.end : this.options.totalSteps)) return { kind: 'skipped', reason: 'end' };
+        const note = { ...pitchToNote(event.pitch), step, length, velocity: event.velocity };
         this.options.addNote(note);
         this.stepPlaced = true;
+        this.stepNext = normStep(target.next);
         return { kind: 'added', note };
     }
 
@@ -163,14 +185,16 @@ export class MidiNoteRecorder {
         if (pressed === undefined) return { kind: 'ignored' };
         this.held.delete(event.pitch);
         const start = pressed.position;
-        const step = Math.max(0, Math.round(start));
+        // そろえる間隔。ふだんは 16 分音符 (1 ステップ)。選んだ刻みが 16 分より細かいか三連なら、その刻み
+        const quantum = Math.max(1 / 60, this.options.quantum?.() ?? 1);
+        const step = Math.max(0, quantize(start, quantum));
         if (step >= this.options.totalSteps) return { kind: 'skipped', reason: 'end' };
-        // 離す前に再生が止まっていたら、長さは最短（16 分音符 1 つ）にする
+        // 離す前に再生が止まっていたら、長さは最短（そろえる間隔 1 つぶん）にする
         let end = position ?? start;
         // 区間ループの終わりをまたいだ (再生位置が頭に戻った) ら、区間の終わりまでにする
         const bounds = this.options.bounds?.() ?? null;
         if (bounds && end < start) end = bounds.end;
-        const length = Math.min(Math.max(1, Math.round(end - start)), this.options.totalSteps - step);
+        const length = normLength(Math.min(Math.max(quantum, quantize(end - start, quantum)), this.options.totalSteps - step));
         // 強さは、押したときのもの (離すときの強さは、ノートの強さではない)
         const note = { ...pitchToNote(event.pitch), step, length, velocity: pressed.velocity };
         this.options.addNote(note);
@@ -195,6 +219,11 @@ export interface MidiSource {
     start(onMessage: MidiMessageHandler, onDevices: (names: string[]) => void): Promise<void>;
     /** 入力を閉じる。 */
     stop(): Promise<void>;
+    /**
+     * つながっている機器の名前を、入力を開かずに調べる。調べられない入力元には無い
+     * （ブラウザの Web MIDI API は、調べるだけでも利用者に許可を尋ねるので、ここでは使わない）。
+     */
+    ports?(): Promise<string[]>;
 }
 
 /** Web MIDI API のうち、ここで使うぶん。 */
@@ -275,6 +304,10 @@ class DesktopMidiSource implements MidiSource {
             this.unlisten = null;
             await invokeDesktop<void>('midi_stop');
         }
+    }
+
+    ports(): Promise<string[]> {
+        return invokeDesktop<string[]>('midi_ports');
     }
 }
 

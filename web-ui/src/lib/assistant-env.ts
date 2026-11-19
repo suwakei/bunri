@@ -139,7 +139,7 @@ export function useAssistantDeps(): AssistantDeps {
                 return progressFacts(chart !== null, songFile !== null, coachResult !== null && coachResult.result.summary.attempt_count > 0);
             },
             referenceSource: (trackId) => referenceSourceOf(engine.getTrack(trackId)),
-            requestDiff: (reference, attempt, perBar, source) => requestDiff(reference, attempt, perBar, source),
+            requestDiff: (reference, attempt, perBar, source, mode) => requestDiff(reference, attempt, perBar, source, mode),
             practiceCompare: async () => (await now().daw.practiceCompareRef.current?.()) ?? null,
             savedGuide: (chartId, sectionId) => fetchSavedGuide(chartId, sectionId),
             pointAt: async (key) => {
@@ -202,6 +202,10 @@ export function useAssistantDeps(): AssistantDeps {
             // 「元に戻す」付きの知らせは出さない (deleteTrack と同じ)
             deleteClip: (trackId, clipIndex) => { timeline().deleteClip(trackId, clipIndex, { toast: false }); },
             duplicateClip: (trackId, clipIndex) => { timeline().duplicateClip(trackId, clipIndex); },
+            // 端のドラッグ・メニュー・フェードの窓と同じ処理 (タイムラインが、元に戻す履歴に載せて行う)
+            trimClip: (trackId, clipIndex, range) => { timeline().trimClip(trackId, clipIndex, range); },
+            splitClip: (trackId, clipIndex, atSec) => { timeline().splitClipAt(trackId, clipIndex, atSec); },
+            fadeClip: (trackId, clipIndex, fades) => { timeline().setClipFades(trackId, clipIndex, fades); },
             applyEffect: async (trackId, clipIndex, effect, params, label) => {
                 const track = engine.getTrack(trackId);
                 const clip = track?.clips[clipIndex];

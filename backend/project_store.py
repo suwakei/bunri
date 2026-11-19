@@ -19,6 +19,23 @@
 
 画面は、音声の元のバイト列のハッシュを先に送り（``missing_audio``）、写しに無いものだけを送る
 （``stage_audio``）。保存し直すときは、前の写しから同じハッシュの音声をそのまま写す（作り直さない）。
+
+## 落ちたときの復旧（自動保存の写し）
+
+画面は、保存していない変更が在るあいだ、ときどき文書を作業用の写しに書き、それを復旧用の写しにする
+（``recovery_put``）。置き場はデータ置き場の ``recovery/`` で、写し 1 つ（``<token>.bunri``）と、目印
+（``recovery.json``。プロジェクトの名前・利用者のファイルの場所・写しの名前・書いた時刻）が入る。
+利用者が選んだ場所のファイルは、自動では書き換えない（利用者が保存したときだけ）。
+
+- 目印が指している写しだけが「いまの復旧用の写し」。新しい写しを置いてから目印を差し替え、そのあとで前の
+  写しを消すので、どの瞬間に落ちても、目印は中身のそろった写しを指している（書きかけを見せない）
+- 作業用の写しは写さずに移す（大きなプロジェクトを、自動保存のたびに 2 つ持たないため）。移したあとも、
+  その名前を ``base`` に指定すれば、音声はそこから写せる（``_base_path``）
+- 次の起動で、画面が ``recovery_info`` を見て「続きを開きますか」と尋ねる。開くときは、新しい作業用の写しに
+  写す（``recovery_open``）。保存できたとき・捨てると決めたときに消す（``recovery_clear``）
+- 画面は、捨てるときに書き途中の自動保存を待たない。消すときに書き手の目印（画面ごとの名前と世代）を
+  ``fence.json`` に覚え、それより前の世代の自動保存がこのあとに届いても断る（消した写しを置き直させない）
+- データの整理（``cleanup``）は ``recovery/`` に触らない
 """
 import json
 import re
@@ -80,6 +97,30 @@ def work_path(token):
     return audio_utils.work_dir() / f"{token}.bunri"
 
 
+def _base_path(base):
+    """音声を写してくる元の写し（``base``）のパスを返す。
+
+    ふつうは作業用の写し（``work/<base>.bunri``）。自動保存の写しは復旧用の置き場へ移してあるので、
+    作業用の写しが無く、復旧用の写しがその名前のときは、そちらを返す（同じ音声を送り直させないため）。
+
+    Args:
+        base: 写しの名前。
+
+    Returns:
+        pathlib.Path: 写しのパス（在るとは限らない。無ければ、音声は 1 つも写せないだけ）。
+
+    Raises:
+        ProjectError: 名前の形が正しくない場合（400）。
+    """
+    path = work_path(base)
+    if path.is_file():
+        return path
+    mark = _read_recovery()
+    if mark is not None and mark["token"] == base:
+        return _recovery_copy(base)
+    return path
+
+
 def _staged_dir():
     return audio_utils.work_dir("staged")
 
@@ -111,7 +152,7 @@ def missing_audio(base, hashes):
             raise ProjectError(400, "音声の指定が正しくありません")
         if h not in wanted:
             wanted.append(h)
-    have = bunri_file.audio_hashes_in(work_path(base)) if base else set()
+    have = bunri_file.audio_hashes_in(_base_path(base)) if base else set()
     return [h for h in wanted if h not in have and not _staged_path(h).exists()]
 
 
@@ -197,8 +238,11 @@ def save_document(doc, base=None, app_version="0.1.0"):
     started = time.monotonic()
     if not isinstance(doc, dict):
         raise ProjectError(400, "プロジェクトの形が正しくありません")
-    base_path = work_path(base) if base else None
+    if base:
+        work_path(base)  # 名前の形だけ先に確かめる
     with _save_lock:
+        # 錠の中で決める (復旧用の写しを置き換えている途中の名前を掴まないように)
+        base_path = _base_path(base) if base else None
         token = new_token()
         path = work_path(token)
         tmp = path.with_suffix(".tmp")
@@ -337,6 +381,217 @@ def read_audio(token, hash_):
     return audio
 
 
+# ---- 落ちたときの復旧（自動保存の写し） ----
+
+# 目印のファイル名と、目印の形の版
+_RECOVERY_MARK = "recovery.json"
+_RECOVERY_VERSION = 1
+# 目印に入れる文字列の長さの上限（名前・利用者のファイルの場所・projects/ の中の名前）
+_RECOVERY_TEXT_LIMITS = {"name": 200, "path": 4096, "file": 255}
+# 捨てたときの目印（どの画面の、どの世代より前の自動保存を断るか）のファイル名
+_RECOVERY_FENCE = "fence.json"
+# 画面ごとの名前の長さの上限（画面が起動ごとに作る乱数の文字列）
+_WRITER_SESSION_LIMIT = 64
+
+
+def _recovery_copy(token):
+    """復旧用の写しのパス（``recovery/<token>.bunri``）。``token`` は形を確かめたものを渡す。"""
+    return audio_utils.recovery_dir() / f"{token}.bunri"
+
+
+def _read_recovery():
+    """目印を読む。無い・読めない・指している写しが無いときは None（復旧できるものは無い）。"""
+    try:
+        mark = json.loads((audio_utils.recovery_dir() / _RECOVERY_MARK).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(mark, dict):
+        return None
+    token = mark.get("token")
+    if not isinstance(token, str) or not _TOKEN_RE.match(token) or not _recovery_copy(token).is_file():
+        return None
+    return mark
+
+
+def _recovery_text(payload, key):
+    """目印に入れる文字列を確かめる（文字列か None。空の文字列は None にする）。"""
+    value = payload.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > _RECOVERY_TEXT_LIMITS[key] or "\x00" in value:
+        raise ProjectError(400, "復旧用の写しの指定が正しくありません")
+    return value
+
+
+def _recovery_view(mark):
+    """目印を、画面に返す形にする。"""
+    return {
+        "name": mark.get("name"), "path": mark.get("path"), "file": mark.get("file"),
+        "saved_at": mark.get("saved_at"), "size_bytes": _recovery_copy(mark["token"]).stat().st_size,
+    }
+
+
+def _recovery_writer(writer):
+    """自動保存の書き手の目印（``{"session": 画面ごとの名前, "generation": 世代}``）を確かめる。
+
+    画面は、捨てる（閉じる・保存しないと決めた）たびに世代を進める。捨てたあとに届いた、それより前の世代の
+    自動保存を断るのに使う。
+
+    Returns:
+        tuple[str, int] | None: ``(session, generation)``。渡されなければ None（目印なし。古い画面・道具からの呼び出し）。
+
+    Raises:
+        ProjectError: 形が正しくない場合（400）。
+    """
+    if writer is None:
+        return None
+    session = writer.get("session") if isinstance(writer, dict) else None
+    generation = writer.get("generation") if isinstance(writer, dict) else None
+    if (not isinstance(session, str) or not 0 < len(session) <= _WRITER_SESSION_LIMIT or "\x00" in session
+            or isinstance(generation, bool) or not isinstance(generation, int) or generation < 0):
+        raise ProjectError(400, "自動保存の書き手の指定が正しくありません")
+    return session, generation
+
+
+def _read_fence():
+    """捨てたときの目印を読む。無い・読めないときは None。"""
+    try:
+        fence = json.loads((audio_utils.recovery_dir() / _RECOVERY_FENCE).read_text(encoding="utf-8"))
+        return _recovery_writer(fence)
+    except (OSError, ValueError, ProjectError):
+        return None
+
+
+def _fenced(writer):
+    """この書き手の自動保存が、捨てたあとに届いた古いものか（同じ画面で、捨てたときの世代より前）。"""
+    if writer is None:
+        return False
+    fence = _read_fence()
+    return fence is not None and fence[0] == writer[0] and writer[1] < fence[1]
+
+
+def _sweep_recovery(keep=None):
+    """復旧の置き場から、いまの写し（``keep``）以外を消す（前の写し、書きかけ）。目印には触らない。"""
+    for p in audio_utils.recovery_dir().iterdir():
+        if p.name in (_RECOVERY_MARK, _RECOVERY_FENCE) or (keep is not None and p == keep):
+            continue
+        if p.is_file():
+            p.unlink(missing_ok=True)
+
+
+def recovery_put(token, name=None, path=None, file=None, now=None, writer=None):
+    """作業用の写しを、復旧用の写しにする（自動保存）。前の復旧用の写しは、差し替えたあとで消す。
+
+    順番は「写しを置く → 目印を差し替える（一時ファイルから rename）→ 前の写しを消す」。途中で落ちても、
+    目印は前の写しか新しい写しの、どちらか中身のそろったほうを指している。
+
+    Args:
+        token: 作業用の写しの名前（``save_document`` が返したもの）。写しは ``recovery/`` へ移す。
+        name: プロジェクトの名前（まだ無ければ None）。
+        path: デスクトップ版の、利用者のファイルの場所（まだ保存していなければ None）。sidecar は開かない。
+        file: 開発用のブラウザ起動の、``projects/`` の中の名前（無ければ None）。
+        now: いまの時刻（テスト用）。
+        writer: 書き手の目印 ``{"session", "generation"}``（``recovery_clear`` を参照）。捨てたあとに届いた
+            古い世代のものなら断る。
+
+    Returns:
+        dict: ``{"name", "path", "file", "saved_at": UNIX 秒, "size_bytes"}``。
+
+    Raises:
+        ProjectError: 写しが無い（404）、指定の形が正しくない（400）、捨てたあとに届いた古い自動保存（409）の場合。
+    """
+    src = work_path(token)
+    given = {"name": name, "path": path, "file": file}
+    texts = {key: _recovery_text(given, key) for key in _RECOVERY_TEXT_LIMITS}
+    who = _recovery_writer(writer)
+    with _save_lock:
+        if not src.is_file():
+            raise ProjectError(404, "復旧用に残すプロジェクトが見つかりません")
+        if _fenced(who):
+            # 利用者が捨てると決めたあとに届いた、書き途中だった自動保存。置き直すと、次の起動でまた尋ねてしまう
+            src.unlink(missing_ok=True)
+            raise ProjectError(409, "保存しないと決めたあとの自動保存なので、残しませんでした")
+        directory = audio_utils.recovery_dir()
+        copy = _recovery_copy(token)
+        src.replace(copy)
+        mark = {
+            "version": _RECOVERY_VERSION, "token": token, **texts,
+            "saved_at": round(time.time() if now is None else now, 3),
+        }
+        tmp = directory / f".{_RECOVERY_MARK}.tmp"
+        tmp.write_text(json.dumps(mark, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(directory / _RECOVERY_MARK)
+        _sweep_recovery(keep=copy)
+        return _recovery_view(mark)
+
+
+def recovery_info():
+    """復旧用の写しが在れば、その目印を返す（起動したときに、画面が「続きを開きますか」と尋ねる材料）。
+
+    Returns:
+        dict | None: ``{"name", "path", "file", "saved_at", "size_bytes"}``。無ければ None。
+    """
+    mark = _read_recovery()
+    if mark is None:
+        return None
+    try:
+        return _recovery_view(mark)
+    except OSError:
+        return None
+
+
+def recovery_open():
+    """復旧用の写しを、新しい作業用の写しに写す（あとは ``open_document`` で開ける）。
+
+    復旧用の写しは消さない。開いたあとも保存していない変更のままなので、保存するか、捨てると決めるまで残す。
+
+    Returns:
+        dict: ``{"token": 新しい作業用の写しの名前, "name", "path", "file"}``。
+
+    Raises:
+        ProjectError: 復旧用の写しが無い場合（404）。
+    """
+    with _save_lock:
+        mark = _read_recovery()
+        if mark is None:
+            raise ProjectError(404, "復旧できる変更は残っていません")
+        token = new_token()
+        dst = work_path(token)
+        tmp = dst.with_suffix(".tmp")
+        shutil.copyfile(_recovery_copy(mark["token"]), tmp)
+        tmp.replace(dst)
+    return {"token": token, "name": mark.get("name"), "path": mark.get("path"), "file": mark.get("file")}
+
+
+def recovery_clear(writer=None):
+    """復旧用の写しと目印を消す（保存できた・捨てると決めた）。目印を先に消す。
+
+    画面は、捨てるときに書き途中の自動保存を待たない（窓を閉じるのを待たせないため）。そのため、書き途中だった
+    自動保存がこのあとに届くことがある。``writer`` を渡すと「この画面の、この世代より前の自動保存は断る」と
+    覚えておき（``fence.json``）、``recovery_put`` がそれを断る。
+
+    Args:
+        writer: ``{"session": 画面ごとの名前, "generation": 捨てたあとの世代}``。None なら覚えない。
+
+    Returns:
+        bool: 復旧用の写しが在ったか。
+
+    Raises:
+        ProjectError: ``writer`` の形が正しくない場合（400）。
+    """
+    who = _recovery_writer(writer)
+    with _save_lock:
+        if who is not None:
+            fence = audio_utils.recovery_dir() / _RECOVERY_FENCE
+            tmp = fence.with_name(f".{_RECOVERY_FENCE}.tmp")
+            tmp.write_text(json.dumps({"session": who[0], "generation": who[1]}), encoding="utf-8")
+            tmp.replace(fence)
+        existed = _read_recovery() is not None
+        (audio_utils.recovery_dir() / _RECOVERY_MARK).unlink(missing_ok=True)
+        _sweep_recovery()
+    return existed
+
+
 # ---- 開発用のブラウザ起動での置き場（projects/）と、以前の形式 ----
 
 def _display_name(name):
@@ -434,13 +689,19 @@ def library_open(file):
 
 
 def _notes(value):
+    """以前の形式のノート列を、文書のノートの形にする。
+
+    位置と長さは小数になりうる（切り捨てない。1/60 ステップの倍数に丸め、整数になる値は整数。
+    ``bunri_file.note_step`` ``note_length``）。数でない位置は 0、数でない・0 以下の長さは 1。
+    """
     if not isinstance(value, list):
         return []
     out = []
     for n in value:
         if isinstance(n, dict) and isinstance(n.get("note"), str):
-            out.append({"note": n["note"], "octave": int(n.get("octave") or 0), "step": int(n.get("step") or 0),
-                        "length": max(1, int(n.get("length") or 1))})
+            out.append({"note": n["note"], "octave": int(n.get("octave") or 0),
+                        "step": bunri_file.note_step(n.get("step")),
+                        "length": bunri_file.note_length(n.get("length"))})
     return out
 
 
@@ -473,6 +734,8 @@ def legacy_document(data, name):
             "mute": t.get("mute") is True, "solo": False,
             "notes": _notes(t.get("pianoNotes")),
             "referenceNotes": _notes(t.get("referenceNotes")) if isinstance(t.get("referenceNotes"), list) else None,
+            # 以前の形式のクリップは、位置と長さだけ (音声は無い)。音声の中の鳴らし始め (audioStart) とフェードは
+            # 当時は無かったので、項目を付けない (付いていないクリップは、音声の全体をそのまま鳴らす)
             "clips": [
                 {"name": c.get("name") if isinstance(c.get("name"), str) else "clip",
                  "offset": float(c.get("offset") or 0), "duration": float(c.get("duration") or 0), "audio": None}
@@ -528,6 +791,8 @@ def _categories():
         {"key": "charts", "label": "カルテの作業ファイル", "path": results / "charts", "skip": (), "cleanable": True},
         {"key": "work", "label": "作業中のプロジェクトの写し", "path": audio_utils.work_dir(), "skip": (),
          "cleanable": True},
+        {"key": "recovery", "label": "保存していない変更の控え（落ちたときに続きを開くためのもの。消さない）",
+         "path": audio_utils.recovery_dir(), "skip": (), "cleanable": False},
         {"key": "claude", "label": "保存したガイドと説明（Claude の結果。消さない）", "path": results / "guide",
          "extra": results / "coach", "skip": (), "cleanable": False},
         {"key": "projects", "label": "アプリの中に保存したプロジェクトと以前の形式（消さない）",
@@ -564,6 +829,7 @@ def cleanup(keep_tokens=(), keep_charts=(), min_age_sec=CLEANUP_MIN_AGE_SEC, now
     - 新しいファイル（``min_age_sec`` 以内に書かれたもの。動いている処理が書いている途中かもしれない）
     - ガイドと説明の保存（Claude の結果。作り直すと費用がかかる）、使用量の記録
     - ``projects/``（アプリの中に保存したプロジェクトと以前の形式）
+    - ``recovery/``（保存していない変更の控え。音声も中に持っているので、ほかを消しても続きを開ける）
     - データ置き場の外のもの（利用者が選んだ場所の `.bunri` には、そもそも触らない）
 
     Args:

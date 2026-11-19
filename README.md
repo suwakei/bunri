@@ -24,7 +24,9 @@ bunri is a desktop app for macOS (Apple Silicon). The Python backend and the ML 
 There is no prebuilt download yet. Build the app yourself:
 
 ```bash
-# Needs Rust, Node.js 22+ and an internet connection (the build downloads the `uv` binary it bundles)
+# Needs Rust, Node.js 22+, CMake and an internet connection (the build downloads the `uv` binary it bundles)
+brew install cmake
+git submodule update --init --recursive   # sfizz, used by the audio engine (takes about 10 minutes the first time)
 npm ci
 npm --prefix web-ui ci
 npm run tauri build
@@ -111,7 +113,7 @@ graph LR
 ## Development
 
 The audio engine (`src-tauri/audio-engine`) builds [sfizz](https://github.com/sfztools/sfizz) from a git submodule,
-so `make test` / `make lint` also need the submodules and CMake:
+and the desktop app links it (playback runs in the Rust engine), so `make desktop`, `make test` and `make lint` need the submodules and CMake:
 
 ```bash
 git submodule update --init --recursive

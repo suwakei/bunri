@@ -26,6 +26,7 @@ import { tabPanelProps, type TabDef } from '../lib/tabs';
 import LearnPanel from './LearnPanel';
 import DataCleanup from './DataCleanup';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy } from '../lib/notice';
 import { FX_LABELS, FX_PARAMS, defaultFxParams, effectedClip } from '../lib/fx';
 
 /**
@@ -219,7 +220,7 @@ function SynthPanel() {
             <label htmlFor="synth-track">追加先トラック</label>
             <TrackSelector id="synth-track" value={synthTrack} onChange={setSynthTrack} emptyLabel="ピアノロールで開いているトラック"
                 tipText="できた音を置くトラック" />
-            <button className="action-btn" onClick={handleRender} disabled={showProgress}
+            <button className="action-btn" onClick={handleRender} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('ピアノロールのノートを音声にして、トラックにクリップとして置きます')}>シーケンスをレンダリング</button>
         </div>
     );
@@ -294,7 +295,7 @@ function DrumPanel() {
             <label htmlFor="drum-track">追加先トラック</label>
             <TrackSelector id="drum-track" value={drumTrack} onChange={setDrumTrack} includeNew
                 tipText="ドラムを置くトラック。「新規作成」なら、新しいトラックを作ります" />
-            <button className="action-btn" onClick={handleGenerate} disabled={showProgress}
+            <button className="action-btn" onClick={handleGenerate} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('選んだパターンでドラムの音声を作り、1 小節目から置きます')}>ドラム生成 → トラックに追加</button>
         </div>
     );
@@ -312,12 +313,12 @@ function FxPanel() {
     const { setStatus, withProgress, showProgress, bumpTracks, record } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
-    const defaultParams = useCallback(() => defaultFxParams(fxType), [fxType]);
-    const [params, setParams] = useState<Record<string, number>>(defaultParams);
-
-    useEffect(() => {
-        setParams(defaultParams());
-    }, [defaultParams]);
+    const [params, setParams] = useState<Record<string, number>>(() => defaultFxParams('eq'));
+    // 種類を変えたら、値はその種類の既定に戻す
+    const changeFxType = useCallback((next: string) => {
+        setFxType(next);
+        setParams(defaultFxParams(next));
+    }, []);
 
     const handleApply = useCallback(async () => {
         const track = engine.getTrack(resolveTrackId(fxTrack));
@@ -346,7 +347,7 @@ function FxPanel() {
             <TrackSelector id="fx-track" value={fxTrack} onChange={setFxTrack}
                 tipText="効果をかけるトラック。そのトラックの最初のクリップにかかります" />
             <label htmlFor="fx-type">エフェクト</label>
-            <select id="fx-type" value={fxType} onChange={e => setFxType(e.target.value)} {...tip(FX_TIPS[fxType] ?? '')}>
+            <select id="fx-type" value={fxType} onChange={e => changeFxType(e.target.value)} {...tip(FX_TIPS[fxType] ?? '')}>
                 {Object.entries(FX_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
             <div id="fx-params">
@@ -360,7 +361,7 @@ function FxPanel() {
                     </div>
                 ))}
             </div>
-            <button className="action-btn" onClick={handleApply} disabled={showProgress}
+            <button className="action-btn" onClick={handleApply} disabled={showProgress} {...blockedBy(showProgress && BUSY_REASON)}
                 {...tip('効果をかけて、クリップをかけた後の音に置き換えます。元に戻すで戻せます')}>エフェクト適用</button>
         </div>
     );
@@ -413,7 +414,7 @@ function FilePanel() {
     // 単音メロディの解析は時間のかかる処理 (ジョブ)。進み具合は解析のボタンの下に出す
     const analyzeJob = useJob('file-analyze', (job) => {
         // 画面を開き直す前に始めた解析は、置く先のピアノロールが分からないので、終わったことだけ知らせる
-        if (job.state === 'done') setStatus('前に始めた単音メロディの解析が終わりました。結果を置くには、トラックを開いてもう一度解析してください');
+        if (job.state === 'done') setStatus('前に始めた単音メロディの解析が終わりました。結果を置くには、トラックを開いてもう一度解析してください', 'hint');
         else if (job.state === 'error') setStatus(jobErrorMessage(job), 'error');
     });
 
@@ -449,15 +450,21 @@ function FilePanel() {
     }, [setStatus]);
 
     const handleMicStop = useCallback(async () => {
-        const buffer = await engine.stopRecording();
-        setIsRecording(false);
-        await recordAsync('録音を追加', async () => {
-            let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
-            if (!recTrack) recTrack = engine.addTrack('Rec');
-            await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
-        });
-        bumpTracks();
-        setStatus('録音をトラックに追加しました');
+        try {
+            const buffer = await engine.stopRecording();
+            setIsRecording(false);
+            await recordAsync('録音を追加', async () => {
+                let recTrack = engine.tracks.find(t => t.name.includes('Rec'));
+                if (!recTrack) recTrack = engine.addTrack('Rec');
+                await engine.addClipFromBuffer(recTrack.id, buffer, 'recording');
+            });
+            bumpTracks();
+            setStatus('録音をトラックに追加しました');
+        } catch (_e) {
+            // 録った音を読めなかった: ボタンを「録音停止」のままにせず、何が起きたかを知らせる
+            setIsRecording(false);
+            setStatus('録音した音を読めませんでした。録音が短すぎたか、マイクから音が届いていない可能性があります。もう一度録音してください', 'error');
+        }
     }, [bumpTracks, setStatus, recordAsync]);
 
     return (
@@ -486,6 +493,7 @@ function FilePanel() {
                 onChange={e => setSensitivity(+e.target.value)}
                 {...tip('上げると小さな音まで拾います。余分なノートが多いときは下げてください')} />
             <button className="action-btn" onClick={handleAnalyze} disabled={showProgress || analyzeJob.heavyBusy}
+                {...blockedBy((showProgress || analyzeJob.heavyBusy) && BUSY_REASON)}
                 {...tip('音の高さを読み取って、開いているピアノロールにノートを並べます')}>解析してピアノロールに配置</button>
             <JobCard slot="file-analyze" job={analyzeJob.job} busyJob={analyzeJob.busyJob} onCancel={() => void analyzeJob.cancel()}
                 onShowBusy={showJob} hint="解析は途中では止められません。中止すると、終わったあとに結果を捨てます。" />

@@ -13,7 +13,7 @@ use tauri::webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse};
 use tauri::{App, AppHandle, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 
 /// メインの窓のラベル (tauri.conf.json の `app.windows[].label` と合わせる)。
-const MAIN_LABEL: &str = "main";
+pub(crate) const MAIN_LABEL: &str = "main";
 
 /// 追加で開いた窓のラベルに付ける連番。
 static NEXT_WINDOW: AtomicUsize = AtomicUsize::new(1);

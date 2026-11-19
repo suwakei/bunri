@@ -9,13 +9,15 @@
  * - 画面の状態に触る部分は、入口をまとめたオブジェクト（`ToolEnv`）を引数に取る。本物は lib/assistant-env.ts が
  *   `useDaw()` などから作り、テストは偽物を渡す
  *
- * 位置はステップ（16 分音符。0 が 1 小節目の頭）、小節は 1 から、高さは `"C4"` の形。
+ * 位置はステップ（16 分音符。0 が 1 小節目の頭。小数も可: 0.5 = 32 分音符、4/3 = 8 分の三連）、小節は 1 から、
+ * 高さは `"C4"` の形。ステップの引数は `stepValue` で読み、1/60 ステップの倍数にそろえる。
  */
 import type { PianoNote } from './engine';
 import type { SongChart } from './chart';
-import type { ProjectGrid } from './grid';
+import { inStepRange, normLength, normStep, stepUnits, toTicks, type ProjectGrid } from './grid';
 import type { RecordMode } from './midi-input';
 import type { DiffResult, ReferenceSource } from './coach';
+import type { DiffMode } from './drums';
 import type { SavedGuideResponse } from './guide';
 import type { ProgressFacts } from './learn';
 import type { ListenMode, PracticeLoop } from './practice';
@@ -161,6 +163,29 @@ export function number(args: Record<string, unknown>, key: string, range: { min:
     return value;
 }
 
+/** ノートの長さの下限（ステップ。0.25 = 64 分音符）。 */
+export const LENGTH_MIN = 0.25;
+
+/**
+ * ステップの項目（位置・長さ・範囲の端・ずらす幅）を読む。1 ステップは 16 分音符で、小数も受ける
+ * （0.5 = 32 分音符、4/3 = 8 分の三連、2/3 = 16 分の三連）。値は 1/60 ステップの倍数にそろえて返す
+ * （lib/grid.ts の `normStep`。`1.3333` と書かれた三連も、ちょうど 4/3 になる）。
+ */
+export function stepValue(args: Record<string, unknown>, key: string, range: { min?: number; max?: number; required?: boolean } = {}): number | undefined {
+    const raw = args[key];
+    if (raw === undefined || raw === null) {
+        if (range.required) throw new ArgError(`${key} を指定してください`);
+        return undefined;
+    }
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+        throw new ArgError(`${key} は数で指定してください（1 ステップ = 16 分音符。小数も可: 0.5 = 32 分音符、1.3333 = 8 分の三連。いまは ${show(raw)}）`);
+    }
+    const value = normStep(raw);
+    if (range.min !== undefined && value < range.min) throw new ArgError(`${key} は ${range.min} 以上にしてください（いまは ${raw}）`);
+    if (range.max !== undefined && value > range.max) throw new ArgError(`${key} は ${range.max} 以下にしてください（いまは ${raw}）`);
+    return value;
+}
+
 /** true / false の項目を読む。 */
 export function flag(args: Record<string, unknown>, key: string): boolean | undefined {
     const value = args[key];
@@ -217,14 +242,15 @@ export function readNotes(value: unknown, maxSteps: number, range?: { start: num
             const item = fields(raw, ['pitch', 'step', 'length', 'velocity']);
             if (item.pitch === undefined) throw new ArgError('pitch を指定してください（"C4" のような高さ）');
             const pitch = parsePitch(item.pitch);
-            const step = integer(item, 'step', { min: 0, required: true })!;
-            const length = integer(item, 'length', { min: 1, required: true })!;
+            // 位置と長さは、小数も受ける (三連・32 分)。1/60 ステップの倍数にそろえる
+            const step = stepValue(item, 'step', { min: 0, required: true })!;
+            const length = stepValue(item, 'length', { min: LENGTH_MIN, required: true })!;
             const velocity = integer(item, 'velocity', { min: 1, max: 127 });
-            if (step + length > maxSteps) {
-                throw new ArgError(`step + length が ${maxSteps} を超えています（ピアノロールの長さの上限。いまは ${step} + ${length}）`);
+            if (toTicks(step) + toTicks(length) > toTicks(maxSteps)) {
+                throw new ArgError(`step + length が ${maxSteps} を超えています（ピアノロールの長さの上限。いまは ${stepOut(step)} + ${stepOut(length)}）`);
             }
-            if (range && (step < range.start || step >= range.end)) {
-                throw new ArgError(`step ${step} は範囲 [${range.start}, ${range.end}) の外です。置き換えるノートは、範囲の中で始めてください`);
+            if (range && !inStepRange(step, range.start, range.end)) {
+                throw new ArgError(`step ${stepOut(step)} は範囲 [${stepOut(range.start)}, ${stepOut(range.end)}) の外です。置き換えるノートは、範囲の中で始めてください`);
             }
             const note: PianoNote = { note: pitch.note, octave: pitch.octave, step, length };
             if (velocity !== undefined) note.velocity = velocity;
@@ -240,24 +266,24 @@ export function readNotes(value: unknown, maxSteps: number, range?: { start: num
     return notes;
 }
 
-/** ステップの範囲 `[start_step, end_step)` を読む。 */
+/** ステップの範囲 `[start_step, end_step)` を読む（小数も可）。 */
 export function readRange(args: Record<string, unknown>): { start: number; end: number } {
-    const start = integer(args, 'start_step', { min: 0, required: true })!;
-    const end = integer(args, 'end_step', { min: 1, required: true })!;
-    if (end <= start) throw new ArgError(`end_step は start_step より大きくしてください（いまは start_step ${start}、end_step ${end}。end_step は範囲に含みません）`);
+    const start = stepValue(args, 'start_step', { min: 0, required: true })!;
+    const end = stepValue(args, 'end_step', { min: 0, required: true })!;
+    if (toTicks(end) <= toTicks(start)) throw new ArgError(`end_step は start_step より大きくしてください（いまは start_step ${stepOut(start)}、end_step ${stepOut(end)}。end_step は範囲に含みません）`);
     return { start, end };
 }
 
 // ---- ノートの並びの計算（元の配列もノートも書き換えない。新しい配列を返す） ----
 
-/** 同じ高さ・同じ位置か、を見る鍵。 */
+/** 同じ高さ・同じ位置か、を見る鍵。位置は、1/60 ステップの単位にそろえて比べる（小数の位置でも、取り違えない）。 */
 export function noteKey(note: Pick<PianoNote, 'note' | 'octave' | 'step'>): string {
-    return `${note.note}${note.octave}@${note.step}`;
+    return `${note.note}${note.octave}@${stepUnits(note.step)}`;
 }
 
-/** ノートを写す（強さは、持っているときだけ）。 */
+/** ノートを写す（強さは、持っているときだけ）。位置と長さは、1/60 ステップの倍数にそろえる。 */
 export function copyNote(n: PianoNote): PianoNote {
-    const copy: PianoNote = { note: n.note, octave: n.octave, step: n.step, length: n.length };
+    const copy: PianoNote = { note: n.note, octave: n.octave, step: normStep(n.step), length: normLength(n.length) };
     if (typeof n.velocity === 'number') copy.velocity = n.velocity;
     return copy;
 }
@@ -286,7 +312,8 @@ export function addNotes(existing: readonly PianoNote[], incoming: readonly Pian
 
 /** 範囲 `[start, end)` に「始まり」が入っているか。`pitches` が在れば、その高さだけ。 */
 export function inRange(note: PianoNote, start: number, end: number, pitches?: ReadonlySet<string>): boolean {
-    return note.step >= start && note.step < end && (!pitches || pitches.has(formatPitch(note)));
+    // 範囲に入るかは、刻みの数 (1/60 ステップの整数) で比べる
+    return inStepRange(note.step, start, end) && (!pitches || pitches.has(formatPitch(note)));
 }
 
 /**
@@ -314,7 +341,8 @@ export function replaceNotes(existing: readonly PianoNote[], start: number, end:
 /** ステップの範囲 `[start, end)` を「1〜2 小節」の形にする。 */
 export function barsLabel(start: number, end: number, perBar: number): string {
     const first = Math.floor(start / perBar) + 1;
-    const last = Math.floor(Math.max(start, end - 1) / perBar) + 1;
+    // 終わりは範囲に含まない。小数の終わり (三連・32 分) でも、終わりのすぐ手前が在る小節までを数える
+    const last = Math.floor(Math.max(start, end - 1e-6) / perBar) + 1;
     return first === last ? `${first} 小節` : `${first}〜${last} 小節`;
 }
 
@@ -325,9 +353,17 @@ export function barsOfNotes(notes: readonly PianoNote[], perBar: number): string
     return barsLabel(start, end, perBar);
 }
 
+/**
+ * ステップの値を、Claude に返す形にする。整数はそのまま、小数（三連・32 分）は 4 桁まで（`1.3333`）。
+ * 同じ値を引数で受けたときは、`stepValue` が 1/60 ステップにそろえるので、ちょうど元の位置に戻る。
+ */
+export function stepOut(step: number): number {
+    return round(step, 4);
+}
+
 /** ノートを、Claude に返す形（`{pitch, step, length, velocity?}`）にする。強さを持たないノートには付けない。 */
 export function describeNote(n: PianoNote): Record<string, unknown> {
-    const out: Record<string, unknown> = { pitch: formatPitch(n), step: n.step, length: n.length };
+    const out: Record<string, unknown> = { pitch: formatPitch(n), step: stepOut(n.step), length: stepOut(n.length) };
     if (typeof n.velocity === 'number') out.velocity = n.velocity;
     return out;
 }
@@ -361,8 +397,16 @@ export interface ToolClip {
     name: string;
     /** タイムラインの上の位置（秒） */
     offset: number;
-    /** 長さ（秒） */
+    /** 鳴らす長さ（秒） */
     duration: number;
+    /** 音声の中の、鳴らし始める位置（秒）。縮めていなければ無い（lib/clip.ts） */
+    audioStart?: number;
+    /** フェードインの長さ（秒）。無ければ 0 */
+    fadeIn?: number;
+    /** フェードアウトの長さ（秒）。無ければ 0 */
+    fadeOut?: number;
+    /** 音声（長さだけを読む。どこまで伸ばせるかを知るため） */
+    buffer?: { duration: number };
     /** 音声が見つからなかったクリップ（プロジェクトを開いたときに、音声が無かった） */
     missing?: boolean;
 }
@@ -458,8 +502,11 @@ export interface ToolEnv {
     learn: () => ProgressFacts;
     /** お手本の出どころ（MIDI ファイルから読み込んだお手本のときだけ、強さも比べる） */
     referenceSource: (trackId: number) => ReferenceSource;
-    /** お手本と打ち込みの差分を取る（信号処理の側の計算。Claude は呼ばない） */
-    requestDiff: (reference: PianoNote[], attempt: PianoNote[], stepsPerBar: number, source: ReferenceSource) => Promise<DiffResult>;
+    /**
+     * お手本と打ち込みの差分を取る（信号処理の側の計算。Claude は呼ばない）。
+     * `mode` は比べ方（お手本がドラムのパートなら `drums`。lib/drums.ts の `diffModeOf`）
+     */
+    requestDiff: (reference: PianoNote[], attempt: PianoNote[], stepsPerBar: number, source: ReferenceSource, mode?: DiffMode) => Promise<DiffResult>;
     /**
      * 練習画面の「比べる」を押したのと同じことをする（ノートに色が付き、学習の記録に 1 件残る）。
      * 比べられなかったら null（理由は練習画面に出る）
@@ -493,6 +540,12 @@ export interface ToolEnv {
     deleteClip: (trackId: number, clipIndex: number) => void;
     /** クリップを複製して、すぐ後ろに置く */
     duplicateClip: (trackId: number, clipIndex: number) => void;
+    /** クリップの端を動かす（縮める・伸ばす）。`start`・`end` は、新しい端の位置（曲の時刻、秒）。音声は書き換えない */
+    trimClip: (trackId: number, clipIndex: number, range: { start?: number; end?: number }) => void;
+    /** クリップを、曲の時刻（秒）で 2 つに分ける（2 つは同じ音声を指す） */
+    splitClip: (trackId: number, clipIndex: number, atSec: number) => void;
+    /** クリップのフェードインとフェードアウトの長さ（秒）を決める。指定しなかったほうは変えない */
+    fadeClip: (trackId: number, clipIndex: number, fades: { fadeIn?: number; fadeOut?: number }) => void;
     /** クリップにエフェクトをかけて、かけた後のクリップに差し替える。かけられなかったら例外（理由つき） */
     applyEffect: (trackId: number, clipIndex: number, effect: string, params: Record<string, number>, label: string) => Promise<void>;
     /** @param fromSec - 始める位置（秒）。省略すると、いまの再生位置から */

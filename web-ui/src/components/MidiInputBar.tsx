@@ -5,8 +5,9 @@
  * ピアノロールにノートが入る。
  *
  * - 録らない: 音を鳴らすだけ（音を探すとき用）
- * - ステップ入力: 弾くたびに、カーソルの位置へ決まった長さのノートを置いて進む
- * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く。再生の前に 1 小節ぶんのカウントを入れられる。
+ * - ステップ入力: 弾くたびに、カーソルの位置へノートを置いて進む。1 歩は、ピアノロールで選んだ刻み（既定）か、決めた長さ
+ * - リアルタイム録音: 再生中に弾いた位置と長さを、16 分音符に丸めて置く（選んだ刻みが 32 分か三連のときは、その刻みに）。
+ *   再生の前に 1 小節ぶんのカウントを入れられる。
  *   弾いた位置は、遅れの補正のぶんだけ前へ戻して置く
  *
  * 弾いた強さ（ベロシティ）は、どちらの録り方でもノートに残る。
@@ -19,17 +20,20 @@
  */
 import { useDaw } from '../lib/store';
 import { cursorLabel, type RecordMode } from '../lib/midi-input';
-import { MAX_LATENCY_MS, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
+import { MAX_LATENCY_MS, STEP_FOLLOWS_SNAP, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
 import { tip } from '../lib/tooltip';
 
-/** ステップ入力で選べるノートの長さ（ステップ数と呼び名）。 */
-const STEP_LENGTHS: [number, string][] = [[1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
+/**
+ * ステップ入力で選べるノートの長さ（ステップ数と呼び名）。既定の「刻みと同じ」は、ピアノロールで選んだ刻み 1 つぶん
+ * （三連なら三連の位置を 1 つずつ進み、スウィングなら、ずらした位置を進む）。
+ */
+const STEP_LENGTHS: [number, string][] = [[STEP_FOLLOWS_SNAP, '刻みと同じ'], [1, '16 分'], [2, '8 分'], [4, '4 分'], [8, '2 分'], [16, '全音符']];
 
 /** 録り方に載せたときの説明 */
 const MODE_TIPS: Record<RecordMode, string> = {
     off: '鍵盤を弾くと音が鳴るだけで、ノートは置きません',
-    step: '弾くたびに、決めた長さのノートを順に置いていきます。同時に押すと和音になります',
-    realtime: '再生しているあいだ、弾いたとおりのタイミングと長さでノートを置きます',
+    step: '弾くたびに、ピアノロールで選んだ刻み（か、決めた長さ）のノートを順に置いていきます。同時に押すと和音になります',
+    realtime: '再生しているあいだ、弾いたとおりのタイミングと長さでノートを置きます（16 分音符に寄せます。刻みが 32 分か三連のときは、その刻みに寄せます）',
 };
 
 const controlStyle = {
@@ -77,7 +81,9 @@ export function RealtimeSettings({ midi, style }: { midi: MidiInputController; s
 export function StepLengthSelect({ midi, style }: { midi: MidiInputController; style?: React.CSSProperties }) {
     return (
         <select aria-label="ノートの長さ" style={style ?? controlStyle} value={midi.stepLength}
-            {...tip('ステップ入力で置くノートの長さ')}
+            {...tip(midi.stepLength === STEP_FOLLOWS_SNAP
+                ? 'ステップ入力で置くノートの長さ。いまは、ピアノロールで選んだ刻み 1 つぶんを置いて、隣の刻みへ進みます'
+                : 'ステップ入力で置くノートの長さ。いまは、この長さのノートを置いて、同じ長さだけ進みます')}
             onChange={(e) => midi.setStepLength(Number(e.target.value))}>
             {STEP_LENGTHS.map(([steps, label]) => <option key={steps} value={steps}>{label}</option>)}
         </select>

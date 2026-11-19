@@ -6,10 +6,19 @@
  *
  * かける処理は API（`/api/effects/{種類}`）が行う。ここは、クリップを WAV にして送り、返ってきた音声を
  * クリップにする（元のクリップは書き換えない。差し替えるのは呼ぶ側で、元に戻す履歴に載せて行う）。
+ *
+ * ## 縮めたクリップとの関係
+ *
+ * エフェクトは、クリップの**見えている範囲だけ**にかける（縮めて隠したところは送らない）。結果は新しい音声になり、
+ * かけた後のクリップは、その音声の頭から全体を鳴らす（`audioStart` は 0 に戻る。縮める前の範囲へは、端を引いても
+ * 戻らない。戻すときは「元に戻す」）。フェードは、音声に焼き込まずにクリップの設定として残す（かけた後も、
+ * つまみで変えられる。長さが変わるエフェクトでは、新しい長さに収める）。同じ音声を指すほかのクリップ（分割の
+ * もう片方・複製）は変わらない。
  */
 import engine, { type Clip } from './engine';
 import { apiFetch, errorDetail } from './api';
 import { decodeWithSource } from './audio-sources';
+import { audioStartOf, fadeInOf, fadeOutOf, playLength, setClipFades } from './clip';
 
 /**
  * FX パネルで表示・操作する単一パラメータの定義。
@@ -89,8 +98,26 @@ export function defaultFxParams(fxType: string): Record<string, number> {
 }
 
 /**
+ * クリップの見えている範囲の音声。縮めていないクリップは、音声をそのまま返す（写さない）。
+ * 縮めたクリップは、その範囲だけを写した新しい音声を返す（フェードは掛けない）。
+ */
+export function visibleBuffer(clip: Clip): AudioBuffer {
+    const { buffer } = clip;
+    const first = Math.round(audioStartOf(clip) * buffer.sampleRate);
+    const frames = Math.min(buffer.length - first, Math.round(playLength(clip) * buffer.sampleRate));
+    if (!Number.isFinite(first) || !Number.isFinite(frames) || (first <= 0 && frames >= buffer.length)) return buffer;
+    engine.init();
+    const out = engine.ctx!.createBuffer(buffer.numberOfChannels, Math.max(1, frames), buffer.sampleRate);
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        out.getChannelData(ch).set(buffer.getChannelData(ch).subarray(first, first + Math.max(0, frames)));
+    }
+    return out;
+}
+
+/**
  * クリップにエフェクトをかけた、新しいクリップを作る（位置は同じ。名前の後ろに種類を足す）。
- * 元のクリップもトラックも書き換えない。
+ * 元のクリップもトラックも書き換えない。かけるのは見えている範囲だけで、フェードはクリップの設定として残す
+ * （このファイルの頭の「縮めたクリップとの関係」）。
  *
  * @param clip - かける前のクリップ
  * @param fxType - 種類（`FX_PARAMS` のキー）
@@ -99,7 +126,7 @@ export function defaultFxParams(fxType: string): Record<string, number> {
  */
 export async function effectedClip(clip: Clip, fxType: string, params: Record<string, number>): Promise<Clip> {
     engine.init();
-    const wavBlob = engine._audioBufferToWav(clip.buffer);
+    const wavBlob = engine._audioBufferToWav(visibleBuffer(clip));
     const fd = new FormData();
     fd.append('file', wavBlob, 'clip.wav');
     fd.append('params', JSON.stringify(params));
@@ -108,5 +135,7 @@ export async function effectedClip(clip: Clip, fxType: string, params: Record<st
     const buf = await (await resp.blob()).arrayBuffer();
     // 元のバイト列を覚えておく (プロジェクトの保存で、そのまま入れる。lib/audio-sources.ts)
     const buffer = await decodeWithSource(engine.ctx!, buf, `${clip.name}[${fxType}].wav`);
-    return { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
+    const next: Clip = { buffer, offset: clip.offset, name: `${clip.name}[${fxType}]`, duration: buffer.duration };
+    // フェードは残す (新しい長さに収める)。フェードの無いクリップには、項目を付けない
+    return setClipFades(next, { fadeIn: fadeInOf(clip), fadeOut: fadeOutOf(clip) });
 }

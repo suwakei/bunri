@@ -6,7 +6,7 @@
  * - バックエンド宛てでない URL（blob: や外部）にはトークンを付けないこと
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { apiFetch, backendUrl, initBackend, isDesktop, setBackendForTest, getBackend, setNetworkErrorListener } from '../lib/api';
+import { apiFetch, backendUrl, initBackend, invokeDesktopRaw, isDesktop, setBackendForTest, getBackend, setNetworkErrorListener } from '../lib/api';
 
 const DESKTOP = { baseUrl: 'http://127.0.0.1:54321', token: 'tok en/1' };
 const BROWSER = { baseUrl: '', token: null };
@@ -96,6 +96,20 @@ describe('デスクトップ版', () => {
             core: { invoke: vi.fn(async () => { throw new Error('uv が見つかりません'); }) },
         };
         await expect(initBackend()).rejects.toThrow('uv が見つかりません');
+    });
+
+    it('invokeDesktopRaw は、生のバイト列を本体に、ほかの値をヘッダにして Rust を呼ぶ', async () => {
+        const invoke = vi.fn(async () => ({ complete: true }));
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+        const body = new Uint8Array([1, 2, 3, 4]);
+        expect(await invokeDesktopRaw('audio_clip_put', body, { 'x-clip-id': '1' })).toEqual({ complete: true });
+        expect(invoke).toHaveBeenCalledWith('audio_clip_put', body, { headers: { 'x-clip-id': '1' } });
+        // Rust 側が理由を文字列で返しても Error として失敗する
+        invoke.mockRejectedValueOnce('受け取れません');
+        await expect(invokeDesktopRaw('audio_clip_put', body, {})).rejects.toThrow('受け取れません');
+        // デスクトップアプリの外では呼べない
+        delete (globalThis as { __TAURI__?: unknown }).__TAURI__;
+        await expect(invokeDesktopRaw('audio_clip_put', body, {})).rejects.toThrow('デスクトップアプリの中でしか使えません');
     });
 
     it('apiFetch は接続先とトークンのヘッダを付ける', async () => {

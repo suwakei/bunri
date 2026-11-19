@@ -7,8 +7,16 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# 音声デバイスへの出力 (output)
+cpal = "0.18.2"
 # WAV の読み書き (クリップの読み込みと、書き出し)
 hound = "3.5"
+# 画面の側と音声スレッドのあいだの、ロックの無いキュー (transport)
+rtrb = "0.4.1"
 
 [build-dependencies]
 cmake = "0.1"
+
+[dev-dependencies]
+# Web Audio の書き出しと突き合わせるテストの曲 (tests/fixtures/webaudio/song.json) を読む
+serde_json = "1"

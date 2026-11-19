@@ -18,6 +18,7 @@ import { JobCancelledError, jobErrorMessage } from '../lib/jobs';
 import { useJob } from '../lib/useJob';
 import JobCard from './JobCard';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy } from '../lib/notice';
 import { cssVar } from '../lib/theme';
 import { formatTime, isChartResponse, type ChartResponse } from '../lib/chart';
 
@@ -72,14 +73,18 @@ export default function GridEditor() {
     });
     const applying = regrid.job !== null;
 
-    // モーダルを開くたびに現在のカルテの値へ初期化する
-    useEffect(() => {
-        if (!showGridEditor || !chart) return;
-        setLocalBpm(chart.grid.bpm);
-        setLocalOffset(chart.grid.downbeat_offset_sec);
-        setLocalBeats(chart.grid.time_signature[0]);
-        setViewStart(Math.max(0, chart.grid.downbeat_offset_sec - 0.5));
-    }, [showGridEditor, chart]);
+    // モーダルを開くたびに (開いているあいだにカルテが変わったときも) 現在のカルテの値へ初期化する。
+    // 描画のうちに合わせる (開いた最初の描画から、カルテの値を出す)
+    const [syncedWith, setSyncedWith] = useState<{ open: boolean; chart: typeof chart }>({ open: false, chart: null });
+    if (syncedWith.open !== showGridEditor || syncedWith.chart !== chart) {
+        setSyncedWith({ open: showGridEditor, chart });
+        if (showGridEditor && chart) {
+            setLocalBpm(chart.grid.bpm);
+            setLocalOffset(chart.grid.downbeat_offset_sec);
+            setLocalBeats(chart.grid.time_signature[0]);
+            setViewStart(Math.max(0, chart.grid.downbeat_offset_sec - 0.5));
+        }
+    }
 
     const duration = chart?.source.duration_sec ?? 0;
 
@@ -183,7 +188,7 @@ export default function GridEditor() {
     }, [showGridEditor, windowSec]);
 
     const handleApply = useCallback(async () => {
-        if (!chartId) return;
+        if (!chartId) { setStatus('カルテがまだ無いので、グリッドを確定できません。先に、曲を取り込んでカルテを作ってください', 'hint'); return; }
         const body = new FormData();
         body.append('chart_id', chartId);
         body.append('bpm', String(localBpm));
@@ -319,10 +324,12 @@ export default function GridEditor() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                     <button className="action-btn" data-autofocus style={{ flex: 2, marginTop: 0 }}
                         disabled={applying || showProgress || regrid.heavyBusy} onClick={handleApply}
+                        {...blockedBy(applying ? 'いま再計算しています。終わるまで待ってください' : (showProgress || regrid.heavyBusy) && BUSY_REASON)}
                         {...tip('この BPM・小節の先頭・拍子で、コード進行と構成を調べ直します。数秒〜十数秒かかります')}>
                         {applying ? '再計算中…' : 'この設定で確定して再計算'}
                     </button>
                     <button type="button" style={{ ...secondaryButton, flex: 1 }} disabled={applying}
+                        {...blockedBy(applying && 'いま再計算しています。やめるときは、上の進み具合の「中止」を押してください')}
                         onClick={close} {...tip('何も変えずに閉じます。カルテは前のままです')}>
                         キャンセル
                     </button>

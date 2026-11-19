@@ -20,9 +20,11 @@ import engine, { cloneNote, type Clip, type PianoNote, type Track } from './engi
 import { apiFetch, errorDetail } from './api';
 import { audioBufferToFloatWav, decodeWithSource, rememberSource, sha256Hex, sourceOf } from './audio-sources';
 import { captureProject } from './project-snapshot';
+import { SWING_NONE, normNote, normSwing } from './grid';
+import { audioStartOf, fadeInOf, fadeOutOf, fitClipToBuffer } from './clip';
 import type { SongChart, WaveformPeaks } from './chart';
 import { comparedOf, rememberCompared, type ComparedNotes, type DiffResult } from './coach';
-import { HISTORY_KINDS, type LearnAttempt } from './learn-history';
+import { HISTORY_KINDS, cleanBarStats, type LearnAttempt } from './learn-history';
 import type { CoachPair, CoachResult, GhostChoice, LearnTab, LeftTab } from './store';
 
 /** 文書の形の版（sidecar の `bunri_file.DOCUMENT_VERSION`）。 */
@@ -32,12 +34,19 @@ export const APP_VERSION = '0.1.0';
 /** 学ぶ流れの状態の節の版。 */
 export const LEARN_STATE_VERSION = 1;
 
-/** クリップ。`audio` は音声の元のバイト列のハッシュ（音声が無ければ null）。 */
+/**
+ * クリップ。`audio` は音声の元のバイト列のハッシュ（音声が無ければ null）。
+ * `duration` は鳴らす長さ。`audioStart`（音声の中の鳴らし始め）・`fadeIn`・`fadeOut`（秒）は、縮める・フェードを
+ * 足す前の版が保存した文書には無い（0 として読む = 音声の全体をそのまま鳴らす）。
+ */
 export interface DocClip {
     name: string;
     offset: number;
     duration: number;
     audio: string | null;
+    audioStart?: number;
+    fadeIn?: number;
+    fadeOut?: number;
 }
 
 /** トラック。`practiceOf` は相手のトラックの並びの番号。 */
@@ -67,7 +76,7 @@ export interface DocChart {
     peaks: WaveformPeaks | null;
 }
 
-/** 学習の記録 1 件（トラックは並びの番号で指す）。 */
+/** 学習の記録 1 件（トラックは並びの番号で指す）。`barStats`（小節ごとの結果）は、以前の版が保存した記録には無い。 */
 export interface DocHistoryEntry extends Omit<LearnAttempt, 'id' | 'referenceId' | 'attemptId'> {
     referenceTrack: number | null;
     attemptTrack: number | null;
@@ -80,7 +89,8 @@ export type DocSection = { version: number } & Record<string, unknown>;
 export interface ProjectDocument {
     version: number;
     meta: { name: string; createdAt?: string | null; modifiedAt?: string | null; uuid?: string | null; appVersion?: string | null };
-    grid: { bpm: number; beatsPerBar: number; gridOffset: number };
+    /** `swing`（スウィング。0.5〜0.75）は、ずらしているときだけ在る。以前の版が保存した文書には無い（0.5 として読む） */
+    grid: { bpm: number; beatsPerBar: number; gridOffset: number; swing?: number };
     tracks: DocTrack[];
     chart: DocChart | null;
     state: Record<string, DocSection>;
@@ -212,10 +222,12 @@ export async function buildDocument(input: BuildInput): Promise<{ doc: ProjectDo
     for (const t of snapshot.tracks) {
         const clips: DocClip[] = [];
         for (const c of t.clips as Clip[]) {
-            const missing = (t.ref.clips.find(x => x.buffer === c.buffer) as Clip | undefined)?.missing;
+            const missing = c.missing ?? (t.ref.clips.find(x => x.buffer === c.buffer) as Clip | undefined)?.missing;
             clips.push({
                 name: c.name, offset: c.offset, duration: c.duration,
+                // 分割した 2 つのクリップは同じ音声を指すので、音声は 1 つだけ入る (ハッシュが同じ)
                 audio: missing ? null : add(await payloadForBuffer(c.buffer, c.name)),
+                audioStart: audioStartOf(c), fadeIn: fadeInOf(c), fadeOut: fadeOutOf(c),
             });
         }
         tracks.push({
@@ -268,7 +280,11 @@ export async function buildDocument(input: BuildInput): Promise<{ doc: ProjectDo
     const doc: ProjectDocument = {
         version: DOCUMENT_VERSION,
         meta: { name: input.name, createdAt: input.createdAt ?? null, uuid: input.uuid ?? null, appVersion: APP_VERSION },
-        grid: { bpm: snapshot.grid.bpm, beatsPerBar: snapshot.grid.beatsPerBar, gridOffset: snapshot.grid.offsetSec },
+        grid: {
+            bpm: snapshot.grid.bpm, beatsPerBar: snapshot.grid.beatsPerBar, gridOffset: snapshot.grid.offsetSec,
+            // スウィングは、ずらしているときだけ入れる (無ければ 0.5 として読む)
+            ...(snapshot.grid.swing !== undefined && snapshot.grid.swing !== SWING_NONE ? { swing: snapshot.grid.swing } : {}),
+        },
         tracks, chart, state, history,
         explanations: { coach: coachKeys },
     };
@@ -321,6 +337,8 @@ export interface ApplyTarget {
     setBpm: (v: number) => void;
     setBeatsPerBar: (v: number) => void;
     setGridOffset: (sec: number) => void;
+    /** スウィング（文書に無ければ 0.5 で呼ぶ）。渡さなければ、再生エンジンの値だけを変える */
+    setSwing?: (ratio: number) => void;
     setChartResult: (r: { chart_id: string; chart: SongChart; peaks?: WaveformPeaks; glossary: Record<string, Record<string, string>> }) => void;
     clearChart: () => void;
     setSongFile: (f: File | null) => void;
@@ -342,10 +360,60 @@ export interface ApplyResult {
     missingClips: number;
 }
 
-/** 音声の無いクリップの、無音の置き場所（小さくするため 8 kHz のモノラル）。 */
+/**
+ * クリップの秒数（鳴らす長さ・音声の中の鳴らし始め・フェード）の上限。これを超える値は壊れた値として 0（無い）にする。
+ * 根拠: 取り込む音声は曲・練習の録音で、長くても数十分。6 時間はそれより十分に長く、まだ現実にありうる長さの上限
+ * （長いライブ録音など）。音声の無いクリップには、この長さまでの無音の置き場所を作るので、極端な値で置き場所を
+ * 作れずにプロジェクト全体が開けなくなる・メモリを使い切る、のを防ぐ歯止めでもある。
+ * 処理を担当する部分（backend/bunri_file.py の MAX_CLIP_SECONDS）と同じ値にする。
+ */
+export const MAX_CLIP_SEC = 6 * 60 * 60;
+
+/** 無音の置き場所の標本化の速さ（小さくするため 8 kHz のモノラル。Web Audio が必ず受け付ける下限）。 */
+const PLACEHOLDER_RATE = 8000;
+
+/**
+ * 音声の無いクリップの、無音の置き場所。長さは上限（`MAX_CLIP_SEC`）まで。
+ * 作れなかったら（メモリが足りないなど）、ごく短い置き場所にする（範囲はクリップの項目に残っているので、
+ * 読み込み直せば同じ範囲を鳴らせる。プロジェクトのほかの部分は開ける）。
+ */
 function placeholderBuffer(duration: number): AudioBuffer {
-    const rate = 8000;
-    return engine.ctx!.createBuffer(1, Math.max(1, Math.round(Math.max(0, duration) * rate)), rate);
+    const length = Math.max(1, Math.round(Math.min(Math.max(0, duration), MAX_CLIP_SEC) * PLACEHOLDER_RATE));
+    try {
+        return engine.ctx!.createBuffer(1, length, PLACEHOLDER_RATE);
+    } catch (e) {
+        console.warn('音声の無いクリップの置き場所を作れませんでした:', e);
+        return engine.ctx!.createBuffer(1, 1, PLACEHOLDER_RATE);
+    }
+}
+
+/** 文書の秒数を読む（数でない・負の値・上限を超える値は 0）。 */
+function seconds(value: unknown, max = MAX_CLIP_SEC): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max ? value : 0;
+}
+
+/** クリップが、音声の中のどこまでを鳴らすか（秒。無音の置き場所の長さに使う）。 */
+function clipEnd(c: DocClip): number {
+    return seconds(c.audioStart) + seconds(c.duration);
+}
+
+/**
+ * 文書のクリップを、画面のクリップにする。
+ * 音声が在れば、範囲を音声の長さに収める（`fitClipToBuffer`）。無ければ、範囲はそのままで、無音の置き場所を付ける
+ * （読み込み直したときに、同じ範囲を鳴らせるように）。範囲とフェードの項目は、0 なら付けない。
+ * @param placeholder - 音声が無いときの置き場所（同じ音声を指すクリップは、同じ置き場所を共有する）
+ */
+function clipFromDoc(c: DocClip, buffer: AudioBuffer | null, placeholder: () => AudioBuffer): Clip {
+    const duration = seconds(c.duration), audioStart = seconds(c.audioStart);
+    // 置き位置 (タイムラインの上の秒) は、音声の長さとは関わらないので、上限で切らない
+    const base = { offset: seconds(c.offset, Infinity), name: c.name, duration, audioStart, fadeIn: seconds(c.fadeIn), fadeOut: seconds(c.fadeOut) };
+    if (buffer) return fitClipToBuffer({ ...base, buffer }, buffer);
+    const clip: Clip = { buffer: placeholder(), offset: base.offset, name: base.name, duration, missing: true };
+    if (audioStart > 0) clip.audioStart = audioStart;
+    const fadeIn = Math.min(base.fadeIn, duration), fadeOut = Math.min(base.fadeOut, duration - fadeIn);
+    if (fadeIn > 0) clip.fadeIn = fadeIn;
+    if (fadeOut > 0) clip.fadeOut = fadeOut;
+    return clip;
 }
 
 /** 同時に取ってくる音声の数（大きな WAV を一度にたくさんデコードしない）。 */
@@ -393,8 +461,27 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
     target.setBpm(doc.grid.bpm || 120);
     target.setBeatsPerBar(doc.grid.beatsPerBar || 4);
     target.setGridOffset(doc.grid.gridOffset || 0);
+    // スウィングは、以前の版が保存した文書には無い (0.5 = ずらさない)
+    const swing = normSwing(doc.grid.swing);
+    if (target.setSwing) target.setSwing(swing); else engine.swing = swing;
 
     let missingClips = 0;
+    // 音声の無いクリップの置き場所は、音声ごとに 1 つ (分割・複製で同じ音声を指すクリップが共有する。曲 1 本ぶんを
+    // クリップの数だけ持たないため。共有していれば「音声を読み込み直す」が、まとめて戻す)。長さは、その音声を指す
+    // クリップのうち、いちばん後ろまで鳴らすものに合わせる。音声の名前が無い (以前の形式) クリップは、それぞれに作る
+    const reach = new Map<string, number>();
+    for (const dt of doc.tracks) {
+        for (const c of dt.clips ?? []) {
+            if (c.audio && !fetched.has(c.audio)) reach.set(c.audio, Math.max(reach.get(c.audio) ?? 0, clipEnd(c)));
+        }
+    }
+    const placeholders = new Map<string, AudioBuffer>();
+    const placeholderFor = (c: DocClip) => (): AudioBuffer => {
+        if (!c.audio) return placeholderBuffer(clipEnd(c));
+        let buffer = placeholders.get(c.audio);
+        if (!buffer) { buffer = placeholderBuffer(reach.get(c.audio) ?? clipEnd(c)); placeholders.set(c.audio, buffer); }
+        return buffer;
+    };
     const created: Track[] = [];
     for (const dt of doc.tracks) {
         const track = engine.addTrack(dt.name || undefined);
@@ -404,13 +491,14 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
         engine.updateTrackPan(track.id, Number(dt.pan) || 0);
         if (dt.mute && !track.mute) engine.toggleMute(track.id);
         track.solo = !!dt.solo;
-        track.pianoNotes = (dt.notes ?? []).map(n => ({ ...n }));
-        track.referenceNotes = dt.referenceNotes ? dt.referenceNotes.map(n => ({ ...n })) : undefined;
+        // 位置と長さは、1/60 ステップの倍数にそろえて読む (小数のノートは、そのまま往復する。整数は整数のまま)
+        track.pianoNotes = (dt.notes ?? []).map(normNote);
+        track.referenceNotes = dt.referenceNotes ? dt.referenceNotes.map(normNote) : undefined;
         track.clips = (dt.clips ?? []).map((c): Clip => {
             const got = c.audio ? fetched.get(c.audio) : undefined;
-            if (got) return { buffer: got.buffer, offset: c.offset, name: c.name, duration: c.duration || got.buffer.duration };
+            if (got) return clipFromDoc(c, got.buffer, placeholderFor(c));
             missingClips++;
-            return { buffer: placeholderBuffer(c.duration), offset: c.offset, name: c.name, duration: c.duration, missing: true };
+            return clipFromDoc(c, null, placeholderFor(c));
         });
         created.push(track);
     }
@@ -476,6 +564,8 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
             id: i + 1, recordedAt: h.recordedAt, referenceId: idOf(h.referenceTrack), attemptId: idOf(h.attemptTrack),
             part: h.part ?? null, startBar: h.startBar, endBar: h.endBar, referenceCount: h.referenceCount,
             matched: h.matched, matchRate: h.matchRate, counts, explanationId: h.explanationId ?? null,
+            // 小節ごとの結果を足す前の版が保存した記録には無い (null。範囲全体の一致率しか分からない記録として扱う)
+            barStats: cleanBarStats(h.barStats),
         };
     }));
 
@@ -489,6 +579,8 @@ export async function applyDocument(doc: ProjectDocument, target: ApplyTarget): 
 
     const open = idOf(learn?.openTrack);
     if (open !== null) target.pianoRoll?.switchToTrack?.(open);
+    // 開いた音声を、裏で Rust の engine に送り始める (デスクトップ版。前のプロジェクトの音声は捨てる)
+    engine.syncNative();
     return { tracks: created.length, missingClips };
 }
 

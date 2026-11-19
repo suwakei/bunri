@@ -1,0 +1,14 @@
+{
+  "about": "コードの種類 → ルートからの音程（半音）と、コード記号でルートの後ろに付く文字。backend/music_theory.py の CHORD_TEMPLATES / CHORD_SUFFIX と、web-ui/src/lib/pitch-hints.ts の CHORD_INTERVALS / CHORD_SUFFIX の両方が、この表と一致することをテストで確かめる（test/back/test_music_theory.py、web-ui/src/__tests__/pitch-hints.test.ts）。コードの種類を足す・変えるときは、3 か所（backend・この表・フロント）を一緒に変える。",
+  "qualities": {
+    "maj": { "intervals": [0, 4, 7], "suffix": "" },
+    "min": { "intervals": [0, 3, 7], "suffix": "m" },
+    "dim": { "intervals": [0, 3, 6], "suffix": "dim" },
+    "aug": { "intervals": [0, 4, 8], "suffix": "aug" },
+    "sus4": { "intervals": [0, 5, 7], "suffix": "sus4" },
+    "maj7": { "intervals": [0, 4, 7, 11], "suffix": "maj7" },
+    "min7": { "intervals": [0, 3, 7, 10], "suffix": "m7" },
+    "7": { "intervals": [0, 4, 7, 10], "suffix": "7" },
+    "m7b5": { "intervals": [0, 3, 6, 10], "suffix": "m7-5" }
+  }
+}

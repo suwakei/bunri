@@ -9,9 +9,10 @@ bunri のデスクトップ版が、どういう部品で出来ていて、な�
 bunri.app (Tauri v2)
 ├─ WebView: web-ui (React) をアプリに同梱して表示
 │     ├─ HTTP ──► Python sidecar (FastAPI。127.0.0.1 の空きポート)
-│     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く)
+│     └─ Tauri command ──► Rust (接続先とトークンを受け取る / 起動の進み具合を聞く / 再生を頼む)
 ├─ Rust (src-tauri/): 窓の生成、初回セットアップ、sidecar の起動・監視・終了、
-│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ
+│                     プロジェクトのファイルの保存・開く (ダイアログ)、閉じる前の確かめ、
+│                     音の再生 (audio-engine/ の engine を cpal で鳴らす)
 └─ Python sidecar (backend/): demucs / basic-pitch / librosa / fluidsynth / dawdreamer
 ```
 
@@ -119,7 +120,7 @@ kill するが、アプリが強制終了された場合、`uv` は親が居な�
 | `bunri.app/Contents/MacOS/uv` | 同梱した `uv` (版とハッシュは `scripts/prepare-desktop.mjs` で固定) |
 | `bunri.app/Contents/Resources/runtime/` | `backend/` と `pyproject.toml` / `uv.lock` (読み取り専用) |
 | `~/Library/Application Support/io.github.suwakei.bunri/runtime/` | Python 本体、venv、uv のキャッシュ、`.pyc` |
-| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` (以前の形式) `work/` (作業中のプロジェクトの写し) `soundfonts/` `models/` (追加の分離モデル) `recent-projects.json` (最近使ったプロジェクト) (`BUNRI_DATA_DIR`) |
+| `~/Library/Application Support/io.github.suwakei.bunri/data/` | `uploads/` `results/` `projects/` (以前の形式) `work/` (作業中のプロジェクトの写し) `recovery/` (保存していない変更の、復旧用の写しと目印。下の「自動保存と、落ちたときの復旧」) `soundfonts/` `models/` (追加の分離モデル) `recent-projects.json` (最近使ったプロジェクト) (`BUNRI_DATA_DIR`) |
 | 利用者が選んだ場所 (既定は `~/Documents/bunri/`) | 保存したプロジェクト (`.bunri`)。書くのは Rust だけ (下の「プロジェクトのファイル」) |
 | `~/.cache/huggingface/` `~/.cache/torch/` | 音源分離のモデル (ライブラリの既定の置き場のまま)。Demucs が自分で取りに行けない追加のモデルだけは、上の `data/models/` に入る (`backend/stem_models.py`) |
 
@@ -145,6 +146,8 @@ Python 側は、データの場所を `audio_utils.data_dir()` から引く。�
   画面が sidecar の `POST /api/project/open/{token}` を呼ぶ。古い形式の写しは sidecar が v2 に上げる (利用者のファイルはそのまま)
 - 最近使ったプロジェクト: Rust がデータ置き場の `recent-projects.json` に持つ (12 件まで。外せる。無くなったファイルは `exists: false`)
 - 作業用の写しは「データの整理」で消せる (開いているものは残す)。sidecar の起動では消さない
+- 保存していない変更は、sidecar がデータ置き場の `recovery/` に復旧用の写しとして持つ (下の「自動保存と、落ちたときの復旧」)。
+  利用者が選んだ場所のファイルは、自動では書き換えない
 
 **なぜこの形か**: sidecar の API に任意のパスを受け取らせると、API の鍵を持つ画面が乗っ取られたとき (XSS など)、利用者の
 どのファイルでも上書きできてしまう (`~/.zshrc` など)。パスの検査を sidecar に足しても、何が「利用者が選んだ」かを sidecar は知らない。
@@ -168,6 +171,58 @@ sidecar に教える (鍵と HTTP の呼び出しが Rust に増える。写す�
 
 `.bunri` をダブルクリックして開く (ファイルの関連付け) は、まだ入れていない (`tauri.conf.json` の `fileAssociations` と、起動時に渡された
 パスを受けて開く仕組みが要る)。
+
+### 自動保存と、落ちたときの復旧
+
+利用者が保存するまで何も残らないと、アプリや sidecar が落ちたときに、打ち込みと学習の記録が消える。そこで、保存していない変更が
+在るあいだ、画面がときどき「復旧用の写し」を残す (`web-ui/src/lib/autosave.ts`、`backend/project_store.py`「落ちたときの復旧」)。
+
+- **利用者のファイルは、自動では書き換えない。** 書くのはデータ置き場の `recovery/` だけ。利用者のファイルに入るのは、
+  これまでどおり利用者が保存したときだけ。題名の「●」も、いま開いているプロジェクトの情報 (場所・作業用の写しの名前) も、
+  元に戻す履歴も、自動保存では変わらない
+- **置き場と目印は sidecar が持つ。Rust は変えていない。** デスクトップ版でも開発用のブラウザ起動でも同じに動き、ブラウザのテストで
+  確かめられる。`recovery/` には、写し 1 つ (`<token>.bunri`) と目印 (`recovery.json`: プロジェクトの名前、デスクトップ版の
+  利用者のファイルの場所 `path`、ブラウザ起動の `projects/` の中の名前 `file`、写しの名前 `token`、書いた時刻 `saved_at`) が入る。
+  `path` は覚えておくだけで、sidecar は開かない (「誰がどこを読み書きするか」は変わらない)
+- **書く流れ**: 保存と同じく、画面が文書と音声を送って `work/<token>.bunri` に書かせ (`POST /api/project/document`)、
+  `POST /api/project/recovery` でそれを復旧用の写しにする。sidecar は写しを `recovery/` へ移し (写さない。大きなプロジェクトを
+  自動保存のたびに 2 つ持たないため)、目印を一時ファイルから rename で差し替え、そのあとで前の写しを消す。どの瞬間に落ちても、
+  目印は中身のそろった写しを指している。移したあとも、その名前を `base` に指定すれば音声をそこから写せるので、
+  自動保存で送った音声は、次の自動保存でも利用者の保存でも送り直さない
+- **いつ書くか**: 最後の変更から 30 秒、変更が続いていても、まだ書いていない最初の変更から 2 分 (`AUTOSAVE_IDLE_MS` /
+  `AUTOSAVE_MAX_WAIT_MS`)。書かないほうがよい状況では、5 秒おきに書けるようになるのを待つ:
+  - 再生中: 音の途切れを避けて待つ。ただし、まだ書いていない最初の変更から 5 分 (`AUTOSAVE_PLAYING_MAX_WAIT_MS`) 経ったら、
+    再生中でも書く。練習画面で区間ループを回しながら打ち込むのがいちばん長い使い方なので、止めるまで何も残らない、にはしない
+  - MIDI のリアルタイム録音で弾いている最中 (録音前のカウントと、最後に鍵盤を押して・離してから 3 秒以内): 弾いた位置を
+    ずらさないよう、5 分を過ぎても待ち、弾く手が止まった合間 (再生中の扱いに戻る) に書く。弾き続けていても、10 分
+    (`AUTOSAVE_RECORDING_MAX_WAIT_MS`) で書く。区間ループの周の切れ目は使っていない (再生エンジンに手を入れずに分かるのは、
+    鍵盤の操作の時刻のほう。弾いていない合間なら、周の途中でも録音を乱さない)
+  - ドラッグの途中・時間のかかる処理 (ジョブ) の最中・sidecar に届かないあいだ: どれだけ経っても書かない (どれも、じきに終わる)
+  - 利用者の保存・開く操作とは重ねない (途中の自動保存はそこでやめ、止まってから利用者の操作を通す。預かった音声を取り合わないため)
+- **再生中に書くときの負荷**: 画面の側の仕事は、文書 (JSON) を作って送ることだけ。音声は、元のバイト列を AudioBuffer ごとに
+  覚えていて (`lib/audio-sources.ts`)、ハッシュも Blob ごとに 1 度しか計算しない (`lib/project-file.ts` の `hashOf`)。元のバイト列の
+  無い音声を浮動小数の WAV に書き出すのも、音声ごとに 1 度だけ (3 分のステレオで 30 ms ほど。Node で測った値)。2 回目からの
+  自動保存は、音声を書き出し直さず、送り直しもしない。FLAC にする・写しを書く仕事は sidecar の側で、画面を塞がない
+- **いつ消すか** (`DELETE /api/project/recovery`): 保存できたとき、元に戻して保存したときと同じになったとき、「保存しない」を選んで
+  別のプロジェクトを開いた・新しくした・窓を閉じたとき。つまり、正しく手放した変更は、次の起動で尋ねない。窓を閉じるときは、
+  消してから `close_confirmed` を呼ぶ (3 秒待って消せなければ、そのまま閉じる)
+- **起動したとき**: 画面が `GET /api/project/recovery` を 1 回だけ確かめる (届かないあいだは、間を空けながら待つ)。残っていれば
+  「前回、保存していない変更が残っています」の窓で、名前と書いた時刻を出して尋ねる。答えが出るまでは、自動保存は書かない
+  (前回の復旧用の写しを上書きしないため)。「続きを開く」は `POST /api/project/recovery/open` で新しい作業用の写しを作らせて開き、
+  名前・`path`・`file` を元のまま戻して、**保存していない変更として**開く。復旧用の写しは、保存するか捨てると決めるまで残す
+  (もう一度落ちても続きを開ける)。「捨てる」は消す
+- **続きを開いたあとの保存**: ⌘S は元のファイルへ入る (`project_commit(token, path)`)。Rust が書き込みを許すのは、ダイアログで
+  選ばれた場所と最近使ったプロジェクトに在る場所だけなので、元の場所が最近使ったプロジェクトから外れていたときは、場所を戻さない
+  (保存のときに、初めての保存と同じく保存先を尋ねる)。目印が書き換えられていても、Rust の決まりの外には書けない
+- データの整理 (`project_store.cleanup`) は `recovery/` に触らない。使用量の一覧には「保存していない変更の控え」として出る
+- 復旧の置き場は、データ置き場に 1 つだけ。同じデータ置き場で bunri を 2 つ起動すると、後から書いたほうの変更だけが残る (取り合う)
+- 開発用のブラウザ起動では、タブを閉じる・再読み込みは「落ちた」のと同じに見える (閉じる前の確かめが無いため)。
+  ブラウザのテスト (`e2e/autosave.spec.ts`) は、これで復旧を確かめる
+
+テストから間隔を変える口は、ブラウザの保存領域の `bunri-autosave` (`off` か `{"idleMs": …, "maxWaitMs": …}`。
+ほかに `retryMs` `playingMaxWaitMs` `recordingMaxWaitMs`)。
+ブラウザのテストは、普段は `off` にしている ([ui-testing.md](ui-testing.md)「テストを足すとき」)。本物の窓のテスト (`make e2e-desktop`) は
+既定の間隔のまま動く。
 
 ### テスト用のビルドで
 
@@ -195,7 +250,8 @@ API の約束、どのステージで割合が出るか、キャンセルで止�
 - 画面: `cd web-ui && npm run dev`。Vite の開発サーバが画面を出し、`/api` をバックエンドへ中継する
   (中継先のポートは環境変数 `BUNRI_API_PORT`)
 - この経路では、ネイティブ側 (Rust) の機能は動かない: API キーのキーチェーン保存、MIDI のネイティブ入力、
-  別窓、初回セットアップ。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+  別窓、初回セットアップ、Rust の engine での再生。画面側は `isDesktop()` で見分けて、ブラウザで出来る範囲に切り替える
+  (再生は Web Audio で鳴らす)
 - `scripts/dev-web.mjs` で起動したときは、画面にデスクトップ版と同じ CSP を掛ける (`tauri.conf.json` から
   起動のたびに読む。`scripts/desktop-csp.mjs`)。違いは、Vite が埋め込むスクリプトの nonce、自動再読み込みの
   接続 (`ws:`)、違反の知らせ先 (`report-uri`) を足したことだけ。CSP を変えたら、ブラウザのテスト (`make e2e`) で
@@ -242,6 +298,7 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 | キーチェーン | 起動時に読まない。API キーの保存・削除は、別の項目名 (`<識別子>.e2e`) に向ける | 利用者の本物のキーに触れない。テストは偽のキーを環境変数で渡す |
 | 書き出したファイル | 環境変数 `BUNRI_E2E_DOWNLOAD_DIR` の場所に保存する | `~/Downloads` に書かない |
 | プロジェクトの保存・開くのダイアログ | 出さずに、環境変数 `BUNRI_E2E_SAVE_PATH` / `BUNRI_E2E_OPEN_PATH` の場所を使う | WebDriver はネイティブのダイアログを操作できない。`~/Documents` に書かない |
+| 再生の音 | 環境変数 `BUNRI_E2E_AUDIO_SILENT=1` のとき (テストの起動が渡す)、Rust の engine が作った音に 0 を掛けてからデバイスへ渡す。出力デバイスを開くところから位置を送るところまでは、配布物と同じに動く | テストを回している機械のスピーカーから音を出さない |
 | 記録 | CSP の違反と、捕まえられなかった例外を `window.__bunriE2E` に記録する (画面の読み込みより前に入れる) | テストが、起動の途中で起きた違反まで拾えるように |
 | WebView の UI の受け手 | プラグインが WKWebView の UI の受け手 (WKUIDelegate) を自分のものに差し替える | `alert()` などをテストから扱うため。代わりに、別窓 (ツール・使い方)、ファイルを選ぶ画面、マイクの許可の確認は、テスト用のビルドでは配布物と同じには動かない ([ui-testing.md](ui-testing.md) の「確かめられない範囲」) |
 
@@ -258,6 +315,10 @@ WebDriver サーバには認証が無い。同じ PC のプロセスなら誰で
 | MCP の橋渡し (`tauri-plugin-mcp-bridge` など) | 入れていない。窓の画像と JS の実行は WebDriver で足りる (`npm run desktop:inspect`)。もう 1 つ自動操作のサーバをアプリに入れることになり、npm の MCP サーバも第三者製のため |
 
 ## ビルド
+
+アプリは音のエンジン (`src-tauri/audio-engine`) をリンクする。エンジンが使う sfizz は submodule
+(`third_party/sfizz`) で、cargo のビルドの中で cmake にかけるので、`make desktop` / `make desktop-build` /
+`make e2e-desktop` には submodule と cmake が要る (`git submodule update --init --recursive`、`brew install cmake`)。
 
 `npm run tauri build` (または `npm run tauri dev`) の前に、`scripts/prepare-desktop.mjs` が自動で走る。
 
@@ -294,7 +355,13 @@ Rust が OS の MIDI を受けて画面に渡す（`src-tauri/src/midi.rs`）。
 - 鍵盤を押してから音が出るまでの遅れは、MIDI の側ではなく、音を出す側に在る。届いてから画面が処理するまでは
   1〜2 ミリ秒。WKWebView の Web Audio は、知らせる値で 15.5 ミリ秒（`baseLatency` 2.7 + `outputLatency` 12.8。
   `latencyHint` を変えても同じ。2026-11-19 に実機で測った）で、利用者の耳にも「少し遅れる」と聞こえた。
-  鍵盤の試聴を Rust の engine で鳴らすと減る（`docs/instrument-engine-design.md` の PR 3）
+  デスクトップ版の鍵盤の試聴は、いまは Rust の engine で鳴らす（下の「音の再生」）
+- `midi_ports` は、つながっている入力ポートの名前を、開かずに返す。入力を始めるまでは、弾いても何も届かない
+  （アプリは、弾かれたことを知れない）。そこで画面は、開いたときに 1 回だけこれを見て、鍵盤がつながっているのに
+  MIDI 入力を始めていなければ、「MIDI 入力を始める」のボタンの付いた知らせを出す（`web-ui/src/lib/useMidiInput.ts`）。
+  一度でも MIDI 入力を始めたか、知らせを ✕ で閉じたあとは、出さない。
+  MIDI を使えない環境では、空のリストを返す（知らせを出さないだけ）。起動してすぐ呼ばれるので、メインスレッドでは動かさない
+  （`#[tauri::command(async)]`。OS の MIDI の用意に時間がかかっても、窓を止めない）
 - 開いたポートと、届いたメッセージは、**ポートの名前つきで** 動きの記録に残す（札 `midi-in`）。画面に渡すのはバイト列だけなので、
   どのポートから来たか（同じ鍵盤が USB と Bluetooth の両方で送ってきていないか、など）は、この記録で確かめる。
   つまみやホイールのように続くメッセージは、同じポートの同じ種類を 0.5 秒に 1 つだけ残す（間引くのは記録だけ。
@@ -303,8 +370,33 @@ Rust が OS の MIDI を受けて画面に渡す（`src-tauri/src/midi.rs`）。
   （`cargo test -- --ignored 仮想ポート`）。本物の窓のテスト（`make e2e-desktop`）は、入力を開いたあとに仮想のポートを作り
   （`web-ui/e2e-desktop/virtual-midi.swift`）、「再検出」で見つかることと、鍵盤 1 回が 1 回だけ届くことを確かめる
 
-音を鳴らすのは今も画面側（Web Audio）。弾いてから鳴るまでの遅れを詰めたくなったら、
-音声エンジンを Rust に移す段階で一緒に扱う。
+受け取った音をどう録るか（ステップ入力・リアルタイム録音）は画面が決め、試聴の音は、画面が Rust の engine に
+頼んで鳴らす（下の「音の再生」。MIDI 入力 → 画面 → `audio_live_note`）。Rust の中で MIDI 入力から engine へ直接は渡していない。
+弾いてから鳴るまでの遅れを詰めたくなったら、楽器の音が入ってから測って決める。
+
+## 音の再生
+
+デスクトップ版では、再生・停止・位置・区間ループ・メトロノーム・録音前のカウント・鍵盤の試聴を、
+Rust の engine (`src-tauri/audio-engine`、crate `bunri-audio`) が cpal で鳴らす。画面とのつなぎは
+`src-tauri/src/audio.rs` (command は `audio_` で始まる 10 個、event は `audio://position`)。
+画面の側の口は `web-ui/src/lib/native-audio.ts` の 1 か所で、呼ぶのは再生エンジン (`lib/engine.ts`) だけ。
+設計・決めたこと・音の決まりは [instrument-engine-design.md](instrument-engine-design.md)
+(「再生を Rust に移して分かったこと」)。
+
+変えるときは両側を一緒に変える:
+
+- command の名前・引数 (`audio.rs` の `#[tauri::command]`) と、`native-audio.ts` の呼び出し。
+  クリップの音声 (`audio_clip_put`) は、生のバイト列とヘッダで渡す (JSON にしない)
+- 位置の event の中身 (`PositionEvent`)。画面は `token` が今の再生のものだけを使う
+- 曲の中身 (`audio_set_song`) のクリップの鳴らす範囲とフェード (`audioStartSec` など。画面の `lib/clip.ts` と同じ決まり)、
+  ドラムのトラックの高さと種類 (`drums`。画面の `lib/drums.ts` の `DRUM_ROWS`)、ドラムに向けた試聴 (`audio_live_note` の `drum`)。
+  ドラムの音そのもの (`audio-engine/src/drum.rs`) は画面の `lib/drum-sound.ts` の写しなので、変えるときは両方を変え、
+  `node scripts/webaudio-reference.mjs` で基準の WAV を作り直す (`tests/webaudio_parity.rs`)
+- 音声スレッド (cpal のコールバック) の中では、メモリの確保と解放・ロック・ファイルの読み書き・ログ出力をしない
+- Rust の呼び出しが失敗したら、画面はそのセッションのあいだ Web Audio に切り替える。Rust の側は、
+  正しくない引数を黙って直さず、エラーで返す
+
+書き出し (WAV)・録音 (`MediaRecorder`)・音声のデコードは、画面側のまま。
 
 ## 動きの記録
 
@@ -359,8 +451,8 @@ libfluidsynth が無ければ使えない。まず「無くても動く」形で
 
 ## 今回やっていないこと
 
-- 再生・録音の Rust への移行。いまは Web Audio と `MediaRecorder` のまま（MIDI 入力の受け取りだけは Rust に在る）。
-  移すときは `src-tauri/src/` に `mod audio;` を足し、`invoke_handler` にコマンドを並べる
+- 録音と書き出しの Rust への移行。いまは `MediaRecorder` と Web Audio のまま（再生は Rust に移した。上の「音の再生」）
+- sfizz と依存のライセンス文の同梱（配布する前に要る。[instrument-engine-design.md](instrument-engine-design.md) の「分かっていない点」）
 - VST プラグインの GUI ホスト
 - Windows / Linux 向けの配布物 (ブラウザで開く版と Docker を廃止したので、いまは mac でしか使えない)
 - Apple Developer ID での署名・公証、自動更新

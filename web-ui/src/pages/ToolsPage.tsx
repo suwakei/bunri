@@ -14,6 +14,7 @@ import { JobCancelledError, jobErrorMessage, jobTracker, slotOf, type Job, type 
 import { useJob, useJobs } from '../lib/useJob';
 import JobCard from '../components/JobCard';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy, notify } from '../lib/notice';
 
 interface AudioResult {
     label: string;
@@ -60,12 +61,15 @@ function ResultItem({ result }: { result: AudioResult }) {
 }
 
 /**
- * 処理の状態の表示。失敗（`type` が `error`）は色を変えて、読み上げの対象にする。
+ * 処理の状態の表示。失敗（`type` が `error`）は色を変えて、読み上げの対象にする。知らせ（lib/notice.ts）としても出す。
  *
  * @param text - 表示する文。空なら何も出さない
  * @param type - `''`（結果）/ `processing`（処理中）/ `error`（失敗）
  */
 function StatusLine({ text, type }: { text: string; type: string }) {
+    // 失敗は、ボタンの下の 1 行に加えて、画面に浮かぶ知らせとしても出す (下までスクロールしていると、行が見えないため)。
+    // 文が変わったときにしか動かないので、同じ文の失敗が続くもの (ファイルを選んでいない、など) は、押した側でも出している
+    useEffect(() => { if (type === 'error' && text) notify('error', text); }, [text, type]);
     if (!text) return null;
     return <div className={`status ${type}`} role={type === 'error' ? 'alert' : 'status'}>{text}</div>;
 }
@@ -192,7 +196,7 @@ function SeparatePanel() {
 
     const handleSeparate = useCallback(async () => {
         const file = ((document.getElementById('sep-file') as HTMLInputElement | null))?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         const model = ((document.getElementById('sep-model') as HTMLInputElement)?.value);
         const mode = ((document.getElementById('sep-mode') as HTMLInputElement)?.value);
         const isDeep = mode === 'deep';
@@ -232,7 +236,7 @@ function SeparatePanel() {
                     ドラムをさらに分ける（キック / スネア / タム / シンバル）
                 </label>
             )}
-            <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy} {...tip('パート分離を始めます。終わるまで数分〜十数分かかります')}>パート分離を始める</button>
+            <button className="btn" onClick={handleSeparate} disabled={separate.heavyBusy} {...blockedBy(separate.heavyBusy && BUSY_REASON)} {...tip('パート分離を始めます。終わるまで数分〜十数分かかります')}>パート分離を始める</button>
             <ToolsJobCard slot="tools-separate" handle={separate} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && (
@@ -254,7 +258,7 @@ function AnalyzePanel() {
 
     const handleAnalyze = useCallback(async () => {
         const file = ((document.getElementById('da-file') as HTMLInputElement | null))?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         const fd = new FormData(); fd.append('file', file);
         setStatus(`解析しています…（${file.name}）`); setStatusType('processing'); setProgress(true); setReport('');
         try {
@@ -276,7 +280,7 @@ function AnalyzePanel() {
             <h2>音声解析</h2>
             <p className="desc">音声ファイルの周波数帯域分布・推定楽器構成・テンポなどを解析します。</p>
             <div className="form-group"><label>音声ファイル</label><input type="file" id="da-file" accept=".wav,.mp3,.flac,.ogg,.m4a" {...tip('調べたい音声ファイルを選びます')} /></div>
-            <button className="btn" onClick={handleAnalyze} disabled={progress} {...tip('選んだファイルを調べて、結果を下に表示します')}>解析開始</button>
+            <button className="btn" onClick={handleAnalyze} disabled={progress} {...blockedBy(progress && 'いま処理しています。終わるまで待ってください')} {...tip('選んだファイルを調べて、結果を下に表示します')}>解析開始</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
             {report && <div className="result-area"><h3>解析結果</h3><div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: report }} /></div>}
@@ -299,7 +303,7 @@ function EditPanel() {
 
     const handleEdit = useCallback(async () => {
         const file = ((document.getElementById('edit-file') as HTMLInputElement | null))?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         let params = {};
         if (action === 'trim' || action === 'cut') params = { start, end };
         else if (action === 'copy_range') params = { start, end, insert_at: extra };
@@ -342,7 +346,7 @@ function EditPanel() {
             )}
             {showExtra && <div className="form-group"><label>{extraLabel}</label><input type="number" value={extra} step="0.1" onChange={e => setExtra(+e.target.value)} /></div>}
             <div className="hint" dangerouslySetInnerHTML={{ __html: EDIT_HINTS[action] || '' }} />
-            <button className="btn" onClick={handleEdit} disabled={statusType === 'processing'} {...tip('編集した結果を、新しいファイルとして作ります。元のファイルはそのままです')}>編集を実行</button>
+            <button className="btn" onClick={handleEdit} disabled={statusType === 'processing'} {...blockedBy(statusType === 'processing' && 'いま処理しています。終わるまで待ってください')} {...tip('編集した結果を、新しいファイルとして作ります。元のファイルはそのままです')}>編集を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>編集結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -352,20 +356,19 @@ function EditPanel() {
 // ---- エフェクトパネル ----
 function EffectsPanel() {
     const [fxType, setFxType] = useState('eq');
-    const [params, setParams] = useState<Record<string, number>>({});
+    const [params, setParams] = useState<Record<string, number>>(() => defaultParams(FX_TOOL_PARAMS.eq || []));
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
     const [results, setResults] = useState<AudioResult[]>([]);
-
-    useEffect(() => {
-        const defs: Record<string, number> = {};
-        (FX_TOOL_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
-        setParams(defs);
-    }, [fxType]);
+    // 種類を変えたら、値はその種類の既定に戻す
+    const changeFxType = useCallback((next: string) => {
+        setFxType(next);
+        setParams(defaultParams(FX_TOOL_PARAMS[next] || []));
+    }, []);
 
     const handleApply = useCallback(async () => {
         const file = ((document.getElementById('fx-file') as HTMLInputElement | null))?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('params', JSON.stringify(params));
         setStatus('処理しています…'); setStatusType('processing');
         try {
@@ -383,7 +386,7 @@ function EffectsPanel() {
             <p className="desc">WAV ファイルにエフェクトをかけて、新しいファイルとしてダウンロードします。</p>
             <div className="form-group"><label>WAV ファイル</label><input type="file" id="fx-file" accept=".wav" {...tip('効果をかける WAV ファイルを選びます')} /></div>
             <div className="form-group"><label>エフェクト</label>
-                <select value={fxType} onChange={e => setFxType(e.target.value)} {...tip('かける効果の種類')}>
+                <select value={fxType} onChange={e => changeFxType(e.target.value)} {...tip('かける効果の種類')}>
                     {Object.entries(FX_TOOL_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                 </select>
             </div>
@@ -395,7 +398,7 @@ function EffectsPanel() {
                     </div>
                 ))}
             </div>
-            <button className="btn" onClick={handleApply} disabled={statusType === 'processing'} {...tip('効果をかけた新しいファイルを作ります。元のファイルはそのままです')}>エフェクト適用</button>
+            <button className="btn" onClick={handleApply} disabled={statusType === 'processing'} {...blockedBy(statusType === 'processing' && 'いま処理しています。終わるまで待ってください')} {...tip('効果をかけた新しいファイルを作ります。元のファイルはそのままです')}>エフェクト適用</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>処理結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -487,7 +490,7 @@ function BatchPanel() {
 
     const handleBatch = useCallback(async () => {
         const files = ((document.getElementById('batch-files') as HTMLInputElement | null))?.files;
-        if (!files?.length) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!files?.length) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         const defs = BATCH_ACTIONS[category][action].params;
         const fd = new FormData();
         for (const f of files) fd.append('files', f);
@@ -541,7 +544,7 @@ function BatchPanel() {
                     ))}
                 </div>
             )}
-            <button className="btn" onClick={handleBatch} disabled={progress} {...tip('選んだすべてのファイルに、同じ操作をかけます')}>一括実行</button>
+            <button className="btn" onClick={handleBatch} disabled={progress} {...blockedBy(progress && 'いま処理しています。終わるまで待ってください')} {...tip('選んだすべてのファイルに、同じ操作をかけます')}>一括実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
             {failures.length > 0 && (
@@ -566,7 +569,7 @@ function OverlayPanel() {
     const handleOverlay = useCallback(async () => {
         const baseFile = ((document.getElementById('ovl-base') as HTMLInputElement | null))?.files?.[0];
         const overFile = ((document.getElementById('ovl-over') as HTMLInputElement | null))?.files?.[0];
-        if (!baseFile || !overFile) { setStatus('2つのファイルを選択してください'); setStatusType('error'); return; }
+        if (!baseFile || !overFile) { setStatus('2つのファイルを選択してください'); setStatusType('error'); notify('error', '2つのファイルを選択してください'); return; }
         const fd = new FormData();
         fd.append('base_file', baseFile); fd.append('overlay_file', overFile);
         fd.append('offset_sec', String(offset)); fd.append('base_vol_db', String(baseVol)); fd.append('overlay_vol_db', String(overVol));
@@ -592,7 +595,7 @@ function OverlayPanel() {
                 <div className="form-group"><label>ベース音量 (dB)</label><input type="number" value={baseVol} min="-20" max="20" onChange={e => setBaseVol(+e.target.value)} {...tip('ベース音源の大きさの増減。0 でそのまま')} /></div>
                 <div className="form-group"><label>オーバーレイ音量 (dB)</label><input type="number" value={overVol} min="-20" max="20" onChange={e => setOverVol(+e.target.value)} {...tip('重ねる音の大きさの増減。0 でそのまま')} /></div>
             </div>
-            <button className="btn" onClick={handleOverlay} disabled={statusType === 'processing'} {...tip('2 つを重ねた新しいファイルを作ります')}>合成を実行</button>
+            <button className="btn" onClick={handleOverlay} disabled={statusType === 'processing'} {...blockedBy(statusType === 'processing' && 'いま処理しています。終わるまで待ってください')} {...tip('2 つを重ねた新しいファイルを作ります')}>合成を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>合成結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -609,7 +612,7 @@ function ConvertPanel() {
 
     const handleConvert = useCallback(async () => {
         const file = ((document.getElementById('conv-file') as HTMLInputElement | null))?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
         const fd = new FormData(); fd.append('file', file); fd.append('bitrate', bitrate);
         setStatus('変換しています…'); setStatusType('processing');
         try {
@@ -637,7 +640,7 @@ function ConvertPanel() {
                     </div>
                 )}
             </div>
-            <button className="btn" onClick={handleConvert} disabled={statusType === 'processing'} {...tip('変換したファイルを作ります')}>変換を実行</button>
+            <button className="btn" onClick={handleConvert} disabled={statusType === 'processing'} {...blockedBy(statusType === 'processing' && 'いま処理しています。終わるまで待ってください')} {...tip('変換したファイルを作ります')}>変換を実行</button>
             <StatusLine text={status} type={statusType} />
             {results.length > 0 && <div className="result-area"><h3>変換結果</h3>{results.map((r, i) => <ResultItem key={i} result={r} />)}</div>}
         </div>
@@ -690,7 +693,7 @@ function DecomposePanel() {
 
     const handleDecompose = useCallback(async () => {
         const file = (document.getElementById('decompose-file') as HTMLInputElement | null)?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
 
         const fd = new FormData();
         fd.append('file', file);
@@ -744,7 +747,7 @@ function DecomposePanel() {
                 そちらを使うと、分けたパートがそのままトラックになり、採譜したノートがピアノロールに並びます
                 （お手本としても残ります）。
             </div>
-            <button className="btn" onClick={handleDecompose} disabled={decompose.heavyBusy} {...tip('パート分離と採譜を始めます。数分かかります')}>
+            <button className="btn" onClick={handleDecompose} disabled={decompose.heavyBusy} {...blockedBy(decompose.heavyBusy && BUSY_REASON)} {...tip('パート分離と採譜を始めます。数分かかります')}>
                 パート分離と採譜を始める
             </button>
             <ToolsJobCard slot="tools-decompose" handle={decompose} hint="待っている間も、ほかのタブ（編集・変換など）は使えます。" />
@@ -847,13 +850,16 @@ function WavOptimizePanel() {
         const fd = new FormData(); fd.append('file', file);
         try {
             const resp = await apiFetch('/api/wav/info', { method: 'POST', body: fd });
-            if (resp.ok) setInfo(await resp.json());
-        } catch (_e) { /* ignore */ }
+            if (resp.ok) { setInfo(await resp.json()); return; }
+            notify('hint', `${file.name} の情報（サンプルレートなど）を読めませんでした。WAV ファイルかどうかを確かめてください`, { live: true });
+        } catch (_e) {
+            notify('hint', `${file.name} の情報（サンプルレートなど）を読めませんでした。処理を担当する部分が動いているかを確かめて、もう一度選んでください`, { live: true });
+        }
     }, []);
 
     const handleOptimize = useCallback(async () => {
         const file = (document.getElementById('opt-file') as HTMLInputElement | null)?.files?.[0];
-        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); return; }
+        if (!file) { setStatus('ファイルを選択してください'); setStatusType('error'); notify('error', 'ファイルを選択してください'); return; }
 
         const fd = new FormData();
         fd.append('file', file);
@@ -916,7 +922,7 @@ function WavOptimizePanel() {
                 動画由来の 48kHz/32bit WAV → 44.1kHz/16bit で <strong>容量が約1/3〜1/4</strong> になります。
             </div>
 
-            <button className="btn" onClick={handleOptimize} disabled={progress} {...tip('形式を変えて、小さくした WAV ファイルを作ります')}>最適化を実行</button>
+            <button className="btn" onClick={handleOptimize} disabled={progress} {...blockedBy(progress && 'いま処理しています。終わるまで待ってください')} {...tip('形式を変えて、小さくした WAV ファイルを作ります')}>最適化を実行</button>
             {progress && <div className="progress-bar"><div className="fill" /></div>}
             <StatusLine text={status} type={statusType} />
 

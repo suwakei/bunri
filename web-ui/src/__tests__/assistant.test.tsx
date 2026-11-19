@@ -27,7 +27,7 @@ const { DawProvider, useDaw } = await import('../lib/store');
 const { AssistantSession, MAX_STEPS, readJsonLines, requestHead } = await import('../lib/assistant');
 const { toolLabel } = await import('../lib/assistant-tools');
 const {
-    COMPACT_CHARS, COMPACT_MESSAGES, DIGEST_CHARS, MAX_SAVED_ITEMS, conversationDigest, itemsFromSection, itemsToSaved, needsCompaction,
+    COMPACT_CHARS, COMPACT_MESSAGES, DIGEST_CHARS, MAX_ARCHIVED, MAX_SAVED_ITEMS, archiveFromSection, archiveTitle, conversationDigest, itemsFromSection, itemsToSaved, needsCompaction,
 } = await import('../lib/assistant-history');
 const { SUGGESTION_COUNT, suggestionsFor } = await import('../lib/assistant-suggestions');
 const { activityEntries, recordActivity, resetActivityForTest } = await import('../lib/activity');
@@ -175,6 +175,9 @@ function engineEnv(record: <T>(label: string, fn: () => T) => T = (_label, fn) =
         moveClip: () => {},
         deleteClip: () => {},
         duplicateClip: () => {},
+        trimClip: () => {},
+        splitClip: () => {},
+        fadeClip: () => {},
         applyEffect: async () => {},
         play: () => {},
         stop: () => {},
@@ -1321,6 +1324,119 @@ describe('頼み方の例（lib/assistant-suggestions.ts）', () => {
         expect(suggestionsFor({ ...base, trackCount: 1 })).toEqual([
             'いまのプロジェクトの様子を教えて', 'トラックを 1 本追加して、1〜2 小節に C メジャーのベースラインを置いて', 'テンポを 96 にして、1 小節目から再生して',
         ]);
+    });
+});
+
+describe('前の会話（履歴）', () => {
+    const FIRST = [
+        { kind: 'user', text: 'ベースを置いて' } as const,
+        { kind: 'assistant', text: '置きました。' } as const,
+    ];
+
+    it('「新しい会話」で、それまでの会話は消えずに履歴の頭へ移る。空の会話は移さない。上限を超えたら古いほうから消える', () => {
+        const session = new AssistantSession();
+        session.reset();
+        expect(session.getState().archive).toEqual([]);
+        session.restore(FIRST);
+        session.reset();
+        expect(session.getState().items).toEqual([]);
+        expect(session.getState().archive).toHaveLength(1);
+        expect(session.getState().archive[0]).toMatchObject({ title: 'ベースを置いて', items: FIRST });
+        for (let i = 0; i < MAX_ARCHIVED + 3; i++) {
+            session.restore([{ kind: 'user', text: `依頼 ${i}` }], session.archived());
+            session.reset();
+        }
+        const titles = session.getState().archive.map((entry) => entry.title);
+        expect(titles).toHaveLength(MAX_ARCHIVED);
+        expect(titles[0]).toBe(`依頼 ${MAX_ARCHIVED + 2}`);
+        expect(titles).not.toContain('ベースを置いて');
+    });
+
+    it('履歴から開き直すと、いまの会話は履歴に残り、次の依頼は開き直した会話の記録から始まる', async () => {
+        stubSteps([step([text('続けます。')])]);
+        const session = new AssistantSession();
+        session.restore(FIRST);
+        session.reset();
+        session.restore([{ kind: 'user', text: 'テンポを 120 に' }], session.archived());
+        const id = session.getState().archive[0].id;
+        expect(session.openArchived(id)).toBe(true);
+        expect(rows(session)).toEqual(['user: ベースを置いて', 'assistant: 置きました。']);
+        expect(session.getState()).toMatchObject({ restored: 2, restoredFrom: 'history' });
+        expect(session.getState().archive.map((entry) => entry.title)).toEqual(['テンポを 120 に']);
+        expect(session.openArchived(9999)).toBe(false);
+
+        await session.send('続きをお願い', fakeDeps().deps);
+        const digest = String(sent[0].messages[0].content[0].text);
+        expect(digest).toMatch(/^<earlier_conversation>\n/);
+        expect(digest).toContain('User: ベースを置いて');
+        expect(digest).not.toContain('テンポを 120 に');
+    });
+
+    it('動いているあいだは、開き直さない。履歴の会話は消せる', async () => {
+        stubSteps(['hang']);
+        const session = new AssistantSession();
+        session.restore(FIRST);
+        session.reset();
+        const id = session.getState().archive[0].id;
+        const running = session.send('こんにちは', fakeDeps().deps);
+        await waitFor(() => expect(session.getState().running).toBe(true));
+        expect(session.openArchived(id)).toBe(false);
+        session.cancel();
+        await running;
+        expect(session.deleteArchived(id)).toBe(true);
+        expect(session.getState().archive).toEqual([]);
+        expect(session.deleteArchived(id)).toBe(false);
+    });
+
+    it('archiveFromSection / archiveTitle: 保存した形を読む。おかしな会話は読み飛ばし、名前が無ければ最初の依頼から作る', () => {
+        let n = 0;
+        const next = () => ++n;
+        expect(archiveFromSection(null, next)).toEqual([]);
+        expect(archiveFromSection({ version: 1, items: FIRST }, next)).toEqual([]);
+        const read = archiveFromSection({
+            archive: [
+                { title: 'ベース', archivedAt: '2026-11-19T05:00:00.000Z', items: FIRST },
+                { title: 'x', items: [] },
+                null,
+                { archivedAt: 'いつか', items: [{ kind: 'assistant', text: 'こんにちは' }] },
+            ],
+        }, next);
+        expect(read).toEqual([
+            { id: 1, title: 'ベース', archivedAt: '2026-11-19T05:00:00.000Z', items: FIRST },
+            { id: 2, title: 'こんにちは', archivedAt: null, items: [{ kind: 'assistant', text: 'こんにちは' }] },
+        ]);
+        expect(archiveTitle([{ kind: 'turn', calls: 1, costUsd: null }])).toBe('（依頼の無い会話）');
+        expect(archiveTitle([{ kind: 'user', text: 'あ'.repeat(40) }])).toBe('あ'.repeat(30) + '…');
+    });
+});
+
+describe('ドック: 前の会話（履歴）', () => {
+    it('「新しい会話」の後、「履歴」から前の会話を開き直せる。区切りは履歴の言い方。消すと一覧から外れる', async () => {
+        const session = new AssistantSession();
+        session.restore([{ kind: 'user', text: 'ベースを置いて' }, { kind: 'assistant', text: '置きました。' }]);
+        renderPanel(session);
+        const history = screen.getByRole('button', { name: /^履歴/ });
+        expect(history).toBeDisabled();
+        fireEvent.click(screen.getByRole('button', { name: '新しい会話' }));
+        expect(within(log()).queryByText('置きました。')).toBeNull();
+        expect(history).toBeEnabled();
+        expect(history).toHaveTextContent('履歴 1');
+
+        fireEvent.click(history);
+        const list = screen.getByRole('region', { name: '前の会話' });
+        expect(within(list).getByText('ベースを置いて')).toBeInTheDocument();
+        fireEvent.click(within(list).getByRole('button', { name: '「ベースを置いて」の会話を開く' }));
+        expect(screen.queryByRole('region', { name: '前の会話' })).toBeNull();
+        expect(within(log()).getByText('置きました。')).toBeInTheDocument();
+        expect(within(log()).getByRole('separator')).toHaveTextContent('ここまでは、履歴から開き直した会話です');
+
+        // 開き直した会話を、もう一度履歴に移して、消す
+        fireEvent.click(screen.getByRole('button', { name: '新しい会話' }));
+        fireEvent.click(screen.getByRole('button', { name: /^履歴/ }));
+        fireEvent.click(screen.getByRole('button', { name: '「ベースを置いて」の会話を消す' }));
+        // 最後の 1 つを消したら、一覧を閉じて会話に戻る
+        expect(screen.queryByRole('region', { name: '前の会話' })).toBeNull();
+        expect(screen.getByRole('button', { name: /^履歴/ })).toBeDisabled();
     });
 });
 

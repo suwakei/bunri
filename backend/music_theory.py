@@ -19,6 +19,10 @@ KS_MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 
 
 # コードテンプレート: 品質名 -> ルートからの半音インターバル
 # v1 は三和音 + 7th まで。テンション・転回形は扱わない
+#
+# 画面も同じ表を持つ（ピアノロールの行にコードの音を色で出す。web-ui/src/lib/pitch-hints.ts の
+# CHORD_INTERVALS / CHORD_SUFFIX）。CHORD_TEMPLATES か CHORD_SUFFIX を足す・変えるときは、
+# test/fixtures/chord-qualities.json と画面の表も一緒に変える（どちらの側のテストも、この fixture と突き合わせる）
 CHORD_TEMPLATES = {
     "maj":   [0, 4, 7],
     "min":   [0, 3, 7],

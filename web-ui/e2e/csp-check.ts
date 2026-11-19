@@ -48,7 +48,7 @@ export default async function cspCheck(): Promise<void> {
     try {
         reports = await (await fetch(`${E2E_URL}/__csp-reports`)).json();
     } catch (e) {
-        throw new Error(`CSP の違反の一覧を取れませんでした (開発サーバが CSP を掛けていない?): ${(e as Error).message}`);
+        throw new Error(`CSP の違反の一覧を取れませんでした (開発サーバが CSP を掛けていない?): ${(e as Error).message}`, { cause: e });
     }
     // 「CSP が効いているか」を確かめるテスト (csp.spec.ts) が、わざと起こした違反と、
     // 開発サーバの自動再読み込みの仕組み (@vite/client) が出した違反は除く
