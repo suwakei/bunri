@@ -234,11 +234,11 @@ pub fn run() {
                 data_dir.as_deref(),
                 &app.package_info().version.to_string(),
             ));
-            app.manage(project::ProjectFiles::new(data_dir));
+            app.manage(project::ProjectFiles::new(data_dir.clone()));
             app.manage(Sidecar::spawn(config));
             app.manage(midi::MidiInputs::default());
             // 出力デバイスは、画面が audio_init を呼ぶまで開かない
-            app.manage(audio::AudioState::new(app.handle().clone()));
+            app.manage(audio::AudioState::new(app.handle().clone(), data_dir));
             windows::create_main_window(app)?;
             Ok(())
         })
@@ -254,6 +254,8 @@ pub fn run() {
             activity_record,
             activity_info,
             audio::audio_init,
+            audio::audio_prepare_piano,
+            audio::audio_render_song,
             audio::audio_clip_put,
             audio::audio_clip_drop,
             audio::audio_set_song,

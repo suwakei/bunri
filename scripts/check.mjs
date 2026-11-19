@@ -82,7 +82,7 @@ export function changedFiles(root, options = {}) {
     return [...new Set(paths)].sort();
 }
 
-const GENERATED = /(^|\/)(node_modules|target|dist|__pycache__|\.venv|\.git|\.pytest_cache|\.ruff_cache|e2e-results|e2e-desktop-results|playwright-report)(\/|$)|^\.claude\/worktrees\/|^(uploads|results|projects|soundfonts)\/|^src-tauri\/(binaries|runtime|gen)\//;
+const GENERATED = /(^|\/)(node_modules|target|dist|__pycache__|\.venv|\.git|\.pytest_cache|\.ruff_cache|e2e-results|e2e-desktop-results|playwright-report)(\/|$)|^\.claude\/worktrees\/|^(uploads|results|projects|soundfonts|instruments)\/|^src-tauri\/(binaries|runtime|gen)\//;
 
 /** ブラウザでは拾えない起動・認証・同梱フォント・ファイル書き出しの経路。 */
 function needsDesktopE2e(path) {

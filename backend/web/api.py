@@ -28,6 +28,10 @@ from fastapi import Query
 from web import job_routes
 app.include_router(job_routes.router)
 
+# 楽器の録音素材の準備（利用者が頼んだときだけ取得する）
+from web import instrument_routes
+app.include_router(instrument_routes.router)
+
 # プロジェクトの保存と読み込み（.bunri v2）と、データの整理
 from web import project_routes
 app.include_router(project_routes.router)

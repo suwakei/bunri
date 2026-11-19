@@ -730,3 +730,63 @@ describe('動きの記録に残さないもの', () => {
         expect(text).not.toMatch(/\?name=[^…]/);
     });
 });
+
+describe('楽器の音源', () => {
+    it('導入した SFZ を読み、鍵盤の試聴とデバイスを使わない WAV 書き出しに渡せる', async () => {
+        // 実際のピアノは取得せず、識別できる高さの録音素材で IPC からサンプラーまでを通す。
+        const version = '3382bf9496bba2486f5ab0de55a264d1dfc38404';
+        const directory = join(inject('dataDir'), 'instruments', 'salamander', version);
+        mkdirSync(join(directory, 'Samples'), { recursive: true });
+        mkdirSync(join(directory, 'Data'), { recursive: true });
+        writeFileSync(join(directory, 'LICENSE'), 'テスト用に生成した波形');
+        writeFileSync(join(directory, 'Samples', 'test.wav'), makeWav(2, [659.255], 48000));
+        writeFileSync(join(directory, 'Salamander Grand Piano V3.sfz'),
+            '<region> sample=Samples/test.wav key=60 ampeg_release=0.12');
+        writeFileSync(join(directory, '.installed.json'), JSON.stringify({
+            version, sha256: '4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476',
+        }));
+        try {
+            const result = await app.run(async () => {
+                const invoke = (window as unknown as {
+                    __TAURI__: { core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> } };
+                }).__TAURI__.core.invoke;
+                // 再生や準備より先に書き出しても、導入済みの録音を使う。
+                const raw = await invoke<ArrayBuffer | number[]>('audio_render_song', { song: {
+                    bpm: 120, offsetSec: 0, beatsPerBar: 4,
+                    tracks: [{ id: 991, gainDb: 0, pan: 0, audible: true,
+                        notes: [{ start: 0, length: 960, pitch: 60, velocity: 96 }], clips: [] }],
+                } });
+                const prepared = await invoke<{ installed: boolean }>('audio_prepare_piano');
+                await invoke('audio_live_note', { pitch: 60, velocity: 96 });
+                await invoke('audio_live_note', { pitch: 60, velocity: 0 });
+                await invoke('audio_live_all_off');
+                const bytes = raw instanceof ArrayBuffer ? raw : new Uint8Array(raw).buffer;
+                const context = new AudioContext();
+                try {
+                    const audio = await context.decodeAudioData(bytes);
+                    const data = audio.getChannelData(0);
+                    let crossings = 0, peak = 0;
+                    const begin = Math.round(audio.sampleRate * 0.1), end = Math.round(audio.sampleRate * 0.4);
+                    for (let i = begin; i < end; i++) {
+                        peak = Math.max(peak, Math.abs(data[i]));
+                        if (data[i - 1] <= 0 && data[i] > 0) crossings++;
+                    }
+                    return { installed: prepared.installed, frequency: crossings / 0.3, peak,
+                        sampleRate: audio.sampleRate, duration: audio.duration };
+                } finally { await context.close(); }
+            });
+            expect(result.installed).toBe(true);
+            // C4 の三角波 (261.6Hz) ではなく、SFZ に割り当てた録音 (659.3Hz) が鳴る。
+            expect(result.frequency).toBeGreaterThan(650);
+            expect(result.frequency).toBeLessThan(670);
+            expect(result.peak).toBeGreaterThan(0.001);
+            expect(result.duration).toBeGreaterThan(0.5);
+            expect(await record()).toEqual({ csp: [], errors: [] });
+        } finally {
+            rmSync(directory, { recursive: true, force: true });
+            await app.run(() => (window as unknown as {
+                __TAURI__: { core: { invoke(cmd: string): Promise<unknown> } };
+            }).__TAURI__.core.invoke('audio_prepare_piano'));
+        }
+    });
+});

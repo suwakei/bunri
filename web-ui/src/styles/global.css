@@ -1624,6 +1624,21 @@ body:has(#health-banner) #notice-region {
     min-height: 0;
 }
 
+.piano-instrument {
+    flex-shrink: 0;
+    max-height: 45%;
+    overflow: auto;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-mid);
+    font-size: 11px;
+}
+
+.piano-instrument summary { cursor: pointer; }
+.piano-instrument-details { padding: 6px 0; }
+.piano-instrument-details p { margin: 4px 0 8px; }
+.piano-instrument-details a { color: var(--accent); }
+
 #piano-keys {
     width: 52px;
     min-width: 52px;

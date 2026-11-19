@@ -32,6 +32,7 @@ import { blockedBy } from '../lib/notice';
 import { firstRegionEndingAfter, inMask } from '../lib/pitch-hints';
 import { DRUM_ROWS, drumRowOfPitch, isDrumTrack } from '../lib/drums';
 import PitchHintBar from './PitchHintBar';
+import PianoInstrument from './PianoInstrument';
 import { MIN_CLIP_SEC, audioStartOf, fadeGain, fadeInOf, fadeOutOf, formatSeconds, playLength, setClipFades, setClipRange, splitClip } from '../lib/clip';
 import { onPeaksReady, peakColumns, peaksOf } from '../lib/waveform';
 import ClipFadeDialog from './ClipFadeDialog';
@@ -2711,6 +2712,7 @@ export default function CenterArea() {
                         <button type="button" aria-label="縦に広げる" {...tip('縦に広げて、ノートを押しやすくします')} disabled={!zoom.canZoomInY} {...blockedBy(!zoom.canZoomInY && 'これ以上は、縦に広げられません（いちばん大きい表示です）')} onClick={() => zoomBy('y', 1)}>＋</button>
                     </span>
                 </div>
+                <PianoInstrument activeTrackId={activeTrackId} />
                 {practiceOpen && <PracticeBands />}
                 <div id="piano-roll-body">
                     <div ref={keysRef} id="piano-keys" data-tip-side="right" data-tip-box="" />

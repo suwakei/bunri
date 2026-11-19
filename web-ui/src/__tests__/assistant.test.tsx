@@ -848,9 +848,10 @@ const log = () => screen.getByRole('log', { name: '会話と操作ログ' });
 
 /** 入力欄に打って Enter で送り、終わるまで待つ。 */
 async function ask(request: string) {
+    const newConversation = screen.getByRole('button', { name: '新しい会話' });
     fireEvent.change(input(), { target: { value: request } });
     fireEvent.keyDown(input(), { key: 'Enter' });
-    await waitFor(() => expect(screen.getByRole('button', { name: '新しい会話' })).toBeEnabled());
+    await waitFor(() => expect(newConversation).toBeEnabled());
 }
 
 describe('依頼ごとの記録（本物の元に戻す履歴）', () => {

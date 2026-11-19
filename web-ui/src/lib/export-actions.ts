@@ -44,7 +44,12 @@ export async function exportMixWav(): Promise<ExportOutcome> {
     engine.init();
     const blocker = wavExportBlocker();
     if (blocker) return { ok: false, message: blocker };
-    const blob = await engine.exportWav();
+    let blob: Blob | null;
+    try {
+        blob = await engine.exportWav();
+    } catch (e) {
+        return { ok: false, message: 'WAV を書き出せませんでした（' + describeError(e) + '）' };
+    }
     if (!blob) return { ok: false, message: 'WAV を書き出せませんでした。もう一度試してください' };
     download(blob, WAV_FILE_NAME);
     return { ok: true, fileName: WAV_FILE_NAME, message: 'WAV ファイルを書き出しました' };

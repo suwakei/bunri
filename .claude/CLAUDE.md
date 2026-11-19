@@ -95,6 +95,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `pitch_time.py` | ピッチシフト/タイムストレッチ（フェーズボコーダー実装） |
 | `metronome.py` | メトロノーム/BPMユーティリティ |
 | `synth.py` | ソフトウェアシンセ + ステップシーケンサー + ドラムマシン（FluidSynth/SoundFont） |
+| `instruments.py` / `instrument_catalog.json` | 楽器の素材の一覧と明示ダウンロード（まず Salamander Grand Piano）。容量・SHA-256 を照合してデータ置き場に展開する。取得 API は `web/instrument_routes.py`。設計は `docs/instrument-engine-design.md` |
 | `analyze.py` | WAV音声解析 → ピアノロール用ノートデータ |
 | `song_chart.py` | 楽曲カルテの組み立て・正規化（第1層のオーケストレーション） |
 | `structure.py` | グリッド推定（BPM/ダウンビート）とセクション検出 |
@@ -127,7 +128,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 |---|---|
 | `web-ui/` | 画面（React + Vite + TypeScript）。API 呼び出しは必ず `src/lib/api.ts` の `apiFetch` / `backendUrl` を通す（素の `fetch('/api/...')` を書かない）。再生は `src/lib/engine.ts` を通す（デスクトップ版では Rust の engine、ブラウザでは Web Audio で鳴らす。Rust に渡す口 `src/lib/native-audio.ts` を部品から直接呼ばない） |
 | `src-tauri/` | デスクトップアプリのネイティブ側（Rust）。窓の生成、初回セットアップ、Python sidecar の起動・監視・終了、API キーのキーチェーン保存、MIDI 入力の受け取り、プロジェクトのファイルの保存・開く（ダイアログ・最近使ったプロジェクト・閉じる前の確かめ。`project.rs`）、動きの記録のファイル（`activity.rs`）、音の再生（`audio.rs`。画面の頼みを音のエンジンに渡し、再生位置を知らせる）だけを持つ |
-| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、仮の音（三角波）、ドラムの合成音（`drum.rs`）、クリップの鳴らす範囲とフェード（`clips.rs`）、再生の状態（transport）、cpal での出力、オフライン描画（WAV 書き出し）。デスクトップ版の再生と鍵盤の試聴はここが鳴らす。書き出しは、まだ画面側。画面の書き出しと同じ音かは `tests/webaudio_parity.rs` が確かめる（設計と PR の並びは `docs/instrument-engine-design.md`） |
+| `src-tauri/audio-engine/` | 音のエンジン（crate `bunri-audio`）。曲（トラック・ノート・クリップ・楽器）を受け取ってブロックごとに音を作る engine、sfizz のサンプラー、仮の音（三角波）、ドラムの合成音（`drum.rs`）、クリップの鳴らす範囲とフェード（`clips.rs`）、再生の状態（transport）、cpal での出力、オフライン描画（WAV 書き出し）。デスクトップ版の再生・鍵盤の試聴・書き出しはここを使い、ピアノ素材を導入すると同じ SFZ で鳴らす。ブラウザは Web Audio のまま。仮の音とドラムの基準は `tests/webaudio_parity.rs` が確かめる（設計と PR の並びは `docs/instrument-engine-design.md`） |
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/webaudio-reference.mjs` | Web Audio の書き出し（本物の `engine.ts` の `mixdown`）で決まった曲を WebKit と Chromium で WAV にし、Rust の engine と突き合わせる基準（`src-tauri/audio-engine/tests/fixtures/webaudio/`）を作る。サーバは立てない |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |

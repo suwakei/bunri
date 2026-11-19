@@ -87,6 +87,7 @@ function desktop() {
     };
     /** 出力を開いた直後の後始末として、まだ来ていない command */
     let cleanupLeft: string[] = [];
+    let preparingAfterInit = false;
     let handler: ((e: { payload: unknown }) => void) | null = null;
     let active = 0;
     const invoke = vi.fn(async (cmd: string, args?: unknown, options?: { headers: Record<string, string> }) => {
@@ -97,7 +98,7 @@ function desktop() {
         } else if (args !== undefined) {
             call.args = JSON.parse(JSON.stringify(args));
         }
-        if (cmd === 'audio_init') cleanupLeft = ['audio_stop', 'audio_live_all_off'];
+        if (cmd === 'audio_init') { cleanupLeft = ['audio_stop', 'audio_live_all_off']; preparingAfterInit = true; }
         if (cleanupLeft[0] === cmd && args === undefined) {
             // 後始末の呼び出しは、どのテストにも出てくるので、順番の確かめの邪魔にならないよう別に覚える
             cleanupLeft.shift();
@@ -106,6 +107,11 @@ function desktop() {
             return undefined;
         }
         if (cmd !== 'audio_init') cleanupLeft = [];
+        if (cmd === 'audio_prepare_piano' && preparingAfterInit) {
+            preparingAfterInit = false;
+            if (state.fail?.(cmd)) throw '偽の Rust: 失敗させた';
+            return { installed: true };
+        }
         calls.push(call);
         const transport = !cmd.startsWith('audio_live') && cmd !== 'audio_clip_put';
         if (transport) { active++; if (active > 1) state.overlapped = true; }
@@ -115,6 +121,8 @@ function desktop() {
             await Promise.resolve();
             if (state.fail?.(cmd)) throw '偽の Rust: 失敗させた';
             if (cmd === 'audio_init') return { sampleRate: 48000, outputLatencySec: 0.012 };
+            if (cmd === 'audio_prepare_piano') return { installed: true };
+            if (cmd === 'audio_render_song') return new ArrayBuffer(44);
             if (cmd === 'audio_clip_put') {
                 const h = call.headers!;
                 const got = Number(h['x-offset']) + call.body!.length / Number(h['x-channels']);
@@ -451,6 +459,66 @@ describe('event からの位置の補い方', () => {
 });
 
 describe('Rust で再生する (デスクトップ版)', () => {
+    it('出力を開いたあとでピアノを準備し、導入後は同じ曲も渡し直す', async () => {
+        const d = desktop();
+        const t = engine.addTrack('Piano');
+        t.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(d.invoke.mock.calls.map(([cmd]) => cmd).slice(0, 5)).toEqual([
+            'audio_init', 'audio_stop', 'audio_live_all_off', 'audio_prepare_piano', 'audio_set_song',
+        ]);
+        expect(engine.instrumentSnapshot()).toBe('piano');
+        engine.stop();
+        await engine.preparePiano();
+        engine.play(0);
+        await nativeAudio.idle();
+        expect(d.of('audio_set_song')).toHaveLength(2);
+    });
+
+    it('WAV は同じ楽器で書き出し、デバイスを開かずミュートとソロを渡す', async () => {
+        const d = desktop();
+        const t = engine.addTrack('Piano');
+        t.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4, velocity: 48 }];
+        t.clips.push({ buffer: audioBuffer([[0.2, 0.1]]), offset: 1, duration: 2 / 48000, name: 'a' });
+        const muted = engine.addTrack('Muted');
+        muted.mute = true;
+        muted.pianoNotes = [{ note: 'E', octave: 4, step: 0, length: 4 }];
+        engine.listenOverride = new Set([muted.id]);
+        const blob = await engine.exportWav();
+        expect(blob?.type).toBe('audio/wav');
+        expect(blob?.size).toBe(44);
+        expect(d.cmds()).toEqual(['audio_clip_put', 'audio_render_song']);
+        const song = d.last('audio_render_song')!.args.song;
+        expect(song.tracks.map((track: { audible: boolean }) => track.audible)).toEqual([true, false]);
+        expect(song.tracks[0].notes).toEqual([{ start: 0, length: 960, pitch: 60, velocity: 48 }]);
+        expect(started).toEqual([]);
+    });
+
+    it('WAV の描画に失敗しても電子音で代用しない', async () => {
+        const d = desktop();
+        d.state.fail = (cmd) => cmd === 'audio_render_song';
+        const t = engine.addTrack('Piano');
+        t.pianoNotes = [{ note: 'C', octave: 4, step: 0, length: 4 }];
+        await expect(engine.exportWav()).rejects.toThrow('偽の Rust');
+        expect(started).toEqual([]);
+    });
+
+    it('クリップを送る前に出力デバイスが開けなくても、WAV は音声を送り直して書き出せる', async () => {
+        const d = desktop();
+        d.state.fail = (cmd) => cmd === 'audio_init';
+        const t = engine.addTrack('Audio');
+        t.clips.push({ buffer: audioBuffer([[0.2, 0.1]]), offset: 0, duration: 2 / 48000, name: 'a' });
+        nativeAudio.syncClips();
+        await nativeAudio.idle();
+        expect(engine.usesNativeAudio()).toBe(false);
+        expect(d.of('audio_clip_put')).toHaveLength(0);
+        const wav = await engine.exportWav();
+        expect(wav?.size).toBe(44);
+        expect(d.cmds()).toEqual(['audio_init', 'audio_clip_put', 'audio_render_song']);
+        expect(d.last('audio_render_song')!.args.song.tracks[0].clips).toHaveLength(1);
+    });
+
     it('最初の再生で、出力を開く → 曲を渡す → 鳴らす、の順に呼ぶ。isPlaying は play() の直後に true', async () => {
         const d = desktop();
         const t = engine.addTrack('A');

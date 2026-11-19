@@ -34,6 +34,8 @@ projects/
 
 # Soundfonts (large binary files)
 soundfonts/
+# 初めて使うときに取得する楽器の録音素材
+/instruments/
 
 # 追加の分離モデル（初回に自動でダウンロードされる）
 /models/

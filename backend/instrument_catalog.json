@@ -1,0 +1,14 @@
+{
+  "salamander": {
+    "id": "salamander",
+    "name": "グランドピアノ",
+    "version": "3382bf9496bba2486f5ab0de55a264d1dfc38404",
+    "url": "https://codeload.github.com/sfzinstruments/SalamanderGrandPiano/zip/3382bf9496bba2486f5ab0de55a264d1dfc38404",
+    "sha256": "4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476",
+    "size": 748522601,
+    "sfz": "Salamander Grand Piano V3.sfz",
+    "license": "CC-BY-3.0",
+    "author": "Alexander Holm",
+    "sourceUrl": "https://github.com/sfzinstruments/SalamanderGrandPiano"
+  }
+}

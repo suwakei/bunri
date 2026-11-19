@@ -541,6 +541,32 @@ class TestExpiry:
 
 
 class TestShutdown:
+    def test_実行中の停止を待つ間に順番待ちのジョブを始めない(self, monkeypatch):
+        manager = JobManager()
+        gate = Gate()
+        ran = []
+        running = manager.submit("fake", lambda job: gate.pause(), queue=True)
+        assert gate.entered.wait(5)
+        waiting = manager.submit("fake", lambda job: ran.append(True), queue=True)
+        request_cancel = running.request_cancel
+
+        def wait_for_running_stop():
+            # 子プロセスの停止待ちのように、キャンセルの呼び出しが戻る前に worker を進める。
+            result = request_cancel()
+            gate.release.set()
+            assert running.wait(5)
+            assert waiting.wait(5)
+            return result
+
+        monkeypatch.setattr(running, "request_cancel", wait_for_running_stop)
+        try:
+            manager.shutdown(timeout=5)
+        finally:
+            gate.release.set()
+        assert running.state == CANCELLED
+        assert waiting.state == CANCELLED
+        assert ran == []
+
     def test_動いているジョブも順番待ちも止め_子プロセスを残さない(self):
         manager = JobManager()
         pids = []

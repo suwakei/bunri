@@ -8,11 +8,11 @@
  *   録音前のカウント・鍵盤の試聴を任せる。曲の内容は、再生を始めるときに渡す
  * - ブラウザ（開発用のブラウザ起動と自動テスト）と、Rust の呼び出しが失敗したあと: Web Audio（ここに書いてある予約の処理）
  *
- * 書き出し（`mixdown` / `exportWav`）、録音、音声のデコードは、どちらのときも Web Audio のまま。
+ * 書き出しもデスクトップ版では同じ Rust の楽器を使う。録音と音声のデコードは Web Audio が受け持つ。
  * トラックの `gainNode` / `panNode` も、どちらのときも今の値を持たせておく（途中で Web Audio に切り替わっても、そのまま鳴らせる）。
  */
-import { apiFetch } from './api';
-import { nativeAudio, type NativePlayback } from './native-audio';
+import { apiFetch, isDesktop } from './api';
+import { nativeAudio, type NativePlayback, type PlayRequest } from './native-audio';
 import { rememberSource } from './audio-sources';
 import { audioStartOf, clipPortion, fadeEnvelope, playLength } from './clip';
 import { playDrum } from './drum-sound';
@@ -1428,8 +1428,31 @@ class AudioEngine {
         });
     }
 
+    /** 導入したピアノを再生と鍵盤の試聴に反映する。画面からの楽器の入口。 */
+    async preparePiano(): Promise<boolean> {
+        return nativeAudio.preparePiano();
+    }
+
+    /** 画面に、実際に用意できた音色と電子音への切り替えを知らせる。 */
+    subscribeInstrument = (listener: () => void): (() => void) => nativeAudio.subscribeInstrument(listener);
+    instrumentSnapshot = () => nativeAudio.instrumentSnapshot();
+
+    /** 書き出す曲。練習画面の「聴く」や速度には従わず、プロジェクトのミュートとソロに従う。 */
+    private _exportRequest(): PlayRequest {
+        const audible = new Set(this.audibleTracks().map((t) => t.id));
+        return {
+            bpm: this.bpm, beatsPerBar: this.beatsPerBar, offsetSec: this.gridOffset,
+            tracks: this.tracks.map((t) => ({
+                id: t.id, gainDb: t.gain, pan: t.pan, audible: audible.has(t.id),
+                notes: this.soundingNotes(t), clips: t.clips,
+                drums: isDrumTrack(t, (id) => this.getTrack(id)),
+            })),
+            fromSec: 0, loop: null, rate: 1, stretched: null, countIn: null, metronome: false,
+        };
+    }
+
     /**
-     * OfflineAudioContext を使って全トラックをミックスダウンする。
+     * デスクトップ版は Rust、開発用ブラウザは OfflineAudioContext で全トラックをミックスダウンする。
      * 鳴らすトラックは再生と同じ（ミュートとソロに従う。`audibleTracks`）。
      * @returns ミックス済み AudioBuffer。コンテンツが空の場合は null
      */
@@ -1437,6 +1460,10 @@ class AudioEngine {
         this.init();
         const duration = this.getTotalDuration();
         if (duration === 0) return null;
+        if (isDesktop()) {
+            const wav = await nativeAudio.render(this._exportRequest());
+            return await this.ctx!.decodeAudioData(await wav.arrayBuffer());
+        }
         const sampleRate = 44100;
         const offCtx = new OfflineAudioContext(2, Math.ceil(duration * sampleRate), sampleRate);
         const master = offCtx.createGain();
@@ -1499,6 +1526,10 @@ class AudioEngine {
      * @returns WAV 形式の Blob。コンテンツが空の場合は null
      */
     async exportWav(): Promise<Blob | null> {
+        if (isDesktop()) {
+            if (this.getTotalDuration() === 0) return null;
+            return await nativeAudio.render(this._exportRequest());
+        }
         const buffer = await this.mixdown();
         if (!buffer) return null;
         return this._audioBufferToWav(buffer);

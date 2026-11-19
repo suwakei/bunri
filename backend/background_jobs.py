@@ -564,8 +564,18 @@ class JobManager:
         """
         with self._cond:
             pending = [job for job in self._jobs.values() if not job.finished]
+            # 子プロセスを止めている間に worker が次のジョブを始めないよう、
+            # 待機中のものを先にまとめて列から外す。停止と完了の通知はロックの外で行う。
+            waiting = list(self._queue)
+            self._queue.clear()
+            for job in waiting:
+                self._funcs.pop(job.id, None)
+        for job in waiting:
+            job.request_cancel()
+            job._finish(CANCELLED)
         for job in pending:
-            self.cancel(job.id)
+            if job not in waiting:
+                self.cancel(job.id)
         deadline = time.monotonic() + timeout
         for job in pending:
             job.wait(max(0.0, deadline - time.monotonic()))

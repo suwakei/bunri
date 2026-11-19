@@ -18,7 +18,7 @@ import { apiFetch, errorDetail, statusMessage } from './api';
 import { readStored, writeStored } from './storage';
 
 /** ジョブの種類（API の `kind`）。 */
-export type JobKind = 'separate' | 'deep_separate' | 'decompose' | 'chart' | 'chart_regrid' | 'analyze';
+export type JobKind = 'separate' | 'deep_separate' | 'decompose' | 'chart' | 'chart_regrid' | 'analyze' | 'instrument_install';
 
 /** ジョブの状態。 */
 export type JobState = 'queued' | 'running' | 'done' | 'error' | 'cancelled';
@@ -57,7 +57,7 @@ export interface Job<T = unknown> {
  * - tools-*: ツールの画面の各タブ
  */
 export type JobSlot =
-    | 'learn-song' | 'learn-parts' | 'grid' | 'file-analyze'
+    | 'learn-song' | 'learn-parts' | 'grid' | 'file-analyze' | 'piano-instrument'
     | 'tools-separate' | 'tools-decompose';
 
 /** どこで始めたか分からないジョブ（覚え書きが無い）を出す場所。種類から決まるものだけ。 */
@@ -67,6 +67,7 @@ const SLOT_BY_KIND: Partial<Record<JobKind, JobSlot>> = {
     analyze: 'file-analyze',
     separate: 'tools-separate',
     deep_separate: 'tools-separate',
+    instrument_install: 'piano-instrument',
 };
 
 /** 終わったか。 */

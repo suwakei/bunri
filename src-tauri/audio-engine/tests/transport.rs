@@ -1056,3 +1056,12 @@ fn デバイスのバッファの長さを変えても同じ音になる() {
         assert!(diff < 1e-6, "block={block}: 差 {diff}");
     }
 }
+
+#[test]
+fn 試聴用サンプラーは出力に合う周波数とブロック長だけを受け取る() {
+    let (mut controller, _transport) = transport(SR).unwrap();
+    let wrong_rate = Box::new(bunri_audio::Sampler::new(44_100.0, 2048));
+    let short_block = Box::new(bunri_audio::Sampler::new(SR as f32, 256));
+    assert!(controller.set_live_sampler(Some(wrong_rate)).is_err());
+    assert!(controller.set_live_sampler(Some(short_block)).is_err());
+}

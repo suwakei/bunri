@@ -67,6 +67,7 @@ impl std::error::Error for LoadError {}
 pub struct Sampler {
     raw: *mut sfizz_synth_t,
     max_block: usize,
+    sample_rate: f32,
 }
 
 // sfizz のシンセは、1 スレッドからだけ触る限りスレッドをまたいで移してよい。
@@ -85,7 +86,16 @@ impl Sampler {
             sfizz_set_sample_rate(raw, sample_rate);
             sfizz_set_samples_per_block(raw, max_block as i32);
         }
-        Sampler { raw, max_block }
+        Sampler {
+            raw,
+            max_block,
+            sample_rate,
+        }
+    }
+
+    /// 出力の周波数と、受け取るブロックの長さに対応しているか。
+    pub(crate) fn supports_output(&self, sample_rate: u32, min_block: usize) -> bool {
+        self.sample_rate == sample_rate as f32 && self.max_block >= min_block
     }
 
     /// SFZ ファイルを読み込む。前に読んだ楽器は置き換わる。

@@ -114,7 +114,23 @@ impl AudioData {
     ///
     /// 整数の形式では、-1.0〜1.0 を超えた値を端の値に切る (折り返さない)。
     pub fn write_wav_file(&self, path: &Path, format: WavFormat) -> Result<(), AudioError> {
-        let file_error = |e: hound::Error| AudioError::File(format!("{}: {e}", path.display()));
+        let file = std::fs::File::create(path).map_err(|e| AudioError::File(e.to_string()))?;
+        self.write_wav(file, format)
+    }
+
+    /// WAV のバイト列を作る。ファイルを介さず IPC へ渡せる。
+    pub fn wav_bytes(&self, format: WavFormat) -> Result<Vec<u8>, AudioError> {
+        let mut output = std::io::Cursor::new(Vec::new());
+        self.write_wav(&mut output, format)?;
+        Ok(output.into_inner())
+    }
+
+    fn write_wav<W: std::io::Write + std::io::Seek>(
+        &self,
+        output: W,
+        format: WavFormat,
+    ) -> Result<(), AudioError> {
+        let file_error = |e: hound::Error| AudioError::File(e.to_string());
         let (bits_per_sample, sample_format) = match format {
             WavFormat::Pcm16 => (16, hound::SampleFormat::Int),
             WavFormat::Pcm24 => (24, hound::SampleFormat::Int),
@@ -126,7 +142,7 @@ impl AudioData {
             bits_per_sample,
             sample_format,
         };
-        let mut writer = hound::WavWriter::create(path, spec).map_err(file_error)?;
+        let mut writer = hound::WavWriter::new(output, spec).map_err(file_error)?;
         // 整数の形式の、いちばん大きい値 (16bit なら 32767)
         let full_scale = ((1i64 << (bits_per_sample - 1)) - 1) as f32;
         for frame in 0..self.frames() {

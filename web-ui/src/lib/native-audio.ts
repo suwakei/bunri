@@ -369,6 +369,17 @@ function mixKey(mix: TrackMix): string {
 
 /** Rust の音のエンジンとのやり取り。 */
 class NativeAudio {
+    private instrumentState: 'unprepared' | 'piano' | 'tone' | 'failed' = 'unprepared';
+    private instrumentListeners = new Set<() => void>();
+    instrumentSnapshot = (): 'unprepared' | 'piano' | 'tone' | 'failed' => this.instrumentState;
+    subscribeInstrument = (listener: () => void): (() => void) => {
+        this.instrumentListeners.add(listener);
+        return () => { this.instrumentListeners.delete(listener); };
+    };
+    private markInstrument(state: 'unprepared' | 'piano' | 'tone' | 'failed'): void {
+        this.instrumentState = state;
+        for (const listener of this.instrumentListeners) listener();
+    }
     /** どこかで失敗して、このセッションは使わないと決めた */
     private failed = false;
     /** `localStorage` の抜け道の値（最初に 1 回だけ読む） */
@@ -427,6 +438,8 @@ class NativeAudio {
                 // (Web Audio の音は画面と一緒に消えるが、Rust の音は消えない)
                 await invokeDesktop('audio_stop');
                 await invokeDesktop('audio_live_all_off');
+                const piano = await invokeDesktop<{ installed: boolean }>('audio_prepare_piano');
+                this.markInstrument(piano.installed ? 'piano' : 'tone');
                 markBackend('native');
             })();
         }
@@ -462,6 +475,7 @@ class NativeAudio {
     private fail(reason: unknown): void {
         if (this.failed) return;
         this.failed = true;
+        this.markInstrument('failed');
         markBackend('web');
         console.warn('[bunri] Rust の音のエンジンを使えないので、このあとは Web Audio で鳴らします:', reason);
         this.current = null;
@@ -567,13 +581,30 @@ class NativeAudio {
      * 音声に番号を振り、裏で送り始める。送ってあれば（送っている途中でも）何もしない。
      * @returns その音声の状態
      */
-    private register(buffer: AudioBuffer): ClipEntry {
+    private register(buffer: AudioBuffer, offline = false): ClipEntry {
         const known = this.byBuffer.get(buffer);
-        if (known && !known.dropped) return known;
+        if (known && !known.dropped) {
+            if (offline && !known.ready) {
+                // 再生の出力を開けず、送れなかった音声も書き出せる。先の送信が終わってから必要なら送り直す。
+                const previous = known.done;
+                known.done = this.uploadChain.then(async () => {
+                    await previous.catch(() => undefined);
+                    if (!known.ready) await this.upload(known, buffer, true);
+                });
+                this.uploadChain = known.done.catch(() => { known.dropped = true; });
+            }
+            return known;
+        }
         const entry: ClipEntry = { id: this.nextClipId++, ready: false, dropped: false, pins: 0, done: Promise.resolve() };
         this.byBuffer.set(buffer, entry);
         this.entries.set(entry.id, entry);
-        entry.done = this.enqueue('uploadChain', () => this.upload(entry, buffer));
+        if (offline) {
+            // 書き出しの音声は、出力デバイスを開かずに送れる。失敗は書き出す側へ返す。
+            entry.done = this.uploadChain.then(() => this.upload(entry, buffer, true));
+            this.uploadChain = entry.done.catch(() => { entry.dropped = true; });
+        } else {
+            entry.done = this.enqueue('uploadChain', () => this.upload(entry, buffer));
+        }
         return entry;
     }
 
@@ -582,7 +613,7 @@ class NativeAudio {
      * （塊が n フレームなら、ch0 の n 個のあとに ch1 の n 個）。3 チャンネル以上は先頭の 2 つだけ送る。
      * Float32Array のバイトの並びは機械に従うが、アプリが動く機械はどれもリトルエンディアン。
      */
-    private async upload(entry: ClipEntry, buffer: AudioBuffer): Promise<void> {
+    private async upload(entry: ClipEntry, buffer: AudioBuffer, offline = false): Promise<void> {
         const channels = Math.max(1, Math.min(2, buffer.numberOfChannels));
         const frames = buffer.length;
         const data: Float32Array[] = [];
@@ -590,7 +621,7 @@ class NativeAudio {
         const perChunk = Math.max(1, Math.floor(CLIP_CHUNK_BYTES / (4 * channels)));
         let offset = 0, sent = false, complete = false;
         do {
-            if (entry.dropped || this.failed) break;
+            if (entry.dropped || (this.failed && !offline)) break;
             const n = Math.max(0, Math.min(perChunk, frames - offset));
             const body = new Float32Array(n * channels);
             for (let ch = 0; ch < channels; ch++) body.set(data[ch].subarray(offset, offset + n), ch * n);
@@ -605,7 +636,7 @@ class NativeAudio {
             offset += n;
             complete = !!result?.complete;
         } while (offset < frames);
-        if (this.failed) return;
+        if (this.failed && !offline) return;
         if (entry.dropped) {
             // 送っている途中で要らなくなった。届いたぶんを捨てる
             if (sent) await invokeDesktop('audio_clip_drop', { ids: [entry.id] });
@@ -655,6 +686,37 @@ class NativeAudio {
         this.sentSong = key;
         this.sentMix = new Map(song.tracks.map((t) => [t.id, mixKey(t)]));
         this.songClips = new Set(song.tracks.flatMap((t) => t.clips.map((c) => c.clip)));
+    }
+
+    /** 導入したピアノを読み直す。再生と試聴の指示が済んでから、次の再生で曲も渡し直す。 */
+    async preparePiano(): Promise<boolean> {
+        await this.idle();
+        await this.ready();
+        if (this.failed) throw new Error('音のエンジンを使えません。アプリを開き直してください');
+        const result = await invokeDesktop<{ installed: boolean }>('audio_prepare_piano');
+        this.sentSong = null;
+        this.markInstrument(result.installed ? 'piano' : 'tone');
+        return result.installed;
+    }
+
+    /** 再生と同じ楽器・クリップで WAV を作る。出力デバイスを開かず、再生中の曲も変えない。 */
+    async render(request: PlayRequest): Promise<Blob> {
+        const pinned: ClipEntry[] = [];
+        const song = buildSong(request, (buffer) => {
+            const entry = this.register(buffer, true);
+            if (!pinned.includes(entry)) { entry.pins++; pinned.push(entry); }
+            return entry.id;
+        });
+        try {
+            await Promise.all(pinned.map((entry) => entry.done));
+            if (pinned.some((entry) => !entry.ready)) throw new Error('書き出しに使う音声を渡せませんでした。アプリを開き直してください');
+            const raw = await invokeDesktop<ArrayBuffer | number[]>('audio_render_song', { song });
+            const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Uint8Array.from(raw);
+            if (bytes.length < 44) throw new Error('書き出した WAV を受け取れませんでした');
+            return new Blob([bytes], { type: 'audio/wav' });
+        } finally {
+            for (const entry of pinned) entry.pins--;
+        }
     }
 
     /**
@@ -750,6 +812,7 @@ class NativeAudio {
         try { this.unlisten?.(); } catch { /* 無視 */ }
         this.unwatch();
         this.failed = false;
+        this.markInstrument('unprepared');
         this.override = undefined;
         this.initPromise = null;
         this.info = null;

@@ -250,3 +250,42 @@ fn 再生の状態を進めるあいだはメモリを確保しない() {
     // 差し替えで外した engine は、音声スレッドでは捨てずに送り返してある
     assert_eq!(controller.collect_garbage(), 1);
 }
+
+#[test]
+fn 試聴用サンプラーの差し替えと演奏でメモリを確保しない() {
+    let dir = Workdir::new("realtime-live-sampler");
+    let path = dir.a440();
+    let make = || {
+        let mut sampler = bunri_audio::Sampler::new(SR as f32, 2048);
+        sampler.load_file(&path).unwrap();
+        Box::new(sampler)
+    };
+    let (mut controller, mut transport) = transport(SR).unwrap();
+    let (mut l, mut r) = ([0.0; 256], [0.0; 256]);
+    controller.set_live_sampler(Some(make())).unwrap();
+    controller.live_note_on(69, 127).unwrap();
+    let mut peak = 0.0f32;
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..8 {
+                transport.process(&mut l, &mut r);
+                peak = l.iter().fold(peak, |m, v| m.max(v.abs()));
+            }
+        }),
+        0
+    );
+    assert!(peak > 0.01, "音源の試聴が鳴っていない");
+    controller.set_live_sampler(Some(make())).unwrap();
+    controller.live_note_on(69, 100).unwrap();
+    controller.live_note_off(69).unwrap();
+    controller.live_all_off().unwrap();
+    assert_eq!(allocations(|| transport.process(&mut l, &mut r)), 0);
+    assert_eq!(
+        controller.collect_garbage(),
+        1,
+        "外したサンプラーが音声スレッドから戻っていない"
+    );
+    controller.set_live_sampler(None).unwrap();
+    assert_eq!(allocations(|| transport.process(&mut l, &mut r)), 0);
+    assert_eq!(controller.collect_garbage(), 1);
+}

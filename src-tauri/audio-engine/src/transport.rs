@@ -40,6 +40,7 @@
 use crate::audio::SAMPLE_RATE_RANGE;
 use crate::drum::{DrumSynth, DrumVoice};
 use crate::engine::Engine;
+use crate::sampler::Sampler;
 use crate::tone::{ToneConfig, ToneSynth};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::f64::consts::TAU;
@@ -233,6 +234,7 @@ enum Command {
         audible: bool,
     },
     SetMetronome(bool),
+    SetLiveSampler(Option<Box<Sampler>>),
     LiveNoteOn {
         pitch: u8,
         velocity: u8,
@@ -245,6 +247,12 @@ enum Command {
         voice: DrumVoice,
         velocity: u8,
     },
+}
+
+/// 音声スレッドの外へ返して破棄する、大きな状態。
+enum Garbage {
+    Engine(Box<Engine>),
+    Sampler(Box<Sampler>),
 }
 
 /// 位置の公開に使う、ロックの無い置き場 (seqlock)。
@@ -278,7 +286,7 @@ struct Shared {
 pub struct Controller {
     sample_rate: u32,
     commands: Producer<Command>,
-    garbage: Consumer<Box<Engine>>,
+    garbage: Consumer<Garbage>,
     shared: Arc<Shared>,
 }
 
@@ -293,7 +301,7 @@ pub struct PositionReader {
 pub struct Transport {
     sample_rate: u32,
     commands: Consumer<Command>,
-    garbage: Producer<Box<Engine>>,
+    garbage: Producer<Garbage>,
     shared: Arc<Shared>,
 
     engine: Option<Box<Engine>>,
@@ -322,6 +330,7 @@ pub struct Transport {
 
     clicks: Clicks,
     live: ToneSynth,
+    live_sampler: Option<Box<Sampler>>,
     /// ドラムに向けて弾いた鍵盤の試聴 (打った瞬間の音)
     live_drums: DrumSynth,
     song_left: Vec<f32>,
@@ -337,7 +346,7 @@ pub fn transport(sample_rate: u32) -> Result<(Controller, Transport), TransportE
         )));
     }
     let (command_tx, command_rx) = RingBuffer::new(COMMAND_CAPACITY);
-    // 送り返す engine は、積まれた差し替えの数より多くならない
+    // 送り返す engine とサンプラーは、積まれた差し替えの数より多くならない
     let (garbage_tx, garbage_rx) = RingBuffer::new(COMMAND_CAPACITY + 2);
     let shared = Arc::new(Shared {
         position: PositionCell {
@@ -379,6 +388,7 @@ pub fn transport(sample_rate: u32) -> Result<(Controller, Transport), TransportE
         fade_out_left: 0,
         clicks: Clicks::new(sample_rate),
         live: ToneSynth::new(sample_rate, &ToneConfig::LIVE),
+        live_sampler: None,
         live_drums: DrumSynth::new(sample_rate, LIVE_DRUM_VOICES),
         song_left: vec![0.0; SEGMENT],
         song_right: vec![0.0; SEGMENT],
@@ -467,6 +477,24 @@ impl Controller {
             engine,
             grid: BeatGrid::from(grid),
         })
+    }
+
+    /// 音声スレッドの外で読み込んだ試聴用サンプラーへ切り替える。
+    /// 古いサンプラーは音声スレッドで破棄せず、回収用のキューへ返す。
+    pub fn set_live_sampler(
+        &mut self,
+        sampler: Option<Box<Sampler>>,
+    ) -> Result<(), TransportError> {
+        if sampler
+            .as_ref()
+            .is_some_and(|s| !s.supports_output(self.sample_rate, SEGMENT))
+        {
+            return Err(TransportError::Invalid(
+                "試聴用のサンプラーの周波数かブロックの長さが出力に合いません".into(),
+            ));
+        }
+        self.collect_garbage();
+        self.send(Command::SetLiveSampler(sampler))
     }
 
     /// いま渡してある曲を鳴らす (鳴っていたら、止めて鳴らし直す)。
@@ -574,12 +602,15 @@ impl Controller {
         self.send(Command::LiveDrum { voice, velocity })
     }
 
-    /// 音声スレッドが送り返してきた古い engine を、ここ (呼んだスレッド) で捨てる。
+    /// 音声スレッドが送り返してきた古い engine とサンプラーを、ここ (呼んだスレッド) で捨てる。
     /// 捨てた数を返す。ときどき呼ぶ (呼ばなくても、次の [`Controller::set_song`] が捨てる)。
     pub fn collect_garbage(&mut self) -> usize {
         let mut dropped = 0;
         while let Ok(engine) = self.garbage.pop() {
-            drop(engine);
+            match engine {
+                Garbage::Engine(engine) => drop(engine),
+                Garbage::Sampler(sampler) => drop(sampler),
+            }
             dropped += 1;
         }
         dropped
@@ -708,7 +739,7 @@ impl Transport {
             Command::SetSong { engine, grid } => {
                 self.grid = grid;
                 if let Some(old) = self.engine.replace(engine) {
-                    self.discard(old);
+                    self.discard(Garbage::Engine(old));
                 }
                 // 再生中なら、同じ位置から続ける (カウントの最中は、曲が始まるときに位置を合わせる)
                 if self.playing && self.count.is_none() {
@@ -749,12 +780,34 @@ impl Transport {
                 }
             }
             Command::SetMetronome(enabled) => self.metronome = enabled,
-            Command::LiveNoteOn { pitch, velocity } => {
-                self.live.note_off(0, pitch);
-                self.live.note_on(0, pitch, velocity);
+            Command::SetLiveSampler(sampler) => {
+                self.live.all_notes_off(0);
+                if let Some(old) = std::mem::replace(&mut self.live_sampler, sampler) {
+                    self.discard(Garbage::Sampler(old));
+                }
             }
-            Command::LiveNoteOff { pitch } => self.live.note_off(0, pitch),
-            Command::LiveAllOff => self.live.all_notes_off(0),
+            Command::LiveNoteOn { pitch, velocity } => {
+                if let Some(sampler) = self.live_sampler.as_mut() {
+                    sampler.note_off(0, pitch);
+                    sampler.note_on(0, pitch, velocity);
+                } else {
+                    self.live.note_off(0, pitch);
+                    self.live.note_on(0, pitch, velocity);
+                }
+            }
+            Command::LiveNoteOff { pitch } => {
+                if let Some(sampler) = self.live_sampler.as_mut() {
+                    sampler.note_off(0, pitch);
+                } else {
+                    self.live.note_off(0, pitch);
+                }
+            }
+            Command::LiveAllOff => {
+                self.live.all_notes_off(0);
+                if let Some(sampler) = self.live_sampler.as_mut() {
+                    sampler.all_sound_off();
+                }
+            }
             Command::LiveDrum { voice, velocity } => self.live_drums.trigger(0, voice, velocity),
         }
     }
@@ -778,12 +831,12 @@ impl Transport {
         };
     }
 
-    /// 古い engine を、捨てる側へ送り返す (音声スレッドでは捨てない)。
-    fn discard(&mut self, engine: Box<Engine>) {
+    /// 古い engine やサンプラーを、捨てる側へ送り返す (音声スレッドでは捨てない)。
+    fn discard(&mut self, engine: Garbage) {
         if let Err(PushError::Full(engine)) = self.garbage.push(engine) {
             // 送り返す先が一杯 (キューの長さの決め方から、起きないはず)。ここで捨てると
             // メモリの解放で音が途切れるので、捨てずに置き去りにする
-            debug_assert!(false, "古い engine を送り返せなかった");
+            debug_assert!(false, "古い音源を送り返せなかった");
             std::mem::forget(engine);
         }
     }
@@ -866,7 +919,21 @@ impl Transport {
         }
         self.clicks.render_add(left, right);
 
-        // 鍵盤の試聴 (左右に同じ音)
+        // 鍵盤の試聴。サンプラーはステレオを保ち、曲と同じ sfizz の音量で鳴らす。
+        if let Some(sampler) = self.live_sampler.as_mut() {
+            // note_on は次の render で処理されるので、active_voices が 0 でも render を呼ぶ。
+            let (l, r) = (&mut self.song_left[..len], &mut self.song_right[..len]);
+            sampler.render(l, r);
+            for ((out_l, out_r), (sample_l, sample_r)) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(l.iter().zip(r.iter()))
+            {
+                *out_l += sample_l;
+                *out_r += sample_r;
+            }
+        }
+        // 仮の音とドラムの試聴 (左右に同じ音)
         if self.live.active_voices() > 0 || self.live_drums.active_voices() > 0 {
             let mono = &mut self.mono[..len];
             self.live.render(mono);

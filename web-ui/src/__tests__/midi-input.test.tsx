@@ -443,7 +443,10 @@ describe('pickMidiSource', () => {
     it('Web MIDI が無く、デスクトップ版の中ならネイティブ側を使う', async () => {
         let handler: ((e: { payload: number[] }) => void) | null = null;
         const unlisten = vi.fn();
-        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        const invoke = vi.fn(async (cmd: string) => {
+            if (cmd === 'audio_prepare_piano') return { installed: false };
+            return cmd === 'midi_start' ? ['USB Keyboard'] : undefined;
+        });
         const listen = vi.fn(async (_name: string, h: (e: { payload: number[] }) => void) => { handler = h; return unlisten; });
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen } };
         const source = pickMidiSource()!;
@@ -602,7 +605,10 @@ describe('MidiInputBar', () => {
         const { resetMidiPortsAnnouncement } = await import('../lib/useMidiInput');
         clearNotices();
         resetMidiPortsAnnouncement();
-        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        const invoke = vi.fn(async (cmd: string) => {
+            if (cmd === 'audio_prepare_piano') return { installed: false };
+            return cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined;
+        });
         const unlisten = vi.fn();
         const listen = vi.fn(async () => unlisten);
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen } };
@@ -642,7 +648,10 @@ describe('MidiInputBar', () => {
         const { resetMidiPortsAnnouncement } = await import('../lib/useMidiInput');
         clearNotices();
         resetMidiPortsAnnouncement();
-        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        const invoke = vi.fn(async (cmd: string) => {
+            if (cmd === 'audio_prepare_piano') return { installed: false };
+            return cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined;
+        });
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen: vi.fn(async () => () => {}) } };
         const first = renderBar([]);
         await waitFor(() => expect(getNotices()).toHaveLength(1));

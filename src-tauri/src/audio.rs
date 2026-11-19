@@ -19,6 +19,7 @@
 //! 変えるときは、両側を一緒に変える。設計は `docs/instrument-engine-design.md`。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -573,6 +574,9 @@ struct Inner {
     opener: Opener,
     /// 出力に 0 を掛けて、音を出さない (窓を自動操作するテスト用)
     silent: bool,
+    /// sidecar と共通のデータ置き場。外から SFZ の任意のパスは受け取らない。
+    data_dir: Option<PathBuf>,
+    piano: Mutex<Option<PathBuf>>,
 }
 
 /// 音の再生の状態。Tauri の state として管理する。
@@ -588,12 +592,16 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl AudioState {
     /// 位置を送るスレッドを始める (出力デバイスは、[`audio_init`] が呼ばれるまで開かない)。
-    pub fn new<R: Runtime>(app: AppHandle<R>) -> Self {
-        Self::with_opener(app, Box::new(open_default_device))
+    pub fn new<R: Runtime>(app: AppHandle<R>, data_dir: Option<PathBuf>) -> Self {
+        Self::with_opener(app, Box::new(open_default_device), data_dir)
     }
 
     /// 出力の開き方を指定して作る。
-    fn with_opener<R: Runtime>(app: AppHandle<R>, opener: Opener) -> Self {
+    fn with_opener<R: Runtime>(
+        app: AppHandle<R>,
+        opener: Opener,
+        data_dir: Option<PathBuf>,
+    ) -> Self {
         let watch = Arc::new(Watch::default());
         let inner = Arc::new(Inner {
             session: Mutex::new(None),
@@ -604,6 +612,8 @@ impl AudioState {
             next_generation: Mutex::new(1),
             opener,
             silent: output_silent(),
+            data_dir,
+            piano: Mutex::new(None),
         });
         // スレッドは Inner を弱く持つ (終了のとき、こちらが先に片付けられるように)
         let weak = Arc::downgrade(&inner);
@@ -694,6 +704,12 @@ impl Inner {
     /// 出力を開く。前に渡された曲が在れば、新しい出力へ渡し直す。
     fn open(&self) -> Result<Session, String> {
         let (output, mut controller) = (self.opener)(self.silent)?;
+        if let Some(path) = lock(&self.piano).as_ref() {
+            let sampler = load_live_sampler(path, controller.sample_rate())?;
+            controller
+                .set_live_sampler(Some(sampler))
+                .map_err(|e| e.to_string())?;
+        }
         let broken = output.broken();
         let generation = {
             let mut next = lock(&self.next_generation);
@@ -767,23 +783,91 @@ impl Inner {
         payload: &SongPayload,
         rate: u32,
     ) -> Result<(Box<Engine>, BuiltSong), String> {
-        // 先に、使うクリップを engine の周波数にそろえる (そろえたものを置き場に覚えさせる)
-        let mut clips = HashMap::new();
+        // 再生用の変換だけをキャッシュする。書き出しはこのキャッシュを更新しない。
         for placed in payload.tracks.iter().flat_map(|t| &t.clips) {
-            let Ok(id) = u32::try_from(whole(placed.clip, "クリップの ID")?) else {
-                continue;
-            };
-            if let Some(audio) = self.clip_at_rate(id, rate)? {
-                clips.insert(id, audio);
+            if let Ok(id) = u32::try_from(whole(placed.clip, "クリップの ID")?) {
+                self.clip_at_rate(id, rate)?;
             }
         }
-        let built = build_song(payload, |id| clips.get(&id).cloned())?;
+        let piano = lock(&self.piano).clone();
+        self.build_engine_for(payload, rate, piano)
+    }
+
+    fn build_engine_for(
+        &self,
+        payload: &SongPayload,
+        rate: u32,
+        piano: Option<PathBuf>,
+    ) -> Result<(Box<Engine>, BuiltSong), String> {
+        // 書き出しでは周波数の変換を Engine 内だけで行い、再生用の音声を置き換えない。
+        let mut built = {
+            let clips = lock(&self.clips);
+            build_song(payload, |id| clips.get(id))?
+        };
+        if let Some(sfz) = piano.as_ref() {
+            for track in &mut built.song.tracks {
+                if track.instrument == Some(Instrument::Tone) {
+                    track.instrument = Some(Instrument::Sampler { sfz: sfz.clone() });
+                }
+            }
+        }
         let config = EngineConfig {
             sample_rate: rate,
             ..EngineConfig::default()
         };
         let engine = Engine::new(&built.song, &config).map_err(|e| e.to_string())?;
         Ok((Box::new(engine), built))
+    }
+
+    /// インストール完了を読み直し、試聴と次の曲の組み立てに反映する。
+    fn prepare_piano(&self) -> Result<PianoResult, String> {
+        let piano = installed_piano(self.data_dir.as_deref());
+        if *lock(&self.piano) == piano {
+            return Ok(PianoResult {
+                installed: piano.is_some(),
+            });
+        }
+        // SFZ の読み込みは音声スレッドの外。出力の作り直しが起きたら新しい周波数でやり直す。
+        for _ in 0..3 {
+            let (rate, generation) =
+                self.with_session(|s| Ok((s.controller.sample_rate(), s.generation)))?;
+            let sampler = piano
+                .as_ref()
+                .map(|path| load_live_sampler(path, rate))
+                .transpose()?;
+            let sent = self.with_session(|session| {
+                if session.generation != generation {
+                    return Ok(false);
+                }
+                session
+                    .controller
+                    .set_live_sampler(sampler)
+                    .map_err(|e| e.to_string())?;
+                Ok(true)
+            })?;
+            if sent {
+                *lock(&self.piano) = piano.clone();
+                *lock(&self.last_song) = None;
+                return Ok(PianoResult {
+                    installed: piano.is_some(),
+                });
+            }
+        }
+        Err("音声の出力が変わり続けています。もう一度、音源を読み込んでください".into())
+    }
+
+    fn render_song(&self, payload: &SongPayload) -> Result<Vec<u8>, String> {
+        // 最初の操作が書き出しでも、出力デバイスの初期化や試聴の準備を待たずに音源を解決する。
+        let piano = installed_piano(self.data_dir.as_deref());
+        let (mut engine, _) = self.build_engine_for(payload, 48_000, piano)?;
+        // 壊れた入力で何時間分ものバッファを確保しない。
+        if engine.length_frames() > 48_000 * 60 * 180 {
+            return Err("3 時間を超える曲はまとめて書き出せません".into());
+        }
+        let audio = bunri_audio::render(&mut engine, &bunri_audio::RenderOptions::default());
+        audio
+            .wav_bytes(bunri_audio::WavFormat::Pcm24)
+            .map_err(|e| e.to_string())
     }
 
     fn init(&self) -> Result<InitResult, String> {
@@ -1037,6 +1121,44 @@ fn report_positions(
     }
 }
 
+/// 固定した版の、導入が完了したピアノだけを返す。
+fn installed_piano(data_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    let root = data_dir?.join("instruments/salamander/3382bf9496bba2486f5ab0de55a264d1dfc38404");
+    let marker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".installed.json")).ok()?).ok()?;
+    if marker.get("version")?.as_str()? != "3382bf9496bba2486f5ab0de55a264d1dfc38404"
+        || marker.get("sha256")?.as_str()?
+            != "4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476"
+    {
+        return None;
+    }
+    let sfz = root.join("Salamander Grand Piano V3.sfz");
+    (sfz.is_file()
+        && root.join("LICENSE").is_file()
+        && root.join("Samples").is_dir()
+        && root.join("Data").is_dir())
+    .then_some(sfz)
+}
+
+/// 試聴のための、曲と同じ SFZ のサンプラー。
+fn load_live_sampler(
+    path: &std::path::Path,
+    rate: u32,
+) -> Result<Box<bunri_audio::Sampler>, String> {
+    let mut sampler = bunri_audio::Sampler::new(rate as f32, 2048);
+    sampler.set_preload_size(16384);
+    sampler.load_file(path).map_err(|e| e.to_string())?;
+    if sampler.num_regions() == 0 || sampler.preloaded_samples() == 0 {
+        return Err("ピアノの音源を読み込めませんでした。もう一度ダウンロードしてください".into());
+    }
+    Ok(Box::new(sampler))
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PianoResult {
+    installed: bool,
+}
+
 // ---- command ----
 
 /// 重い処理 (デバイスを開く、周波数の変換、engine の組み立て) を、メインスレッドでも
@@ -1054,6 +1176,23 @@ async fn blocking<T: Send + 'static>(
 pub async fn audio_init(state: State<'_, AudioState>) -> Result<InitResult, String> {
     let inner = Arc::clone(&state.inner);
     blocking(move || inner.init()).await
+}
+
+/// ダウンロード済みのピアノを、再生と試聴に反映する。
+#[tauri::command]
+pub async fn audio_prepare_piano(state: State<'_, AudioState>) -> Result<PianoResult, String> {
+    let inner = Arc::clone(&state.inner);
+    blocking(move || inner.prepare_piano()).await
+}
+
+/// 同じ音源とクリップで曲を描画し、WAV のバイト列を返す。再生中の曲には触れない。
+#[tauri::command]
+pub async fn audio_render_song(
+    song: SongPayload,
+    state: State<'_, AudioState>,
+) -> Result<tauri::ipc::Response, String> {
+    let inner = Arc::clone(&state.inner);
+    blocking(move || inner.render_song(&song).map(tauri::ipc::Response::new)).await
 }
 
 /// ヘッダの値 (10 進の整数) を読む。
@@ -1264,6 +1403,160 @@ mod tests {
 
     fn audio(rate: u32, frames: usize) -> Arc<AudioData> {
         Arc::new(AudioData::new(rate, vec![vec![0.25; frames]]).unwrap())
+    }
+
+    /// 本物の楽器の代わりに、左右で異なる値の WAV を SFZ に割り当てる。
+    struct PianoFixture(PathBuf);
+
+    impl PianoFixture {
+        fn new(name: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("bunri-piano-{}-{name}", std::process::id()));
+            let folder =
+                root.join("instruments/salamander/3382bf9496bba2486f5ab0de55a264d1dfc38404");
+            std::fs::create_dir_all(folder.join("Samples")).unwrap();
+            std::fs::create_dir_all(folder.join("Data")).unwrap();
+            std::fs::write(folder.join("LICENSE"), "テスト用の音源").unwrap();
+            let samples: Vec<f32> = (0..48_000)
+                .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5)
+                .collect();
+            AudioData::new(
+                48_000,
+                vec![samples.clone(), samples.iter().map(|v| v * 0.3).collect()],
+            )
+            .unwrap()
+            .write_wav_file(&folder.join("piano.wav"), bunri_audio::WavFormat::Float32)
+            .unwrap();
+            std::fs::write(
+                folder.join("Salamander Grand Piano V3.sfz"),
+                "<region> sample=piano.wav pitch_keycenter=69 ampeg_release=0.1\n",
+            )
+            .unwrap();
+            Self(root)
+        }
+        fn install(&self) {
+            let folder = self
+                .0
+                .join("instruments/salamander/3382bf9496bba2486f5ab0de55a264d1dfc38404");
+            std::fs::write(folder.join(".installed.json"), r#"{"version":"3382bf9496bba2486f5ab0de55a264d1dfc38404","sha256":"4f64bc2dadf2eb893e7fb824c2982c03962025e1c82ab9e593e2f7269c50a476"}"#).unwrap();
+        }
+    }
+    impl Drop for PianoFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn 完了の印がない音源を読まず導入後は試聴と曲に同じsfzを使う() {
+        let fixture = PianoFixture::new("prepare");
+        let rig = rig_at(Some(fixture.0.clone()));
+        assert_eq!(
+            rig.invoke("audio_prepare_piano", serde_json::json!({}))
+                .unwrap()["installed"],
+            false
+        );
+        assert_eq!(rig.opened_count(), 0, "未導入の確認だけで出力を開かない");
+        fixture.install();
+        assert_eq!(
+            rig.invoke("audio_prepare_piano", serde_json::json!({}))
+                .unwrap()["installed"],
+            true
+        );
+        rig.invoke(
+            "audio_live_note",
+            serde_json::json!({"pitch":69,"velocity":127}),
+        )
+        .unwrap();
+        let samples = rig.process(8);
+        assert!(samples.iter().any(|v| v.abs() > 0.01));
+        let state = rig.window.state::<AudioState>();
+        let p = payload(
+            serde_json::json!({"bpm":120,"offsetSec":0,"beatsPerBar":4,"tracks":[{"id":1,"gainDb":0,"pan":0,"audible":true,"notes":[{"start":0,"length":960,"pitch":69,"velocity":127}]}]}),
+        );
+        let (mut engine, built) = state.inner.build_engine(&p, 48_000).unwrap();
+        assert!(matches!(
+            built.song.tracks[0].instrument,
+            Some(Instrument::Sampler { .. })
+        ));
+        let audio = bunri_audio::render(&mut engine, &bunri_audio::RenderOptions::default());
+        assert!(audio.frames() > 24_000, "鍵盤を離したあとの余韻を含める");
+        assert!(
+            audio
+                .left()
+                .iter()
+                .zip(audio.right())
+                .any(|(l, r)| (l - r).abs() > 0.01),
+            "ステレオ音源を保つ"
+        );
+        let bytes = state.inner.render_song(&p).unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(rig.opened_count(), 1, "書き出しで出力を開き直さない");
+        // デバイスを開き直しても、試聴の音源は同じものを読み直す。
+        lock(&rig.opened)
+            .last()
+            .unwrap()
+            .broken
+            .store(true, Ordering::Relaxed);
+        rig.invoke(
+            "audio_live_note",
+            serde_json::json!({"pitch":69,"velocity":127}),
+        )
+        .unwrap();
+        assert!(rig.process(8).iter().any(|v| v.abs() > 0.01));
+        assert_eq!(rig.opened_count(), 2);
+    }
+
+    #[test]
+    fn 音声デバイスがなく最初の操作でも導入済みのピアノでwavを書き出せる() {
+        let fixture = PianoFixture::new("export-only");
+        fixture.install();
+        let rig = rig_at(Some(fixture.0.clone()));
+        rig.next_rate.store(0, Ordering::Relaxed);
+        let state = rig.window.state::<AudioState>();
+        let p = payload(
+            serde_json::json!({"bpm":120,"offsetSec":0,"beatsPerBar":4,"tracks":[{"id":1,"gainDb":0,"pan":0,"audible":true,"notes":[{"start":0,"length":960,"pitch":69}]}]}),
+        );
+        let bytes = state.inner.render_song(&p).unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert!(bytes.len() > 48_000);
+        let (mut expected, _) = state
+            .inner
+            .build_engine_for(&p, 48_000, installed_piano(Some(&fixture.0)))
+            .unwrap();
+        let expected = bunri_audio::render(&mut expected, &bunri_audio::RenderOptions::default())
+            .wav_bytes(bunri_audio::WavFormat::Pcm24)
+            .unwrap();
+        assert_eq!(
+            bytes, expected,
+            "初回書き出しも導入したサンプラーと同じ音であること"
+        );
+        assert_eq!(rig.opened_count(), 0);
+    }
+
+    #[test]
+    fn 周波数が違う書き出しを繰り返しても再生用の音声を置き換えない() {
+        let rig = rig();
+        rig.next_rate.store(44_100, Ordering::Relaxed);
+        let original = audio(44_100, 4410);
+        let state = rig.window.state::<AudioState>();
+        lock(&state.inner.clips)
+            .ready
+            .insert(1, Arc::clone(&original));
+        let p = payload(
+            serde_json::json!({"bpm":120,"offsetSec":0,"beatsPerBar":4,"tracks":[{"id":1,"gainDb":0,"pan":0,"audible":true,"clips":[{"clip":1,"startSec":0}]}]}),
+        );
+        for _ in 0..3 {
+            state.inner.build_engine(&p, 44_100).unwrap();
+            state.inner.render_song(&p).unwrap();
+            let stored = lock(&state.inner.clips).get(1).unwrap();
+            assert!(
+                Arc::ptr_eq(&stored, &original),
+                "書き出しが再生用の音声を置き換えた"
+            );
+            assert_eq!(stored.sample_rate(), 44_100);
+        }
     }
 
     // ---- 曲の組み立て ----
@@ -2050,9 +2343,15 @@ mod tests {
     }
 
     fn rig() -> Rig {
+        rig_at(None)
+    }
+
+    fn rig_at(data_dir: Option<PathBuf>) -> Rig {
         let app = mock_builder()
             .invoke_handler(tauri::generate_handler![
                 audio_init,
+                audio_prepare_piano,
+                audio_render_song,
                 audio_clip_put,
                 audio_clip_drop,
                 audio_set_song,
@@ -2082,7 +2381,11 @@ mod tests {
             });
             Ok((Box::new(FakeOutput { broken }), controller))
         });
-        app.manage(AudioState::with_opener(app.handle().clone(), opener));
+        app.manage(AudioState::with_opener(
+            app.handle().clone(),
+            opener,
+            data_dir,
+        ));
         let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("テスト用の窓を作れるはず");

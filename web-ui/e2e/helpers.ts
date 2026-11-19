@@ -163,7 +163,7 @@ export function wavFile(name: string, seconds = 2, notes: number[] = [440]) {
 }
 
 /**
- * WAV (16bit PCM) の中身を読む。長さ (秒) と、いちばん大きい振幅 (0〜1) を返す。
+ * WAV (16bit / 24bit PCM) の中身を読む。長さ (秒) と、いちばん大きい振幅 (0〜1) を返す。
  * 「音が出ている (無音ではない)」ことを確かめるのに使う。
  */
 export function readWav(bytes: Buffer): { seconds: number; peak: number; sampleRate: number; channels: number } {
@@ -171,20 +171,28 @@ export function readWav(bytes: Buffer): { seconds: number; peak: number; sampleR
         throw new Error('WAV ではありません');
     }
     let pos = 12;
-    let sampleRate = 0, channels = 0, bits = 0;
+    let sampleRate = 0, channels = 0, bits = 0, format = 0;
     while (pos + 8 <= bytes.length) {
         const id = bytes.subarray(pos, pos + 4).toString('latin1');
         const size = bytes.readUInt32LE(pos + 4);
         if (id === 'fmt ') {
+            format = bytes.readUInt16LE(pos + 8);
             channels = bytes.readUInt16LE(pos + 10);
             sampleRate = bytes.readUInt32LE(pos + 12);
             bits = bytes.readUInt16LE(pos + 22);
+            // hound の 24bit 出力は WAVE_FORMAT_EXTENSIBLE。PCM の subtype だけを受け付ける。
+            const pcmSubtype = Buffer.from('0100000000001000800000aa00389b71', 'hex');
+            if (format === 0xfffe && size >= 40 && bytes.readUInt16LE(pos + 26) === bits
+                && bytes.subarray(pos + 32, pos + 48).equals(pcmSubtype)) format = 1;
         } else if (id === 'data') {
-            if (bits !== 16) throw new Error(`16bit ではない WAV です (${bits}bit)`);
+            if (format !== 1 || (bits !== 16 && bits !== 24) || !channels || !sampleRate) {
+                throw new Error(`対応していない WAV です (形式 ${format} / ${bits}bit)`);
+            }
             const end = Math.min(bytes.length, pos + 8 + size);
+            const width = bits / 8;
             let peak = 0;
-            for (let i = pos + 8; i + 1 < end; i += 2) peak = Math.max(peak, Math.abs(bytes.readInt16LE(i)));
-            return { seconds: (end - pos - 8) / 2 / channels / sampleRate, peak: peak / 32768, sampleRate, channels };
+            for (let i = pos + 8; i + width <= end; i += width) peak = Math.max(peak, Math.abs(bytes.readIntLE(i, width)));
+            return { seconds: (end - pos - 8) / width / channels / sampleRate, peak: peak / (2 ** (bits - 1)), sampleRate, channels };
         }
         pos += 8 + size + (size % 2);
     }
