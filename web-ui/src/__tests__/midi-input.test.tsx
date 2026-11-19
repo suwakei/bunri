@@ -516,10 +516,15 @@ describe('MidiInputBar', () => {
     });
 
     it('デスクトップ版で「再検出」を押しても、鍵盤 1 回でノートは 1 個だけ入る', async () => {
-        // 受け口を、外されるまで全部覚えておく (外し忘れた受け口にも届くように)
+        // MIDI の受け口を、外されるまで全部覚えておく (外し忘れた受け口にも届くように)。
+        // ほかの知らせ (再生位置の audio://position など) の受け口は数えない
         const handlers = new Set<(e: { payload: number[] }) => void>();
         const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
-        const listen = vi.fn(async (_name: string, h: (e: { payload: number[] }) => void) => { handlers.add(h); return () => { handlers.delete(h); }; });
+        const listen = vi.fn(async (name: string, h: (e: { payload: number[] }) => void) => {
+            if (name !== 'midi-message') return () => {};
+            handlers.add(h);
+            return () => { handlers.delete(h); };
+        });
         (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen } };
         const send = (bytes: number[]) => { for (const h of [...handlers]) h({ payload: bytes }); };
         const notes: PianoNote[] = [];
