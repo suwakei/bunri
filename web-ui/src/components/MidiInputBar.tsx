@@ -22,6 +22,7 @@ import { useDaw } from '../lib/store';
 import { cursorLabel, type RecordMode } from '../lib/midi-input';
 import { MAX_LATENCY_MS, STEP_FOLLOWS_SNAP, midiUnavailableText, useMidiInput, type MidiInputController } from '../lib/useMidiInput';
 import { tip } from '../lib/tooltip';
+import { midiModeGuidance } from '../lib/midi-guidance';
 
 /**
  * ステップ入力で選べるノートの長さ（ステップ数と呼び名）。既定の「刻みと同じ」は、ピアノロールで選んだ刻み 1 つぶん
@@ -35,6 +36,21 @@ const MODE_TIPS: Record<RecordMode, string> = {
     step: '弾くたびに、ピアノロールで選んだ刻み（か、決めた長さ）のノートを順に置いていきます。同時に押すと和音になります',
     realtime: '再生しているあいだ、弾いたとおりのタイミングと長さでノートを置きます（16 分音符に寄せます。刻みが 32 分か三連のときは、その刻みに寄せます）',
 };
+
+/** 鍵盤の録り方と、次の操作。自由制作と練習画面で同じ案内を使う。 */
+export function MidiRecordingHelp({ mode, countIn, connected = true, practice = false }: { mode: RecordMode; countIn: boolean; connected?: boolean; practice?: boolean }) {
+    if (!connected) return (
+        <span className="midi-recording-help">鍵盤の入力はまだつながっていません。{practice
+            ? '鍵盤をつないで「同じ長さで 1 音ずつ置く」か「弾いた長さで録る」を選ぶと、入力を始めます。'
+            : '鍵盤をつないだら、まず「MIDI 入力」を押します。つないだだけでは音は鳴りません。'}</span>
+    );
+    return (
+        <span className="midi-recording-help">
+            {practice && mode === 'off' && 'マウスでは、ダブルクリックで横棒を置けます。'}
+            {midiModeGuidance(mode, countIn, practice ? 'practice' : 'arrange')}
+        </span>
+    );
+}
 
 const controlStyle = {
     fontSize: 11, padding: '1px 6px', marginLeft: 6, textTransform: 'none', letterSpacing: 0,
@@ -116,12 +132,14 @@ export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
             {c.connected && (
                 <>
                     <button type="button" style={controlStyle} onClick={() => void c.connect()} {...tip('鍵盤をつなぎ直したときに押します')}>再検出</button>
-                    <select aria-label="録り方" style={controlStyle} value={c.mode} onChange={(e) => c.setMode(e.target.value as RecordMode)}
-                        {...tip(MODE_TIPS[c.mode])}>
-                        <option value="off">録らない（音だけ）</option>
-                        <option value="step">ステップ入力</option>
-                        <option value="realtime">リアルタイム録音</option>
-                    </select>
+                    <label className="midi-recording-label">鍵盤の録り方
+                        <select aria-label="録り方" style={controlStyle} value={c.mode} onChange={(e) => c.setMode(e.target.value as RecordMode)}
+                            {...tip(MODE_TIPS[c.mode])}>
+                            <option value="off">音を鳴らすだけ</option>
+                            <option value="step">同じ長さで 1 音ずつ置く（ステップ入力）</option>
+                            <option value="realtime">弾いた長さで録る（リアルタイム録音）</option>
+                        </select>
+                    </label>
                     {c.mode === 'step' && (
                         <>
                             <StepLengthSelect midi={c} />
@@ -138,6 +156,7 @@ export default function MidiInputBar({ midi }: { midi?: MidiInputController }) {
                     </span>
                 </>
             )}
+            <MidiRecordingHelp mode={c.mode} countIn={c.countIn} connected={c.connected} />
         </span>
     );
 }

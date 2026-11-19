@@ -27,8 +27,11 @@ async function connect(page: Page) {
     await openDaw(page);
     await startFree(page, 1);
     await page.locator('#tracks-container .track-name').first().click();
+    await expect(page.locator('#midi-input-bar .midi-recording-help')).toContainText('MIDI 入力');
     await page.locator('#midi-input-bar').getByRole('button', { name: 'MIDI 入力', exact: true }).click();
     await expect(page.locator('#midi-input-bar')).toContainText('E2E Keys');
+    await expect(page.locator('#midi-input-bar .midi-recording-label')).toBeVisible();
+    await expect(page.locator('#midi-input-bar .midi-recording-help')).toContainText('長押ししても伸びません');
 }
 
 const notes = (page: Page) => page.locator('#note-layer .note-block');
@@ -77,6 +80,8 @@ test('リアルタイム録音は、1 小節ぶんのカウントのあとから
     await fakeKeyboard(page);
     await connect(page);
     await page.getByLabel('録り方').selectOption('realtime');
+    await expect(page.locator('#midi-input-bar .midi-recording-help')).toContainText('音を鳴らすだけ');
+    await expect(page.locator('#midi-input-bar .midi-recording-help')).toContainText('最初のカウント中は録りません');
     // 既定でカウントが入る。遅れの補正の欄が出る
     await expect(page.getByLabel('録音前にカウント')).toBeChecked();
     await page.getByLabel('遅れの補正（ミリ秒）').fill('0');

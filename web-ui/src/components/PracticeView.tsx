@@ -48,7 +48,7 @@ import { PART_LABELS, referenceSourceOf } from '../lib/learn';
 import { DRUM_DIFF_NOTE, diffModeOf } from '../lib/drums';
 import { attemptFromDiff, barRangeOf, deltaText, useMatchSummary } from '../lib/learn-history';
 import { cellStateText, cellText, mapRow, mapSections, sectionName } from '../lib/practice-map';
-import { RealtimeSettings, StepLengthSelect } from './MidiInputBar';
+import { MidiRecordingHelp, RealtimeSettings, StepLengthSelect } from './MidiInputBar';
 import VelocityFindings from './VelocityFindings';
 import { midiUnavailableText, type MidiInputController } from '../lib/useMidiInput';
 import { cursorLabel } from '../lib/midi-input';
@@ -882,7 +882,9 @@ export function PracticeControls() {
         { key: 'part', label: 'パート' }, { key: 'self', label: '自分' }, { key: 'both', label: '両方' },
     ];
     const inputs: { key: InputMode; label: string }[] = [
-        { key: 'mouse', label: 'マウス' }, { key: 'midi-step', label: 'MIDI ステップ' }, { key: 'midi-realtime', label: 'MIDI リアルタイム' },
+        { key: 'mouse', label: 'マウス（鍵盤は音だけ）' },
+        { key: 'midi-step', label: '同じ長さで 1 音ずつ置く（ステップ入力）' },
+        { key: 'midi-realtime', label: '弾いた長さで録る（リアルタイム録音）' },
     ];
     const speedText = (() => {
         switch (speedStatus.kind) {
@@ -956,8 +958,8 @@ export function PracticeControls() {
                     ))}
                 </span>
 
-                <span className="practice-group" role="radiogroup" aria-label="入力">
-                    <span className="practice-group-label" aria-hidden="true">入力</span>
+                <span className="practice-group practice-input-group" role="radiogroup" aria-label="入力">
+                    <span className="practice-group-label" aria-hidden="true">入力・鍵盤の録り方</span>
                     {inputs.map((it) => (
                         <label key={it.key} className="practice-radio"
                             {...tip(it.key === 'mouse' ? 'ピアノロールをダブルクリックして、ノートを置きます'
@@ -994,6 +996,9 @@ export function PracticeControls() {
                     {busy ? '比べています…' : '比べる'}
                 </button>
             </div>
+            {midi.available && (
+                <MidiRecordingHelp mode={midi.mode} countIn={midi.countIn} connected={midi.connected} practice />
+            )}
             <span className="visually-hidden">{`ショートカット: Space 再生、L 区間ループ、[ ] 区間を動かす、Esc アレンジに戻る、${modKeyLabel()}Z 元に戻す`}</span>
         </div>
     );

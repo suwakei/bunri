@@ -223,12 +223,12 @@ export default function HeaderBar() {
                     {isPlaying ? '⏸' : '▶'}
                 </button>
                 <button aria-label="停止" onClick={handleStop} {...tip('止めて、曲の頭に戻ります')}>■</button>
-                <button aria-label="録音" aria-pressed={engine.isRecording} onClick={handleRecord}
+                <button aria-label="マイク録音" aria-pressed={engine.isRecording} onClick={handleRecord}
                     className={engine.isRecording ? 'active' : ''}
                     style={engine.isRecording ? { color: 'var(--danger)' } : {}}
                     {...tip(engine.isRecording
                         ? '録音を止めます。録った音は「Rec」のトラックに入ります'
-                        : 'マイクの音を録ります。ほかのトラックを鳴らしながら録れます')}>●</button>
+                        : 'マイクの音を録ります。鍵盤をノートとして録るときは、ピアノロールの「録り方」を使います')}>● マイク</button>
                 <button aria-label="メトロノーム" aria-pressed={metronomeEnabled} onClick={handleMetronome}
                     className={metronomeEnabled ? 'active' : ''}
                     {...tip(metronomeEnabled ? 'クリック音を止めます' : '再生中、拍に合わせてクリック音を鳴らします')}>🔔</button>

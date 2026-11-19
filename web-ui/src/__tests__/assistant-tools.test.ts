@@ -747,11 +747,20 @@ describe('練習画面と MIDI 入力', () => {
         const result = await ok('midi_input', { action: 'connect', mode: 'realtime' }, env);
         expect(result).toMatchObject({ connected: true, devices: ['Keystation 49'], mode: 'realtime' });
         expect(result.summary).toBe('MIDI 入力をつなぎました（鍵盤: Keystation 49。録り方: リアルタイム録音）');
+        expect(result.next_step).toContain('再生');
+        expect(result.next_step).toContain('カウント');
         // つないである間は、つなぎ直さない
         expect((await ok('midi_input', { action: 'connect' }, env)).mode).toBe('realtime');
         expect(calls).toEqual(['midi.connect', 'midi.setMode realtime']);
         expect((await ok('midi_input', { action: 'disconnect' }, env)).summary).toBe('MIDI 入力を止めました');
         expect((await ok('midi_input', { action: 'disconnect' }, env)).summary).toBe('MIDI 入力は、つないでいません');
+    });
+
+    it('midi_input: 鍵盤が見つからないときは再検出を案内する', async () => {
+        const { env } = makeEnv({ midi: { connected: true, devices: [] } });
+        const result = await ok('midi_input', { action: 'connect', mode: 'realtime' }, env);
+        expect(result.next_step).toContain('再検出');
+        expect(result.next_step).not.toContain('再生');
     });
 
     it('midi_input: 使えない環境、開けなかったとき、だめな引数', async () => {

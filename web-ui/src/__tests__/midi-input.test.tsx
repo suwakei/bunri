@@ -38,6 +38,7 @@ const { DawProvider, useDaw } = await import('../lib/store');
 const engine = (await import('../lib/engine')).default;
 const MidiInputBar = (await import('../components/MidiInputBar')).default;
 const StatusBar = (await import('../components/StatusBar')).default;
+const { PracticeProvider, PracticeControls } = await import('../components/PracticeView');
 
 const on = (pitch: number, velocity = 100) => ({ type: 'on' as const, pitch, velocity });
 const off = (pitch: number) => ({ type: 'off' as const, pitch, velocity: 0 });
@@ -498,6 +499,33 @@ describe('MidiInputBar', () => {
         expect(screen.queryByRole('button', { name: 'MIDI 入力' })).not.toBeInTheDocument();
     });
 
+    it('接続前から手順が見え、録り方を変えると長押し・録音・聴き返しの案内が切り替わる', async () => {
+        stubWebMidi();
+        localStorage.removeItem('bunri-midi-count-in');
+        const { container } = renderBar([]);
+        const help = () => container.querySelector('.midi-recording-help');
+        expect(help()).toHaveTextContent('まず');
+        expect(help()).toHaveTextContent('MIDI 入力');
+        expect(screen.queryByLabelText('録り方')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        const mode = await screen.findByLabelText('録り方');
+        expect(screen.getByText('鍵盤の録り方')).toBeVisible();
+        expect(help()).toHaveTextContent('長押ししても伸びません');
+        expect(help()).toHaveTextContent('一音ぶんの横棒');
+        fireEvent.change(mode, { target: { value: 'realtime' } });
+        expect(help()).toHaveTextContent('▶ で再生してから弾く');
+        expect(help()).toHaveTextContent('最初のカウント中は録りません');
+        expect(help()).toHaveTextContent('音を鳴らすだけ');
+        expect(help()).toHaveTextContent('また鍵盤の演奏を録ります');
+        fireEvent.click(screen.getByLabelText('録音前にカウント'));
+        expect(help()).not.toHaveTextContent('カウント中');
+
+        fireEvent.change(mode, { target: { value: 'off' } });
+        expect(help()).toHaveTextContent('横棒）は増えません');
+        expect(help()).not.toHaveTextContent('また鍵盤の演奏を録ります');
+    });
+
     it('つなぐと機器の名前が出て、弾くと音が鳴り、ステップ入力でノートが入る', async () => {
         const midi = stubWebMidi(['Keystation 49']);
         const notes: PianoNote[] = [];
@@ -811,5 +839,42 @@ describe('MidiInputBar', () => {
         renderBar([]);
         fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
         await waitFor(() => expect(screen.getByText(/MIDI 入力を開けませんでした。.*許可されませんでした/)).toBeInTheDocument());
+    });
+});
+
+describe('練習画面の鍵盤の案内', () => {
+    it('練習の選択と異なるときも実際の録り方を示し、未接続なら録れるとは案内しない', async () => {
+        engine.init();
+        const part = engine.addTrack('お手本');
+        const attempt = engine.addTrack('練習');
+        let daw: ReturnType<typeof useDaw> | null = null;
+        function ReadDaw() {
+            const state = useDaw();
+            useEffect(() => { daw = state; }, [state]);
+            return null;
+        }
+        const midi: import('../lib/useMidiInput').MidiInputController = {
+            available: true, connected: true, devices: ['Keys'], mode: 'off', countIn: true,
+            cursor: 0, stepLength: 4, latencyMs: 0, latencyAuto: true,
+            setMode: vi.fn(), setCountIn: vi.fn(), setCursor: vi.fn(), setStepLength: vi.fn(), setLatencyMs: vi.fn(),
+            connect: vi.fn().mockResolvedValue(true), disconnect: vi.fn().mockResolvedValue(undefined), setPracticeHooks: vi.fn(),
+        };
+        const app = () => <DawProvider><ReadDaw /><PracticeProvider midi={midi}><PracticeControls /></PracticeProvider></DawProvider>;
+        const { container, rerender } = render(app());
+        act(() => { daw!.openPractice(part.id, attempt.id); });
+        act(() => { daw!.updatePractice({ input: 'midi-step' }); });
+        const help = () => container.querySelector('.midi-recording-help');
+        expect(screen.getByRole('radio', { name: '同じ長さで 1 音ずつ置く（ステップ入力）' })).toBeChecked();
+        expect(help()).toHaveTextContent('音だけが鳴り');
+        expect(help()).not.toHaveTextContent('長押ししても伸びません');
+
+        midi.mode = 'realtime';
+        rerender(app());
+        expect(help()).toHaveTextContent('▶ で再生してから弾く');
+        expect(help()).toHaveTextContent('「聴く」を「自分」');
+        midi.connected = false;
+        rerender(app());
+        expect(help()).toHaveTextContent('鍵盤の入力はまだつながっていません');
+        expect(help()).not.toHaveTextContent('押した長さでノート');
     });
 });

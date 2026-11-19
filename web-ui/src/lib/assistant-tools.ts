@@ -20,6 +20,7 @@
 import { barToSec, inStepRange, secToStep, stepToBar, stepsPerBar, roundBpm } from './grid';
 import { GAIN_MAX_DB, GAIN_MIN_DB, formatGainDb, formatPan } from './mix';
 import type { RecordMode } from './midi-input';
+import { midiModeGuidance } from './midi-guidance';
 import {
     ArgError, BPM_MAX, BPM_MIN, MAX_NOTES_READ, ToolError, addNotes, barsLabel, barsOfNotes, byPosition, choice, describeNote, fields, flag,
     formatPitch, integer, meterLabel, number, parsePitch, readNotes, readRange, readTrackName, removeNotes, replaceNotes, roleOf,
@@ -486,6 +487,9 @@ export const TOOLS: Record<string, ToolSpec> = {
             const keyboards = now.devices.length > 0 ? `鍵盤: ${now.devices.join(' / ')}` : '鍵盤は見つかっていません';
             return {
                 ok: true, summary: `MIDI 入力をつなぎました（${keyboards}。録り方: ${MODE_LABELS[current]}）`,
+                next_step: now.devices.length === 0
+                    ? '鍵盤が見つかりません。鍵盤をつないで電源を入れてから、「再検出」を押してください'
+                    : midiModeGuidance(current),
                 connected: true, devices: now.devices.slice(), mode: current,
             };
         },
