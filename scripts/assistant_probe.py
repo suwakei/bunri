@@ -148,6 +148,15 @@ def handle(result, messages, problems):
     return True
 
 
+def show_route(route, problems):
+    """ルーターの結果を出し、選んだモデルを返す（step 0 で route が無ければ、問題として数える）。"""
+    if not route:
+        problems.append("step 0 に route が無い")
+        return None
+    print(f"  route: {route.get('tier')} {route.get('model')}（{route.get('reason')}）概算 ${route.get('cost_usd') or 0:.6f}")
+    return route.get("model")
+
+
 def main():
     parser = argparse.ArgumentParser(description="アシスタントの呼び出しを、本物の Claude に送って確かめる（費用がかかる）")
     parser.add_argument("--yes", action="store_true", help="実際に送る")
@@ -169,8 +178,11 @@ def main():
     messages = [{"role": "user", "content": [{"type": "text", "text":
                  "Track 1 の 1 小節目の頭に、C メジャーのコード（ド・ミ・ソ）を 4 分音符で置いて"}]}]
     turn = f"probe-{uuid.uuid4().hex[:12]}"
+    # step 0 ではルーターがモデルを選ぶ。続きの呼び出しには、選んだモデルを渡す（画面と同じ。依頼の途中で変えない）
+    model = None
     for step in range(6):
-        result = assistant.step(messages, turn, step)
+        result = assistant.step(messages, turn, step, model=model)
+        model = model or show_route(result.get("route"), problems)
         calls += 1
         total += result.get("cost_usd") or 0
         reads.append(("A", step, result["usage"]))
@@ -182,13 +194,16 @@ def main():
     print("\n[依頼 B] 少しずつ返す版 (stream_step): 別の会話で、読むだけの依頼")
     messages = [{"role": "user", "content": [{"type": "text", "text": "いまのテンポと拍子を教えて"}]}]
     turn = f"probe-{uuid.uuid4().hex[:12]}"
+    model = None
     for step in range(4):
         counts, done = {}, None
-        for event in assistant.stream_step(messages, turn, step):
+        for event in assistant.stream_step(messages, turn, step, model=model):
             if event is None:
                 continue
             counts[event["type"]] = counts.get(event["type"], 0) + 1
-            if event["type"] == "done":
+            if event["type"] == "route" and model is None:
+                model = show_route(event, problems)
+            elif event["type"] == "done":
                 done = event
             elif event["type"] == "error":
                 print(f"  error のイベント: {event['detail']}")
