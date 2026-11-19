@@ -3343,7 +3343,8 @@ body:has(#health-banner) #notice-region {
     cursor: pointer;
 }
 
-#assistant-panel > header .assistant-new { margin-left: auto; }
+#assistant-panel > header .assistant-history-toggle { margin-left: auto; }
+#assistant-panel > header .assistant-history-toggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 #assistant-panel > header .assistant-close { border: none; font-size: 16px; line-height: 1; padding: 0 6px; }
 
 #assistant-panel > header button:hover:not(:disabled) {
@@ -3540,6 +3541,69 @@ body:has(#health-banner) #notice-region {
 #assistant-panel .assistant-example:hover {
     border-color: var(--accent);
     background: var(--bg-elevated);
+}
+
+#assistant-panel .assistant-log[hidden] { display: none; }
+
+/* 前の会話（履歴）の一覧。会話の場所に出す */
+#assistant-panel .assistant-history {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px;
+}
+
+#assistant-panel .assistant-history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
+#assistant-panel .assistant-history ul {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#assistant-panel .assistant-history-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+#assistant-panel .assistant-history-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+#assistant-panel .assistant-history-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+
+#assistant-panel .assistant-history-meta {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+#assistant-panel .assistant-history-item button,
+#assistant-panel .assistant-history-back {
+    flex: none;
+    padding: 2px 8px;
+    font-size: 11px;
 }
 
 #assistant-panel .assistant-empty {

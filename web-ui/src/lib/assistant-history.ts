@@ -7,6 +7,10 @@
  * `assistant` に入れる（登録は lib/assistant-project.ts）。**Claude に送る会話（Messages API の形）は保存しない**。
  * 思考のブロックは、作った会話の中でしか通らず、トラックの ID も開き直すたびに変わるため。
  *
+ * 「新しい会話」を押すと、それまでの会話は消さずに **履歴**（`ArchivedConversation`）へ移る。履歴も同じ節に入り
+ * （`archive`。新しい順に `MAX_ARCHIVED` 個まで）、一覧から開き直すと、プロジェクトを開き直したときと同じく
+ * 「これまでの記録」で続ける。
+ *
  * ## まとめ（記録）
  *
  * Claude に送る会話は、依頼の途中では足すだけにする（書き換えない・間引かない。lib/assistant.ts の約束）。
@@ -20,8 +24,16 @@
  */
 import type { ApiMessage, ChatItem } from './assistant';
 
-/** 状態の節 `assistant` の版。形を変えたら上げ、`itemsFromSection` で古い版を読めるようにする。 */
-export const ASSISTANT_SECTION_VERSION = 1;
+/**
+ * 状態の節 `assistant` の版。形を変えたら上げ、`itemsFromSection` / `archiveFromSection` で古い版を読めるようにする。
+ * 2: 前の会話（履歴。`archive`）を足した。1 は `items` だけ（そのまま読める）。
+ */
+export const ASSISTANT_SECTION_VERSION = 2;
+
+/** 履歴に残す会話の数の上限（新しいほうから）。超えたら、いちばん古い会話から消える。 */
+export const MAX_ARCHIVED = 30;
+/** 履歴の会話の名前の長さ（最初の依頼の頭の文字数）。 */
+const ARCHIVE_TITLE = 30;
 
 /** 保存する並びの上限（新しいほうから）。 */
 export const MAX_SAVED_ITEMS = 300;
@@ -47,6 +59,56 @@ export type SavedItem =
     | { kind: 'tool'; name: string; state: 'ok' | 'error' | 'cancelled'; text: string }
     | { kind: 'notice'; tone: 'info' | 'error'; text: string }
     | { kind: 'turn'; calls: number; costUsd: number | null };
+
+/**
+ * 前の会話 1 つ（履歴）。「新しい会話」を押すと、それまでの会話がここに移る。
+ * 画面に並んでいたもの（`SavedItem`）だけを持つ。Claude に送る会話は持たない（開き直すと「これまでの記録」で続ける）。
+ */
+export interface ArchivedConversation {
+    /** 画面の中だけの番号（保存しない。読み込むたびに振り直す） */
+    id: number;
+    /** 一覧に出す名前（最初の依頼の頭） */
+    title: string;
+    /** 履歴に移した日時（ISO 8601）。分からなければ null */
+    archivedAt: string | null;
+    items: SavedItem[];
+}
+
+/** 保存した並びから、履歴の一覧に出す名前を作る（最初の依頼の頭。依頼が無ければ、最初の文）。 */
+export function archiveTitle(items: readonly SavedItem[]): string {
+    const first = items.find((item) => item.kind === 'user') ?? items.find((item) => 'text' in item);
+    const text = first && 'text' in first ? first.text.replace(/\s+/g, ' ').trim() : '';
+    return text ? clip(text, ARCHIVE_TITLE) : '（依頼の無い会話）';
+}
+
+/** 履歴を、プロジェクトの節に入れる形にする（番号は入れない）。 */
+export function archiveToSaved(archive: readonly ArchivedConversation[]): { title: string; archivedAt: string | null; items: SavedItem[] }[] {
+    return archive.slice(0, MAX_ARCHIVED).map(({ title, archivedAt, items }) => ({ title, archivedAt, items }));
+}
+
+/**
+ * プロジェクトの節から、履歴を読む（新しい順）。おかしな会話は読み飛ばす。版 1 の節（履歴が無い）は空。
+ *
+ * @param value - 節の値（節が無ければ null）
+ * @param nextId - 番号を振る関数
+ */
+export function archiveFromSection(value: unknown, nextId: () => number): ArchivedConversation[] {
+    if (!value || typeof value !== 'object') return [];
+    const list = (value as { archive?: unknown }).archive;
+    if (!Array.isArray(list)) return [];
+    const out: ArchivedConversation[] = [];
+    for (const raw of list) {
+        if (!raw || typeof raw !== 'object') continue;
+        const entry = raw as Record<string, unknown>;
+        const items = itemsFromSection({ items: entry.items });
+        if (items.length === 0) continue;
+        const title = typeof entry.title === 'string' && entry.title.trim() !== '' ? clip(entry.title.trim(), ARCHIVE_TITLE + 1) : archiveTitle(items);
+        const archivedAt = typeof entry.archivedAt === 'string' && !Number.isNaN(Date.parse(entry.archivedAt)) ? entry.archivedAt : null;
+        out.push({ id: nextId(), title, archivedAt, items });
+        if (out.length >= MAX_ARCHIVED) break;
+    }
+    return out;
+}
 
 /** 文を、上限の長さで切る（切ったら「…」を付ける）。 */
 function clip(text: string, max: number): string {

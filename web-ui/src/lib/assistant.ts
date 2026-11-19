@@ -34,7 +34,7 @@ import { apiFetch, describeError } from './api';
 import { activityEntries, recordActivity, type ActivityEntry } from './activity';
 import { GuideRequestError, fetchGuideSettings, toError, type GuideToday, type GuideUsage } from './guide';
 import { TOOLS, isWriteTool, runTool, toolLabel, type ToolEnv } from './assistant-tools';
-import { conversationDigest, itemsToSaved, needsCompaction, savedToItems, type SavedItem } from './assistant-history';
+import { MAX_ARCHIVED, archiveTitle, conversationDigest, itemsToSaved, needsCompaction, savedToItems, type ArchivedConversation, type SavedItem } from './assistant-history';
 import type { SuggestionFacts } from './assistant-suggestions';
 
 /** 1 回の依頼で Claude を呼べる回数の上限（処理を担当する部分の `MAX_STEPS` と同じ）。 */
@@ -130,8 +130,12 @@ export interface AssistantState {
     today: GuideToday | null;
     /** API キーを入れれば直る失敗が起きた（キーの欄を出す） */
     needsKey: boolean;
-    /** 頭から何個が、プロジェクトに保存してあった会話か（その後ろに、区切りを出す）。無ければ 0 */
+    /** 頭から何個が、前に保存してあった会話か（その後ろに、区切りを出す）。無ければ 0 */
     restored: number;
+    /** 戻した会話が、どこから来たか（project: プロジェクトを開いた / history: 履歴から開き直した）。区切りの文を変える */
+    restoredFrom: 'project' | 'history';
+    /** 前の会話（履歴）。新しい順。「新しい会話」を押すと、それまでの会話がここの頭に入る */
+    archive: readonly ArchivedConversation[];
 }
 
 /**
@@ -259,12 +263,14 @@ function parseLine(line: string): Record<string, unknown> | null {
 export class AssistantSession {
     /** Claude に送る会話。足すだけで、書き換えない */
     private messages: ApiMessage[] = [];
-    private state: AssistantState = { items: [], running: false, waiting: null, today: null, needsKey: false, restored: 0 };
+    private state: AssistantState = {
+        items: [], running: false, waiting: null, today: null, needsKey: false, restored: 0, restoredFrom: 'project', archive: [],
+    };
     private listeners = new Set<() => void>();
     private nextId = 1;
     private controller: AbortController | null = null;
-    /** 動いているあいだに届いた、戻す会話（プロジェクトが入れ替わった）。依頼が終わったところで戻す */
-    private pendingRestore: readonly SavedItem[] | null = null;
+    /** 動いているあいだに届いた、戻す会話と履歴（プロジェクトが入れ替わった）。依頼が終わったところで戻す */
+    private pendingRestore: { saved: readonly SavedItem[]; archive: readonly ArchivedConversation[] } | null = null;
 
     /** 状態が変わったときに呼ばれる関数を登録する。戻り値を呼ぶと、登録を外す。 */
     subscribe = (listener: () => void): (() => void) => {
@@ -371,11 +377,47 @@ export class AssistantSession {
         if (this.state.needsKey !== needsKey) this.update({ needsKey });
     }
 
-    /** 新しい会話にする（会話と操作ログを空にする）。動いているあいだは、何もしない。 */
+    /**
+     * 新しい会話にする。それまでの会話は消さずに、履歴の頭へ移す（空の会話は移さない）。動いているあいだは、何もしない。
+     * 履歴が `MAX_ARCHIVED` を超えたら、いちばん古い会話から消える。
+     */
     reset(): boolean {
         if (this.state.running) return false;
+        const archive = this.archiveCurrent();
         this.messages = [];
-        this.update({ items: [], waiting: null, needsKey: false, restored: 0 });
+        this.update({ items: [], waiting: null, needsKey: false, restored: 0, archive });
+        return true;
+    }
+
+    /** いまの会話を履歴の頭に入れた、新しい履歴を返す（いまの会話が空なら、そのまま）。 */
+    private archiveCurrent(): ArchivedConversation[] {
+        const items = this.saved();
+        if (items.length === 0) return [...this.state.archive];
+        const entry: ArchivedConversation = { id: this.id(), title: archiveTitle(items), archivedAt: new Date().toISOString(), items };
+        return [entry, ...this.state.archive].slice(0, MAX_ARCHIVED);
+    }
+
+    /**
+     * 履歴の会話を開き直す。いまの会話（空でなければ）は、履歴の頭へ移す。Claude に送る会話は空にし、次の依頼は、
+     * 開き直した並びから作った「これまでの記録」で始まる（プロジェクトを開き直したときと同じ）。
+     *
+     * @returns 開いたら true（動いているあいだ・その番号が無いときは false で、何もしない）
+     */
+    openArchived(id: number): boolean {
+        if (this.state.running) return false;
+        const target = this.state.archive.find((entry) => entry.id === id);
+        if (!target) return false;
+        const archive = this.archiveCurrent().filter((entry) => entry.id !== id);
+        this.messages = [];
+        const items = savedToItems(target.items, () => this.id());
+        this.update({ items, waiting: null, needsKey: false, restored: items.length, restoredFrom: 'history', archive });
+        return true;
+    }
+
+    /** 履歴の会話を 1 つ消す（次の保存で、プロジェクトからも消える）。消したら true。 */
+    deleteArchived(id: number): boolean {
+        if (!this.state.archive.some((entry) => entry.id === id)) return false;
+        this.update({ archive: this.state.archive.filter((entry) => entry.id !== id) });
         return true;
     }
 
@@ -384,27 +426,37 @@ export class AssistantSession {
         return itemsToSaved(this.state.items);
     }
 
+    /** 履歴（プロジェクトに保存する。新しい順）。 */
+    archived(): readonly ArchivedConversation[] {
+        return this.state.archive;
+    }
+
     /**
-     * プロジェクトに保存してあった会話を戻す（プロジェクトを開いたとき。空の並びなら、空にする）。
+     * プロジェクトに保存してあった会話と履歴を戻す（プロジェクトを開いたとき。空なら、空にする）。
      * Claude に送る会話は空にする。次の依頼は、戻した並びから作った「これまでの記録」で始まる。
      *
      * 動いているあいだに呼ばれたら（依頼の途中で、プロジェクトを開いた・新しくした）、中止を頼み、依頼が
      * 終わったところで戻す。前のプロジェクトの会話を、新しいプロジェクトに残さない（保存で、別のプロジェクトの
      * ファイルに入ってしまう）。その依頼の、元に戻す履歴の記録は作らない（前と後で、別のプロジェクトになるため）。
      *
+     * @param saved - いまの会話
+     * @param archive - 履歴（新しい順）。省くと空
      * @returns すぐ戻したら true（動いていて、後で戻すなら false）
      */
-    restore(saved: readonly SavedItem[]): boolean {
+    restore(saved: readonly SavedItem[], archive: readonly ArchivedConversation[] = []): boolean {
         if (this.state.running) {
-            this.pendingRestore = saved;
+            this.pendingRestore = { saved, archive };
             this.cancel();
             return false;
         }
         this.messages = [];
         const items = savedToItems(saved, () => this.id());
-        this.update({ items, waiting: null, needsKey: false, restored: items.length });
+        this.update({ items, waiting: null, needsKey: false, restored: items.length, restoredFrom: 'project', archive: archive.slice(0, MAX_ARCHIVED) });
         return true;
     }
+
+    /** 履歴の番号を振る関数（プロジェクトから履歴を読むときに使う。会話の並びと同じ番号の列）。 */
+    nextItemId = (): number => this.id();
 
     /**
      * 中止する。待っている呼び出しを止め、次のツール・次の呼び出しを始めない。すでに行った操作は残る。
@@ -559,7 +611,7 @@ export class AssistantSession {
             this.controller = null;
             this.update({ items, running: false, waiting: null });
             // 入れ替わったプロジェクトの会話に置き換える (この依頼の並びは、前のプロジェクトのものなので残さない)
-            if (replaced) this.restore(replaced);
+            if (replaced) this.restore(replaced.saved, replaced.archive);
         }
         return true;
     }

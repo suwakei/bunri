@@ -4,7 +4,7 @@
  * 練習画面でもドックが見える。ドックを開いても、画面が窓からはみ出さない。
  *
  * ノートの変形・差分チェック・練習の設定・場所を示す・書き出しも、頼むと画面がそのとおりに変わる。
- * 会話は、プロジェクトを保存して開き直すと戻る。
+ * 会話は、プロジェクトを保存して開き直すと戻る。「新しい会話」の前の会話は履歴に残り、開き直して続きを頼める。
  *
  * 本物の Claude は呼ばない。API サーバは、偽の Claude サーバ (fake-anthropic.mjs) を呼ぶ。偽のサーバは、依頼の文に
  * 含まれることば (「トラック」「ノート」「失敗」) で決まった筋書きのツールを呼ぶ。
@@ -556,6 +556,39 @@ test('会話は、プロジェクトを保存すると一緒に入り、開き�
     await ask(page, 'もう 1 回くり返して', 2);
     await expect(toolRows(page).last()).toContainText('置いた先は 3〜4 小節、8 個');
     await expect(noteBlocks(page)).toHaveCount(16);
+});
+
+test('「新しい会話」の前の会話は履歴に残る。保存して開き直しても残り、履歴から開いて続きを頼める', async ({ page }, testInfo) => {
+    await openDaw(page);
+    await startFree(page);
+    await openDock(page);
+    const history = dock(page).getByRole('button', { name: /^履歴/ });
+    await expect(history).toBeDisabled();
+    await ask(page, 'ノートを置いて', 1);
+    await dock(page).getByRole('button', { name: '新しい会話' }).click();
+    await expect(toolRows(page)).toHaveCount(0);
+    await expect(history).toHaveText('履歴 1');
+
+    // 保存して、新しいプロジェクトにして、開き直す: 履歴も戻る
+    const name = await saveProject(page, `履歴 ${testInfo.project.name} ${Date.now()}`);
+    await page.getByRole('button', { name: 'プロジェクトのメニュー' }).click();
+    await page.getByRole('menuitem', { name: '新しいプロジェクト' }).click();
+    await expect(history).toBeDisabled();
+    await openProject(page, name);
+    await expect(history).toHaveText('履歴 1');
+
+    // 履歴から開く: 前の会話が並び、区切りの後ろで続きを頼める
+    await history.click();
+    const list = dock(page).getByRole('region', { name: '前の会話' });
+    await list.getByRole('button', { name: '「ノートを置いて」の会話を開く' }).click();
+    await expect(list).toHaveCount(0);
+    await expect(toolRows(page)).toHaveCount(2);
+    await expect(chat(page).getByRole('separator')).toContainText('ここまでは、履歴から開き直した会話です');
+    await expect(noteBlocks(page)).toHaveCount(8);
+    await ask(page, 'もう 1 回くり返して', 2);
+    await expect(toolRows(page).last()).toContainText('置いた先は 3〜4 小節、8 個');
+    await expect(noteBlocks(page)).toHaveCount(16);
+    await expectFitsWindow(page);
 });
 
 test('示せる場所のセレクタは、実際の画面に在る（いつも出ているものと、左のパネルのタブ）', async ({ page }) => {
