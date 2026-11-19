@@ -240,6 +240,41 @@ class TestLedger:
             assert tool["input_schema"]["type"] == "object", tool["name"]
             check(tool["input_schema"], tool["name"])
 
+    def test_ノートの位置と長さと範囲は_小数を受ける(self):
+        """ステップは 16 分音符の単位のまま、小数を受ける（32 分音符・三連・スウィング）"""
+        tools = {tool["name"]: tool for tool in assistant.load_ledger()}
+        for name in ("add_notes", "replace_notes"):
+            item = tools[name]["input_schema"]["properties"]["notes"]["items"]["properties"]
+            assert item["step"]["type"] == item["length"]["type"] == "number", name
+            assert "0.5" in item["step"]["description"] and "triplet" in item["step"]["description"], name
+        ranged = ("remove_notes", "replace_notes", "transpose_notes", "shift_notes", "quantize_notes", "repeat_notes",
+                  "set_velocity")
+        for name in ranged:
+            properties = tools[name]["input_schema"]["properties"]
+            assert properties["start_step"]["type"] == properties["end_step"]["type"] == "number", name
+        assert tools["shift_notes"]["input_schema"]["properties"]["steps"]["type"] == "number"
+        assert tools["repeat_notes"]["input_schema"]["properties"]["to_step"]["type"] == "number"
+        # 数える項目（回数・半音・強さ・小節）は、整数のまま
+        assert tools["repeat_notes"]["input_schema"]["properties"]["times"]["type"] == "integer"
+        assert tools["transpose_notes"]["input_schema"]["properties"]["semitones"]["type"] == "integer"
+        assert tools["get_notes"]["input_schema"]["properties"]["start_bar"]["type"] == "integer"
+
+    def test_そろえる間隔に_16分と32分と三連が在る(self):
+        quantize = next(tool for tool in assistant.load_ledger() if tool["name"] == "quantize_notes")
+        grid = quantize["input_schema"]["properties"]["grid_steps"]
+        # 三連の間隔（4/3、2/3）は整数で書けないので、決まった値の並び（enum）にはせず、説明に書く。確かめるのは画面側
+        assert grid["type"] == "number" and "enum" not in grid
+        for word in ("32nd", "16th", "triplet", "1.3333", "0.6667"):
+            assert word in grid["description"], word
+            assert word in quantize["description"], word
+        assert "no 16th grid" not in quantize["description"]
+
+    def test_指示文に_小数のステップの説明が在る(self):
+        prompt = assistant.SYSTEM_PROMPT
+        assert "one step is a 16th note" in prompt
+        for word in ("decimals", "32nd", "triplet", "1.3333", "1/60"):
+            assert word in prompt, word
+
 
 class TestBuildRequest:
     def test_ツールは台帳の順で_Claudeに渡さない項目を含まない(self):
@@ -624,7 +659,7 @@ class TestUsageRecord:
         first, second = guide_usage.read_records()
         assert (first["feature"], first["turn"], first["step"]) == ("assistant", "turn-abc", 0)
         assert (second["feature"], second["turn"], second["step"]) == ("assistant", "turn-abc", 1)
-        assert first["version"] == assistant.ASSISTANT_VERSION == 2
+        assert first["version"] == assistant.ASSISTANT_VERSION == 4
         assert first["ok"] is True and first["error"] is None
         assert first["focus"] is None and first["chart"] is None
         assert first["effort"] == "medium" and first["cache_ttl"] == "5m"

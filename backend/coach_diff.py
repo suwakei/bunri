@@ -8,13 +8,21 @@ LLM は使わない。お手本（原曲を採譜したノート）と打ち込�
 あとから載せる。事実と言語化を分けておくのは、第1層・第2層と同じ理由による。
 
 ノートの形はピアノロールと同じ: ``{"note": "C", "octave": 4, "step": 0, "length": 4}``。
-``step`` と ``length`` は 16 分音符単位。``velocity``（強さ。1〜127）は在っても無くてもよい。
+``step`` と ``length`` は 16 分音符単位で、小数も受け付ける（0.5 = 32 分音符、4/3 = 8 分の三連）。
+値は 1/60 ステップの倍数に丸めてから比べ、整数になる値は整数のまま返す（``note_steps``）。整数だけの入力に
+対する結果は、小数を許す前と同じ。``velocity``（強さ。1〜127）は在っても無くてもよい。
 
 強さ（ベロシティ）の違いは、**お手本が MIDI ファイルから読み込んだもののときだけ** 出す
 （``reference_source="midi"``）。音源から採譜したお手本の強さは当てにならないので、比べない
 （docs/coach-diff-design.md の「強さの違い」）。強さは、位置・高さ・長さの指摘とは別の欄
 （結果の ``velocity``）に出し、指摘の一覧（``bars``）と一致率（``summary.accuracy``）には入れない。
+
+小節ごとの「お手本のノートの数」と「合っていた数」も、別の欄（結果の ``bar_stats``）に出す。画面が、曲のどこを
+比べ終えたかを小節ごとに記録するのに使う（docs/coach-diff-design.md の「練習の地図」）。数え方は一致率と同じで、
+言語化（``coach_explain``）に渡す事実には入れない。
 """
+
+import note_steps
 
 NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11}
 
@@ -23,6 +31,21 @@ KINDS = ("missing", "pitch", "octave", "extra", "timing", "length")
 
 # 一度に受け付けるノートの上限（突き合わせは件数の積に比例して重くなるため）
 MAX_NOTES = 20000
+
+# ---- 比べ方（``diff_notes`` の ``mode``） ----
+
+# ふつうの比べ方（高さ・位置・長さ）と、ドラムの比べ方（リズムだけ。docs/coach-diff-design.md の「ドラムの差分」）
+MODE_NOTES = "notes"
+MODE_DRUMS = "drums"
+# 「同じ位置」とみなす、位置のずれの上限（ステップ = 16 分音符）。``timing_tolerance`` を渡さなければ、比べ方で決まる。
+# ドラムは 16 分音符 1 個: 16 分で刻むハイハットの隣どうしを取り違えないため（2 個だと、1 つ飛ばして組になりうる）
+TIMING_TOLERANCE = {MODE_NOTES: 2, MODE_DRUMS: 1}
+# 「位置のずれ」「長さの違い」として指摘する、差の下限（ステップ）。組になったノートの差がこれより小さければ、
+# 合っているものとして扱う（指摘しない）。整数どうしの差は 0 か 1 以上なので、整数だけの入力の結果は変わらない。
+# 0.5 にしたのは、16 分と三連の隣どうし（1 と 4/3。差は 1/3）を「ずれ」にせず、8 分の裏と三連の裏
+# （2 と 8/3。差は 2/3）は「ずれ」にするため。根拠は docs/coach-diff-design.md の「小数の位置と長さ」
+MIN_TIMING_ISSUE_STEPS = 0.5
+MIN_LENGTH_ISSUE_STEPS = 0.5
 
 # ---- 強さ（ベロシティ）の比べ方。値はどれも暫定（根拠は docs/coach-diff-design.md の「強さの違い」） ----
 
@@ -58,10 +81,13 @@ def _clean(notes, label):
         label: エラーメッセージに使う呼び名（「お手本」「打ち込み」）。
 
     Returns:
-        list[dict]: ``note`` ``octave`` ``step`` ``length`` ``pitch`` を持つ辞書のリスト（位置順）。
+        list[dict]: ``note`` ``octave`` ``step`` ``length`` ``pitch`` ``velocity`` と、比べるための
+        ``step_ticks`` ``length_ticks``（1/60 ステップ単位の整数）を持つ辞書のリスト（位置順）。
+        ``step`` と ``length`` は 1/60 ステップの倍数に丸めた値（整数になる値は整数）。
 
     Raises:
-        DiffError: リストでない、件数が多すぎる、ノートの形が正しくない場合。
+        DiffError: リストでない、件数が多すぎる、ノートの形が正しくない場合
+            （``step`` が負・数でない、``length`` が 0 以下・丸めると 0・数でない、NaN や無限、bool）。
     """
     if not isinstance(notes, list):
         raise DiffError(f"{label}のノートの形式が正しくありません")
@@ -72,19 +98,23 @@ def _clean(notes, label):
         if not isinstance(raw, dict):
             raise DiffError(f"{label}のノートの形式が正しくありません")
         name, octave, step, length = raw.get("note"), raw.get("octave"), raw.get("step"), raw.get("length")
+        # 位置と長さは、刻みの数（1/60 ステップ単位の整数）に直してから確かめる。数でない・bool・NaN・無限は None
+        step_ticks, length_ticks = note_steps.to_ticks(step), note_steps.to_ticks(length)
         valid = (
             name in NOTE_INDEX
             and isinstance(octave, int) and not isinstance(octave, bool) and -1 <= octave <= 9
-            and isinstance(step, int) and not isinstance(step, bool) and step >= 0
-            and isinstance(length, int) and not isinstance(length, bool) and length > 0
+            and step_ticks is not None and step >= 0
+            and length_ticks is not None and length_ticks > 0
         )
         if not valid:
             raise DiffError(f"{label}のノートの形式が正しくありません")
-        note = {"note": name, "octave": octave, "step": step, "length": length}
+        note = {"note": name, "octave": octave,
+                "step": note_steps.from_ticks(step_ticks), "length": note_steps.from_ticks(length_ticks)}
         note["pitch"] = _pitch(note)
         note["velocity"] = _velocity(raw.get("velocity"))
+        note["step_ticks"], note["length_ticks"] = step_ticks, length_ticks
         cleaned.append(note)
-    cleaned.sort(key=lambda n: (n["step"], n["pitch"], n["length"]))
+    cleaned.sort(key=lambda n: (n["step_ticks"], n["pitch"], n["length_ticks"]))
     return cleaned
 
 
@@ -110,15 +140,16 @@ def _public(note):
 def _pair(reference, attempt, used_ref, used_att, tolerance, accept):
     """条件に合うお手本と打ち込みの組を、近い順に作る。
 
-    位置が ``tolerance`` ステップ以内のものだけを候補にする。両方とも位置順に並んでいるので、
+    位置が ``tolerance`` 以内のものだけを候補にする。両方とも位置順に並んでいるので、
     二分探索で範囲を絞る（全部の組み合わせを見ると、件数の積に比例して遅くなる）。
+    位置は刻みの数（``step_ticks``。整数）で比べるので、小数の位置でも、境目で丸めの誤差が出ない。
 
     Args:
         reference: お手本のノート列（位置順）。
         attempt: 打ち込みのノート列（位置順）。
         used_ref: すでに組になったお手本の添字の集合（更新される）。
         used_att: すでに組になった打ち込みの添字の集合（更新される）。
-        tolerance: 候補にする位置のずれの上限（ステップ）。
+        tolerance: 候補にする位置のずれの上限（刻みの数。1/60 ステップ単位）。
         accept: ``(お手本, 打ち込み)`` を受け取り、組にしてよければ近さ（小さいほど近い）を、
             だめなら None を返す関数。
 
@@ -127,13 +158,13 @@ def _pair(reference, attempt, used_ref, used_att, tolerance, accept):
     """
     from bisect import bisect_left, bisect_right
 
-    steps = [a["step"] for a in attempt]
+    steps = [a["step_ticks"] for a in attempt]
     candidates = []
     for i, ref in enumerate(reference):
         if i in used_ref:
             continue
-        lo = bisect_left(steps, ref["step"] - tolerance)
-        hi = bisect_right(steps, ref["step"] + tolerance)
+        lo = bisect_left(steps, ref["step_ticks"] - tolerance)
+        hi = bisect_right(steps, ref["step_ticks"] + tolerance)
         for j in range(lo, hi):
             if j in used_att:
                 continue
@@ -151,37 +182,57 @@ def _pair(reference, attempt, used_ref, used_att, tolerance, accept):
     return pairs
 
 
-def diff_notes(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_tolerance=2, reference_source=None):
+def diff_notes(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_tolerance=None, reference_source=None,
+               mode=None):
     """お手本と打ち込みを突き合わせ、差分を返す。
 
     突き合わせは 3 段階。先の段階で組になったノートは、後の段階では使わない。
 
     1. 同じ高さで、位置のずれが ``timing_tolerance`` ステップ以内 → 同じ音とみなす。
-       位置がずれていれば ``timing``、長さが違えば ``length`` の指摘になる
+       位置が ``MIN_TIMING_ISSUE_STEPS``（0.5 ステップ）以上ずれていれば ``timing``、長さが
+       ``MIN_LENGTH_ISSUE_STEPS``（0.5 ステップ）以上違えば ``length`` の指摘になる。それより小さい差
+       （16 分と三連の隣どうしの 1/3 ステップなど）は、合っているものとして扱う。整数どうしの差は
+       0 か 1 以上なので、整数だけの入力では「少しでも違えば指摘」のまま
     2. 位置が近く、高さがちょうどオクターブ単位で違う → ``octave``（オクターブ違い）
     3. 位置が近く、高さが 2 半音以内で違う → ``pitch``（音の間違い）
 
     どれとも組にならなかったお手本は ``missing``（抜け）、打ち込みは ``extra``（余分）。
+
+    ドラムの比べ方（``mode="drums"``）は、リズムだけを比べる。ドラムのノートの高さは音の高さではなく
+    種類（キック・スネアなど。画面が種類ごとに決まった高さへ置く）なので、1. だけを行う: 同じ高さ
+    （= 同じ種類）どうしを組にし、位置がずれていれば ``timing``。**長さは比べない**（打音に長さは無い）。
+    2. と 3. は行わないので、種類を間違えた打音は、お手本の ``missing`` と打ち込みの ``extra`` として出る
+    （``pitch`` ``octave`` ``length`` は、いつも 0 件）。一致率・``bar_stats``・結果の形は、ふつうの比べ方と同じ。
 
     Args:
         reference: お手本のノート列（原曲を採譜したもの）。
         attempt: 利用者の打ち込みのノート列。
         steps_per_bar: 1 小節のステップ数（4/4 なら 16）。
         steps_per_beat: 1 拍のステップ数（16 分音符単位なら 4）。
-        timing_tolerance: 「同じ位置」とみなす、位置のずれの上限（ステップ）。
+        timing_tolerance: 「同じ位置」とみなす、位置のずれの上限（ステップ）。None なら、比べ方で決まる
+            （``TIMING_TOLERANCE``。ふつうは 2、ドラムは 1）。
         reference_source: お手本の出どころ。``"midi"``（MIDI ファイルから読み込んだ）のときだけ、
             強さを比べる。``"transcription"``（採譜）や None（分からない）、そのほかの値では比べない。
+        mode: 比べ方。``"drums"`` でドラムの比べ方。None と ``"notes"`` は、ふつうの比べ方。
 
     Returns:
-        dict: ``{"summary", "bars", "worst_bars", "velocity"}``。
+        dict: ``{"summary", "bars", "worst_bars", "velocity", "bar_stats"}``。
 
-        - ``summary``: 件数。``reference_count`` ``attempt_count`` ``exact``（位置も長さも一致）、
-          差分の種類ごとの件数、``accuracy``（お手本のうち、高さと位置が合っていた割合。0〜1）
+        - ``summary``: 件数。``reference_count`` ``attempt_count`` ``exact``（位置も長さも一致。指摘の下限より
+          小さい差は、一致に数える）、差分の種類ごとの件数、``accuracy``（お手本のうち、高さと位置が
+          合っていた割合。0〜1）
         - ``bars``: 指摘の在る小節ごとの一覧。各指摘は ``kind`` ``bar`` ``beat`` ``expected``
-          ``actual`` ``offset_steps`` ``length_diff`` を持つ
+          ``actual`` ``offset_steps`` ``length_diff`` を持つ。``bar`` と ``beat`` は、位置が小数でも整数
+          （そのノートが始まる小節と拍）。``expected`` ``actual`` の ``step`` ``length`` と、``offset_steps``
+          ``length_diff`` は、1/60 ステップの倍数（整数になる値は整数）。``offset_steps`` と ``length_diff`` は
+          実際の差で、指摘の下限より小さい差もそのまま載る
         - ``worst_bars``: 指摘が重い順の小節番号（最大 5 つ）
         - ``velocity``: 強さの違い（``velocity_diff`` の結果）。強さを比べないお手本では None。
           ``summary`` ``bars`` ``worst_bars`` は、強さを比べても比べなくても同じ
+        - ``bar_stats``: 小節ごとの一致（``_bar_stats`` の結果）。お手本のノートが在る小節だけを、小節順に持つ。
+          各要素は ``bar`` ``reference_count``（その小節で始まるお手本のノートの数）``matched``（そのうち、
+          高さと位置が合っていた数。``summary.accuracy`` と同じ数え方）。全部足すと、``reference_count`` は
+          ``summary.reference_count``、``matched`` は一致率の分子（``accuracy × reference_count``）になる
 
     Raises:
         DiffError: 入力の形が正しくない、または比べるお手本が空の場合。
@@ -189,6 +240,13 @@ def diff_notes(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_to
     for name, value in (("steps_per_bar", steps_per_bar), ("steps_per_beat", steps_per_beat)):
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise DiffError(f"{name} が正しくありません")
+    if mode is None:
+        mode = MODE_NOTES
+    if not isinstance(mode, str) or mode not in TIMING_TOLERANCE:
+        raise DiffError("mode が正しくありません")
+    drums = mode == MODE_DRUMS
+    if timing_tolerance is None:
+        timing_tolerance = TIMING_TOLERANCE[mode]
     if not isinstance(timing_tolerance, int) or isinstance(timing_tolerance, bool) or timing_tolerance < 0:
         raise DiffError("timing_tolerance が正しくありません")
     ref = _clean(reference, "お手本")
@@ -199,34 +257,43 @@ def diff_notes(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_to
     used_ref, used_att = set(), set()
     issues = []
     exact = 0
+    # 位置と長さは、刻みの数（1/60 ステップ単位の整数）で比べる
+    tolerance = timing_tolerance * note_steps.STEP_DIVISIONS
+    min_timing = MIN_TIMING_ISSUE_STEPS * note_steps.STEP_DIVISIONS
+    min_length = MIN_LENGTH_ISSUE_STEPS * note_steps.STEP_DIVISIONS
 
     def distance(r, a):
-        return abs(r["step"] - a["step"])
+        return abs(r["step_ticks"] - a["step_ticks"])
 
     # 1. 同じ高さ
-    same = _pair(ref, att, used_ref, used_att, timing_tolerance,
+    same = _pair(ref, att, used_ref, used_att, tolerance,
                  lambda r, a: distance(r, a) if r["pitch"] == a["pitch"] else None)
     for i, j in same:
         r, a = ref[i], att[j]
-        offset, length_diff = a["step"] - r["step"], a["length"] - r["length"]
-        if offset == 0 and length_diff == 0:
+        # ドラムは長さを比べない（位置が同じなら、ぴったり）
+        moved = abs(a["step_ticks"] - r["step_ticks"]) >= min_timing
+        resized = not drums and abs(a["length_ticks"] - r["length_ticks"]) >= min_length
+        if not moved and not resized:
             exact += 1
             continue
-        if offset != 0:
+        if moved:
             issues.append(_issue("timing", r, a, steps_per_bar, steps_per_beat))
-        if length_diff != 0:
+        if resized:
             issues.append(_issue("length", r, a, steps_per_bar, steps_per_beat))
 
-    # 2. オクターブ違い
-    for i, j in _pair(ref, att, used_ref, used_att, timing_tolerance,
-                      lambda r, a: distance(r, a) if (r["pitch"] - a["pitch"]) % 12 == 0 else None):
-        issues.append(_issue("octave", ref[i], att[j], steps_per_bar, steps_per_beat))
+    # ドラムは、ここまで。高さは種類なので、「近い高さ」「オクターブ違い」に意味が無い
+    # （種類を間違えた打音は、下で抜けと余分になる）
+    if not drums:
+        # 2. オクターブ違い
+        for i, j in _pair(ref, att, used_ref, used_att, tolerance,
+                          lambda r, a: distance(r, a) if (r["pitch"] - a["pitch"]) % 12 == 0 else None):
+            issues.append(_issue("octave", ref[i], att[j], steps_per_bar, steps_per_beat))
 
-    # 3. 近い高さの間違い
-    for i, j in _pair(ref, att, used_ref, used_att, timing_tolerance,
-                      lambda r, a: (abs(r["pitch"] - a["pitch"]), distance(r, a))
-                      if 0 < abs(r["pitch"] - a["pitch"]) <= 2 else None):
-        issues.append(_issue("pitch", ref[i], att[j], steps_per_bar, steps_per_beat))
+        # 3. 近い高さの間違い
+        for i, j in _pair(ref, att, used_ref, used_att, tolerance,
+                          lambda r, a: (abs(r["pitch"] - a["pitch"]), distance(r, a))
+                          if 0 < abs(r["pitch"] - a["pitch"]) <= 2 else None):
+            issues.append(_issue("pitch", ref[i], att[j], steps_per_bar, steps_per_beat))
 
     for i, r in enumerate(ref):
         if i not in used_ref:
@@ -258,22 +325,65 @@ def diff_notes(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_to
         # 強さを比べるのは、位置と高さが合った組（一致率に数えた組）だけ
         "velocity": (velocity_diff([(ref[i], att[j]) for i, j in same], steps_per_bar, steps_per_beat)
                      if reference_source in VELOCITY_SOURCES else None),
+        "bar_stats": _bar_stats(ref, {i for i, _ in same}, steps_per_bar),
     }
 
 
+def _bar_of(step, steps_per_bar):
+    """ステップが何小節目か（1 始まり）。ステップが小数でも、小節は整数で返す。"""
+    return int(step // steps_per_bar) + 1
+
+
+def _bar_stats(ref, matched, steps_per_bar):
+    """小節ごとに、お手本のノートの数と、合っていた数を数える。
+
+    小節は、お手本のノートが始まる位置で決める（指摘の ``bar`` と同じ）。「合っていた」は一致率と同じで、
+    同じ高さの打ち込みと、位置のずれが許容以内で組になったお手本（長さの違いと許容内のずれも、合っている側）。
+
+    Args:
+        ref: お手本のノート列（``_clean`` の形）。
+        matched: 同じ高さで組になったお手本の添字の集合。
+        steps_per_bar: 1 小節のステップ数。
+
+    Returns:
+        list[dict]: ``{"bar", "reference_count", "matched"}`` のリスト（小節順。お手本のノートが在る小節だけ）。
+    """
+    stats = {}
+    for i, note in enumerate(ref):
+        entry = stats.setdefault(_bar_of(note["step"], steps_per_bar), [0, 0])
+        entry[0] += 1
+        if i in matched:
+            entry[1] += 1
+    return [{"bar": bar, "reference_count": count, "matched": hit} for bar, (count, hit) in sorted(stats.items())]
+
+
+def _bar_beat(step_ticks, steps_per_bar, steps_per_beat):
+    """刻みの数で表した位置が、何小節目の何拍目か（どちらも 1 始まりの整数）。
+
+    位置が小数でも、小節と拍は整数（そのノートが始まる小節と拍。拍の途中で始まるノートは、その拍に数える）。
+    """
+    bar_ticks = steps_per_bar * note_steps.STEP_DIVISIONS
+    beat_ticks = steps_per_beat * note_steps.STEP_DIVISIONS
+    return step_ticks // bar_ticks + 1, (step_ticks % bar_ticks) // beat_ticks + 1
+
+
 def _issue(kind, ref, att, steps_per_bar, steps_per_beat):
-    """指摘 1 件を組み立てる。位置は、お手本が在ればお手本の位置、無ければ打ち込みの位置。"""
+    """指摘 1 件を組み立てる。位置は、お手本が在ればお手本の位置、無ければ打ち込みの位置。
+
+    ``step`` は並べ替え用（刻みの数）。応答には載せない（``_strip``）。
+    """
     anchor = ref if ref is not None else att
-    step = anchor["step"]
+    bar, beat = _bar_beat(anchor["step_ticks"], steps_per_bar, steps_per_beat)
+    paired = ref is not None and att is not None
     return {
         "kind": kind,
-        "step": step,
-        "bar": step // steps_per_bar + 1,
-        "beat": (step % steps_per_bar) // steps_per_beat + 1,
+        "step": anchor["step_ticks"],
+        "bar": bar,
+        "beat": beat,
         "expected": _public(ref),
         "actual": _public(att),
-        "offset_steps": (att["step"] - ref["step"]) if ref is not None and att is not None else None,
-        "length_diff": (att["length"] - ref["length"]) if ref is not None and att is not None else None,
+        "offset_steps": note_steps.from_ticks(att["step_ticks"] - ref["step_ticks"]) if paired else None,
+        "length_diff": note_steps.from_ticks(att["length_ticks"] - ref["length_ticks"]) if paired else None,
     }
 
 
@@ -334,10 +444,12 @@ def velocity_diff(pairs, steps_per_bar=16, steps_per_beat=4):
     entries = []
     for ref, att in pairs:
         expected, actual = _with_velocity(ref), _with_velocity(att)
+        # 小節と拍は、位置が小数でも整数（指摘の ``bar`` ``beat`` と同じ数え方）
+        bar, beat = _bar_beat(ref["step_ticks"], steps_per_bar, steps_per_beat)
         entries.append({
-            "step": ref["step"], "pitch": ref["pitch"],
-            "bar": ref["step"] // steps_per_bar + 1,
-            "beat": (ref["step"] % steps_per_bar) // steps_per_beat + 1,
+            "step": ref["step_ticks"], "pitch": ref["pitch"],
+            "bar": bar,
+            "beat": beat,
             "expected": expected, "actual": actual,
             "diff": actual["velocity"] - expected["velocity"],
             "unset": att["velocity"] is None,

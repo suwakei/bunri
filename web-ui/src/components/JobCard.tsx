@@ -10,6 +10,7 @@ import { useEffect, useRef } from 'react';
 import { busyMessage, isModelDownload, jobTracker, stageCount, stageText, type Job, type JobSlot } from '../lib/jobs';
 import { formatElapsed } from '../lib/time';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 
 interface JobCardProps {
     /** カードを出す場所（ステータスバーからの「カードを見る」で、ここへスクロールする）。 */
@@ -77,6 +78,7 @@ export default function JobCard({ slot, job, busyJob, onCancel, onShowBusy, hint
             <div className="job-card-foot">
                 <span className="job-card-elapsed">経過 {formatElapsed(job.elapsed_sec)}{percent !== null ? ` ・ ${percent}%` : ''}</span>
                 <button type="button" className="job-cancel" onClick={onCancel} disabled={job.cancel_requested}
+                    {...blockedBy(job.cancel_requested && '中止を頼んであります。処理が止まるまで、少し待ってください')}
                     {...tip('この処理を途中でやめます')}>
                     {job.cancel_requested ? 'キャンセル中…' : '中止'}
                 </button>

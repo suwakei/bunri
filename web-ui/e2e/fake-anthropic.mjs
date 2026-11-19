@@ -107,6 +107,8 @@ function blocksOf(message) {
  * いまの依頼は、最後の「文を持つ user のメッセージ」。その後ろに在る tool_result の数で、筋書きのどこまで進んだかが分かる。
  * 依頼の文に含まれることばで、筋書きを選ぶ:
  *
+ * - 「クリップ」: get_project → クリップの在る最初のトラックの、最初のクリップを trim_clip で 1.5 秒までに縮める
+ *   → split_clip で 1 秒の位置で分ける → 左のクリップに fade_clip でフェードイン 0.25 秒 → 文で終わる
  * - 「オクターブ」: get_project → 開いているトラックのノートを transpose_notes で 12 半音上げる → 文で終わる
  * - 「くり返」: get_project → 開いているトラックの 1〜2 小節を repeat_notes で 1 回くり返す → 文で終わる
  * - 「比べ」: get_project → 練習のトラック (無ければ開いているトラック) を check_diff で比べる → 結果の一致 (%) を言って終わる
@@ -152,6 +154,15 @@ function assistantReply(body) {
 
     /** 練習のトラック (練習画面を開いていれば)、無ければ開いているトラック、それも無ければ最初のトラック。 */
     const workTrack = (project) => project.practice?.track_id ?? project.open_track_id ?? project.tracks?.[0]?.id;
+    if (request.includes('クリップ')) {
+        if (stepNo === 0) return call('', ['get_project', {}]);
+        const tracks = parsed(results[0]).tracks;
+        const trackId = (Array.isArray(tracks) ? tracks : []).find((t) => t.clip_count > 0)?.id;
+        if (stepNo === 1) return call('', ['trim_clip', { track_id: trackId, clip_index: 0, end_seconds: 1.5 }]);
+        if (stepNo === 2) return call('', ['split_clip', { track_id: trackId, clip_index: 0, at_seconds: 1 }]);
+        if (stepNo === 3) return call('', ['fade_clip', { track_id: trackId, clip_index: 0, fade_in_seconds: 0.25 }]);
+        return say(failed ? 'すみません、クリップを変えられませんでした。' : 'クリップを 1.5 秒までに縮めて、1 秒の位置で分け、頭にフェードインを付けました。');
+    }
     if (request.includes('オクターブ')) {
         if (stepNo === 0) return call('', ['get_project', {}]);
         if (stepNo === 1) return call('', ['transpose_notes', { track_id: workTrack(parsed(results[0])), semitones: 12 }]);

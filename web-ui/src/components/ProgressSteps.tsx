@@ -76,7 +76,7 @@ export default function ProgressSteps() {
                 } else {
                     openLearn('song');
                     revealLater('#learn-parts');
-                    setStatus('打ち込む前に、原曲をパートに分けてください（「パートに分ける」）');
+                    setStatus('打ち込む前に、原曲をパートに分けてください（「パートに分ける」）', 'hint');
                 }
                 // ピアノロールが見えるように
                 pianoRollRef.current?.wrap?.scrollIntoView?.({ block: 'nearest' });

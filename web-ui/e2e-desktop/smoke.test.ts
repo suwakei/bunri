@@ -135,6 +135,15 @@ describe('動きの記録と、名前での操作', () => {
         seenTokens.add((await backendInfo()).token);
     });
 
+    it('つながっている MIDI のポートを、開かずに調べられる', async () => {
+        const ports = await app.run(() => (window as unknown as {
+            __TAURI__: { core: { invoke<T>(cmd: string): Promise<T> } };
+        }).__TAURI__.core.invoke<string[]>('midi_ports'));
+        expect(Array.isArray(ports)).toBe(true);
+        // 中身は、つながっている機器で変わる (CI には無い)。コマンドが在って、名前の一覧を返すことだけを確かめる
+        expect(ports.every((name) => typeof name === 'string' && name !== '')).toBe(true);
+    });
+
     it('「記録」の一覧に、同じ内容と、ファイルの場所が出る', async () => {
         await clickControl(app, '記録');
         await app.waitFor('一覧に、押したボタンとエージェントの行が出る', () => {

@@ -31,9 +31,18 @@ export const FAKE_LLM_URL = `http://127.0.0.1:${FAKE_LLM_PORT}`;
 /**
  * 初回の案内 (ウェルカムガイド) を出さない状態で DAW の画面を開く。
  * 案内は初めて開いたときだけ出て、画面全体を覆うので、普段のテストでは既読にしておく。
+ *
+ * 自動保存 (lib/autosave.ts) は、普段のテストでは止めておく。保存していない変更のまま 30 秒経つと復旧用の写しが
+ * 残り、データ置き場は全部のテストで共有なので、後のテストの起動で「続きを開きますか」の窓が出てしまうため。
+ * 自動保存を確かめるテスト (autosave.spec.ts) は、`autosave` に短い間隔を渡す。
+ *
+ * @param options.autosave - 自動保存の間隔 (ミリ秒)。省略すると、自動保存をしない
  */
-export async function openDaw(page: Page): Promise<void> {
-    await page.addInitScript(() => localStorage.setItem('bunri-guide-seen', '1'));
+export async function openDaw(page: Page, options: { autosave?: { idleMs: number; maxWaitMs: number; retryMs?: number } } = {}): Promise<void> {
+    await page.addInitScript((autosave) => {
+        localStorage.setItem('bunri-guide-seen', '1');
+        localStorage.setItem('bunri-autosave', autosave);
+    }, options.autosave ? JSON.stringify(options.autosave) : 'off');
     await page.goto('/');
     await page.getByText('準備完了').waitFor();
 }

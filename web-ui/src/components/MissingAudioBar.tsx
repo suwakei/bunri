@@ -4,12 +4,16 @@
  * 以前の形式のプロジェクト（projects/*.json）は音声を持っていないので、開くとクリップは位置と長さだけになる
  * （無音の置き場所。engine.ts の `Clip.missing`）。ここで、どのクリップかを示し、「音声を読み込み直す」で
  * 手元のファイルを選び直せるようにする。読み込み直しは元に戻せる。
+ *
+ * クリップの位置・鳴らす範囲・フェードは残し、範囲が新しい音声の長さを超えないようにする（lib/clip.ts の
+ * `fitClipToBuffer`）。分割や複製で同じ音声を指しているクリップは、まとめて読み込み直す。
  */
 import { useRef } from 'react';
 import { useDaw } from '../lib/store';
 import engine, { type Clip, type Track } from '../lib/engine';
 import { missingClips } from '../lib/project-file';
 import { decodeWithSource } from '../lib/audio-sources';
+import { fitClipToBuffer } from '../lib/clip';
 import { describeError } from '../lib/api';
 import { tip } from '../lib/tooltip';
 
@@ -40,9 +44,15 @@ export default function MissingAudioBar() {
         try {
             const buffer = await decodeWithSource(engine.ctx!, await file.arrayBuffer(), file.name);
             record('音声を読み込み直す', () => {
-                track.clips = track.clips.map((c) => (c === clip
-                    ? { buffer, offset: c.offset, name: c.name, duration: buffer.duration }
-                    : c));
+                // 同じ音声を指すクリップ (分割・複製したもの) も、一緒に差し替える。音声の無い印は外す
+                const reload = (c: Clip): Clip => {
+                    if (c !== clip && !(c.missing && c.buffer === clip.buffer)) return c;
+                    const { missing: _missing, ...rest } = c;
+                    return fitClipToBuffer({ ...rest, buffer }, buffer);
+                };
+                for (const t of engine.tracks) {
+                    if (t === track || t.clips.some((c) => c.missing && c.buffer === clip.buffer)) t.clips = t.clips.map(reload);
+                }
             });
             bumpTracks();
             setStatus(`「${clip.name}」の音声を読み込み直しました`);

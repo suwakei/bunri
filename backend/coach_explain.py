@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 
 import coach_diff
 import llm_settings
+import note_steps
 from reproduction_guide import GuideError, call_structured, confidence_label, count_input_tokens, request_chars, terms_outside
 
 # 1 回の応答の上限。途中で切れたときの歯止めで、節約の手段ではない（第2層と同じ）
@@ -231,6 +232,15 @@ def _pitch(note):
 def _anchor_step(issue):
     """指摘の位置（ステップ）。お手本が在ればお手本の位置、無ければ打ち込みの位置（``coach_diff`` と同じ）。"""
     return (issue["expected"] or issue["actual"])["step"]
+
+
+def _steps_fact(value):
+    """位置のずれ・長さの違い（ステップ）を、LLM に渡す数にする。
+
+    整数はそのまま（整数だけのノートでは、事実は小数を許す前とバイト単位で同じ）。小数（三連符や 32 分音符の
+    ノートが在るとき）は、小数 2 桁に丸める（``0.6666666666666666`` ではなく ``0.67``。``mean_offset_steps`` と同じ桁）。
+    """
+    return round(value, 2) if isinstance(value, float) else value
 
 
 def _tendencies(issues, steps_per_beat):
@@ -482,7 +492,9 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
     for entry in diff["bars"]:
         for issue in entry["issues"]:
             issues.append({**issue, "index": len(issues) + 1})
-    bar_count = max(note["step"] for note in [*reference, *attempt]) // steps_per_bar + 1
+    # 位置は小数になりうる。小節の数は、刻みの数（整数）から出して、いつも整数にする
+    last_ticks = max(note_steps.to_ticks(note["step"]) for note in [*reference, *attempt])
+    bar_count = last_ticks // (steps_per_bar * note_steps.STEP_DIVISIONS) + 1
 
     level, key, scale, chord_at, sections = _chart_context(chart, bpm, steps_per_bar, steps_per_beat, bar_count,
                                                            grid_offset_sec)
@@ -497,7 +509,7 @@ def build_facts(reference, attempt, steps_per_bar=16, steps_per_beat=4, timing_t
         expected, actual = issue["expected"], issue["actual"]
         semitones = _pitch(actual) - _pitch(expected) if issue["kind"] in ("pitch", "octave") else None
         row = [f'i{issue["index"]}', issue["bar"], issue["beat"], issue["kind"], _note_name(expected),
-               _note_name(actual), semitones, issue["offset_steps"], issue["length_diff"]]
+               _note_name(actual), semitones, _steps_fact(issue["offset_steps"]), _steps_fact(issue["length_diff"])]
         chord = chord_at(_anchor_step(issue)) if chord_at else None
         if level == "chords":
             row += [chord.get("symbol") if chord else None,

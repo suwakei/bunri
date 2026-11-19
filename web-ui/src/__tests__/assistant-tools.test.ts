@@ -11,9 +11,10 @@ import {
     readNotes, readTrackName, removeNotes, replaceNotes, runTool, toolLabel,
     type ToolClip, type ToolEnv, type ToolJob, type ToolMidi, type ToolPracticeSettings, type ToolResult, type ToolSelection, type ToolTrack,
 } from '../lib/assistant-tools';
-import { quantizeNotes, repeatNotes, setVelocity, shiftNotes, transformNotes, transposeNotes } from '../lib/assistant-tools-notes';
+import { QUANTIZE_GRIDS, quantizeGrid, quantizeNotes, repeatNotes, setVelocity, shiftNotes, transformNotes, transposeNotes } from '../lib/assistant-tools-notes';
 import { MAX_ISSUES } from '../lib/assistant-tools-learn';
 import { EFFECT_NAMES, readEffectParams } from '../lib/assistant-tools-app';
+import { setClipFades, setClipRange, splitClip } from '../lib/clip';
 import { LANDMARKS } from '../lib/assistant-landmarks';
 import type { DiffIssue, DiffResult } from '../lib/coach';
 import type { SavedGuideResponse } from '../lib/guide';
@@ -24,8 +25,8 @@ const note = (name: string, octave: number, step: number, length = 4, velocity?:
 const track = (id: number, name: string, extra: Partial<ToolTrack> = {}): ToolTrack =>
     ({ id, name, mute: false, solo: false, gain: 0, pan: 0, pianoNotes: [], clips: [], ...extra });
 
-/** 音声のクリップ（偽物。長さと位置だけ）。 */
-const clip = (name: string, offset = 0, duration = 8) => ({ name, offset, duration });
+/** 音声のクリップ（偽物。長さと位置だけ）。`extra` で、音声の長さ（`buffer`）・縮めた範囲・フェードを足せる。 */
+const clip = (name: string, offset = 0, duration = 8, extra: Partial<ToolClip> = {}): ToolClip => ({ name, offset, duration, ...extra });
 
 /** 差分の結果（偽物）。指摘を小節ごとにまとめ、まとめの数を合わせる。 */
 function diffResult(issues: DiffIssue[], extra: Partial<DiffResult['summary']> = {}): DiffResult {
@@ -62,7 +63,7 @@ function makeEnv(init: {
         separation: { started: true } as { started: true } | { started: false; reason: string },
         /** エフェクトの失敗（在れば、その理由で失敗する） */
         effectError: null as string | null,
-        diffCalls: [] as { reference: PianoNote[]; attempt: PianoNote[]; perBar: number; source: string }[],
+        diffCalls: [] as { reference: PianoNote[]; attempt: PianoNote[]; perBar: number; source: string; mode?: string }[],
     };
     const calls: string[] = [];
     const find = (id: number) => state.tracks.find((t) => t.id === id)!;
@@ -123,9 +124,9 @@ function makeEnv(init: {
             practiced: state.tracks.some((t) => t.role === 'practice' && t.pianoNotes.length > 0), diffed: false,
         }),
         referenceSource: (id) => (find(id).part === 'midi' ? 'midi' : 'transcription'),
-        requestDiff: async (reference, attempt, perBar, source) => {
+        requestDiff: async (reference, attempt, perBar, source, mode) => {
             calls.push('diff');
-            state.diffCalls.push({ reference, attempt, perBar, source });
+            state.diffCalls.push({ reference, attempt, perBar, source, mode });
             return init.diff ?? diffResult([]);
         },
         practiceCompare: async () => { calls.push('practiceCompare'); return state.screenDiff; },
@@ -161,6 +162,22 @@ function makeEnv(init: {
             calls.push(`duplicateClip ${id} ${index}`);
             const source = find(id).clips[index];
             (find(id).clips as ToolClip[]).splice(index + 1, 0, { ...source, offset: source.offset + source.duration });
+        },
+        // 本物 (タイムライン) と同じ計算 (lib/clip.ts) で、新しいクリップに差し替える
+        trimClip: (id, index, range) => {
+            calls.push(`trimClip ${id} ${index} ${JSON.stringify(range)}`);
+            const clips = find(id).clips as ToolClip[];
+            clips[index] = setClipRange(clips[index], range);
+        },
+        splitClip: (id, index, at) => {
+            calls.push(`splitClip ${id} ${index} ${at}`);
+            const clips = find(id).clips as ToolClip[];
+            clips.splice(index, 1, ...splitClip(clips[index], at)!);
+        },
+        fadeClip: (id, index, fades) => {
+            calls.push(`fadeClip ${id} ${index} ${JSON.stringify(fades)}`);
+            const clips = find(id).clips as ToolClip[];
+            clips[index] = setClipFades(clips[index], fades);
         },
         applyEffect: async (id, index, effect, params, label) => {
             calls.push(`effect ${id} ${index} ${effect} ${JSON.stringify(params)} ${label}`);
@@ -288,6 +305,20 @@ describe('引数の確かめ', () => {
             .toEqual([note('A#', 2, 0), note('C', 3, 4, 2, 80)]);
     });
 
+    it('readNotes: 小数の位置と長さ（32 分音符・三連）を受けて、1/60 ステップの倍数にそろえる', () => {
+        const notes = readNotes([
+            { pitch: 'C4', step: 0.5, length: 0.5 },          // 32 分音符
+            { pitch: 'D4', step: 1.3333, length: 1.3333 },    // 8 分の三連（4 桁で書かれても、ちょうど 4/3 になる）
+            { pitch: 'E4', step: 2.6667, length: 0.6667 },    // 16 分の三連の長さ
+            { pitch: 'F4', step: 4.0000001, length: 4 },      // 端数の付いた整数は、整数に戻す
+        ], 128);
+        expect(notes).toEqual([note('C', 4, 0.5, 0.5), note('D', 4, 4 / 3, 4 / 3), note('E', 4, 8 / 3, 2 / 3), note('F', 4, 4, 4)]);
+        expect(Number.isInteger(notes[3].step)).toBe(true);
+        // 範囲の端も、そろえた値で比べる（範囲の終わりちょうどで始まるノートは、範囲の外）
+        expect(() => readNotes([{ pitch: 'C4', step: 1.3333, length: 1 }], 128, { start: 0, end: 4 / 3 })).toThrow(/step 1\.3333 は範囲 \[0, 1\.3333\) の外/);
+        expect(readNotes([{ pitch: 'C4', step: 1.3333, length: 1 }], 128, { start: 4 / 3, end: 4 })).toHaveLength(1);
+    });
+
     it('readNotes: だめなノートは、どのノートの何を直すかを並べる', () => {
         const run = (value: unknown, range?: { start: number; end: number }) => {
             try { readNotes(value, 128, range); } catch (e) { return (e as Error).message; }
@@ -296,8 +327,10 @@ describe('引数の確かめ', () => {
         expect(run('C4')).toMatch(/配列/);
         expect(run([])).toMatch(/空です/);
         expect(run([{ pitch: 'C4', step: -1, length: 4 }])).toMatch(/notes\[0\]: step は 0 以上/);
-        expect(run([{ pitch: 'C4', step: 0, length: 4 }, { pitch: 'C4', step: 1.5, length: 4 }])).toMatch(/notes\[1\]: step は整数/);
-        expect(run([{ pitch: 'C4', step: 0, length: 0 }])).toMatch(/length は 1 以上/);
+        expect(run([{ pitch: 'C4', step: 0, length: 4 }, { pitch: 'C4', step: '1.5', length: 4 }])).toMatch(/notes\[1\]: step は数で指定.*小数も可/);
+        expect(run([{ pitch: 'C4', step: 0, length: 0 }])).toMatch(/length は 0\.25 以上/);
+        expect(run([{ pitch: 'C4', step: 0, length: 0.1 }])).toMatch(/length は 0\.25 以上/);
+        expect(run([{ pitch: 'C4', step: NaN, length: 4 }])).toMatch(/step は数で指定/);
         expect(run([{ pitch: 'C4', step: 0 }])).toMatch(/length を指定/);
         expect(run([{ step: 0, length: 4 }])).toMatch(/pitch を指定/);
         expect(run([{ pitch: 'C4', step: 0, length: 4, velocity: 0 }])).toMatch(/velocity は 1 以上/);
@@ -837,7 +870,10 @@ describe('ノートの変形のツール', () => {
         expect(await fail('transpose_notes', { track_id: 1, semitones: 0 }, env)).toMatch(/semitones が 0 です/);
         expect(await fail('transpose_notes', { track_id: 1, semitones: 60 }, env)).toMatch(/48 以下/);
         expect(await fail('shift_notes', { track_id: 1, steps: -1 }, env)).toMatch(/前へずらせるのは 0 ステップまで/);
-        expect(await fail('quantize_notes', { track_id: 1, grid_steps: 3 }, env)).toMatch(/2（8 分音符）・4（4 分音符）・8（2 分音符）・16（全音符） のどれか/);
+        expect(await fail('quantize_notes', { track_id: 1, grid_steps: 3 }, env))
+            .toMatch(/0\.5（32 分音符）・0\.6667（16 分の三連）・1（16 分音符）・1\.3333（8 分の三連）・2（8 分音符）・4（4 分音符）・8（2 分音符）・16（全音符） のどれか/);
+        expect(await fail('quantize_notes', { track_id: 1, grid_steps: '4' }, env)).toMatch(/grid_steps は数で指定/);
+        expect(await fail('shift_notes', { track_id: 1, steps: '1' }, env)).toMatch(/steps は数で指定/);
         expect(await fail('set_velocity', { track_id: 1 }, env)).toMatch(/velocity（1〜127。その強さにする）か、delta/);
         expect(await fail('set_velocity', { track_id: 1, velocity: 90, delta: 5 }, env)).toMatch(/どちらか一方/);
         expect(await fail('set_velocity', { track_id: 1, end_velocity: 90 }, env)).toMatch(/velocity と一緒に/);
@@ -850,6 +886,79 @@ describe('ノートの変形のツール', () => {
         const result = await ok('quantize_notes', { track_id: 1, grid_steps: 4 }, env);
         expect(result.summary).toBe('対象の 4 個は、もう4 分音符の位置に合っています（ベース、全部）');
         expect(calls).toEqual([]);
+    });
+
+    it('quantize_notes: 16 分・32 分・三連にそろえられる（三連は、小数で渡された間隔を読む）', async () => {
+        // 16 分音符の裏と、32 分音符の位置に在るノート
+        const loose = () => track(1, 'ベース', { pianoNotes: [note('C', 2, 0), note('E', 2, 1.4), note('G', 2, 2.5), note('C', 3, 4.1)] });
+        const sixteenth = makeEnv({ tracks: [loose()] });
+        expect((await ok('quantize_notes', { track_id: 1, grid_steps: 1 }, sixteenth.env)).summary)
+            .toBe('ノートを 3 個、16 分音符の位置にそろえました（ベース、全部。もう合っていた 1 個は、そのままです）');
+        expect(sixteenth.state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([0, 1, 3, 4]);
+
+        const thirtySecond = makeEnv({ tracks: [loose()] });
+        expect(await ok('quantize_notes', { track_id: 1, grid_steps: 0.5 }, thirtySecond.env)).toMatchObject({ changed: 2, unchanged: 2, grid_steps: 0.5 });
+        expect(thirtySecond.state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([0, 1.5, 2.5, 4]);
+
+        // 8 分の三連: ストレートの 8 分（0・2・4…）を、三連の位置（0・1.33・2.67・4…）へ
+        const triplet = makeEnv({ tracks: [track(1, 'ベース', { pianoNotes: [note('C', 2, 0, 2), note('E', 2, 2, 2), note('G', 2, 4, 2), note('C', 3, 6, 2)] })] });
+        const result = await ok('quantize_notes', { track_id: 1, grid_steps: 1.3333, lengths: true }, triplet.env);
+        expect(result.summary).toBe('ノートを 4 個、8 分の三連の位置と長さにそろえました（ベース、全部）');
+        expect(result.grid_steps).toBe(1.3333);
+        // 位置 2 は、1.33 と 2.67 のちょうど真ん中なので後ろ（2.67）へ。6 → 6.67。長さ 2 も、三連 1 つぶんと 2 つぶんの真ん中なので 2 つぶん（2.67）
+        expect(triplet.state.tracks[0].pianoNotes).toEqual([
+            note('C', 2, 0, 8 / 3), note('E', 2, 8 / 3, 8 / 3), note('G', 2, 4, 8 / 3), note('C', 3, 20 / 3, 8 / 3),
+        ]);
+        // 16 分の三連（0.6667）
+        const fine = makeEnv({ tracks: [track(1, 'ベース', { pianoNotes: [note('C', 2, 0.6), note('E', 2, 1.4)] })] });
+        expect((await ok('quantize_notes', { track_id: 1, grid_steps: 0.6667 }, fine.env)).summary).toMatch(/16 分の三連の位置にそろえました/);
+        expect(fine.state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([2 / 3, 4 / 3]);
+    });
+
+    it('小数のステップ: 三連のノートを置き、範囲に入れ、ずらし、くり返し、読める', async () => {
+        const { env, state } = makeEnv({ tracks: [track(1, 'ベース')] });
+        // 1 拍目に、8 分の三連を 3 つ（4 桁の小数で渡される）
+        const placed = await ok('add_notes', { track_id: 1, notes: [
+            { pitch: 'C2', step: 0, length: 1.3333 }, { pitch: 'E2', step: 1.3333, length: 1.3333 }, { pitch: 'G2', step: 2.6667, length: 1.3333 },
+        ] }, env);
+        expect(placed.summary).toBe('ノートを 3 個置きました（ベース、1 小節）');
+        expect(state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([0, 4 / 3, 8 / 3]);
+        // 同じ位置を、桁の違う小数で渡されても、二重に置かない
+        expect(await ok('add_notes', { track_id: 1, notes: [{ pitch: 'E2', step: 1.33333, length: 1 }] }, env)).toMatchObject({ added: 0, skipped: 1 });
+
+        // 読むと、4 桁の小数で返る
+        expect((await ok('get_notes', { track_id: 1 }, env)).notes).toEqual([
+            { pitch: 'C2', step: 0, length: 1.3333 }, { pitch: 'E2', step: 1.3333, length: 1.3333 }, { pitch: 'G2', step: 2.6667, length: 1.3333 },
+        ]);
+
+        // 範囲 [1.3333, 2.6667) には、2 つ目だけが入る（終わりちょうどで始まる 3 つ目は入らない）
+        expect(await ok('transpose_notes', { track_id: 1, start_step: 1.3333, end_step: 2.6667, semitones: 12 }, env)).toMatchObject({ changed: 1 });
+        expect(state.tracks[0].pianoNotes.map((n) => `${n.note}${n.octave}`)).toEqual(['C2', 'E3', 'G2']);
+
+        // 三連 1 つぶん、後ろへ
+        const shifted = await ok('shift_notes', { track_id: 1, steps: 1.3333 }, env);
+        expect(shifted.summary).toBe('ノートを 3 個、8 分の三連符 1 個ぶん後ろへずらしました（ベース、全部）');
+        expect(shifted.steps).toBe(1.3333);
+        expect(state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([4 / 3, 8 / 3, 4]);
+        // 32 分音符 1 つぶん、前へ。整数のステップは、これまでどおりの言い方
+        expect((await ok('shift_notes', { track_id: 1, steps: -0.5 }, env)).summary).toMatch(/32 分音符 1 個ぶん前へずらしました/);
+        expect((await ok('shift_notes', { track_id: 1, steps: 0.5 }, env)).summary).toMatch(/32 分音符 1 個ぶん後ろへ/);
+        expect((await ok('shift_notes', { track_id: 1, steps: 3 }, env)).summary).toMatch(/3 ステップ後ろへ/);
+        expect(await fail('shift_notes', { track_id: 1, steps: -9 }, env)).toMatch(/前へずらせるのは 4\.3333 ステップまで/);
+
+        // 1 拍ぶん（4 ステップ）を、すぐ後ろへくり返す。置いた先も、三連の位置
+        const repeated = await ok('repeat_notes', { track_id: 1, start_step: 4, end_step: 8, times: 1 }, env);
+        expect(repeated).toMatchObject({ added: 3, to_step: 8, end_step: 12 });
+        expect(state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([13 / 3, 17 / 3, 7, 25 / 3, 29 / 3, 11]);
+        // どの値も、1/60 ステップの倍数（端数がたまっていない）
+        for (const n of state.tracks[0].pianoNotes) expect(Math.round(n.step * 60) / 60).toBe(n.step);
+
+        // 範囲で消す・置き換える
+        expect(await ok('remove_notes', { track_id: 1, start_step: 8.3333, end_step: 9.6667 }, env)).toMatchObject({ removed: 1, note_count: 5 });
+        const replaced = await ok('replace_notes', { track_id: 1, start_step: 4, end_step: 8, notes: [{ pitch: 'A2', step: 4.5, length: 0.5 }] }, env);
+        expect(replaced.summary).toBe('ノートを置き換えました（ベース、1 小節。3 個 → 1 個）');
+        expect(state.tracks[0].pianoNotes.map((n) => n.step)).toEqual([29 / 3, 11, 4.5]);
+        expect(await fail('remove_notes', { track_id: 1, start_step: 4, end_step: 4 }, env)).toMatch(/end_step は start_step より大きく/);
     });
 
     it('repeat_notes: 1〜1 小節のフレーズを、後ろへ 3 回くり返す', async () => {
@@ -897,8 +1006,38 @@ describe('差分チェック（check_diff）', () => {
         // お手本の全部と、打ち込みの全部を送る。採譜したお手本なので、強さは比べない
         expect(state.diffCalls).toHaveLength(1);
         expect(state.diffCalls[0]).toMatchObject({ perBar: 16, source: 'transcription' });
+        // ドラムのパートでなければ、比べ方は指定しない (ふつうの比べ方)
+        expect(state.diffCalls[0].mode).toBeUndefined();
+        expect(result.comparison).toBeUndefined();
         expect(state.diffCalls[0].reference).toHaveLength(4);
         expect(state.diffCalls[0].attempt).toHaveLength(3);
+    });
+
+    it('ドラムのパートは、ドラムの比べ方で比べる。指摘は、種類の名前で返す', async () => {
+        const drumDiff = diffResult([
+            issue('missing', 1, 1, note('C', 2, 0, 1), null),
+            issue('timing', 1, 2, note('D', 2, 4, 1), note('D', 2, 5, 4), { offset_steps: 1 }),
+            issue('extra', 1, 3, null, note('E', 2, 8, 4)),
+        ]);
+        const { env, state } = makeEnv({
+            tracks: [
+                track(4, 'ドラム', { role: 'part', part: 'drums', referenceNotes: [note('C', 2, 0, 1), note('D', 2, 4, 1), note('F#', 2, 0, 1)] }),
+                track(6, 'ドラムの練習', { role: 'practice', part: 'drums', practiceOf: 4, pianoNotes: [note('D', 2, 5), note('E', 2, 8), note('F#', 2, 0)] }),
+            ],
+            diff: drumDiff,
+        });
+        const result = await ok('check_diff', { track_id: 6 }, env);
+        expect(result.reference_track_id).toBe(4);
+        expect(state.diffCalls[0]).toMatchObject({ source: 'transcription', mode: 'drums' });
+        // 比べ方の説明を添える (Claude が、高さを音の高さとして読まないように)
+        expect(result.comparison).toMatch(/only where each kind of drum is hit is compared/);
+        expect(result.comparison).toMatch(/C2 = キック, D2 = スネア, F#2 = ハイハット・シンバル, A2 = タム/);
+        expect(result.issues).toEqual([
+            { kind: 'missing', bar: 1, beat: 1, text: '1 小節 1 拍目: キック が抜けています', expected: { pitch: 'C2', drum: 'キック', step: 0, length: 1 } },
+            { kind: 'timing', bar: 1, beat: 2, text: '1 小節 2 拍目: スネア が16 分音符 1 個ぶん遅い', expected: { pitch: 'D2', drum: 'スネア', step: 4, length: 1 }, actual: { pitch: 'D2', drum: 'スネア', step: 5, length: 4 }, offset_steps: 1 },
+            // ドラムの行でない高さは、音名のまま
+            { kind: 'extra', bar: 1, beat: 3, text: '1 小節 3 拍目: E2 はお手本にありません', actual: { pitch: 'E2', step: 8, length: 4 } },
+        ]);
     });
 
     it('小節の範囲を渡すと、その中で始まるノートだけを比べる', async () => {
@@ -934,10 +1073,12 @@ describe('差分チェック（check_diff）', () => {
         expect(calls).toEqual(['practiceCompare', 'diff']);
     });
 
-    it('お手本が無い・分からない・ドラムのときは、次にどうすればよいかを返す', async () => {
-        const { env, calls } = makeEnv({ tracks: tracks() });
+    it('お手本が無い・分からない・以前の分け方のドラムのときは、次にどうすればよいかを返す', async () => {
+        const { env, calls } = makeEnv({ tracks: [...tracks(), track(7, '古いドラム', { role: 'part', part: 'drums', pianoNotes: [note('C', 2, 0, 1)] })] });
         expect(await fail('check_diff', { track_id: 5 }, env)).toMatch(/比べるお手本が分かりません。reference_track_id で.*2（ベース）、4（ドラム）/);
-        expect(await fail('check_diff', { track_id: 5, reference_track_id: 4 }, env)).toMatch(/ドラムは差分チェックの対象外/);
+        // 以前の分け方のドラム (お手本を持たない) は、分け直すと比べられる、と返す
+        expect(await fail('check_diff', { track_id: 7 }, env)).toMatch(/以前の分け方で作ったドラムのパートで、お手本を持っていません.*separate_parts/);
+        expect(await fail('check_diff', { track_id: 5, reference_track_id: 7 }, env)).toMatch(/以前の分け方で作ったドラム/);
         expect(await fail('check_diff', { track_id: 5, reference_track_id: 99 }, env)).toMatch(/reference_track_id 99 のトラックはありません/);
         expect(await fail('check_diff', { track_id: 1 }, makeEnv().env)).toMatch(/お手本は、利用者が曲をパートに分けるか/);
         expect(calls).toEqual([]);
@@ -1147,6 +1288,120 @@ describe('アプリのツール（処理・書き出し・保存・クリップ�
         expect(calls).toEqual([]);
     });
 
+    it('get_project: 縮めた・フェードを付けたクリップには、音声の中の位置と全体の長さ、フェードの長さを添える', async () => {
+        const { env } = makeEnv({
+            tracks: [track(1, 'ボーカル', { clips: [
+                clip('take1.wav', 4, 2, { buffer: { duration: 10 }, audioStart: 3, fadeIn: 0.5 }),
+                clip('take2.wav', 8, 4, { buffer: { duration: 4 }, fadeOut: 1 }),
+                clip('take3.wav', 12, 4, { buffer: { duration: 4 } }),
+            ] })],
+        });
+        const result = await ok('get_project', {}, env);
+        expect((result.tracks as { clips: unknown[] }[])[0].clips).toEqual([
+            { index: 0, name: 'take1.wav', start_seconds: 4, duration_seconds: 2, start_bar: 3, audio_start_seconds: 3, audio_duration_seconds: 10, fade_in_seconds: 0.5 },
+            { index: 1, name: 'take2.wav', start_seconds: 8, duration_seconds: 4, start_bar: 5, fade_out_seconds: 1 },
+            { index: 2, name: 'take3.wav', start_seconds: 12, duration_seconds: 4, start_bar: 7 },
+        ]);
+    });
+
+    it('trim_clip: 端の位置を秒か小節で指して、縮める・伸ばす。音声の端より外へは伸びない', async () => {
+        // 10 秒の音声を、4 秒の位置に置いたクリップ (4〜14 秒)。120 BPM の 1 小節は 2 秒
+        const { env, state, calls } = makeEnv({ tracks: [track(1, 'ボーカル', { clips: [clip('take1.wav', 4, 10, { buffer: { duration: 10 }, fadeOut: 3 })] }), track(2, 'Track 2')], bpm: 120 });
+        const first = () => state.tracks[0].clips[0];
+        // 左の端を 6 秒へ: 音の位置は動かず、音声の 2 秒目から鳴る
+        expect(await ok('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 6 }, env)).toMatchObject({
+            summary: 'クリップ「take1.wav」を縮めました（6〜14 秒。ボーカル）',
+            start_seconds: 6, end_seconds: 14, duration_seconds: 8, audio_start_seconds: 2, previous_start_seconds: 4, previous_end_seconds: 14,
+        });
+        expect(first()).toMatchObject({ offset: 6, duration: 8, audioStart: 2 });
+        // 小節で: 4 小節目の頭 (6 秒) から 5 小節目の終わり (10 秒) まで
+        expect((await ok('trim_clip', { track_id: 1, clip_index: 0, start_bar: 4, end_bar: 5 }, env)).summary).toBe('クリップ「take1.wav」を縮めました（6〜10 秒。ボーカル）');
+        // フェードは、新しい長さに収まる (3 秒のまま、4 秒のクリップに入る)
+        expect(first()).toMatchObject({ offset: 6, duration: 4, fadeOut: 3 });
+        expect((await ok('trim_clip', { track_id: 1, clip_index: 0, end_seconds: 10 }, env)).summary).toBe('クリップ「take1.wav」は、すでにその範囲です（6〜10 秒）');
+        // 音声の全体に戻す: 端は音声の端で止まり、そのことを返す
+        const restored = await ok('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 0, end_seconds: 60 }, env);
+        expect(restored).toMatchObject({ summary: 'クリップ「take1.wav」を伸ばしました（4〜14 秒。ボーカル）。音声の端より外へは伸ばせないので、端で止めました', stopped_at_audio_edge: true, audio_start_seconds: 0 });
+        expect(first().audioStart).toBeUndefined();
+        expect(calls).toEqual(['trimClip 1 0 {"start":6}', 'trimClip 1 0 {"start":6,"end":10}', 'trimClip 1 0 {"start":0,"end":60}']);
+        calls.length = 0;
+        // 指定の誤り
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0 }, env)).toMatch(/動かす端を指定してください/);
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 5, start_bar: 3 }, env)).toMatch(/start_seconds か start_bar の、どちらか一方/);
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0, end_seconds: 5, end_bar: 3 }, env)).toMatch(/end_seconds か end_bar の、どちらか一方/);
+        expect(await shown('trim_clip', { track_id: 1, clip_index: 0 }, env)).toBe('指定が合わず、行っていません');
+        // 状態による失敗: 終わりが頭より手前、音声の無い範囲
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 14 }, env)).toMatch(/右の端（14 秒）は、左の端（14 秒）より後ろに/);
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0, end_seconds: 3 }, env)).toMatch(/いまのクリップは 4〜14 秒/);
+        expect(await fail('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 20, end_seconds: 30 }, env)).toMatch(/音声が在るのは 4〜14 秒.*move_clip/);
+        expect(await shown('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 20, end_seconds: 30 }, env)).toBe('その範囲には、クリップ「take1.wav」の音声がありません（音声が在るのは 4〜14 秒）');
+        expect(await fail('trim_clip', { track_id: 2, clip_index: 0, start_seconds: 1 }, env)).toMatch(/音声のクリップがありません/);
+        expect(calls).toEqual([]);
+    });
+
+    it('trim_clip: 最短の長さで止まったときは、音声の端ではなく、最短の長さで止めたと返す', async () => {
+        // 10 秒の音声を、4 秒の位置に置いたクリップ (4〜14 秒)
+        const { env } = makeEnv({ tracks: [track(1, 'ボーカル', { clips: [clip('take1.wav', 4, 10, { buffer: { duration: 10 } })] })], bpm: 120 });
+        const short = await ok('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 9, end_seconds: 9.01 }, env);
+        expect(short.summary).toBe('クリップ「take1.wav」を縮めました（8.96〜9.01 秒。ボーカル）。クリップは 0.05 秒より短くできないので、0.05 秒で止めました');
+        expect(short.stopped_at_min_length).toBe(true);
+        expect(short.stopped_at_audio_edge).toBeUndefined();
+        // 音声の端と、最短の長さの両方で止まったときは、両方を返す
+        const both = await ok('trim_clip', { track_id: 1, clip_index: 0, start_seconds: 0, end_seconds: 4.01 }, env);
+        expect(both).toMatchObject({ stopped_at_audio_edge: true, stopped_at_min_length: true, start_seconds: 4, end_seconds: 4.05 });
+        expect(both.summary).toMatch(/音声の端より外へは伸ばせないので、端で止めました。クリップは 0\.05 秒より短くできないので、0\.05 秒で止めました$/);
+    });
+
+    it('split_clip: 秒・小節・再生位置で 2 つに分ける。クリップの外では分けない', async () => {
+        const { env, state, calls } = makeEnv({ tracks: [track(1, 'ボーカル', { clips: [clip('take1.wav', 0, 8, { buffer: { duration: 8 }, fadeIn: 1, fadeOut: 1 }), clip('take2.wav', 10, 4)] })], bpm: 120 });
+        expect(await ok('split_clip', { track_id: 1, clip_index: 0, at_seconds: 3 }, env)).toMatchObject({
+            summary: 'クリップ「take1.wav」を、3 秒で 2 つに分けました（ボーカル）', clip_index: 0, new_clip_index: 1, at_seconds: 3, clip_count: 3,
+        });
+        // 左がフェードインを、右がフェードアウトを引き継ぐ。後ろのクリップは 1 つずれる
+        expect(state.tracks[0].clips.map((c) => [c.name, c.offset, c.duration, c.audioStart ?? 0, c.fadeIn ?? 0, c.fadeOut ?? 0])).toEqual([
+            ['take1.wav', 0, 3, 0, 1, 0], ['take1.wav', 3, 5, 3, 0, 1], ['take2.wav', 10, 4, 0, 0, 0],
+        ]);
+        // 小節で: 3 小節目の頭 (4 秒)
+        expect((await ok('split_clip', { track_id: 1, clip_index: 1, at_bar: 3 }, env)).summary).toBe('クリップ「take1.wav」を、3 小節目の頭で 2 つに分けました（ボーカル）');
+        // どちらも省くと、再生位置で
+        state.positionSec = 11.5;
+        expect((await ok('split_clip', { track_id: 1, clip_index: 3 }, env)).summary).toBe('クリップ「take2.wav」を、再生位置（11.5 秒）で 2 つに分けました（ボーカル）');
+        expect(calls).toEqual(['splitClip 1 0 3', 'splitClip 1 1 4', 'splitClip 1 3 11.5']);
+        calls.length = 0;
+        // クリップの外 (再生位置が、指したクリップの中に無い)
+        expect(await fail('split_clip', { track_id: 1, clip_index: 0 }, env)).toMatch(/再生位置（11.5 秒）は、クリップ「take1.wav」の中に在りません（クリップは 0〜3 秒）。at_seconds か at_bar/);
+        expect(await shown('split_clip', { track_id: 1, clip_index: 0 }, env)).toBe('再生位置（11.5 秒）は、クリップ「take1.wav」の中に在りません（クリップは 0〜3 秒）');
+        // 端そのものでは分けない
+        expect(await fail('split_clip', { track_id: 1, clip_index: 0, at_seconds: 3 }, env)).toMatch(/3 秒は、クリップ「take1.wav」の中に在りません/);
+        expect(await fail('split_clip', { track_id: 1, clip_index: 0, at_seconds: 1, at_bar: 1 }, env)).toMatch(/at_seconds か at_bar の、どちらか一方/);
+        expect(calls).toEqual([]);
+    });
+
+    it('fade_clip: フェードの長さを決める。0 で外す。合計がクリップの長さを超えたら失敗する', async () => {
+        const { env, state, calls } = makeEnv({ tracks: [track(1, 'ボーカル', { clips: [clip('take1.wav', 0, 4)] })] });
+        const first = () => state.tracks[0].clips[0];
+        expect(await ok('fade_clip', { track_id: 1, clip_index: 0, fade_in_seconds: 0.5 }, env)).toMatchObject({
+            summary: 'クリップ「take1.wav」にフェードを付けました（フェードイン 0.5 秒、フェードアウト 0 秒。ボーカル）', fade_in_seconds: 0.5, fade_out_seconds: 0,
+        });
+        // 指定しなかったほうは、そのまま
+        expect(await ok('fade_clip', { track_id: 1, clip_index: 0, fade_out_seconds: 2 }, env)).toMatchObject({ fade_in_seconds: 0.5, fade_out_seconds: 2 });
+        expect(first()).toMatchObject({ fadeIn: 0.5, fadeOut: 2 });
+        expect((await ok('fade_clip', { track_id: 1, clip_index: 0, fade_out_seconds: 2 }, env)).summary).toBe('クリップ「take1.wav」のフェードは、すでにその長さです（フェードイン 0.5 秒、フェードアウト 2 秒）');
+        // 合計が長さを超える (フェードインはいまの 0.5 秒のまま)
+        expect(await fail('fade_clip', { track_id: 1, clip_index: 0, fade_out_seconds: 3.8 }, env))
+            .toBe('フェードイン 0.5 秒とフェードアウト 3.8 秒の合計が、クリップ「take1.wav」の長さ（4 秒）を超えています。合計を 4 秒以内にしてください');
+        expect(await shown('fade_clip', { track_id: 1, clip_index: 0, fade_out_seconds: 3.8 }, env)).toBe('フェードイン 0.5 秒とフェードアウト 3.8 秒の合計が、クリップ「take1.wav」の長さ（4 秒）を超えています');
+        expect(first()).toMatchObject({ fadeIn: 0.5, fadeOut: 2 });
+        // 0 で外す
+        expect((await ok('fade_clip', { track_id: 1, clip_index: 0, fade_in_seconds: 0, fade_out_seconds: 0 }, env)).summary).toBe('クリップ「take1.wav」のフェードを外しました（ボーカル）');
+        expect('fadeIn' in first() || 'fadeOut' in first()).toBe(false);
+        expect(calls).toEqual(['fadeClip 1 0 {"fadeIn":0.5,"fadeOut":0}', 'fadeClip 1 0 {"fadeIn":0.5,"fadeOut":2}', 'fadeClip 1 0 {"fadeIn":0,"fadeOut":0}']);
+        calls.length = 0;
+        expect(await fail('fade_clip', { track_id: 1, clip_index: 0 }, env)).toMatch(/fade_in_seconds か fade_out_seconds の、少なくとも一方/);
+        expect(await fail('fade_clip', { track_id: 1, clip_index: 0, fade_in_seconds: -1 }, env)).toMatch(/fade_in_seconds は 0〜3600 の範囲/);
+        expect(calls).toEqual([]);
+    });
+
     it('apply_effect: 省いたパラメータは既定の値。知らない名前と範囲の外は失敗する', async () => {
         const { env, state, calls } = makeEnv({ tracks: [track(1, 'ボーカル', { clips: [clip('take1.wav')] })] });
         const result = await ok('apply_effect', { track_id: 1, effect: 'reverb', params: { wet: 0.5 } }, env);
@@ -1208,7 +1463,7 @@ describe('台帳（backend/assistant_tools.json）との一致', () => {
     });
 
     it('ツールの名前が、過不足なく一致する', () => {
-        expect(ledger.tools).toHaveLength(39);
+        expect(ledger.tools).toHaveLength(42);
         expect(Object.keys(TOOLS).sort()).toEqual(ledger.tools.map((t) => t.name).sort());
     });
 
@@ -1250,6 +1505,26 @@ describe('台帳（backend/assistant_tools.json）との一致', () => {
         // パラメータの名前も、定義に在るものと過不足なく一致する
         const params = ledger.tools.find((t) => t.name === 'apply_effect')!.input_schema.properties.params as { properties: Record<string, unknown> };
         expect(Object.keys(params.properties).sort()).toEqual([...new Set(EFFECT_NAMES.flatMap((name) => Object.keys(readEffectParams(name, {}))))].sort());
+    });
+
+    it('ノートの位置・長さ・範囲・ずらす幅は、小数を受ける型（number）。そろえる間隔の説明に、画面が受ける値が全部在る', () => {
+        const props = (name: string) => ledger.tools.find((t) => t.name === name)!.input_schema.properties as Record<string, { type: string; description?: string; items?: { properties: Record<string, { type: string }> } }>;
+        for (const name of ['add_notes', 'replace_notes']) {
+            const item = props(name).notes.items!.properties;
+            expect([item.step.type, item.length.type], name).toEqual(['number', 'number']);
+        }
+        for (const name of ['remove_notes', 'replace_notes', 'transpose_notes', 'shift_notes', 'quantize_notes', 'repeat_notes', 'set_velocity']) {
+            expect([props(name).start_step.type, props(name).end_step.type], name).toEqual(['number', 'number']);
+        }
+        expect(props('shift_notes').steps.type).toBe('number');
+        expect(props('repeat_notes').to_step.type).toBe('number');
+        // そろえる間隔: 台帳の説明に書いた値を、画面がどれも受ける。画面が受ける値は、どれも説明に在る
+        const grid = props('quantize_notes').grid_steps;
+        expect(grid.type).toBe('number');
+        for (const g of QUANTIZE_GRIDS) expect(grid.description, g.label).toContain(String(Math.round(g.steps * 10000) / 10000));
+        const written = [...grid.description!.matchAll(/(\d+(?:\.\d+)?) \(/g)].map((m) => Number(m[1]));
+        expect(written).toHaveLength(QUANTIZE_GRIDS.length);
+        for (const value of written) expect(quantizeGrid(value), String(value)).toBeDefined();
     });
 
     it('set_practice の速度の選択肢が、練習画面の速度と一致する', () => {

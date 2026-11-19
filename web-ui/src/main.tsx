@@ -13,6 +13,8 @@
  * 動いている時間のかかる処理を探す（lib/jobs.ts。画面を開き直す前に始めた処理につなぎ直す）。
  *
  * 動きの記録（lib/activity.ts。いま何が起きたかの記録）は、描画より前に始める。
+ *
+ * 失敗と「いまはできない理由」の知らせ（NoticeLayer。lib/notice.ts）は、どの画面でも出るよう、ここに 1 つだけ置く。
  */
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -25,6 +27,7 @@ import { jobTracker } from './lib/jobs';
 import BootMessage from './components/BootMessage';
 import HealthBanner from './components/HealthBanner';
 import TooltipLayer from './components/Tooltip';
+import NoticeLayer from './components/NoticeToast';
 import DawPage from './pages/DawPage';
 import ToolsPage from './pages/ToolsPage';
 import HelpPage from './pages/HelpPage';
@@ -42,6 +45,7 @@ function renderApp() {
           <Route path="/help" element={<HelpPage />} />
         </Routes>
         <TooltipLayer />
+        <NoticeLayer />
       </BrowserRouter>
       <HealthBanner />
     </StrictMode>

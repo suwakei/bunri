@@ -26,6 +26,7 @@
  * 相関（似ている度合い）は、まず 4 サンプルおきの位置を 8 サンプルおきの和で粗く探し、
  * 見つけた位置の前後だけを細かく探す。全部の位置を全部のサンプルで比べるより 30 倍ほど軽い。
  */
+import { fadeGain } from './clip';
 
 /** 窓の長さ（秒）。ベースの低い音（E1 = 41 Hz、1 周期 24 ミリ秒）が 2 周期入る長さ。 */
 const FRAME_SEC = 0.046;
@@ -119,11 +120,22 @@ export interface RegionClip {
     /** タイムライン上の開始位置（秒） */
     offset: number;
     buffer: Pick<AudioBuffer, 'numberOfChannels' | 'sampleRate' | 'length' | 'getChannelData'>;
+    /** 鳴らす長さ（秒）。無ければ、音声の残りの全部 */
+    duration?: number;
+    /** 音声の中の、鳴らし始める位置（秒）。無ければ 0 */
+    audioStart?: number;
+    /** フェードインの長さ（秒）。無ければ 0 */
+    fadeIn?: number;
+    /** フェードアウトの長さ（秒）。無ければ 0 */
+    fadeOut?: number;
 }
 
 /**
  * トラックのクリップから、`[startSec, endSec)` の音声を切り出して 1 本にまとめる（重なるクリップは足す）。
  * サンプルレートは最初のクリップのものに合わせる（違うレートのクリップは、いちばん近いサンプルを取る）。
+ *
+ * 縮めたクリップは、見えている範囲（`audioStart` から `duration` ぶん）だけを読み、フェードも掛けておく
+ * （再生・書き出しと同じ音にする。lib/clip.ts）。伸ばした音声は、これをそのまま伸ばす。
  *
  * @returns チャンネルごとのサンプルとサンプルレート。クリップが無ければ null
  */
@@ -136,13 +148,25 @@ export function extractRegion(clips: RegionClip[], startSec: number, endSec: num
     for (const clip of clips) {
         const { buffer } = clip;
         const ratio = buffer.sampleRate / sampleRate;
+        // クリップの鳴らす範囲とフェード (項目の無いクリップは、音声の全体をそのまま)
+        const audioStart = Math.max(0, clip.audioStart ?? 0);
+        const available = Math.max(0, buffer.length / buffer.sampleRate - audioStart);
+        const playLen = clip.duration === undefined ? available : Math.max(0, Math.min(clip.duration, available));
+        const fadeIn = Math.max(0, Math.min(clip.fadeIn ?? 0, playLen));
+        const fadeOut = Math.max(0, Math.min(clip.fadeOut ?? 0, playLen - fadeIn));
+        const faded = fadeIn > 0 || fadeOut > 0;
+        // 読み始めと範囲の終わりは、サンプルの番号で持つ (音声のサンプルレートで)
+        const first = Math.round(audioStart * buffer.sampleRate);
+        const count = Math.min(buffer.length - first, Math.round(playLen * buffer.sampleRate));
         for (let c = 0; c < numChannels; c++) {
             // モノラルのクリップは、全部のチャンネルに同じ音を入れる
             const src = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1));
             const dst = channels[c];
             for (let i = 0; i < length; i++) {
+                // クリップの頭から数えた位置 (サンプル)
                 const j = Math.round((startSec - clip.offset + i / sampleRate) * sampleRate * ratio);
-                if (j >= 0 && j < buffer.length) dst[i] += src[j];
+                if (j < 0 || j >= count) continue;
+                dst[i] += faded ? src[first + j] * fadeGain(j / buffer.sampleRate, playLen, fadeIn, fadeOut) : src[first + j];
             }
         }
     }

@@ -469,8 +469,11 @@ class TestRealEndpoints:
     async def test_音源の分解(self, real_app, wav_bytes, tmp_path, monkeypatch):
         import decompose
 
-        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0):
+        split_requests = []
+
+        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False):
             assert (segment, jobs) == (7, 1)
+            split_requests.append(split_drums)
             job.enter_stage("transcribe")
             stems = write_stems(tmp_path / "work", ["vocals", "bass"])
             return {"bpm": bpm or 123, "stems": {
@@ -498,6 +501,18 @@ class TestRealEndpoints:
             fixed = (await client.post("/api/decompose?async=1", files=upload(wav_bytes), data={"bpm": "90"})).json()
             assert fixed["stage_count"] == 4
             assert (await poll(client, fixed["id"]))["result"]["bpm"] == 90
+            # 頼まれなければ、ドラムを種類ごとに分けない（追加のモデルも落とさない）
+            assert split_requests == [False, False, False]
+
+            # ドラムを種類ごとに分ける: 分けるステージが増える。追加のモデルが手元に無ければ、ダウンロードのステージも
+            import stem_models
+            for cached, stage_count in ((True, 5), (False, 6)):
+                monkeypatch.setattr(stem_models, "is_cached", lambda name, cached=cached: cached)
+                split = (await client.post("/api/decompose?async=1", files=upload(wav_bytes),
+                                           data={"bpm": "90", "split_drums": "true"})).json()
+                assert split["stage_count"] == stage_count
+                await poll(client, split["id"])
+            assert split_requests[3:] == [True, True]
 
     @pytest.mark.asyncio
     async def test_採譜(self, real_app, wav_bytes, monkeypatch):
@@ -614,7 +629,7 @@ class TestRealEndpoints:
 
         gate = Gate()
 
-        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0):
+        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False):
             job.enter_stage("separate")
             gate.pause()
             return {"bpm": 120, "stems": {}}

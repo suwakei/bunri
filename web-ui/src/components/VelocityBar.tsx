@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { VELOCITY_MAX, VELOCITY_MIN, VELOCITY_STEP } from '../lib/velocity';
 import type { VelocitySummary } from '../lib/velocity';
 import { tip } from '../lib/tooltip';
+import { notify } from '../lib/notice';
 
 interface Props {
     /** 選んでいるノートの強さのまとめ */
@@ -56,6 +57,8 @@ export default function VelocityBar({ summary, open, onSet, onNudge }: Props) {
         const v = parseVelocity(draft);
         setDraft(null);
         if (v !== null && draft.trim() !== shown) onSet(v);
+        // 数でない・範囲の外: 黙って前の値に戻さずに、理由を知らせる
+        else if (v === null && draft.trim() !== '') notify('hint', `強さは ${VELOCITY_MIN}〜${VELOCITY_MAX} の数で入れてください。前の値に戻しました`, { live: true });
     };
     const allUnset = summary.unset === summary.count;
     // 押せないあいだは、どうすれば押せるようになるかを書く

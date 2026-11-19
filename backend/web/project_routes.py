@@ -1,4 +1,4 @@
-"""プロジェクトの保存と読み込み（`.bunri` v2）と、データの整理の API。
+"""プロジェクトの保存と読み込み（`.bunri` v2）、落ちたときの復旧（自動保存の写し）と、データの整理の API。
 
 中身は ``project_store``。ここは HTTP との橋渡しだけ。sidecar が読み書きするのはデータ置き場の中だけ
 （利用者が選んだ場所へ写すのは、デスクトップ版では Rust。docs/desktop-architecture.md「プロジェクトのファイル」）。
@@ -91,6 +91,66 @@ def api_project_open(token: str):
     """
     try:
         return project_store.open_document(token)
+    except project_store.ProjectError as e:
+        raise _http(e)
+
+
+@router.post("/api/project/recovery")
+def api_project_recovery_put(payload: dict = Body(...)):
+    """作業用の写しを、落ちたときの復旧用の写しにする（画面の自動保存。利用者のファイルは書き換えない）。
+
+    Args:
+        payload: ``{"token": ``/api/project/document`` が返した写しの名前, "name": プロジェクトの名前か null,
+            "path": デスクトップ版の利用者のファイルの場所か null, "file": ``projects/`` の中の名前か null,
+            "writer": 書き手の目印 ``{"session", "generation"}``（省略可。DELETE を参照）}``。
+
+    Returns:
+        ``{"name", "path", "file", "saved_at", "size_bytes"}``。捨てたあとに届いた古い自動保存なら 409。
+    """
+    try:
+        return project_store.recovery_put(
+            payload.get("token"), payload.get("name"), payload.get("path"), payload.get("file"),
+            writer=payload.get("writer"))
+    except project_store.ProjectError as e:
+        raise _http(e)
+
+
+@router.get("/api/project/recovery")
+def api_project_recovery_get():
+    """復旧用の写しが在るか（起動したときに、画面が「続きを開きますか」と尋ねる材料）。
+
+    Returns:
+        ``{"recovery": {"name", "path", "file", "saved_at", "size_bytes"}}``。無ければ ``{"recovery": null}``。
+    """
+    return {"recovery": project_store.recovery_info()}
+
+
+@router.post("/api/project/recovery/open")
+def api_project_recovery_open():
+    """復旧用の写しを、新しい作業用の写しにする。あとは ``/api/project/open/{token}`` で開く。
+
+    Returns:
+        ``{"token", "name", "path", "file"}``。復旧用の写しが無ければ 404。
+    """
+    try:
+        return project_store.recovery_open()
+    except project_store.ProjectError as e:
+        raise _http(e)
+
+
+@router.delete("/api/project/recovery")
+def api_project_recovery_delete(payload: dict | None = Body(None)):
+    """復旧用の写しと目印を消す（保存できた・捨てると決めた）。無くても失敗にしない。
+
+    Args:
+        payload: 省略可。``{"writer": {"session": 画面ごとの名前, "generation": 捨てたあとの世代}}`` を渡すと、
+            この画面のそれより前の世代の自動保存（書き途中で、このあとに届くもの）を断る。
+
+    Returns:
+        ``{"removed": 復旧用の写しが在ったか}``。
+    """
+    try:
+        return {"removed": project_store.recovery_clear(writer=(payload or {}).get("writer"))}
     except project_store.ProjectError as e:
         raise _http(e)
 

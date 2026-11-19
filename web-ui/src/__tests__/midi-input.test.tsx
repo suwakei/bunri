@@ -31,6 +31,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const { parseMidiMessage, pitchToNote, cursorLabel, MidiNoteRecorder, pickMidiSource } = await import('../lib/midi-input');
+const { realtimeQuantum, snapGrid, stepCell } = await import('../lib/snap');
 const { noteLevel, cloneNote, DEFAULT_VELOCITY } = await import('../lib/engine');
 type PianoNote = import('../lib/engine').PianoNote;
 const { DawProvider, useDaw } = await import('../lib/store');
@@ -189,6 +190,103 @@ describe('MidiNoteRecorder — リアルタイム録音', () => {
         recorder.setMode('realtime');
         recorder.handle(on(60)); now = 40; recorder.handle(off(60));
         expect(notes[0]).toEqual({ note: 'C', octave: 4, step: 30, length: 2, velocity: 100 });
+    });
+});
+
+describe('MidiNoteRecorder — 選んだ刻み（三連・32 分・スウィング）', () => {
+    /** 刻みを渡した録る部品（`cell` はステップ入力の 1 歩、`quantum` はリアルタイム録音でそろえる間隔）。 */
+    function withSnap(id: Parameters<typeof snapGrid>[0], swing = 0.5, position: () => number | null = () => null, bounds?: { start: number; end: number }) {
+        const notes: PianoNote[] = [];
+        const grid = snapGrid(id, swing);
+        const recorder = new MidiNoteRecorder({
+            position, addNote: (n) => notes.push(n), totalSteps: 32, minOctave: 2, maxOctave: 7,
+            cell: (cursor) => stepCell(grid, cursor), quantum: () => realtimeQuantum(id), bounds: bounds ? () => bounds : undefined,
+        });
+        return { recorder, notes };
+    }
+
+    it('ステップ入力: 8 分の三連なら、三連の位置を 1 つずつ進む（3 つで 1 拍）', () => {
+        const { recorder, notes } = withSnap('1/8T');
+        recorder.setMode('step');
+        for (const pitch of [60, 62, 64, 65]) { recorder.handle(on(pitch)); recorder.handle(off(pitch)); }
+        expect(notes.map((n) => [n.step, n.length])).toEqual([[0, 4 / 3], [4 / 3, 4 / 3], [8 / 3, 4 / 3], [4, 4 / 3]]);
+        expect(recorder.cursor).toBe(16 / 3);
+        // 決めた長さ (stepLength) は、刻みに従うあいだは使わない
+        expect(recorder.stepLength).toBe(4);
+    });
+
+    it('ステップ入力: 和音は同じ位置に入り、全部離すと、刻み 1 つぶんだけ進む', () => {
+        const { recorder, notes } = withSnap('1/32');
+        recorder.setMode('step');
+        recorder.handle(on(60)); recorder.handle(on(64)); recorder.handle(off(60)); recorder.handle(off(64));
+        recorder.handle(on(67)); recorder.handle(off(67));
+        expect(notes.map((n) => [n.step, n.length])).toEqual([[0, 0.5], [0, 0.5], [0.5, 0.5]]);
+        expect(recorder.cursor).toBe(1);
+    });
+
+    it('ステップ入力: スウィングなら、ずらした位置を進む（表は長く、裏は短い）', () => {
+        const { recorder, notes } = withSnap('1/8', 2 / 3);
+        recorder.setMode('step');
+        for (const pitch of [60, 62, 64]) { recorder.handle(on(pitch)); recorder.handle(off(pitch)); }
+        expect(notes.map((n) => [n.step, n.length])).toEqual([[0, 8 / 3], [8 / 3, 4 / 3], [4, 8 / 3]]);
+    });
+
+    it('ステップ入力: 区間の終わりを越える 1 歩は置かない。区間の外のカーソルは、区間の頭から', () => {
+        const { recorder, notes } = withSnap('1/8T', 0.5, () => null, { start: 16, end: 19 });
+        recorder.setMode('step');
+        for (const pitch of [60, 62]) { recorder.handle(on(pitch)); recorder.handle(off(pitch)); }
+        expect(notes.map((n) => n.step)).toEqual([16, 52 / 3]);
+        // 3 つ目 (18.67 から 20 まで) は、区間の終わり (19) を越えるので置かない
+        expect(recorder.handle(on(64))).toEqual({ kind: 'skipped', reason: 'end' });
+        expect(notes).toHaveLength(2);
+    });
+
+    it('ステップ入力: 区間をちょうど埋めたら、次は区間の頭に戻る（これまでと同じ）', () => {
+        const { recorder, notes } = withSnap('1/8T', 0.5, () => null, { start: 16, end: 20 });
+        recorder.setMode('step');
+        for (const pitch of [60, 62, 64, 65]) { recorder.handle(on(pitch)); recorder.handle(off(pitch)); }
+        expect(notes.map((n) => n.step)).toEqual([16, 52 / 3, 56 / 3, 16]);
+    });
+
+    it('リアルタイム録音: 8 分の三連なら、三連の位置と長さにそろえる', () => {
+        let now: number | null = 1.2;
+        const { recorder, notes } = withSnap('1/8T', 0.5, () => now);
+        recorder.setMode('realtime');
+        recorder.handle(on(60)); now = 2.7; recorder.handle(off(60));     // 1.2 → 1.33、長さ 1.5 → 1.33
+        recorder.handle(on(62)); now = 2.75; recorder.handle(off(62));    // 2.7 → 2.67、短く弾いても三連 1 つぶん
+        expect(notes).toEqual([
+            { note: 'C', octave: 4, step: 4 / 3, length: 4 / 3, velocity: 100 },
+            { note: 'D', octave: 4, step: 8 / 3, length: 4 / 3, velocity: 100 },
+        ]);
+    });
+
+    it('リアルタイム録音: 32 分なら 0.5 ステップに、4 分・8 分・16 分なら、これまでどおり 16 分音符にそろえる', () => {
+        const record = (id: Parameters<typeof snapGrid>[0], swing = 0.5) => {
+            let now: number | null = 2.4;
+            const { recorder, notes } = withSnap(id, swing, () => now);
+            recorder.setMode('realtime');
+            recorder.handle(on(60)); now = 3.1; recorder.handle(off(60));
+            return [notes[0].step, notes[0].length];
+        };
+        expect(record('1/32')).toEqual([2.5, 0.5]);
+        expect(record('1/16T')).toEqual([8 / 3, 2 / 3]);
+        expect(record('1/4')).toEqual([2, 1]);
+        expect(record('1/8')).toEqual([2, 1]);
+        expect(record('1/16')).toEqual([2, 1]);
+        // スウィングを選んでいても、リアルタイム録音は 16 分音符にそろえる（ずらした位置に録るなら、三連の刻みを選ぶ）
+        expect(record('1/8', 2 / 3)).toEqual([2, 1]);
+    });
+
+    it('置いたノートの位置と長さは、1/60 ステップの倍数（端数の付いた値を置かない）', () => {
+        let now: number | null = 0.1 + 0.2;   // 0.30000000000000004
+        const { recorder, notes } = withSnap('1/16T', 0.5, () => now);
+        recorder.setMode('realtime');
+        recorder.handle(on(60)); now = 0.1 + 0.2 + 2; recorder.handle(off(60));
+        for (const n of notes) {
+            expect(Math.round(n.step * 60) / 60).toBe(n.step);
+            expect(Math.round(n.length * 60) / 60).toBe(n.length);
+        }
+        expect(notes[0]).toMatchObject({ step: 0, length: 2 });
     });
 });
 
@@ -431,13 +529,109 @@ describe('MidiInputBar', () => {
 
         expect(activityEntries().map((e) => `${e.tag}: ${e.message}`)).toEqual([
             'midi: MIDI 入力を開いた（Keystation 49）',
+            'status: MIDI 入力を始めました（Keystation 49）。弾くと音が鳴ります。ノートを置くには、トラックを選んでから弾きます',
             'midi: 押した C4（強さ 100）',
             'midi: ノートを置いた C4（位置 1 小節 1 拍・ステップ 0、長さ 4、強さ 100）',
             'midi: 離した C4',
             'midi: 押した C1（強さ 80）',
-            'status: MIDI 入力: この高さはピアノロールの範囲の外です',
+            'status: 知らせ: MIDI 入力: この高さはピアノロールの範囲の外なので、ノートを置けません。鍵盤のオクターブを切り替えて、範囲の中の高さで弾いてください',
             'midi: MIDI 入力を止めた',
         ]);
+    });
+
+    it('トラックを選ばずに弾くと、ノートが置かれない理由を知らせる。弾き続けても、知らせは 1 つのまま', async () => {
+        const { clearNotices, getNotices } = await import('../lib/notice');
+        clearNotices();
+        const midi = stubWebMidi();
+        const notes: PianoNote[] = [];
+        renderBar(notes, null);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await waitFor(() => expect(screen.getByText('Keystation 49')).toBeInTheDocument());
+        act(() => { midi.send([0x90, 60, 100]); midi.send([0x80, 60, 0]); midi.send([0x90, 62, 100]); });
+        expect(notes).toEqual([]);
+        expect(getNotices().map((n) => [n.kind, n.text])).toEqual([
+            ['hint', 'MIDI 入力: 先に、ノートを入れるトラックをクリックして選んでください（いまは音が鳴るだけで、ノートは置かれません）'],
+        ]);
+        clearNotices();
+    });
+
+    it('鍵盤が 1 つも見つからないときは、つないで「再検出」を押すよう知らせる', async () => {
+        const { clearNotices, getNotices } = await import('../lib/notice');
+        clearNotices();
+        stubWebMidi([]);
+        renderBar([]);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await waitFor(() => expect(screen.getByText(/鍵盤が見つかりません（つないでから/)).toBeInTheDocument());
+        expect(getNotices().map((n) => [n.kind, n.text])).toEqual([
+            ['hint', 'MIDI 鍵盤が見つかりません。鍵盤をつないで電源を入れてから、「再検出」を押してください'],
+        ]);
+        clearNotices();
+    });
+
+    it('デスクトップ版: 鍵盤がつながっているのに MIDI 入力を始めていないと、画面を開いたときに 1 回だけ知らせる。知らせのボタンで始められる', async () => {
+        const { clearNotices, getNotices } = await import('../lib/notice');
+        const { resetMidiPortsAnnouncement } = await import('../lib/useMidiInput');
+        clearNotices();
+        resetMidiPortsAnnouncement();
+        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        const unlisten = vi.fn();
+        const listen = vi.fn(async () => unlisten);
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen } };
+        const first = renderBar([]);
+        await waitFor(() => expect(getNotices()).toHaveLength(1));
+        const notice = getNotices()[0];
+        expect(notice.kind).toBe('hint');
+        expect(notice.text).toBe('MIDI 機器（USB Keyboard）がつながっています。まだ、鍵盤を弾いても何も起きません。「MIDI 入力」を押すと、弾いて音を鳴らしたり、ノートを置いたりできます');
+        expect(notice.action?.label).toBe('MIDI 入力を始める');
+        // 入力は、まだ開いていない (調べただけ)。ステータスバーの文は変えない
+        expect(invoke).not.toHaveBeenCalledWith('midi_start', undefined);
+        expect(document.getElementById('status-text')).toHaveTextContent('準備完了');
+        expect(getNotices()[0].bump).toBe(0);
+
+        // 知らせのボタンで、入力を始める
+        act(() => { notice.action!.run(); });
+        await waitFor(() => expect(screen.getByRole('button', { name: 'MIDI 入力を止める' })).toBeInTheDocument());
+        expect(invoke).toHaveBeenCalledWith('midi_start', undefined);
+
+        // 「再検出」は、前の受け口を閉じてから開き直す (閉じないと、1 回の打鍵が 2 回届く)
+        expect(unlisten).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', { name: '再検出' }));
+        await waitFor(() => expect(listen).toHaveBeenCalledTimes(2));
+        expect(unlisten).toHaveBeenCalledTimes(1);
+
+        // 画面を開き直しても、もう知らせない
+        first.unmount();
+        clearNotices();
+        renderBar([]);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(getNotices()).toHaveLength(0);
+        resetMidiPortsAnnouncement();
+    });
+
+    it('デスクトップ版: 見出しの「MIDI 入力」で始めると、出ていた「つながっています」の知らせは閉じる。一度始めたら、次に開いたときは出さない', async () => {
+        const { clearNotices, getNotices } = await import('../lib/notice');
+        const { resetMidiPortsAnnouncement } = await import('../lib/useMidiInput');
+        clearNotices();
+        resetMidiPortsAnnouncement();
+        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_ports' || cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen: vi.fn(async () => () => {}) } };
+        const first = renderBar([]);
+        await waitFor(() => expect(getNotices()).toHaveLength(1));
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await waitFor(() => expect(screen.getByRole('button', { name: 'MIDI 入力を止める' })).toBeInTheDocument());
+        expect(getNotices()).toHaveLength(0);
+        expect(localStorage.getItem('bunri-midi-intro-seen')).toBe('1');
+
+        // アプリを開き直したとき (モジュールの中の覚えは消えている) も、もう出さない
+        first.unmount();
+        resetMidiPortsAnnouncement();
+        localStorage.setItem('bunri-midi-intro-seen', '1');
+        invoke.mockClear();
+        renderBar([]);
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(invoke).not.toHaveBeenCalledWith('midi_ports', undefined);
+        expect(getNotices()).toHaveLength(0);
+        resetMidiPortsAnnouncement();
     });
 
     it('「録らない」にすると、音は鳴るがノートは入らない', async () => {

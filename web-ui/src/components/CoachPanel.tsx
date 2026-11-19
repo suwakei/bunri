@@ -8,6 +8,8 @@
  * 練習のトラック（「このパートを練習する」で作ったもの）と比べる。パートのトラック自身や、
  * 別のトラックに自分で打ち込んだものと比べることもできる。
  *
+ * 「差分」の段では、このパネルの上に、練習の地図（components/PracticeMap.tsx。パートと構成の区間ごとの一致率）が出る。
+ *
  * 比べる組と結果は全体の状態（`coachPair` / `coachResult`）に置いてある。「このパートを練習する」が
  * 組を決め、進み具合の段が「差分で直す」の済んだかを見るため。
  *
@@ -25,9 +27,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 import engine, { type PianoNote } from '../lib/engine';
 import { describeError } from '../lib/api';
 import { chartIdOfParts, practiceTrackOf, referenceSourceOf } from '../lib/learn';
+import { DRUM_DIFF_NOTE, DRUM_EXPLAIN_NOTE, diffModeOf } from '../lib/drums';
 import {
     ExplainRequestError, KIND_LABEL, comparedOf, explanationRefLabel, fetchSavedExplanation, hasVelocityDiff, issueText, issuesById,
     rememberCompared, requestDiff, requestExplanation, velocityNotesOf, type DiffIssue, type DiffResult, type ExplainRequest,
@@ -108,7 +112,8 @@ export default function CoachPanel() {
             const stepsPerBar = (beatsPerBar || 4) * 4;
             // 強さを比べるのは、MIDI ファイルから読み込んだお手本のときだけ (採譜したお手本の強さは当てにならない)
             const referenceSource = referenceSourceOf(reference);
-            const diff = await requestDiff(referenceNotes, attemptNotes, stepsPerBar, referenceSource);
+            // お手本がドラムのパートなら、種類ごとの叩く位置だけを比べる (練習画面・アシスタントと同じ決め方)
+            const diff = await requestDiff(referenceNotes, attemptNotes, stepsPerBar, referenceSource, diffModeOf(reference));
             rememberCompared(diff, {
                 reference: referenceNotes.map((n) => ({ ...n })), attempt: attemptNotes.map((n) => ({ ...n })), stepsPerBar, referenceSource,
             });
@@ -171,6 +176,8 @@ export default function CoachPanel() {
      * 別の曲を取り込んだあとの古いパートには、新しい曲のカルテを添えない）。
      */
     const request = useMemo<ExplainRequest | null>(() => {
+        // ドラムの差分は、説明を頼まない (保存済みの説明も探さない)。言語化の指示文は、高さの違いを前提にしているため
+        if (diffModeOf(reference)) return null;
         const compared = result ? comparedOf(result) : undefined;
         if (!compared) return null;
         const body: ExplainRequest = { reference: compared.reference, attempt: compared.attempt, steps_per_bar: compared.stepsPerBar };
@@ -287,13 +294,15 @@ export default function CoachPanel() {
         : [];
     let shown = 0;
     const total = result ? result.bars.reduce((sum, b) => sum + b.issues.length, 0) : 0;
+    // お手本がドラムのパートのとき。比べ方の説明を添え、指摘を種類の名前で書き、Claude の説明は出さない
+    const drums = diffModeOf(reference) === 'drums';
 
     return (
         <div id="coach-panel" className="panel-content">
             {header}
             <div>
                 <label htmlFor="coach-reference">お手本</label>
-                <select id="coach-reference" value={reference.id} disabled={busy}
+                <select id="coach-reference" value={reference.id} disabled={busy} {...blockedBy(busy && 'いま比べています。終わるまで待ってください')}
                     {...tip('比べる相手にするお手本（パート）')}
                     onChange={(e) => setCoachPair({ referenceId: Number(e.target.value), attemptId: null })}>
                     {withReference.map((t) => <option key={t.id} value={t.id}>{t.name}（{t.referenceNotes!.length} ノート）</option>)}
@@ -301,18 +310,21 @@ export default function CoachPanel() {
             </div>
             <div>
                 <label htmlFor="coach-attempt">比べる打ち込み</label>
-                <select id="coach-attempt" value={attempt?.id ?? reference.id} disabled={busy}
+                <select id="coach-attempt" value={attempt?.id ?? reference.id} disabled={busy} {...blockedBy(busy && 'いま比べています。終わるまで待ってください')}
                     {...tip('お手本と比べる、自分の打ち込みが入ったトラック')}
                     onChange={(e) => setCoachPair({ referenceId: reference.id, attemptId: Number(e.target.value) })}>
                     {engine.tracks.map((t) => <option key={t.id} value={t.id}>{t.name}（{(t.pianoNotes || []).length} ノート）</option>)}
                 </select>
             </div>
-            <button className="action-btn" onClick={handleCompare} disabled={busy}
+            <button className="action-btn" onClick={handleCompare} disabled={busy} {...blockedBy(busy && 'いま比べています。終わるまで待ってください')}
                 {...tip(referenceSourceOf(reference) === 'midi'
                     ? '打ち込みをお手本と比べて、違うところを小節ごとに挙げます。MIDI ファイルから読み込んだお手本なので、強さも比べます'
-                    : '打ち込みをお手本と比べて、違うところを小節ごとに挙げます')}>
+                    : drums
+                        ? '打ち込みをお手本と比べて、違うところを小節ごとに挙げます。ドラムなので、種類ごとの叩く位置だけを比べます'
+                        : '打ち込みをお手本と比べて、違うところを小節ごとに挙げます')}>
                 {busy ? '比べています…' : 'お手本と比べる'}
             </button>
+            {drums && <p className="note-text" id="coach-drum-note" style={{ marginTop: 6 }}>{DRUM_DIFF_NOTE}</p>}
 
             {error && <p role="alert" className="error-text" style={{ marginTop: 8 }}>{error}</p>}
 
@@ -321,7 +333,7 @@ export default function CoachPanel() {
                     <p className="body-text">
                         お手本 {result.summary.reference_count} ノートのうち、
                         <strong>{Math.round(result.summary.accuracy * 100)}%</strong> が合っています
-                        （位置も長さもぴったり: {result.summary.exact} ノート）。
+                        （{drums ? '位置がぴったり' : '位置も長さもぴったり'}: {result.summary.exact} ノート）。
                     </p>
                     {total === 0 ? (
                         <p className="body-text" style={{ marginTop: 6 }}>
@@ -347,6 +359,12 @@ export default function CoachPanel() {
                             onToday={setToday} onSettingsSaved={handleSettingsSaved}
                             onExplain={handleExplain} onJump={jumpToRef} />
                     )}
+                    {drums && (
+                        // ドラムでは、説明のボタンの代わりに決まった文を出す (Claude は呼ばない)
+                        <section className="coach-explain" aria-label="差分の説明">
+                            <p className="note-text" id="coach-drum-explain" style={{ marginTop: 4 }}>{DRUM_EXPLAIN_NOTE}</p>
+                        </section>
+                    )}
                     {total > 0 && (
                         <>
                             <ul aria-label="指摘の一覧" style={{ paddingLeft: 16, margin: '8px 0 0' }}>
@@ -360,7 +378,7 @@ export default function CoachPanel() {
                                             <button type="button" {...tip('ピアノロールでこの場所を開きます')}
                                                 onClick={() => handleJump(issue)}
                                                 style={{ display: 'block', width: '100%', background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer', textDecoration: 'underline dotted' }}>
-                                                {issueText(issue)}
+                                                {issueText(issue, drums ? 'drums' : undefined)}
                                             </button>
                                         </li>,
                                     ];
@@ -420,7 +438,7 @@ function ExplanationSection({
     const fromClaude = explain?.source === 'claude' && body;
     return (
         <section className="coach-explain" aria-label="差分の説明">
-            <button className="action-btn" onClick={onExplain} disabled={explaining}
+            <button className="action-btn" onClick={onExplain} disabled={explaining} {...blockedBy(explaining && 'いま説明を作っています。できあがるまで待ってください')}
                 {...tip(fromClaude
                     ? 'もう一度 Claude に頼んで、説明を作り直します。そのたびに費用がかかります'
                     : '差分の一覧を Claude に渡して、どこをどう直すとよいかを文章にしてもらいます')}>
