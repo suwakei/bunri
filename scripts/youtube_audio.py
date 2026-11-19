@@ -14,6 +14,37 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
+PROGRESS_PREFIX = "__BUNRI_PROGRESS__"
+
+
+def progress_bar(line: str) -> str:
+    """取得済みバイト数からバーを作る。総量が不明なときは取得量だけを出す。"""
+    values = line.removeprefix(PROGRESS_PREFIX).strip().split("|")
+    if len(values) != 4:
+        return "ダウンロード中…"
+    status, downloaded, total, estimated = values
+    try:
+        done = max(0, float(downloaded))
+    except ValueError:
+        done = 0
+    size = 0
+    for value in (total, estimated):
+        try:
+            size = float(value)
+        except ValueError:
+            continue
+        if size > 0:
+            break
+    if size > 0:
+        fraction = min(1, done / size)
+        filled = int(fraction * 24)
+        bar = "#" * filled + "-" * (24 - filled)
+        text = f"取得中 [{bar}] {fraction:6.1%}  {done / 1048576:.1f}/{size / 1048576:.1f} MiB"
+    else:
+        text = f"取得中 [総量不明] {done / 1048576:.1f} MiB"
+    if status == "finished":
+        text += "  取得完了・音声を変換中…"
+    return text
 
 
 def youtube_url(value: str) -> str:
@@ -63,14 +94,48 @@ def download(url: str, audio_format: str) -> int:
         "--paths", str(MUSIC_DIR),
         "--output", "%(title).150B [%(id)s].%(ext)s",
         "--print", "after_move:保存しました: %(filepath)s",
-        "--no-simulate", "--progress",
+        "--no-simulate", "--progress", "--newline", "--no-color",
+        "--socket-timeout", "30", "--retries", "3", "--fragment-retries", "3",
+        "--progress-template",
+        f"download:{PROGRESS_PREFIX}%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s",
     ]
     # yt-dlp が既定で使う Deno がない環境でも、Node.js があれば利用する。
     if shutil.which("node"):
         command.extend(["--js-runtimes", "node"])
     command.extend(["--", url])
     print(f"保存先: {MUSIC_DIR}\n形式: {audio_format.upper()}", flush=True)
-    return subprocess.run(command, check=False).returncode
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
+        try:
+            showing_bar = False
+            for line in process.stdout:
+                if line.startswith(PROGRESS_PREFIX):
+                    text = progress_bar(line)
+                    print(f"\r{text:<100}", end="" if sys.stdout.isatty() else "\n", flush=True)
+                    showing_bar = sys.stdout.isatty()
+                else:
+                    if showing_bar:
+                        print()
+                        showing_bar = False
+                    print(line, end="", flush=True)
+            if showing_bar:
+                print()
+            result = process.wait()
+        except BaseException:
+            # 中止・出力先の切断時も取得プロセスを残さない。
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+    if result:
+        print(
+            "取得または変換に失敗しました。上のエラーを確認し、通信状態・動画の公開状態・空き容量を確認してください。\n"
+            "YouTube 側の変更が原因の場合: uv run --refresh scripts/youtube_audio.py",
+            file=sys.stderr,
+        )
+    return result if result >= 0 else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,17 +147,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         url = args.url or youtube_url(input("YouTube のURLを貼り付けてください: "))
         audio_format = args.format
+        if audio_format is None:
+            print("保存形式を選んでください:\n  1) MP3\n  2) WAV")
         while audio_format is None:
-            answer = input("保存形式 [mp3/wav]（Enter: mp3）: ").strip().lower() or "mp3"
+            answer = input("選択 [1/2]（Enter: 1 = MP3）: ").strip().lower() or "1"
+            answer = {"1": "mp3", "2": "wav"}.get(answer, answer)
             if answer in {"mp3", "wav"}:
                 audio_format = answer
             else:
-                print("mp3 または wav を入力してください。")
+                print("1（MP3）または 2（WAV）を入力してください。")
         return download(url, audio_format)
     except argparse.ArgumentTypeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
+        print("\n入力が終了しました。ターミナルで実行するか --format mp3 / wav を指定してください。", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
         print("\n中止しました。", file=sys.stderr)
         return 130
     except OSError as exc:

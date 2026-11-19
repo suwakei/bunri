@@ -1,12 +1,39 @@
 # bunri DAW — コマンド集
 # 使い方: make <コマンド>
 
-.PHONY: help install install-frontend install-desktop desktop desktop-build dev-web e2e e2e-desktop test lint clean check check-all check-plan check-harness harness-sync harness-setup
+# URL 内の = を make が変数代入として解釈する場合も、URL 全体を復元する。
+ifneq ($(filter dl,$(MAKECMDGOALS)),)
+DL_GOALS := $(filter-out dl,$(MAKECMDGOALS))
+DL_URL_VARIABLES := $(foreach name,$(filter https://% http://%,$(.VARIABLES)),$(if $(filter command line,$(origin $(name))),$(name)))
+export BUNRI_DL_URL := $(strip $(DL_GOALS) $(foreach name,$(DL_URL_VARIABLES),$(name)=$(value $(name))))
+ifneq ($(words $(BUNRI_DL_URL)),1)
+$(error 使い方: make dl 'YouTubeの動画URL' （URLを1つ指定してください）)
+endif
+ifeq ($(filter https://% http://%,$(BUNRI_DL_URL)),)
+$(error 使い方: make dl 'https://www.youtube.com/watch?v=動画ID')
+endif
+ifneq ($(filter-out https://% http://%,$(DL_GOALS)),)
+$(error dl と他のコマンドは同時に実行できません)
+endif
+ifneq ($(DL_GOALS),)
+%:
+	@:
+endif
+endif
+
+.DEFAULT_GOAL := help
+
+.PHONY: dl help install install-frontend install-desktop desktop desktop-build dev-web e2e e2e-desktop test lint clean check check-all check-plan check-harness harness-sync harness-setup
+
+dl: ## YouTube の動画URLを引数に取り、形式を選んで music/ に保存
+	@command -v uv >/dev/null 2>&1 || { echo "uv が必要です。macOS: brew install uv" >&2; exit 1; }
+	@uv run scripts/youtube_audio.py "$$BUNRI_DL_URL"
 
 help: ## コマンド一覧を表示
 	@echo ""
 	@echo "  bunri DAW"
 	@echo "  ─────────────────────────────"
+	@echo "  make dl 'URL'          YouTube の音声を MP3 / WAV で music/ に保存"
 	@echo "  make install           バックエンド依存パッケージをインストール"
 	@echo "  make install-frontend  フロントエンド依存パッケージをインストール"
 	@echo "  make install-desktop   デスクトップ版の依存（Tauri CLI）をインストール"
