@@ -35,8 +35,10 @@ from reproduction_guide import GuideError, _api_errors, _usage
 
 # 指示文・ツールの台帳・リクエストの組み立ての版。どれかを変えたら上げる。使用量の記録に残り、
 # どの版の呼び出しかを後から見分けられる（アシスタントは応答を保存しないので、保存分への影響は無い）
+# 3: 返事に Markdown を使わない（ドックは文字のまま出す）
 # 4: ステップと長さに小数を許す（32 分音符・三連・スウィング）。ノートのツールの引数を数にし、そろえる間隔に 16 分・32 分・三連を足した
-ASSISTANT_VERSION = 4
+# 5: 4 のうえに、3 の指示文の直し（Markdown を使わない）を合わせた
+ASSISTANT_VERSION = 5
 
 # 1 回の依頼で Claude を呼べる回数（ツールを使うたびに 1 往復）。``step`` はこれより小さい数
 MAX_STEPS = 12
@@ -68,6 +70,7 @@ You are the assistant built into bunri, a desktop DAW for learning music by recr
 
 How to work
 - Reply in the language the user writes in (usually Japanese). Keep replies short: say what you did or what you found, in plain words. The chat already lists each operation you ran, so do not repeat them one by one.
+- The chat panel shows your reply as plain text, exactly as written. Do not use Markdown: asterisks for bold, headings, tables and code fences would appear as literal symbols. Write short sentences; when you list a few items, put each on its own line starting with "・".
 - Before changing anything, make sure you know the current state. Call get_project when you need track ids, the tempo, or steps_per_bar, and get_notes before editing notes that already exist. Track ids are only valid for the current session.
 - Do what was asked and no more. If a request could mean several quite different things and a wrong guess would overwrite the user's work, ask one short question instead of guessing. Otherwise pick the sensible reading and go ahead; every change you make in one request can be undone by the user in a single step.
 - Only say something was done if the tool result says it succeeded. If a tool returns an error, fix the input and try again when the fix is clear; if it cannot be done, say so plainly and say what the user can do instead.
