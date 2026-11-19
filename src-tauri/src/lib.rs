@@ -164,9 +164,6 @@ fn midi_start(
         })
         .map_err(|e| format!("MIDI の記録のスレッドを作れません: {e}"))?;
 
-    #[cfg(target_os = "macos")]
-    prime_midi(&app);
-
     let repeats = Arc::new(Mutex::new(midi::RepeatFilter::default()));
     let duplicates = Arc::new(Mutex::new(midi::DuplicateFilter::default()));
     let handle = app.clone();
@@ -202,27 +199,6 @@ fn midi_start(
     };
     note_activity(&app, "midi-in", &opened);
     Ok(names)
-}
-
-/// mac で、最初の MIDI クライアントをメインスレッドで作る (`midi::prime`。起動のあとにつないだ機器を
-/// 「再検出」で見つけられるようにする)。入力を開く前に、作り終わるまで待つ。
-///
-/// コマンドがメインスレッドで動いているときは、その場で作る (メインスレッドに頼んで待つと、自分を待つことになる)。
-#[cfg(target_os = "macos")]
-fn prime_midi(app: &tauri::AppHandle) {
-    // SAFETY: 引数も前提も無い、スレッドを問い合わせるだけの呼び出し
-    if unsafe { libc::pthread_main_np() } != 0 {
-        midi::prime();
-        return;
-    }
-    let (done, wait) = std::sync::mpsc::channel::<()>();
-    let asked = app.run_on_main_thread(move || {
-        midi::prime();
-        let _ = done.send(());
-    });
-    if asked.is_ok() {
-        let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
-    }
 }
 
 /// つながっている MIDI の入力ポートの名前を返す (開かない)。

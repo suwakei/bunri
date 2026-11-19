@@ -222,8 +222,8 @@ describe('MIDI 入力', () => {
             return;
         }
         try {
-            // 「再検出」は、あとからつないだ鍵盤を見つける (mac では、最初の MIDI クライアントをメインスレッドで
-            // 作らないと、ポートの一覧が古いままになる。src-tauri/src/midi.rs の prime)
+            // 「再検出」は、あとからつないだ鍵盤を見つける (mac では、最初の MIDI クライアントを run loop を回す
+            // スレッドで作らないと、ポートの一覧が古いままになる。src-tauri/src/midi.rs の prime)
             const deadline = Date.now() + 20_000;
             for (;;) {
                 await clickControl(app, '再検出');

@@ -7,8 +7,8 @@
 //! - つながっている入力ポートを **すべて** 開く。どの鍵盤を弾いても入るようにするため
 //! - 接続は専用のスレッドが持つ。OS によっては接続をスレッド間で受け渡せないため
 //! - 機器の抜き差しは自動では追わない。画面の「再検出」で開き直す
-//! - mac では、最初のクライアントをメインスレッドで作っておく (`prime`)。そうしないと、起動のあとに
-//!   つないだ機器が「再検出」でも見つからない
+//! - mac では、最初のクライアントを、run loop を回し続ける専用のスレッドで作っておく (`prime`)。そうしないと、
+//!   起動のあとにつないだ機器が「再検出」でも見つからない
 //! - 同じ鍵盤が 2 つ以上のポートから同じものを送ってくることが在る (USB の 2 つのポートと Bluetooth、など)。
 //!   画面には 1 回だけ渡す (`DuplicateFilter`)。渡さないと、鍵盤 1 回でノートがポートの数だけ入る
 //! - 受け取る側には、メッセージと一緒に **ポートの名前** も渡す。画面に渡すのはバイト列だけだが、
@@ -29,25 +29,51 @@ pub const EVENT: &str = "midi-message";
 /// OS に見せるクライアント名。
 const CLIENT_NAME: &str = "bunri";
 
-/// mac で、起動のあとにつないだ機器が見えるようにする。**メインスレッドから**呼ぶ。2 回目からは何もしない。
+/// mac で、起動のあとにつないだ機器が見えるようにする。クライアントを作る前に呼ぶ。2 回目からは何もしない。
 ///
 /// CoreMIDI は、機器の増減の知らせを、プロセスで最初にクライアントを作ったスレッドの run loop で受け取る。
-/// 入力を開くスレッド (`midi-input`) は run loop を回さないので、最初のクライアントをそこで作ると、
-/// 知らせがどこにも届かず、ポートの一覧が「最初にクライアントを作ったとき」のまま変わらなくなる
+/// 入力を開くスレッド (`midi-input`) も、ポートの名前を調べるスレッドも run loop を回さないので、最初のクライアントを
+/// そこで作ると、知らせがどこにも届かず、ポートの一覧が「最初にクライアントを作ったとき」のまま変わらなくなる
 /// (起動のあとにつないだ鍵盤が、「再検出」を押しても見つからない。減ったほうは分かる)。
-/// メインスレッドは窓のために run loop を回しているので、最初のクライアントをここで作って、持ったままにする。
+/// そこで、最初のクライアントを専用のスレッドで作り、そのスレッドで run loop を回し続ける。
+/// メインスレッドは使わない (OS の MIDI の用意に時間がかかっても、窓を止めないため)。
 ///
 /// 失敗しても何もしない (MIDI が使えないことは、入力を開くときに利用者へ伝わる)。
 #[cfg(target_os = "macos")]
-pub fn prime() {
+fn prime() {
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRunLoopRun();
+    }
     static PRIMED: std::sync::Once = std::sync::Once::new();
     PRIMED.call_once(|| {
-        if let Ok(client) = MidiInput::new(CLIENT_NAME) {
-            // アプリが終わるまで持ったままにする (クライアントはスレッドをまたげないので、手放さずに置く)
-            Box::leak(Box::new(client));
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let spawned = thread::Builder::new()
+            .name("midi-notify".into())
+            .spawn(move || {
+                // アプリが終わるまで持ったままにする
+                let client = MidiInput::new(CLIENT_NAME);
+                let _ = ready_tx.send(());
+                if client.is_err() {
+                    return;
+                }
+                loop {
+                    // SAFETY: 引数も前提も無い。このスレッドの run loop を回す (知らせの受け口が在るあいだ戻らない)
+                    unsafe { CFRunLoopRun() };
+                    // 受け口が無くて戻ってきたときに、回り続けて CPU を使わないように
+                    thread::sleep(Duration::from_secs(1));
+                }
+            });
+        if spawned.is_ok() {
+            // 最初のクライアントができるまで待つ (呼び出し側が、先に自分のクライアントを作らないように)
+            let _ = ready_rx.recv_timeout(Duration::from_secs(10));
         }
     });
 }
+
+/// mac 以外では、何もしない (ポートの一覧は、調べるたびに OS から取り直される)。
+#[cfg(not(target_os = "macos"))]
+fn prime() {}
 
 /// 開いている MIDI 入力。Tauri の state として管理する。
 #[derive(Default)]
@@ -113,6 +139,7 @@ impl MidiInputs {
 /// 弾いても何も届かないので、アプリの側からは、つながっていることしか分からない。
 /// MIDI を使えない環境では、失敗にせず空のリストを返す (知らせを出さないだけにする)。
 pub fn port_names() -> Vec<String> {
+    prime();
     let Ok(input) = MidiInput::new(CLIENT_NAME) else {
         return Vec::new();
     };
@@ -136,6 +163,7 @@ fn open_all<F>(on_message: F) -> Result<(Vec<String>, Vec<midir::MidiInputConnec
 where
     F: Fn(&str, &[u8]) + Send + Clone + 'static,
 {
+    prime();
     let port_count = MidiInput::new(CLIENT_NAME)
         .map_err(|e| format!("MIDI を使えません: {e}"))?
         .ports()
