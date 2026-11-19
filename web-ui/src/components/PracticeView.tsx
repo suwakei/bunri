@@ -28,7 +28,7 @@
  * 画面の部品は 4 つ（見出し・段・右の一覧・下の操作）に分かれ、中央エリアの中の別々の場所に置く。
  * 状態は `PracticeProvider` が持ち、部品はそこから読む。
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Component, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useDaw } from '../lib/store';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
@@ -125,6 +125,21 @@ interface ArrangeView {
 }
 
 /**
+ * 練習画面に入る瞬間を、画面を組み替える直前 (DOM を変える前) に知らせる。何も描かない。
+ * 描画のあいだに DOM を読まずに「組み替える前のスクロール位置」を読めるのは、ここ (getSnapshotBeforeUpdate) だけなので、クラスで書く。
+ */
+class BeforeOpen extends Component<{ open: boolean; onOpen: () => void }> {
+    getSnapshotBeforeUpdate(prev: Readonly<{ open: boolean }>): null {
+        if (this.props.open && !prev.open) this.props.onOpen();
+        return null;
+    }
+
+    componentDidUpdate(): void { /* getSnapshotBeforeUpdate には、これが要る */ }
+
+    render(): null { return null; }
+}
+
+/**
  * 練習画面の状態と、再生エンジン・ピアノロールとのつなぎを持つ。中央エリア全体を囲む。
  * 練習画面を閉じているあいだは何もしない（ふだんの画面の見え方を控えておくだけ）。
  */
@@ -158,8 +173,8 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     // お手本の高さへ動かす。その scroll イベントが届くのは次の描画のときで、そのときにはもう練習画面なので
     // 下の onScroll は控えない。イベントだけに頼ると、動かす前の位置が残り、アレンジに戻ったときに、
     // お手本の見えない高さへ戻ることがあった (WebKit で 2 回に 1 回ほど)
-    if (practiceOpen && !openRef.current) lastScrollRef.current = readScroll();
-    openRef.current = practiceOpen;
+    const captureOnOpen = useCallback(() => { lastScrollRef.current = readScroll(); }, [readScroll]);
+    useLayoutEffect(() => { openRef.current = practiceOpen; }, [practiceOpen]);
     void trackVersion;
 
     const part = practice ? engine.getTrack(practice.partId) : undefined;
@@ -288,6 +303,7 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
     useEffect(() => {
         if (!practiceOpen || !practice) return;
         const rate = practice.speed;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 表示は、再生エンジンと伸ばした音声の控え (React の外) にこの effect で合わせた結果。描画中に求めると、決め直す条件が変わる
         if (rate === 1) { engine.setTempo(1, null); setSpeedStatus({ kind: 'normal' }); return; }
         if (!practice.loop.enabled) { engine.setTempo(1, null); setSpeedStatus({ kind: 'needs-loop' }); return; }
         const partTrack = engine.getTrack(practice.partId);
@@ -509,7 +525,12 @@ export function PracticeProvider({ midi, children }: { midi: MidiInputController
         selectedFinding, selectFinding,
         speedStatus, playing: isPlaying, togglePlay, stopPlay, setLoop,
     };
-    return <PracticeContext.Provider value={value}>{children}</PracticeContext.Provider>;
+    return (
+        <PracticeContext.Provider value={value}>
+            <BeforeOpen open={practiceOpen} onOpen={captureOnOpen} />
+            {children}
+        </PracticeContext.Provider>
+    );
 }
 
 // ---- 見出し ----

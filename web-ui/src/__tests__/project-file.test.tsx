@@ -505,7 +505,7 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
         { kind: 'assistant', text: '置きました。' } as const,
         { kind: 'turn', calls: 2, costUsd: 0.03 } as const,
     ];
-    afterEach(() => { pf.resetSections(); assistantSession.reset(); });
+    afterEach(() => { pf.resetSections(); assistantSession.restore([]); });
 
     it('保存すると、画面に並ぶ文と操作ログの行が入る。開くと戻り、新しいプロジェクトにすると空になる', async () => {
         render(<Probe />);
@@ -514,7 +514,7 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
 
         act(() => { assistantSession.restore(SAVED); });
         const { doc } = await pf.buildDocument(baseInput());
-        expect(doc.state.assistant).toEqual({ version: 1, items: SAVED });
+        expect(doc.state.assistant).toEqual({ version: 2, items: SAVED });
         // Claude に送る会話 (思考のブロックやツールの結果) は、入れない
         expect(JSON.stringify(doc.state.assistant)).not.toMatch(/tool_use|tool_result|signature|thinking/);
 
@@ -536,6 +536,35 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
         delete without.state.assistant;
         await act(async () => { await pf.applyDocument(without, applyTarget()); });
         expect(assistantSession.getState().items).toEqual([]);
+    });
+
+    it('「新しい会話」の前の会話は、履歴として一緒に入り、開くと戻る。版 1 の節（履歴が無い）も読める', async () => {
+        render(<Probe />);
+        act(() => { assistantSession.restore(SAVED); assistantSession.reset(); });
+        // いまの会話が空でも、履歴が在れば節を入れる
+        const { doc } = await pf.buildDocument(baseInput());
+        const section = doc.state.assistant as { version: number; items: unknown[]; archive: { title: string; archivedAt: string; items: unknown[] }[] };
+        expect(section.version).toBe(2);
+        expect(section.items).toEqual([]);
+        expect(section.archive).toHaveLength(1);
+        expect(section.archive[0]).toMatchObject({ title: 'ベースを置いて', items: SAVED });
+        expect(Number.isNaN(Date.parse(section.archive[0].archivedAt))).toBe(false);
+        // 画面の中だけの番号は、入れない
+        expect(section.archive[0]).not.toHaveProperty('id');
+
+        act(() => pf.resetSections());
+        expect(assistantSession.getState().archive).toEqual([]);
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+        await act(async () => { await pf.applyDocument(JSON.parse(JSON.stringify(doc)), applyTarget()); });
+        expect(assistantSession.getState().archive.map((entry) => entry.title)).toEqual(['ベースを置いて']);
+        expect(assistantSession.archived()[0].items).toEqual(SAVED);
+
+        // 版 1 の節: いまの会話だけが戻り、履歴は空
+        const v1 = JSON.parse(JSON.stringify(doc));
+        v1.state.assistant = { version: 1, items: SAVED };
+        await act(async () => { await pf.applyDocument(v1, applyTarget()); });
+        expect(assistantSession.saved()).toEqual(SAVED);
+        expect(assistantSession.getState().archive).toEqual([]);
     });
 
     it('壊れた節は、読めるものだけを戻す', async () => {

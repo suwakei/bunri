@@ -163,7 +163,7 @@ export async function launchApp(): Promise<LaunchedApp> {
         await waitForWebDriver(webdriverPort, 60_000, () => app.exitCode === null);
     } catch (e) {
         cleanup(false);
-        throw new Error(`${(e as Error).message}\nアプリの出力: ${logFile}`);
+        throw new Error(`${(e as Error).message}\nアプリの出力: ${logFile}`, { cause: e });
     }
 
     const stop = async ({ keep = false } = {}): Promise<string[]> => {

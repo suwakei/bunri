@@ -25,13 +25,11 @@ export default function DataCleanup() {
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState('');
 
-    const load = useCallback(async () => {
-        try {
-            const resp = await apiFetch('/api/storage');
-            if (resp.ok) setUsage(await resp.json());
-        } catch { /* 使用量が出ないだけ */ }
+    useEffect(() => {
+        apiFetch('/api/storage')
+            .then(async (resp) => { if (resp.ok) setUsage(await resp.json()); })
+            .catch(() => { /* 使用量が出ないだけ */ });
     }, []);
-    useEffect(() => { void load(); }, [load]);
 
     const cleanup = useCallback(async () => {
         setBusy(true);

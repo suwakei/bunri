@@ -7,12 +7,13 @@
  *
  * - 左パネルは練習画面のあいだ隠れるので、チャットは左パネルのタブではなく、右側のドックに置く（練習画面でも見える）
  * - 会話と操作ログは lib/assistant.ts が持つ。ドックを閉じても、練習画面に出入りしても残る
+ * - 「新しい会話」を押すと、それまでの会話は「履歴」に残る。履歴の一覧から開き直す・消すことができる
  * - アシスタントの文は、少しずつ届く。流れている途中の吹き出しは、末尾に印を出し、読み上げは確定まで待つ
  * - 画面の入口（ツールが呼ぶもの）は lib/assistant-env.ts。ドックを閉じているあいだも、繰り返しは続く
  */
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useDaw } from '../lib/store';
-import { assistantSession, type AssistantDeps, type AssistantSession, type ChatItem, type ToolRow, type TurnRow } from '../lib/assistant';
+import { assistantSession, type AssistantDeps, type AssistantSession, type AssistantState, type ChatItem, type ToolRow, type TurnRow } from '../lib/assistant';
 import { useAssistantDeps } from '../lib/assistant-env';
 import { suggestionsFor } from '../lib/assistant-suggestions';
 import { formatActivityTime, tagLabel } from '../lib/activity';
@@ -43,6 +44,59 @@ export function AssistantToggle() {
             onClick={() => setAssistantOpen(!assistantOpen)}>
             アシスタント
         </button>
+    );
+}
+
+/** 履歴の会話を移した日時を、一覧に出す形にする（今日なら時刻だけ）。分からなければ空。 */
+function archivedWhen(iso: string | null, now = new Date()): string {
+    if (!iso) return '';
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '';
+    const time = `${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}`;
+    const sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+    return sameDay ? time : `${at.getMonth() + 1}/${at.getDate()} ${time}`;
+}
+
+/** 前の会話（履歴）の一覧。開く・消すができる。 */
+function HistoryList({ state, onOpen, onDelete, onBack }: {
+    state: AssistantState;
+    onOpen: (id: number) => void;
+    onDelete: (id: number) => void;
+    onBack: () => void;
+}) {
+    return (
+        <div className="assistant-history" role="region" aria-label="前の会話">
+            <div className="assistant-history-head">
+                <span>前の会話（新しい順）</span>
+                <button type="button" className="assistant-history-back" {...tip('いまの会話に戻ります')} onClick={onBack}>会話に戻る</button>
+            </div>
+            <ul>
+                {state.archive.map((entry) => {
+                    const when = archivedWhen(entry.archivedAt);
+                    const requests = entry.items.filter((item) => item.kind === 'user').length;
+                    return (
+                        <li key={entry.id} className="assistant-history-item">
+                            <div className="assistant-history-text">
+                                <span className="assistant-history-title">{entry.title}</span>
+                                <span className="assistant-history-meta">{[when, `依頼 ${requests} 件`].filter(Boolean).join('・')}</span>
+                            </div>
+                            <button type="button" className="assistant-history-open" disabled={state.running}
+                                aria-label={`「${entry.title}」の会話を開く`}
+                                {...blockedBy(state.running && 'アシスタントが動いているあいだは、前の会話を開けません。終わるのを待つか、止めてから押してください')}
+                                {...tip('この会話を開いて、続きを頼めます。いまの会話は、履歴に残ります')}
+                                onClick={() => onOpen(entry.id)}>
+                                開く
+                            </button>
+                            <button type="button" className="assistant-history-delete" aria-label={`「${entry.title}」の会話を消す`}
+                                {...tip('この会話を履歴から消します。プロジェクトに保存してある会話も、次の保存で消えます')}
+                                onClick={() => onDelete(entry.id)}>
+                                消す
+                            </button>
+                        </li>
+                    );
+                })}
+            </ul>
+        </div>
     );
 }
 
@@ -140,6 +194,8 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
     const state = useSyncExternalStore(session.subscribe, session.getState);
     const [text, setText] = useState('');
     const [showSettings, setShowSettings] = useState(false);
+    /** 前の会話（履歴）の一覧を出しているか */
+    const [showHistory, setShowHistory] = useState(false);
     const logRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     /** 末尾を見ているか。見ているあいだだけ、新しい行に付いていく（さかのぼって読んでいるときは動かさない）。 */
@@ -179,6 +235,9 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
         submit();
     };
 
+    // 履歴が空なら (最後の 1 つを消した・別のプロジェクトを開いた)、一覧は出さずに会話を出す
+    const historyOpen = showHistory && state.archive.length > 0;
+
     const settingsOpen = showSettings || state.needsKey;
     const empty = state.items.length === 0;
     const canSend = text.trim() !== '' && !state.running;
@@ -201,18 +260,31 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                         今日 {state.today.calls} 回・{formatUsd(state.today.cost_usd)}
                     </span>
                 )}
+                <button type="button" className="assistant-history-toggle" aria-pressed={historyOpen}
+                    disabled={state.archive.length === 0}
+                    {...blockedBy(state.archive.length === 0 && '前の会話は、まだありません。「新しい会話」を押すと、それまでの会話が履歴に残ります')}
+                    {...tip(historyOpen ? '履歴を閉じて、いまの会話に戻ります' : '前の会話の一覧を出します。開き直して続きを頼めます')}
+                    onClick={() => setShowHistory(!historyOpen)}>
+                    履歴{state.archive.length > 0 ? ` ${state.archive.length}` : ''}
+                </button>
                 <button type="button" className="assistant-new" disabled={state.running || empty}
                     {...blockedBy(state.running ? 'アシスタントが動いているあいだは、新しい会話にできません。終わるのを待つか、止めてから押してください'
                         : empty && '会話は、まだ空です。入力欄に頼みたいことを書いて、送ってください')}
-                    {...tip('会話と操作ログを空にして、始め直します。行った操作は、そのまま残ります。プロジェクトに保存してある会話も、次の保存で消えます')}
-                    onClick={() => { session.reset(); inputRef.current?.focus(); }}>
+                    {...tip('いまの会話を履歴に残して、新しい会話を始めます。行った操作は、そのまま残ります')}
+                    onClick={() => { session.reset(); setShowHistory(false); inputRef.current?.focus(); }}>
                     新しい会話
                 </button>
                 <button type="button" className="assistant-close" aria-label="アシスタントを閉じる"
                     {...tip('閉じます。会話は残ります')} onClick={() => setAssistantOpen(false)}>×</button>
             </header>
 
-            <div className="assistant-log" ref={logRef} role="log" aria-label="会話と操作ログ" tabIndex={0}
+            {historyOpen && (
+                <HistoryList state={state}
+                    onOpen={(id) => { if (session.openArchived(id)) { setShowHistory(false); followRef.current = true; inputRef.current?.focus(); } }}
+                    onDelete={(id) => { session.deleteArchived(id); if (session.archived().length === 0) setShowHistory(false); }}
+                    onBack={() => setShowHistory(false)} />
+            )}
+            <div className="assistant-log" ref={logRef} hidden={historyOpen} role="log" aria-label="会話と操作ログ" tabIndex={0}
                 onScroll={(e) => {
                     const el = e.currentTarget;
                     followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
@@ -236,10 +308,10 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                 {state.items.map((item, index) => (
                     <Fragment key={item.id}>
                         <Item item={item} running={state.running} />
-                        {/* プロジェクトに保存してあった会話と、開いてからの会話の境目 */}
+                        {/* 前に保存してあった会話 (プロジェクト・履歴) と、開いてからの会話の境目 */}
                         {index === state.restored - 1 && (
                             <p className="assistant-restored" role="separator">
-                                ここまでは、プロジェクトに保存してあった会話です。アシスタントは、要点だけを覚えています
+                                {state.restoredFrom === 'history' ? 'ここまでは、履歴から開き直した会話です' : 'ここまでは、プロジェクトに保存してあった会話です'}。アシスタントは、要点だけを覚えています
                             </p>
                         )}
                     </Fragment>
@@ -275,7 +347,7 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                     <ClaudeSendNote open={settingsOpen} onToggle={() => {
                         if (settingsOpen) { setShowSettings(false); session.setNeedsKey(false); } else setShowSettings(true);
                     }}>
-                        Claude に送るのは、ここに打った文と、アシスタントが読んだプロジェクトの中身（トラックの名前・ノート・カルテ・再現ガイド・差分の結果）です。音声は送りません。ここに並んだ会話は、プロジェクトを保存すると、プロジェクトのファイルにも入ります。
+                        Claude に送るのは、ここに打った文と、アシスタントが読んだプロジェクトの中身（トラックの名前・ノート・カルテ・再現ガイド・差分の結果）です。音声は送りません。ここに並んだ会話と履歴は、プロジェクトを保存すると、プロジェクトのファイルにも入ります。
                     </ClaudeSendNote>
                     <ClaudeSettings idPrefix="assistant" open={settingsOpen} today={state.today}
                         onToday={(today) => session.setToday(today)}

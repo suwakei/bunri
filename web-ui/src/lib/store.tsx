@@ -1,7 +1,7 @@
 /**
  * bunri DAW — グローバル状態管理（React Context ベース）
  */
-import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import engine, { type PianoNote } from './engine';
 import { describeError } from './api';
 import type { ChartResponse, Glossary, SongChart, WaveformPeaks } from './chart';
@@ -626,9 +626,9 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const openSongPicker = useCallback(() => songPickerRef.current?.click(), []);
 
-    // いまの練習画面の状態 (続けて変えたときも、前の変更の上に重ねるため。描画を待たずに読む)
+    // いまの練習画面の状態 (続けて変えたときも、前の変更の上に重ねるため。描画を待たずに読む)。
+    // practice を変えるところ (setPractice) は、どこもこの控えも一緒に変える
     const practiceRef = useRef<PracticeState | null>(practice);
-    practiceRef.current = practice;
 
     const openPractice = useCallback((partId: number, trackId: number) => {
         const part = engine.getTrack(partId);
@@ -689,12 +689,10 @@ export function DawProvider({ children }: { children: ReactNode }) {
     // ---- 元に戻す / やり直す ----
     // 履歴は 1 本 (プロジェクト全体)。記録の中身はプロジェクトの控え (lib/project-snapshot.ts。
     // なぜ控えで持つかは、そのファイルの説明)。描き直しのきっかけは historyVersion
-    const historyRef = useRef<UndoHistory<ProjectSnapshot> | null>(null);
-    if (historyRef.current === null) {
-        historyRef.current = new UndoHistory<ProjectSnapshot>({
-            limit: HISTORY_LIMIT, budget: HISTORY_BUDGET, cost: snapshotCost, equals: projectsEqual,
-        });
-    }
+    // 履歴そのものは作り直さない (state に置くのは、同じ 1 つを持ち続けて、描画中にも読めるようにするため)
+    const [history] = useState(() => new UndoHistory<ProjectSnapshot>({
+        limit: HISTORY_LIMIT, budget: HISTORY_BUDGET, cost: snapshotCost, equals: projectsEqual,
+    }));
     const [historyVersion, setHistoryVersion] = useState(0);
     // 直前に取った控え。中身が同じノートの並びを共有して、メモリを節約する
     const lastSnapshotRef = useRef<ProjectSnapshot | null>(null);
@@ -739,7 +737,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
             if (override?.discard) return false;
             const after = capture();
             const { activityLabel, ...push } = options;
-            const entry = historyRef.current!.push(override?.label ?? label, before, after, push);
+            const entry = history.push(override?.label ?? label, before, after, push);
             if (entry && activityLabel !== undefined) activityLabelsRef.current.set(entry.id, activityLabel);
             // 操作でトラックを直接書き換えたぶん (クリップの差し替え・縮める・分割・エフェクト、ソロなど) を、
             // デスクトップ版の Rust の engine にも伝える (新しい音声を先に送り始め、再生中なら音量・パン・鳴らすかを合わせる)
@@ -749,7 +747,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
             if (toastRef.current && (!entry || entry.id !== toastRef.current.entryId)) setToast(null);
             return entry !== null;
         };
-    }, [capture, setToast]);
+    }, [history, capture, setToast]);
 
     const record = useCallback(<T,>(label: string, fn: () => T, options?: PushOptions): T => {
         const commit = beginEdit(label, options);
@@ -791,52 +789,52 @@ export function DawProvider({ children }: { children: ReactNode }) {
     const undo = useCallback(() => {
         if (!canStep()) { setStatus(pianoRollRef.current?.isBusy?.() ? STEP_DRAGGING : STEP_BUSY, 'hint'); return; }
         pianoRollRef.current?._saveToEngine?.();
-        const entry = historyRef.current!.undo();
+        const entry = history.undo();
         // ボタンは押せなくなっているが、キー操作 (⌘Z) は届く
         if (!entry) { setStatus('取り消せる操作はまだありません', 'hint'); return; }
         restore(entry.before, entry.after);
         if (toastRef.current?.entryId === entry.id) setToast(null);
         const noted = activityLabelsRef.current.get(entry.id);
         setStatus(`元に戻しました（${entry.label}）`, 'info', noted === undefined ? {} : { activity: `元に戻しました（${noted}）` });
-    }, [canStep, restore, setToast, setStatus]);
+    }, [history, canStep, restore, setToast, setStatus]);
 
     const redo = useCallback(() => {
         if (!canStep()) { setStatus(pianoRollRef.current?.isBusy?.() ? STEP_DRAGGING : STEP_BUSY, 'hint'); return; }
         pianoRollRef.current?._saveToEngine?.();
-        const entry = historyRef.current!.redo();
+        const entry = history.redo();
         if (!entry) { setStatus('やり直せる操作はありません', 'hint'); return; }
         restore(entry.after, entry.before);
         const noted = activityLabelsRef.current.get(entry.id);
         setStatus(`やり直しました（${entry.label}）`, 'info', noted === undefined ? {} : { activity: `やり直しました（${noted}）` });
-    }, [canStep, restore, setStatus]);
+    }, [history, canStep, restore, setStatus]);
 
     const clearHistory = useCallback(() => {
-        historyRef.current!.clear();
+        history.clear();
         activityLabelsRef.current.clear();
         lastSnapshotRef.current = null;
         setToast(null);
         setHistoryVersion(v => v + 1);
-    }, [setToast]);
+    }, [history, setToast]);
 
     const showUndoToast = useCallback((message: string) => {
         toastSeq.current += 1;
-        setToast({ id: toastSeq.current, message, entryId: historyRef.current!.peekUndo()?.id ?? null });
-    }, [setToast]);
+        setToast({ id: toastSeq.current, message, entryId: history.peekUndo()?.id ?? null });
+    }, [history, setToast]);
 
     const dismissUndoToast = useCallback(() => setToast(null), [setToast]);
 
-    const topUndoId = useCallback(() => historyRef.current!.peekUndo()?.id ?? null, []);
+    const topUndoId = useCallback(() => history.peekUndo()?.id ?? null, [history]);
 
     const undoFromToast = useCallback(() => {
         const toast = toastRef.current;
         setToast(null);
         if (!toast || toast.entryId === null) return;
-        if (historyRef.current!.peekUndo()?.id !== toast.entryId) {
+        if (history.peekUndo()?.id !== toast.entryId) {
             setStatus('その後に別の操作をしたので、この知らせからは元に戻せません。「元に戻す」で 1 つずつ戻してください', 'hint');
             return;
         }
         undo();
-    }, [setToast, setStatus, undo]);
+    }, [history, setToast, setStatus, undo]);
 
     // ---- 学習の記録 ----
     const recordLearnAttempt = useCallback((attempt: Omit<LearnAttempt, 'id'>) => {
@@ -862,13 +860,12 @@ export function DawProvider({ children }: { children: ReactNode }) {
     // ---- 保存していない変更 ----
     // 最後に保存した (開いた) ときの控えと、カルテ・学習の記録・節の変更の回数。
     // いまの控えと比べて違えば「保存していない変更」。元に戻して保存したときと同じになれば、印は消える
-    const savedRef = useRef<SavedBaseline | null>(null);
+    const [saved, setSaved] = useState<SavedBaseline>(
+        () => ({ snapshot: captureProject(engine), chartId: null, history: learnHistory, touch: 0 }));
     const [savedVersion, setSavedVersion] = useState(0);
+    // 控えを取るときに読む、いまのカルテ・記録・回数 (描画を待たずに呼ばれる関数から読むため。描画のあとで写す)
     const latest = useRef({ chartId, learnHistory, touchVersion });
-    latest.current = { chartId, learnHistory, touchVersion };
-    if (savedRef.current === null) {
-        savedRef.current = { snapshot: captureProject(engine), chartId: null, history: learnHistory, touch: 0 };
-    }
+    useLayoutEffect(() => { latest.current = { chartId, learnHistory, touchVersion }; }, [chartId, learnHistory, touchVersion]);
 
     const captureBaseline = useCallback((): SavedBaseline => {
         pianoRollRef.current?._saveToEngine?.();
@@ -881,22 +878,20 @@ export function DawProvider({ children }: { children: ReactNode }) {
     // 控えを渡さないときは、次の描画のあとで取る (開いた直後は、カルテや記録の state がまだ反映されていないため)
     const pendingMark = useRef(false);
     const markSaved = useCallback((baseline?: SavedBaseline) => {
-        if (baseline) savedRef.current = baseline;
+        if (baseline) setSaved(baseline);
         else pendingMark.current = true;
         setSavedVersion(v => v + 1);
     }, []);
     useEffect(() => {
         if (!pendingMark.current) return;
         pendingMark.current = false;
-        savedRef.current = captureBaseline();
-        setSavedVersion(v => v + 1);
+        setSaved(captureBaseline());
     }, [savedVersion, captureBaseline]);
 
     // touch は 0 から増えるだけなので、-1 の控えとは一致しない (保存するまで、保存していない変更のまま)
     const markUnsaved = useCallback(() => {
         pendingMark.current = false;
-        savedRef.current = { ...captureBaseline(), touch: -1 };
-        setSavedVersion(v => v + 1);
+        setSaved({ ...captureBaseline(), touch: -1 });
     }, [captureBaseline]);
 
     const changeMark = useMemo(() => {
@@ -907,12 +902,10 @@ export function DawProvider({ children }: { children: ReactNode }) {
 
     const isDirty = useMemo(() => {
         void historyVersion; void trackVersion; void bpm; void beatsPerBar; void gridOffset; void swing; void savedVersion;
-        const saved = savedRef.current!;
         if (saved.chartId !== chartId || saved.history !== learnHistory || saved.touch !== touchVersion) return true;
         return !projectsEqual(saved.snapshot, captureProject(engine));
-    }, [historyVersion, trackVersion, bpm, beatsPerBar, gridOffset, swing, savedVersion, chartId, learnHistory, touchVersion]);
+    }, [historyVersion, trackVersion, bpm, beatsPerBar, gridOffset, swing, savedVersion, saved, chartId, learnHistory, touchVersion]);
 
-    const history = historyRef.current;
     const nextUndo = history.peekUndo(), nextRedo = history.peekRedo();
     void historyVersion;
 

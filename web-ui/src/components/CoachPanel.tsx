@@ -25,7 +25,7 @@
  * 比べた直後に Claude を呼ばずに取ってきて、最初から出す。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useDaw } from '../lib/store';
+import { useDaw, type CoachPair } from '../lib/store';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
 import engine, { type PianoNote } from '../lib/engine';
@@ -72,6 +72,19 @@ function RefChip({ label, onClick }: { label: string; onClick: () => void }) {
 }
 
 /**
+ * いま比べる組 (お手本のトラックと、打ち込みのトラック)。描画のたびに、トラックの一覧から選び直す。
+ * 選んだトラックは、描画のあいだに書き換えない (比べる・移動するときに、そのまま使う)。
+ */
+function useCoachTracks(coachPair: CoachPair) {
+    const withReference = engine.tracks.filter((t) => t.referenceNotes && t.referenceNotes.length > 0);
+    const reference = withReference.find((t) => t.id === coachPair.referenceId) ?? withReference[0];
+    // 打ち込みの既定は、そのパートの練習のトラック。無ければお手本のトラック自身
+    const attempt = engine.tracks.find((t) => t.id === coachPair.attemptId)
+        ?? (reference ? practiceTrackOf(reference.id) ?? reference : undefined);
+    return { withReference, reference, attempt };
+}
+
+/**
  * 差分コーチのパネル。お手本を持つトラックが無いときは、使い方の案内だけを出す。
  */
 export default function CoachPanel() {
@@ -91,11 +104,7 @@ export default function CoachPanel() {
     const [highlightId, setHighlightId] = useState<string | null>(null);
     void trackVersion;
 
-    const withReference = engine.tracks.filter((t) => t.referenceNotes && t.referenceNotes.length > 0);
-    const reference = withReference.find((t) => t.id === coachPair.referenceId) ?? withReference[0];
-    // 打ち込みの既定は、そのパートの練習のトラック。無ければお手本のトラック自身
-    const attempt = engine.tracks.find((t) => t.id === coachPair.attemptId)
-        ?? (reference ? practiceTrackOf(reference.id) ?? reference : undefined);
+    const { withReference, reference, attempt } = useCoachTracks(coachPair);
     // 結果は、いま選んでいる組で比べたものだけを出す
     const result = coachResult && reference && attempt
         && coachResult.referenceId === reference.id && coachResult.attemptId === attempt.id ? coachResult.result : null;
@@ -191,11 +200,16 @@ export default function CoachPanel() {
         return body;
     }, [result, chart, chartId, reference, bpm, gridOffset]);
 
-    // 比べ直したら（結果が変わったら）、前の説明は消して、Claude を呼ばずに返せる説明を探す。在れば最初から出す
-    useEffect(() => {
+    // 比べ直したら（結果が変わったら）、前の説明は消す (描画のうちに。古い説明を 1 度も出さない)
+    const [explainedRequest, setExplainedRequest] = useState(request);
+    if (explainedRequest !== request) {
+        setExplainedRequest(request);
         setExplain(null);
         setExplainError(null);
         setHighlightId(null);
+    }
+    // そのうえで、Claude を呼ばずに返せる説明を探す。在れば最初から出す
+    useEffect(() => {
         if (!request) return;
         let stale = false;
         fetchSavedExplanation(request)

@@ -45,13 +45,19 @@ export default function GuidePanel() {
     const [error, setError] = useState<GuideRequestError | null>(null);
     const [showKeyForm, setShowKeyForm] = useState(false);
 
-    // カルテを開いたとき・対象を変えたとき・カルテが変わったとき（グリッド補正）に、保存済みのガイドを探す。
-    // 在れば最初から表示する。Claude は呼ばない
+    // カルテを開いたとき・対象を変えたとき・カルテが変わったとき（グリッド補正）は、前のガイドを消す (描画のうちに)
+    const [shownFor, setShownFor] = useState({ chartId, chart, focus });
+    if (shownFor.chartId !== chartId || shownFor.chart !== chart || shownFor.focus !== focus) {
+        setShownFor({ chartId, chart, focus });
+        if (chartId) {
+            setResult(null);
+            setError(null);
+        }
+    }
+    // そのうえで、保存済みのガイドを探す。在れば最初から表示する。Claude は呼ばない
     useEffect(() => {
         if (!chartId) return;
         let stale = false;
-        setResult(null);
-        setError(null);
         fetchSavedGuide(chartId, focus || null)
             .then((saved) => {
                 if (stale) return;

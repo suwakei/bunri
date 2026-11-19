@@ -73,14 +73,18 @@ export default function GridEditor() {
     });
     const applying = regrid.job !== null;
 
-    // モーダルを開くたびに現在のカルテの値へ初期化する
-    useEffect(() => {
-        if (!showGridEditor || !chart) return;
-        setLocalBpm(chart.grid.bpm);
-        setLocalOffset(chart.grid.downbeat_offset_sec);
-        setLocalBeats(chart.grid.time_signature[0]);
-        setViewStart(Math.max(0, chart.grid.downbeat_offset_sec - 0.5));
-    }, [showGridEditor, chart]);
+    // モーダルを開くたびに (開いているあいだにカルテが変わったときも) 現在のカルテの値へ初期化する。
+    // 描画のうちに合わせる (開いた最初の描画から、カルテの値を出す)
+    const [syncedWith, setSyncedWith] = useState<{ open: boolean; chart: typeof chart }>({ open: false, chart: null });
+    if (syncedWith.open !== showGridEditor || syncedWith.chart !== chart) {
+        setSyncedWith({ open: showGridEditor, chart });
+        if (showGridEditor && chart) {
+            setLocalBpm(chart.grid.bpm);
+            setLocalOffset(chart.grid.downbeat_offset_sec);
+            setLocalBeats(chart.grid.time_signature[0]);
+            setViewStart(Math.max(0, chart.grid.downbeat_offset_sec - 0.5));
+        }
+    }
 
     const duration = chart?.source.duration_sec ?? 0;
 

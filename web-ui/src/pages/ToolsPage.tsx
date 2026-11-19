@@ -356,16 +356,15 @@ function EditPanel() {
 // ---- エフェクトパネル ----
 function EffectsPanel() {
     const [fxType, setFxType] = useState('eq');
-    const [params, setParams] = useState<Record<string, number>>({});
+    const [params, setParams] = useState<Record<string, number>>(() => defaultParams(FX_TOOL_PARAMS.eq || []));
     const [status, setStatus] = useState('');
     const [statusType, setStatusType] = useState('');
     const [results, setResults] = useState<AudioResult[]>([]);
-
-    useEffect(() => {
-        const defs: Record<string, number> = {};
-        (FX_TOOL_PARAMS[fxType] || []).forEach(p => { defs[p.id] = p.def; });
-        setParams(defs);
-    }, [fxType]);
+    // 種類を変えたら、値はその種類の既定に戻す
+    const changeFxType = useCallback((next: string) => {
+        setFxType(next);
+        setParams(defaultParams(FX_TOOL_PARAMS[next] || []));
+    }, []);
 
     const handleApply = useCallback(async () => {
         const file = ((document.getElementById('fx-file') as HTMLInputElement | null))?.files?.[0];
@@ -387,7 +386,7 @@ function EffectsPanel() {
             <p className="desc">WAV ファイルにエフェクトをかけて、新しいファイルとしてダウンロードします。</p>
             <div className="form-group"><label>WAV ファイル</label><input type="file" id="fx-file" accept=".wav" {...tip('効果をかける WAV ファイルを選びます')} /></div>
             <div className="form-group"><label>エフェクト</label>
-                <select value={fxType} onChange={e => setFxType(e.target.value)} {...tip('かける効果の種類')}>
+                <select value={fxType} onChange={e => changeFxType(e.target.value)} {...tip('かける効果の種類')}>
                     {Object.entries(FX_TOOL_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                 </select>
             </div>
