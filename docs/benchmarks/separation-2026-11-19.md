@@ -4,6 +4,9 @@
 **SubRoformer＋MPS**、CPUでの速さ優先で **SCNet小型＋ONNX** とする。
 今回の作業は比較と選定まで。アプリの既定モデルは変更していない。
 
+その後の本番実装で両モデルを画面へ追加し、SubRoformerを既定にした。
+現在の使い方は [パート分離の品質と音量](../separation-quality.md) を参照。
+
 ## 条件
 
 Apple M5、メモリ24 GiB、macOS 26.5.2。現行FTと6s、新モデル2つ、小型ONNXの計5モデルを

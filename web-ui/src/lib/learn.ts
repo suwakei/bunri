@@ -72,9 +72,9 @@ export { isDrumPart };
 /** ドラムの採譜の作り方。`stems`: 種類ごとに分けた音から / `spectral`: 1 本の音を、音の明るさで振り分けた。 */
 export type DrumSource = 'stems' | 'spectral';
 
-/** パート分離のモデル。既定では、4 パートの分離を優先する。 */
-export type SeparationModel = 'htdemucs_ft' | 'htdemucs' | 'htdemucs_6s';
-export const DEFAULT_SEPARATION_MODEL: SeparationModel = 'htdemucs_ft';
+/** パート分離のモデル。既定は、精度を優先する SubRoformer の4パート。 */
+export type SeparationModel = 'subroformer' | 'scnet' | 'htdemucs_ft' | 'htdemucs' | 'htdemucs_6s';
+export const DEFAULT_SEPARATION_MODEL: SeparationModel = 'subroformer';
 
 /**
  * `/api/decompose` の結果の 1 パート。API の側では「ステム」と呼んでいる。
@@ -503,7 +503,8 @@ export function useLearnActions() {
         const usedChart = chart ? chartId : null;
 
         const notice = (await modelDownloadNotice(model)) || (splitDrums && drumModelCached === false ? MODEL_DOWNLOAD_NOTICE : '');
-        setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
+        const timeNotice = model === 'subroformer' ? '時間がかかります。' : '数分かかります。';
+        setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。${timeNotice}${notice}`);
         // 始める (受け付けられたら、呼び手に知らせる) → 終わるのを待つ
         let job: Job;
         try {

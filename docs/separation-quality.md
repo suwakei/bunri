@@ -4,12 +4,14 @@
 
 ## 分け方
 
-「学ぶ」の `POST /api/decompose` は Form の `model` で次を選ぶ。省略時は `htdemucs_ft`。
+「学ぶ」の `POST /api/decompose` は Form の `model` で次を選ぶ。省略時は `subroformer`。
 未対応の値は HTTP 422 で、処理やモデル取得を始めずに拒否する。成功結果の `model` は使った値。
 
 | 値 | 画面での扱い | 出力 |
 |---|---|---|
-| `htdemucs_ft` | 音の分離を優先（既定） | ボーカル・ドラム・ベース・その他 |
+| `subroformer` | 精度を優先（既定）。対応MacはMPS、他はCPU | ボーカル・ドラム・ベース・その他 |
+| `scnet` | 速さを優先。ONNX RuntimeのCPU | 同上 |
+| `htdemucs_ft` | 従来の分離優先版 | 同上 |
 | `htdemucs` | 速さを優先 | 同上 |
 | `htdemucs_6s` | ギター・ピアノも分ける | 上記にギター・ピアノを追加 |
 
@@ -42,13 +44,25 @@ Demucs 4.1 は `torchaudio.save` を通らず独自の `encode_wav` で浮動小
 モデル自身の混入・欠落や、分離結果の和が原曲と完全一致することは保証しない。
 真の単独パートがない曲では、そのパートの正しい音量を一意に検証できない。
 
-## 新しいモデルの調査
+## 新しいモデルの実装
 
-BS-RoFormer / Mel-Band RoFormer 系と SubRoformer が候補。今回それらのエンジンは追加していない。
+SubRoformerと小型SCNetのエンジンを実装し、通常の画面から選べるようにした。
+既定はSubRoformer。初回は選んだモデルだけを取得する（約207 MB / 約13 MB）。
+固定revisionの重みをSHA-256とサイズで照合し、使う直前にも破損を確認する。
+SubRoformerのコードと設定・MITライセンスは `backend/_vendor/subroformer/` に同梱する。
+SCNetは比較したJavaScriptの処理をNumPy/SciPy/ONNX Runtimeへ移植し、Nodeを不要にした。
+通常動作で比較環境・`/tmp`・外部checkout・実行時コンパイラを必要としない。
+
+モデルの取得も推論も子プロセス内で行う。取得バイト数と処理区間数で進み具合を表示し、
+中止時は子プロセスと変換用ffmpegを終了する。取得途中の`.part`と分離途中の出力は消し、
+取得済みの正常な重みは残す。失敗理由はジョブ経由で画面へ伝え、別モデルへ黙って切り替えない。
+再分離を頼んだ場合も、モデル専用の中間出力だけを初期化し、画面の旧パートは成功するまで保持する。
+
+導入前の調査で確認した事項:
 
 - [SubRoformer 公式](https://github.com/ArchiMickey/SubRoformer) は4パート、CPU・MPS対応、safetensorsを配布。
   作者の公開値はMUSDB18-HQでの評価で、対象のゲーム音楽での優位性は未検証。
-  パッケージ全体は学習用の依存も多く、NumPy 2以上の要件は既存の採譜依存との調整が必要。
+  パッケージ全体は学習用依存も多いため、推論に必要な部分をMITで同梱し、学習用依存は入れない。
 - [BS-RoFormer-Infer 公式](https://github.com/openmirlab/bs-roformer-infer) は推論用だが、
   既定6パート重みの来歴・ライセンス未確認を明記し、追加モデルをsafetensorsに限る既存方針にもそのまま合わない。
 
@@ -58,7 +72,7 @@ BS-RoFormer / Mel-Band RoFormer 系と SubRoformer が候補。今回それら�
 その後、5モデル・7実行条件・5区間の実比較を実施した。
 [比較結果と次の導入候補](benchmarks/separation-2026-11-19.md)、
 [比較ツールと再現方法](benchmarks/separation-method.md) を参照。
-この比較自体では、アプリの既定モデルは替えていない。
+比較時点では既定を替えず、その後の本番実装でSubRoformerへ変更した。
 
 ## 検証
 
@@ -70,3 +84,19 @@ BS-RoFormer / Mel-Band RoFormer 系と SubRoformer が候補。今回それら�
 本物の窓の `smoke.test.ts` の音楽取り込みケースでは、float32 ステレオ WAV を取り込み、
 Rust の描画後も入力とピークが一致することを確認する（分離計算の応答は合成）。
 通常のテストで実モデルの重みをダウンロードしたり、実LLMを呼んだりしない。
+
+本番実装では `test_modern_models.py` / `test_modern_separate.py` / `test_modern_inference.py` で
+取得・破損検出・進捗・中止と後片付け・左右と振幅・再実行を検証する。
+同梱コードと設定・ライセンスはvendorとprepare-desktopのテストで確認する。
+SCNet移植版は正解付き6.8秒と15秒の実出力で比較時JavaScript版と照合し、最大絶対差は1.1〜2.4×10⁻⁷。
+
+本物の窓の実モデル検証は、固定重みを用意したときだけ明示的に実行する。
+`BUNRI_E2E_MODEL_FIXTURES` は `modern_models.py` の2つのファイル名で重みを置いたディレクトリ。
+テストは隔離した置き場へコピーし、新モデルのUI選択→実API→同梱worker→音声デコードと連続再分離を確認する。
+
+```sh
+cd web-ui
+node e2e-desktop/build.mjs
+BUNRI_E2E_MODEL_FIXTURES=/absolute/path/to/models npx vitest run \
+  --config e2e-desktop/vitest.config.ts -t '同梱sidecarでSubRoformer'
+```

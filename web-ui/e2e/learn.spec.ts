@@ -71,6 +71,10 @@ function fakeDecompose() {
 /** カルテとパート分離の API を差し替える。パート分離に送られたリクエストを返す。 */
 async function fakeBackend(page: Page) {
     const sent: { decompose?: Request } = {};
+    await page.route((url) => /^\/api\/models\/(subroformer|scnet)\/status$/.test(url.pathname), (route) => {
+        const model = new URL(route.request().url()).pathname.split('/')[3];
+        return route.fulfill({ json: { model, cached: false, missing: 1, download_bytes: model === 'subroformer' ? 207349784 : 12900000 } });
+    });
     await fakeJob(page, '/api/chart', fakeChart);
     await page.route('**/api/chart/song/guide*', (route) => route.fulfill({ json: { saved: false } }));
     await fakeJob(page, '/api/decompose', fakeDecompose, (request) => { sent.decompose = request; });
@@ -240,17 +244,18 @@ test('分離した音声は音量とパンを二重適用せず、ミュート�
     await expect(statusText(page)).toContainText('一時停止');
 });
 
-test('分け方は 4 パートの分離を優先し、速さや 6 パートも選んで処理を頼める', async ({ page }) => {
+test('分け方は SubRoformer が既定で、高速な SCNet と従来の3方式も選んで処理を頼める', async ({ page }) => {
     const sent = await fakeBackend(page);
     await openDaw(page);
     await importSong(page, mp3());
     await expect(statusText(page)).toContainText('カルテを作りました');
     await openTab(page, '曲とパート');
     const choice = page.getByRole('combobox', { name: '分け方' });
-    await expect(choice).toHaveValue('htdemucs_ft');
-    await expect(page.locator('#learn-separation-model-note')).toContainText('約 4 倍');
-    for (const model of ['htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
+    await expect(choice).toHaveValue('subroformer');
+    await expect(page.locator('#learn-separation-model-note')).toContainText('約 207 MB');
+    for (const model of ['subroformer', 'scnet', 'htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
         await choice.selectOption(model);
+        if (model === 'scnet') await expect(page.locator('#learn-separation-model-note')).toContainText('約 13 MB');
         sent.decompose = undefined;
         await page.getByRole('button', { name: /パートに分け(?:て採譜する|直す)/ }).click();
         await expect.poll(() => sent.decompose?.postData() ?? '').toContain(`name="model"\r\n\r\n${model}\r\n`);

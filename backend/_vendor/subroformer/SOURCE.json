@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/ArchiMickey/SubRoformer",
+  "revision": "bf4e35aff7905c8cd43b8d7365ffd1bcc7d1df02",
+  "license": "MIT",
+  "subset": "CPU/MPSのPyTorch推論。学習コード、重み、Core ML、JITネイティブ拡張は含めない。",
+  "changes": {
+    "subroformer/frontend/subband/dsp3/utils.py": "上流の_shift_frequency_referenceだけを呼ぶ。CPU/CUDA/MPSの実行時コンパイルを行わない。",
+    "subroformer/inference/coreml.py": "Core MLの依存を読み込まない互換入口。torch/autoだけ許可。"
+  },
+  "upstream_sha256": {
+    "subroformer/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "subroformer/checkpoint_utils.py": "c2f620bdb16c20c3dd7f73983f509e142c91201010fc94dc7ea2a12c344419d5",
+    "subroformer/configs/__init__.py": "1018833626c182156e85d76483e4509daaab39955d81b6144af2ea0b6bb1ac42",
+    "subroformer/configs/sbroformer_base_4stem_silu.yaml": "c84ff8e5816390d8e5ce764f07c4bf88578c641b52434af524499cbba26c2d33",
+    "subroformer/frontend/__init__.py": "1615b3646f1ee974625203f0caf6fdd58817073608b044fe8a450775ac6771ff",
+    "subroformer/frontend/subband/__init__.py": "b1faa950e693e19667a56604076944eb30c977b0b0b98c16a0e2f5102631db89",
+    "subroformer/frontend/subband/dsp/__init__.py": "200cfce3fd0b6b6b2e2b58f44794475f79b03f304d1d73de97b5e2668279878f",
+    "subroformer/frontend/subband/dsp/analytic.py": "5df7eb1c780e2ed4b5c9bb71faee50bcbfa196fa9fdd250c4cc541bb59c0a738",
+    "subroformer/frontend/subband/dsp/banks.py": "0d3fa669d86c63629d3f618683ca5b9935bc6952c11eeee6c83771669928e3a0",
+    "subroformer/frontend/subband/dsp/convolve.py": "78a58156d335f7cf491808bf1dc9008fd690dc401e85833947bc99c949d8595e",
+    "subroformer/frontend/subband/dsp/inference_optimized.py": "e1da4f81500351407119ba4d339df3d8d21008da513f2bcd0cb992a9772aec68",
+    "subroformer/frontend/subband/dsp/overlap_add.py": "0a3d9024bffea8c372f28c88fe00a4a62ba25c94b6f5dba2a11b33e023a35953",
+    "subroformer/frontend/subband/dsp/subband_fast_triangle.py": "fa48843de75b91a9cf4e0cf5e23f93374492a2eca0ec8cb6a3e2d433da1c74e0",
+    "subroformer/frontend/subband/dsp/upsample.py": "c376b417a875008d70948d4de3febebc5f8b88b704b30bfd2185331af80cc6dd",
+    "subroformer/frontend/subband/dsp/utils.py": "80d93138ce7b8db2c499061bae09d40bdfa48c91fa7e19656dcd5f91cadfa0ac",
+    "subroformer/frontend/subband/dsp3/__init__.py": "7fbf5f260e978ae8adca65d39dbb361f31d1fcde095b053af30bb54ed8269632",
+    "subroformer/frontend/subband/dsp3/inference_optimized.py": "8faee0cf5e79d826029aa0478e4db99e7e8caee740eec0035c0e5c6e8c1178ba",
+    "subroformer/frontend/subband/dsp3/subband_fast_triangle.py": "28233af54da0924d3c8b66dfb6c18f450cf23da0fce98c424872eb1822ee4ae3",
+    "subroformer/frontend/subband/dsp3/utils.py": "cb53eb6fba8dbec434a189d14510b4302a5d3734e20e30ccc46b96103c2dad9c",
+    "subroformer/inference/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "subroformer/inference/engine.py": "38190b493946c5ec6c3c3a7514aa40cf938e7fb276f6522499eff1d70126e8db",
+    "subroformer/model.py": "22cf9ddf7db171c228e294a026410829b6628b255f85718a1a646b8a39682fb3",
+    "subroformer/model_utils.py": "ff487ac3aeaf12613085274a19a42b5b7f4e8345d47393ec50981814a28abf1a"
+  }
+}

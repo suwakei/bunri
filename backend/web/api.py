@@ -992,7 +992,7 @@ async def api_decompose(
     grid_offset: float = Form(0),
     sensitivity: float = Form(0.5),
     split_drums: str = Form("false"),
-    model: Literal["htdemucs_ft", "htdemucs", "htdemucs_6s"] = Form("htdemucs_ft"),
+    model: Literal["subroformer", "scnet", "htdemucs_ft", "htdemucs", "htdemucs_6s"] = Form("subroformer"),
     run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
@@ -1007,7 +1007,7 @@ async def api_decompose(
             （同時に鳴った種類が、両方ともイベントになる）。追加のモデルが手元に無ければ、最初にダウンロードする
             （約 160 MB）。用意できなければ失敗にせず、これまでの振り分けで採譜する（結果の ``drum_fallback`` に理由）。
             付けなければ、ダウンロードもドラムの分離もしない。
-        model: 分離を優先する4パート版（既定）、速い4パート版、ギター・ピアノを加えた6パート版。
+        model: SubRoformer（既定）、SCNet、または従来のDemucs各版。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:

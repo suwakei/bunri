@@ -145,16 +145,22 @@ function SongPanel() {
                 <select id="learn-separation-model" value={separationModel} disabled={blocked}
                     aria-describedby="learn-separation-model-note"
                     onChange={e => setSeparationModel(e.target.value as SeparationModel)}>
-                    <option value="htdemucs_ft">音の分離を優先（4パート・時間がかかります）</option>
-                    <option value="htdemucs">速さを優先（4パート）</option>
-                    <option value="htdemucs_6s">ギター・ピアノも分ける（6パート）</option>
+                    <option value="subroformer">精度を優先（SubRoformer・4パート）</option>
+                    <option value="scnet">速さを優先（SCNet・4パート）</option>
+                    <option value="htdemucs_ft">従来の精度優先（Demucs FT・4パート）</option>
+                    <option value="htdemucs">従来の標準（Demucs・4パート）</option>
+                    <option value="htdemucs_6s">ギター・ピアノも分ける（Demucs・6パート）</option>
                 </select>
                 <p className="note-text" id="learn-separation-model-note">
                     {separationModel === 'htdemucs_6s'
                         ? 'ボーカル・ドラム・ベース・ギター・ピアノ・その他に分けます。曲によっては、別の楽器の混入や音の欠けが増えることがあります。'
-                        : `ボーカル・ドラム・ベース・その他に分けます。${separationModel === 'htdemucs_ft'
-                            ? '「速さを優先」の約 4 倍の時間が目安です。' : ''}`}
-                    分けた音声の音量と左右の広がりは、そのまま保ちます。
+                        : `ボーカル・ドラム・ベース・その他に分けます。${separationModel === 'subroformer'
+                            ? '対応するMacではGPUを自動で使い、CPUだけの環境では時間がかかります。初回のみ約 207 MB をダウンロードします。'
+                            : separationModel === 'scnet'
+                                ? '速く処理できますが、ベースでは別の分け方の方がきれいな場合があります。初回のみ約 13 MB をダウンロードします。'
+                                : separationModel === 'htdemucs_ft'
+                                    ? '「従来の標準」の約 4 倍の時間が目安です。' : ''}`}
+                    分けた音声を取り込むときに、音量や左右の広がりを変えません。
                 </p>
                 <label htmlFor="file-transcribe-sensitivity">採譜の感度（{sensitivity}）</label>
                 <input id="file-transcribe-sensitivity" type="range" min="0.1" max="1" step="0.05"
@@ -185,7 +191,8 @@ function SongPanel() {
                                 ? 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります。MIDI ファイルから読み込んだお手本は残ります'
                                 : 'もう一度パートに分けます。いまのパートと練習のトラックは、新しいものに入れ替わります')
                             : '原曲をボーカル・ドラム・ベースなどに分けて、パートごとにお手本を作ります')}>
-                    {separated.length > 0 ? 'パートに分け直す（数分かかります）' : 'パートに分けて採譜する（数分かかります）'}
+                    {separated.length > 0 ? 'パートに分け直す' : 'パートに分けて採譜する'}
+                    {separationModel === 'subroformer' ? '（時間がかかります）' : '（数分かかります）'}
                 </button>
                 <JobCard slot="learn-parts" job={partsJob.job} busyJob={partsJob.busyJob} onCancel={() => void partsJob.cancel()}
                     onShowBusy={showJob} hint="待っている間も、カルテやガイドは読めます（「カルテ」「ガイド」の段）。" />

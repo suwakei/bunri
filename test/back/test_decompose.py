@@ -614,7 +614,7 @@ class TestDecomposeDrums:
         monkeypatch.setattr(demucs_progress, "run", run)
         monkeypatch.setattr(audio_utils, "results_dir", lambda *parts: _mkdir(tmp_path.joinpath("results", *parts)))
         job = background_jobs.Job(kind="decompose", stages=decompose.decompose_stages(detect_bpm=False, split_drums=True))
-        result = decompose.decompose(str(tmp_path / "song.wav"), bpm=120, split_drums=True, job=job)
+        result = decompose.decompose(str(tmp_path / "song.wav"), bpm=120, split_drums=True, job=job, model="htdemucs_6s")
         return result, job, first_calls, partial
 
     def test_ドラムの細分化が失敗しても_分けずに採譜して続ける(self, tmp_path, monkeypatch, stems):
@@ -673,7 +673,7 @@ def _mkdir(path):
 
 
 class TestSeparationModel:
-    @pytest.mark.parametrize("model", ["htdemucs_ft", "htdemucs", "htdemucs_6s"])
+    @pytest.mark.parametrize("model", ["subroformer", "scnet", "htdemucs_ft", "htdemucs", "htdemucs_6s"])
     def test_選んだモデルで一度だけ分けて音量を変えずに渡す(self, tmp_path, monkeypatch, model):
         import audio_utils
         import decompose

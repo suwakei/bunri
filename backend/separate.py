@@ -74,7 +74,8 @@ def deep_separate_stages(recursive_depth=0, split_drums=False, download_drum_mod
     Returns:
         list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
     """
-    if model not in MODELS:
+    import modern_models
+    if model not in MODELS and model not in modern_models.MODELS:
         raise ValueError(f"非対応の分離モデルです: {model}")
     stages = []
     if split_drums and download_drum_model:
@@ -408,7 +409,7 @@ def deep_separate(
             （``separate_drums``）が失敗したときに呼ぶ関数。渡すと、失敗にせず、ドラムの部位を
             結果に入れないで続ける（6 ステムの分離は捨てない。書きかけの細分化の出力は消してある）。
             キャンセルは受け止めず、そのまま伝える。None なら、失敗をそのまま送出する（デフォルト）。
-        model (str, optional): ``htdemucs`` / ``htdemucs_ft`` / ``htdemucs_6s``。
+        model (str, optional): ``htdemucs`` / ``htdemucs_ft`` / ``htdemucs_6s`` / ``subroformer`` / ``scnet``。
             既定は ``htdemucs_6s``。``other`` の再分離は、明示した場合だけ 6 ステムのモデルを使う。
 
     Returns:
@@ -430,7 +431,8 @@ def deep_separate(
     """
     import background_jobs
 
-    if model not in MODELS:
+    import modern_models
+    if model not in MODELS and model not in modern_models.MODELS:
         raise ValueError(f"非対応の分離モデルです: {model}")
     if job is None:
         job = background_jobs.detached()
@@ -440,16 +442,22 @@ def deep_separate(
 
     # 第1段: 選んだモデルでフル分離
     print(f"[深層分離] === 第1段: {model} フル分離 ===")
-    first = separate_audio(
-        input_path=input_path,
-        output_dir=output_dir,
-        model=model,
-        two_stems=False,
-        mp3_output=mp3_output,
-        segment=segment,
-        jobs=jobs,
-        job=job,
-    )
+    if model in modern_models.MODELS:
+        if mp3_output:
+            raise ValueError("この分離モデルの出力はWAVです。MP3への変換は分離後に行ってください。")
+        from modern_separate import separate
+        first = separate(input_path, output_dir, model, job=job)
+    else:
+        first = separate_audio(
+            input_path=input_path,
+            output_dir=output_dir,
+            model=model,
+            two_stems=False,
+            mp3_output=mp3_output,
+            segment=segment,
+            jobs=jobs,
+            job=job,
+        )
 
     result = {}
     other_path = None

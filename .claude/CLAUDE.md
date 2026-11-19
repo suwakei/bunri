@@ -1,7 +1,7 @@
 # bunri DAW
 
 ## 概要
-Demucs (Meta AI) による音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。
+SubRoformer・SCNet・Demucsによる音源分離と、音声編集・ミキシング・エフェクトを備えた軽量DAW。
 React / Vite / TypeScript の画面、FastAPI / Python 3.11 の音声処理、Tauri v2 / Rust のデスクトップアプリ。
 この文書を Claude Code と Codex の共通規約とし、Codex の入口はルートの `AGENTS.md`。
 
@@ -85,6 +85,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `web/project_routes.py` | プロジェクトの保存・開く（`/api/project/*`）とデータの整理（`/api/storage*`）の API |
 | `web/job_routes.py` | ジョブの API（`/api/jobs…`）と、時間のかかる API を `?async=1` でジョブとして始めるための共通処理（`dispatch`） |
 | `separate.py` | Demucs 音源分離（htdemucs標準） |
+| `modern_models.py` / `modern_separate.py` | SubRoformer・SCNetの固定重みの取得・SHA照合と、キャンセル可能な分離子プロセスへの橋渡し |
+| `_modern_separate_runner.py` / `subroformer_inference.py` / `scnet_inference.py` | 新しい4パート分離。SubRoformerは同梱したMITの推論コードでMPSまたはCPU、SCNetはONNX RuntimeのCPU。比較用の別環境やNodeに依存しない |
 | `deep_separate.py` | 6ステム詳細分離（htdemucs_6s） |
 | `edit.py` | 基本編集（トリム/カット/分割/コピー/音量/フェード/ループ/パン/速度/結合/ノーマライズ/リバース/MP3書き出し） |
 | `effects.py` | エフェクト（3バンドEQ/コンプレッサー/リバーブ/ディレイ） |
@@ -153,6 +155,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 `pyproject.toml` に記載し、`uv.lock` で版を固定する（`uv sync` で入る。Python は 3.11）。
 主要なもの:
 - `demucs`, `torch`, `torchaudio` — 音源分離
+- `onnxruntime`, `omegaconf` — SCNetと同梱SubRoformerの推論
 - `fastapi`, `uvicorn`, `python-multipart` — Web API
 - `soundfile` — WAV読み書き
 - `numpy` — 音声処理全般（遅延インポート）
@@ -165,9 +168,10 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 - **並列制限**: jobs=1でCPU負荷を最小化
 - **WAV入出力**: エンコード/デコードの負荷を避けるためWAVをデフォルトに
 - **遅延インポート**: 起動高速化のため、重いモジュール（numpy等）はボタン押下時にインポート
-- **モデル**: 「学ぶ」のパート分離は分離を優先する `htdemucs_ft`（4パート）を既定とする。
-  `htdemucs`（速い4パート）と `htdemucs_6s`（ギター・ピアノを含む6パート）も明示選択できる。
-  `htdemucs_ft` はCPUでは標準の約4倍かかる。音量を保つ保存とモデル選択の決まりは
+- **モデル**: 「学ぶ」のパート分離は精度を優先する `subroformer`（4パート）を既定とする。
+  対応MacではMPSを自動利用し、他はCPUで動く。速さ優先の `scnet`（CPU・4パート）と従来の
+  `htdemucs_ft` / `htdemucs` / `htdemucs_6s` も選択できる。初回は選んだ重みだけを取得する。
+  音量を保つ保存とモデル選択の決まりは
   [docs/separation-quality.md](../docs/separation-quality.md)。
 
 ## コーディング規約

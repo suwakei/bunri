@@ -10,7 +10,7 @@
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
@@ -275,6 +275,102 @@ describe('起動', () => {
         }
     });
 
+});
+
+describe('新しい分離モデル', () => {
+    // 通常の検証でモデルをダウンロードしない。親が用意した固定重みだけをテストの置き場へコピーする。
+    it.skipIf(!process.env.BUNRI_E2E_MODEL_FIXTURES)('同梱sidecarでSubRoformerとSCNetを選び、実際に分離した音声を取り込める', async () => {
+        const fixtures = process.env.BUNRI_E2E_MODEL_FIXTURES!;
+        const models = join(inject('dataDir'), 'models');
+        mkdirSync(models, { recursive: true });
+        for (const name of ['subroformer-perceptual-c0ac06e4.safetensors', 'scnet-small-98228931.onnx']) {
+            copyFileSync(join(fixtures, name), join(models, name));
+        }
+        const wav = makeWav(0.5, [110, 440]).toString('base64');
+        try {
+            await app.run((encoded: string) => {
+                const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+                const transfer = new DataTransfer();
+                transfer.items.add(new File([bytes], 'native-modern.wav', { type: 'audio/wav' }));
+                const input = document.querySelector<HTMLInputElement>('#song-file')!;
+                input.files = transfer.files;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }, wav);
+            const { port, token } = await backendInfo();
+            seenTokens.add(token);
+            const base = `http://127.0.0.1:${port}`;
+            await app.waitFor('原曲を取り込み、カルテの処理を終える', async (baseUrl: string, key: string) => {
+                const state = await fetch(`${baseUrl}/api/jobs`, { headers: { 'X-Bunri-Token': key } }).then(r => r.json());
+                return document.querySelector('#song-current')?.textContent?.includes('native-modern.wav') && !state.active;
+            }, [base, token], 60_000);
+            await waitStatus('カルテを作りました', 60_000);
+            await app.click('//button[@role="tab"][normalize-space()="曲とパート"]');
+            const checkModel = async (model: string) => {
+                const previous = await app.run(async (baseUrl: string, key: string) => {
+                    const state = await fetch(`${baseUrl}/api/jobs`, { headers: { 'X-Bunri-Token': key } }).then(r => r.json());
+                    return state.jobs.find((item: { kind: string }) => item.kind === 'decompose')?.id ?? null;
+                }, base, token);
+                await app.run((value: string) => {
+                    const select = document.querySelector<HTMLSelectElement>('#learn-separation-model')!;
+                    select.value = value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }, model);
+                await app.waitFor('分離ボタンが押せる', () => {
+                    const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+                        .find(item => item.textContent?.includes('パートに分けて採譜する') || item.textContent?.includes('パートに分け直す'));
+                    return button !== undefined && !button.disabled;
+                }, []);
+                await app.click('//button[contains(normalize-space(),"パートに分けて採譜する") or contains(normalize-space(),"パートに分け直す")]');
+                await app.waitFor('新しく始めた分離ジョブが完了する', async (baseUrl: string, key: string, oldId: string | null) => {
+                    const state = await fetch(`${baseUrl}/api/jobs`, { headers: { 'X-Bunri-Token': key } }).then(r => r.json());
+                    const job = state.jobs.find((item: { kind: string; id: string }) => item.kind === 'decompose');
+                    if (job?.state === 'error') throw new Error(JSON.stringify(job.error));
+                    return job?.id !== oldId && job?.state === 'done';
+                }, [base, token, previous], 60_000);
+                await waitStatus('パートに分けました', 60_000);
+                const outcome = await app.run(async (baseUrl: string, key: string) => {
+                    const headers = { 'X-Bunri-Token': key };
+                    const state = await fetch(`${baseUrl}/api/jobs`, { headers }).then(r => r.json());
+                    const job = state.jobs.find((item: { kind: string }) => item.kind === 'decompose');
+                    const finished = await fetch(`${baseUrl}/api/jobs/${job.id}`, { headers }).then(r => r.json());
+                    const stems = Object.values(finished.result?.stems ?? {}) as { audio_url?: string }[];
+                    if (!stems.length || !stems[0].audio_url) throw new Error(JSON.stringify(finished));
+                    const bytes = await fetch(`${baseUrl}${stems[0].audio_url}`, { headers }).then(r => r.arrayBuffer());
+                    const context = new AudioContext();
+                    try {
+                        const buffer = await context.decodeAudioData(bytes);
+                        const samples = buffer.getChannelData(0);
+                        return { model: finished.result.model, state: finished.state, duration: buffer.duration,
+                            channels: buffer.numberOfChannels, finite: samples.every(Number.isFinite),
+                            clips: document.querySelectorAll('#tracks-container .clip').length };
+                    } finally {
+                        await context.close();
+                    }
+                }, base, token);
+                expect(outcome.model).toBe(model);
+                expect(outcome.state).toBe('done');
+                expect(outcome.duration).toBeCloseTo(0.5, 2);
+                expect(outcome.channels).toBe(2);
+                expect(outcome.finite).toBe(true);
+                expect(outcome.clips).toBeGreaterThan(1);
+            };
+            await checkModel('subroformer');
+            await checkModel('scnet');
+            // 同じモデルで分け直しても、前回の中間WAVと衝突しない。
+            await checkModel('scnet');
+            expect((await record()).errors).toEqual([]);
+        } finally {
+            await app.click('//button[@aria-label="プロジェクトのメニュー"]');
+            await app.click('//button[@role="menuitem"][normalize-space()="新しいプロジェクト"]');
+            await app.waitFor('新規作成または保存の確認', () => document.querySelector('#status-text')?.textContent?.includes('新しいプロジェクトにしました')
+                || Array.from(document.querySelectorAll('[role="alertdialog"] button'))
+                    .some(button => button.textContent?.trim() === '保存しない'), []);
+            if (await app.run(() => document.querySelector('[role="alertdialog"]') !== null)) {
+                await app.click('//*[@role="alertdialog"]//button[normalize-space()="保存しない"]');
+            }
+            await waitStatus('新しいプロジェクトにしました');
+        }
+    });
 });
 
 /** 動きの記録のファイル (テストの一時ディレクトリの中。利用者の記録には混ざらない)。 */

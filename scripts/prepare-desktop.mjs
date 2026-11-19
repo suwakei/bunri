@@ -114,29 +114,34 @@ function renameOrCopy(src, dest) {
 }
 
 /** Python のコードと依存の定義を src-tauri/runtime/ に並べ直す。 */
-function prepareRuntime() {
-    const dest = join(TAURI_DIR, 'runtime');
+export function prepareRuntime(root = ROOT, tauriDir = join(root, 'src-tauri')) {
+    const dest = join(tauriDir, 'runtime');
     rmSync(dest, { recursive: true, force: true });
     mkdirSync(dest, { recursive: true });
     for (const file of ['pyproject.toml', 'uv.lock']) {
-        cpSync(join(ROOT, file), join(dest, file));
+        cpSync(join(root, file), join(dest, file));
     }
     let count = 0;
-    cpSync(join(ROOT, 'backend'), join(dest, 'backend'), {
+    cpSync(join(root, 'backend'), join(dest, 'backend'), {
         recursive: true,
         filter: (src) => {
-            const rel = src.slice(join(ROOT, 'backend').length).replaceAll('\\', '/');
+            const rel = src.slice(join(root, 'backend').length).replaceAll('\\', '/');
             if (rel.includes('/__pycache__')) return false;
+            if (/\.(pyc|pyo)$/.test(rel)) return false;
+            // 比較専用の入口は配布せず、推論に要る vendor の YAML・LICENSE は再帰コピーする。
+            if (/^\/(_bench_[^/]+\.py|separation_bench\.py)$/.test(rel)) return false;
             if (rel.endsWith('.py')) count += 1;
             return true;
         },
     });
     // 同梱した uv.lock の指紋。アプリ側が「環境がこのロックのとおりか」を見分けるのに使う
-    const lockHash = createHash('sha256').update(readFileSync(join(ROOT, 'uv.lock'))).digest('hex');
+    const lockHash = createHash('sha256').update(readFileSync(join(root, 'uv.lock'))).digest('hex');
     writeFileSync(join(dest, 'lock.sha256'), lockHash + '\n');
     console.log(`[prepare] runtime を用意: Python ファイル ${count} 本 → ${dest}`);
 }
 
-const triple = targetTriple();
-await prepareUv(triple);
-prepareRuntime();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    const triple = targetTriple();
+    await prepareUv(triple);
+    prepareRuntime();
+}

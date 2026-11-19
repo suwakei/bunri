@@ -515,7 +515,7 @@ class TestRealEndpoints:
             assert split_requests[3:] == [True, True]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", [None, "htdemucs_ft", "htdemucs", "htdemucs_6s"])
+    @pytest.mark.parametrize("model", [None, "subroformer", "scnet", "htdemucs_ft", "htdemucs", "htdemucs_6s"])
     async def test_選んだ分離モデルを使い_mp3入力もwavで返す(self, real_app, wav_bytes, tmp_path, monkeypatch, model):
         import decompose
 
@@ -534,7 +534,7 @@ class TestRealEndpoints:
             assert response.status_code == 202, response.text
             done = await poll(client, response.json()["id"])
             assert done["state"] == "done", done
-            expected = model or "htdemucs_ft"
+            expected = model or "subroformer"
             assert selected == [expected]
             assert done["result"]["model"] == expected
             url = done["result"]["stems"]["other"]["audio_url"]

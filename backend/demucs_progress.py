@@ -117,7 +117,7 @@ def install_hooks():
     return True
 
 
-def watch_parent(fd=0):
+def watch_parent(fd=0, on_exit=None):
     """親（API サーバ）が居なくなったら、自分で終わるための見張りを始める。
 
     親は、この子プロセスの標準入力をパイプで握ったままにする（``Job.run_process``）。
@@ -129,6 +129,7 @@ def watch_parent(fd=0):
 
     Args:
         fd: 見張るファイル記述子。既定は標準入力（0）。
+        on_exit: 終了する前に副プロセスを止めるための関数。省略可能。
 
     Returns:
         threading.Thread: 見張りのスレッド（デーモン）。
@@ -139,7 +140,11 @@ def watch_parent(fd=0):
                 pass
         except OSError:
             pass
-        os._exit(1)
+        try:
+            if on_exit is not None:
+                on_exit()
+        finally:
+            os._exit(1)
 
     thread = threading.Thread(target=_watch, name="parent-watch", daemon=True)
     thread.start()
@@ -214,6 +219,7 @@ class Tracker:
         self._model_stage = model_stage
         self._separating = False
         self._passes = 1
+        self.error_message = None
 
     def start(self):
         """子プロセスを起動する直前に呼ぶ。最初のステージに入る。"""
@@ -238,7 +244,15 @@ class Tracker:
                 pass  # ログの出力先が閉じていても、分離は止めない
             return
         name = event["event"]
-        if name == "ready":
+        if name == "error":
+            self.error_message = event.get("message") if isinstance(event.get("message"), str) else None
+        elif name == "model_download" and not self._separating and self._model_stage is not None:
+            total = int(event.get("total") or 0)
+            done = int(event.get("done") or 0)
+            self._job.set_label(DOWNLOAD_LABEL)
+            if total > 0:
+                self._job.set_progress(max(0.0, min(1.0, done / total)))
+        elif name == "ready":
             if not event.get("hooks"):
                 # 進み具合が取れない。モデルの用意と分離の境目も分からないので、分離のステージにまとめる
                 self._enter_separation()

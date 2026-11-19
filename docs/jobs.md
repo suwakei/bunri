@@ -16,7 +16,7 @@
 時間のかかる API に、クエリ `?async=1` を付けて呼ぶ。フォームの中身は今までと同じ。
 
 ```
-POST /api/decompose?async=1      (multipart: file, bpm, grid_offset, sensitivity, split_drums)
+POST /api/decompose?async=1      (multipart: file, bpm, grid_offset, sensitivity, split_drums, model)
 → 202  ジョブの状態（下の「ジョブの状態」）
 ```
 
@@ -109,7 +109,7 @@ GET /api/jobs
 |---|---|---|---|
 | `/api/separate` | `separate` | `model` → `separate` | `separate` |
 | `/api/deep-separate` | `deep_separate` | `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `separate_other`（`depth=0` なら無し） | `drum_model` `separate` `separate_drums` `separate_other` |
-| `/api/decompose` | `decompose` | `tempo`（BPM 指定なら無し）→ `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `separate_other` → `transcribe` | `drum_model` `separate` `separate_drums` `separate_other` `transcribe` |
+| `/api/decompose` | `decompose` | `tempo`（BPM 指定なら無し）→ `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `transcribe` | `drum_model` `separate` `separate_drums` `transcribe`。SubRoformer/SCNetは取得中の`model`も数字が出る |
 | `/api/chart` `/api/chart/regrid` | `chart` `chart_regrid` | `grid` → `key` → `chords` → `sections` → `mix` → `save` | 無し |
 | `/api/analyze` | `analyze` | `transcribe` | 無し |
 
@@ -132,6 +132,10 @@ GET /api/jobs
   「モデルをダウンロードしています（初回のみ）」になる。**ダウンロードの量（何 MB 中の何 MB）は出していない**。
   Demucs が使うダウンロードの仕組み（HuggingFace hub / Xet）は合計の量を確かな形で渡してこないため、
   表示名だけにした
+- **SubRoformer / SCNet**: `model` → `separate` の段階は既存と共通。固定した重みを子プロセスで取得し、
+  `model_download` イベントのバイト数で `model` の進み具合を出す。用意が済むと `model_ready`、
+  分離区間ごとに `segments` が届く。モデル取得中も子を止めて中止でき、親は`.part`と中間出力を削除する。
+  起動に使うコード・設定は同梱し、外部コードや別環境を動的に取得しない。
 - ほかのステージ（テンポ・カルテの各解析・採譜）は、表示名だけ
 
 ## 重い処理は同時に 1 つ

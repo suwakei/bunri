@@ -1133,7 +1133,7 @@ def estimate_mix_params(file_path):
     }
 
 
-def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=False, model="htdemucs_ft"):
+def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=False, model="subroformer"):
     """``decompose`` をジョブとして動かすときのステージの並びを返す。
 
     Args:
@@ -1179,7 +1179,7 @@ def _onset_times(entry):
 
 
 def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None, grid_offset_sec=0.0,
-              split_drums=False, model="htdemucs_ft"):
+              split_drums=False, model="subroformer"):
     """音源分解のメインパイプライン。WAV → 分離 → 解析 → トラックデータを返す。
 
     以下の3段階で処理する:
@@ -1213,8 +1213,8 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
             ダウンロードする。用意できなければ（オフラインなど）、または細分化そのものが失敗したら
             （メモリ不足など）、失敗にせず、これまでのスペクトル重心の振り分け（``transcribe_drums``）に落とす
             （理由は結果の ``drum_fallback``）。偽なら、ダウンロードもドラムの分離もしない。デフォルト False。
-        model (str, optional): ``htdemucs_ft``（既定・分離優先4パート）、``htdemucs``（速い4パート）、
-            ``htdemucs_6s``（ギター・ピアノを加えた6パート）。「その他」は再分離しない。
+        model (str, optional): ``subroformer``（既定・精度優先4パート）、``scnet``（高速CPU4パート）、
+            または従来の ``htdemucs_ft`` / ``htdemucs`` / ``htdemucs_6s``。「その他」は再分離しない。
 
     Returns:
         dict: 以下の構造を持つ辞書。

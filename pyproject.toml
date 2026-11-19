@@ -24,6 +24,9 @@ dependencies = [
     "anthropic>=1.0",
     # resampy (basic-pitch の依存) が pkg_resources を import する。setuptools 81 以降には無い
     "setuptools<81",
+    # SCNet のローカル推論と、同梱した SubRoformer の設定読み込み
+    "onnxruntime>=1.23,<2",
+    "omegaconf==2.3.0",
 ]
 
 [dependency-groups]
@@ -52,7 +55,7 @@ target-version = "py311"
 line-length = 120
 # 外から取り込んだコード (サブモジュールの sfizz など) は見ない。
 # サブモジュールを取ってある checkout で `ruff check .` (make lint) が、他所のスクリプトのエラーで落ちるため
-extend-exclude = ["third_party"]
+extend-exclude = ["third_party", "backend/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

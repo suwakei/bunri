@@ -14,7 +14,7 @@ import os
 import re
 from pathlib import Path
 
-# 画面から選べるモデル（separate.py / deep_separate.py が使うもの）
+# Demucs側のモデル。新しい4パート版はmodern_modelsの台帳で扱う。
 KNOWN_MODELS = ("htdemucs", "htdemucs_ft", "htdemucs_6s")
 
 
@@ -157,6 +157,9 @@ def model_status(name, remote_dir=None):
     Raises:
         KeyError: 知らないモデル名の場合。
     """
+    import modern_models
+    if name in modern_models.MODELS:
+        return modern_models.model_status(name)
     signatures = model_signatures(name, remote_dir)
     missing = _missing_in_hf(name, signatures)
     if missing:

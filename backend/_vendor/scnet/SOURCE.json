@@ -1,0 +1,16 @@
+{
+  "implemented_in": "backend/scnet_inference.py",
+  "reference_repository": "https://github.com/audiojs/neural",
+  "reference_revision": "6df9aedb25cc10e54e9acddad673aac587c079a9",
+  "reference_file": "packages/neural-separate/separate.js",
+  "model_origin": "https://github.com/starrytong/SCNet",
+  "weights_repository": "https://huggingface.co/square-zero-labs/scnet",
+  "weights_revision": "af9bf78fdf676109a67211b32a3b54a1069acd40",
+  "weights_file": "scnet.int8.onnx",
+  "weights_sha256": "98228931494151762a1c4ab1ec7899a894b1f81fd4a509921a9d2f9bacc50845",
+  "license_files": {
+    "LICENSE.audiojs": "8fa9a071713f6dd69c723230836ebd9fb883d8f0f5e9cc17784198046d445d8d",
+    "NOTICE.audiojs": "6cc6423ea52f32141f50ee9e7a3835522b021ed4f792172c975571d8ab1e987b",
+    "LICENSE.SCNet": "0bdf1b69335198118ab16cfc50d337b496b8c6d90e83beeaba4643781ab62513"
+  }
+}

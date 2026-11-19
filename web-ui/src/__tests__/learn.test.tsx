@@ -231,7 +231,7 @@ describe('曲とパート', () => {
         expect(engine.tracks).toHaveLength(1);
     });
 
-    it('分け方は音の分離を優先する 4 パートが既定で、選んだモデルの準備と分離を頼む', async () => {
+    it('分け方は SubRoformer が既定で、新旧5モデルの準備と分離を頼む', async () => {
         const posted: FormData[] = [];
         const checkedModels: string[] = [];
         vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -254,10 +254,12 @@ describe('曲とパート', () => {
         try {
             render(<DawProvider><WithSong /></DawProvider>);
             const choice = screen.getByRole('combobox', { name: '分け方' });
-            expect(choice).toHaveValue('htdemucs_ft');
-            expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('約 4 倍');
-            for (const model of ['htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
+            expect(choice).toHaveValue('subroformer');
+            expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('約 207 MB');
+            expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('CPUだけの環境では時間がかかります');
+            for (const model of ['subroformer', 'scnet', 'htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
                 fireEvent.change(choice, { target: { value: model } });
+                if (model === 'scnet') expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('約 13 MB');
                 await act(async () => { fireEvent.click(screen.getByRole('button', { name: /パートに分けて採譜する/ })); });
                 await vi.waitFor(() => expect(posted.at(-1)?.get('model')).toBe(model));
                 expect(checkedModels).toContain(`/api/models/${model}/status`);
@@ -437,10 +439,10 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(engine.getTrack(midiPractice.id)?.pianoNotes).toEqual([note]);
     });
 
-    it('分離済み音声の測定音量と左右差を、再生の音量とパンに二重適用しない', async () => {
+    it.each(['subroformer', 'scnet'])('新モデル %s の分離音量と左右差も、再生時に二重適用しない', async (model) => {
         const song = engine.addTrack('原曲'); song.role = 'song';
         render(<DawProvider><Harness /></DawProvider>);
-        await act(async () => { await latest.actions!.applyParts({ bpm: 120, stems: {
+        await act(async () => { await latest.actions!.applyParts({ bpm: 120, model, stems: {
             bass: { gm_program: null, mix: { volume_db: -48.8, pan: 0.7, reverb_wet: 0.2 }, notes: [], drum_events: [] },
         } }); });
         const part = engine.tracks.find(track => track.part === 'bass')!;
@@ -448,6 +450,34 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(part.pan).toBe(0);
         // 通常再生では原曲と重ねない設定は維持する。
         expect(part.mute).toBe(true);
+    });
+
+    it.each([
+        ['subroformer', 'error'], ['subroformer', 'cancelled'], ['scnet', 'error'], ['scnet', 'cancelled'],
+    ] as const)('新モデル %s が %s で終わっても以前のパートと練習を保持する', async (model, state) => {
+        const oldPart = addPart('ベース', 'bass');
+        const practice = engine.addTrack('ベースの練習');
+        practice.role = 'practice'; practice.practiceOf = oldPart.id;
+        practice.pianoNotes = [note('C', 2, 0)];
+        const before = engine.tracks.map(track => track.id);
+        const job = (status: string) => ({
+            id: 'parts', kind: 'decompose', title: 'パート分離と採譜', filename: 'song.wav', state: status,
+            cancel_requested: status === 'cancelled', stage: null, stage_key: null, stage_index: null, stage_count: 1,
+            progress: null, elapsed_sec: 0, result: null,
+            error: status === 'error' ? { status: 503, detail: 'モデルをダウンロードできませんでした' } : null,
+        });
+        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+            if (String(url).includes('/api/models/')) return Response.json({ cached: true });
+            if (String(url).includes('/api/decompose')) return Response.json(job('running'), { status: 202 });
+            if (String(url).includes('/api/jobs/parts')) return Response.json(job(state));
+            return Response.json({}, { status: 404 });
+        }));
+        render(<DawProvider><Harness /></DawProvider>);
+        act(() => { latest.daw!.setSongFile(new File(['song'], 'song.wav')); });
+        await act(async () => { await latest.actions!.separateParts(0.5, undefined, { model }); });
+        expect(engine.tracks.map(track => track.id)).toEqual(before);
+        expect(engine.getTrack(practice.id)?.pianoNotes).toEqual([note('C', 2, 0)]);
+        expect(latest.daw!.status).toContain(state === 'cancelled' ? 'パート分離を中止しました' : 'モデルをダウンロードできませんでした');
     });
 
     const drumStem = (events: { type: string; step: number; velocity: number }[], source: 'stems' | 'spectral') =>
