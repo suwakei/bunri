@@ -95,6 +95,41 @@ describe('学習の記録', () => {
         expect(lh.formatDelta(-3)).toBe('−3%');
         expect(lh.formatDelta(0)).toBe('±0%');
     });
+
+    it('小節ごとの結果 (bar_stats) を記録に持たせる。合計は全体の数と食い違わない。無い結果からは、小節ごとの結果を持たない記録になる', () => {
+        const result = {
+            ...(diff(0.6667, 3) as object),
+            bar_stats: [{ bar: 2, reference_count: 1, matched: 0 }, { bar: 1, reference_count: 2, matched: 2 }],
+        } as never;
+        const a = lh.attemptFromDiff(result, { referenceId: 1, attemptId: 2, part: 'bass', reference: [note('C', 2, 0)], stepsPerBar: 16 });
+        // 小節順にそろえる
+        expect(a.barStats).toEqual([{ bar: 1, referenceCount: 2, matched: 2 }, { bar: 2, referenceCount: 1, matched: 0 }]);
+        expect(a.barStats!.reduce((sum, b) => sum + b.referenceCount, 0)).toBe(a.referenceCount);
+        expect(a.barStats!.reduce((sum, b) => sum + b.matched, 0)).toBe(a.matched);
+        expect(a).toMatchObject({ matched: 2, referenceCount: 3, matchRate: 0.6667 });
+
+        // 以前の版の処理を担当する部分が返した結果 (bar_stats が無い): いままでどおりの値で、小節ごとの結果は持たない
+        const old = lh.attemptFromDiff(diff(0.75, 4), { referenceId: 1, attemptId: 2, part: 'bass', reference: [note('C', 2, 0)], stepsPerBar: 16 });
+        expect(old).toMatchObject({ matched: 3, referenceCount: 4, matchRate: 0.75, barStats: null });
+
+        // 形の違う要素は落とす
+        expect(lh.cleanBarStats([{ bar: 1, referenceCount: 2, matched: 3 }, { bar: 0, referenceCount: 1, matched: 0 },
+            { bar: 2.5, referenceCount: 1, matched: 0 }, { bar: 3, referenceCount: 0, matched: 0 }, null, 'x',
+            { bar: 4, referenceCount: 5, matched: 5 }])).toEqual([{ bar: 4, referenceCount: 5, matched: 5 }]);
+        expect(lh.cleanBarStats(undefined)).toBeNull();
+        expect(lh.cleanBarStats(null)).toBeNull();
+        expect(lh.cleanBarStats('1:2:2')).toBeNull();
+        expect(lh.cleanBarStats([])).toEqual([]);
+    });
+
+    it('練習の地図の % は、学習の記録の % と同じ丸め方', async () => {
+        const { ratePercent } = await import('../lib/practice-map');
+        for (const [matched, count] of [[1, 8], [2, 8], [1, 3], [2, 3], [5, 8], [199, 400], [0, 5], [5, 5]]) {
+            // 差分チェックの accuracy は、小数 4 桁に丸めた値
+            const accuracy = Math.round((matched / count) * 1e4) / 1e4;
+            expect(ratePercent(matched, count)).toBe(lh.percentOf(accuracy));
+        }
+    });
 });
 
 describe('文書を作る (buildDocument)', () => {
@@ -135,6 +170,33 @@ describe('文書を作る (buildDocument)', () => {
         expect(learn.openTrack).toBe(2);
         expect(doc.history[0]).toMatchObject({ referenceTrack: 1, attemptTrack: 2, matchRate: 0.5 });
         expect(doc.explanations).toEqual({ coach: ['a'.repeat(40)] });
+    });
+
+    it('学習の記録の小節ごとの結果は、保存と読み出しで往復する。以前の記録 (小節ごとの結果が無い) も開ける', async () => {
+        const part = engine.addTrack('ベース'); part.role = 'part'; part.part = 'bass';
+        part.referenceNotes = [note('C', 2, 0), note('E', 2, 4), note('G', 2, 16)];
+        const practice = engine.addTrack('ベースの練習'); practice.role = 'practice'; practice.practiceOf = part.id;
+        const counts = { missing: 0, pitch: 0, octave: 0, extra: 0, timing: 0, length: 0 };
+        const base = { recordedAt: 't', referenceId: part.id, attemptId: practice.id, part: 'bass', startBar: 1, endBar: 2,
+            referenceCount: 3, matched: 2, matchRate: 0.6667, counts, explanationId: null };
+        const barStats = [{ bar: 1, referenceCount: 2, matched: 2 }, { bar: 2, referenceCount: 1, matched: 0 }];
+        const { doc } = await pf.buildDocument(baseInput({ learnHistory: [{ ...base, id: 1 }, { ...base, id: 2, barStats }] }));
+        expect(doc.history[0].barStats ?? null).toBeNull();
+        expect(doc.history[1].barStats).toEqual(barStats);
+
+        // sidecar を通ったあとの形 (JSON) から戻す。以前のファイルの記録は、barStats が null か、項目そのものが無い
+        const saved = JSON.parse(JSON.stringify(doc)) as PF.ProjectDocument;
+        saved.history.push({ ...saved.history[0], barStats: null });
+        saved.history.push({ ...saved.history[1], barStats: [{ bar: 1, referenceCount: 2, matched: 9 }] as never });
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+        const target = applyTarget();
+        await pf.applyDocument(saved, target);
+        const restored = (target.setLearnHistory as ReturnType<typeof vi.fn>).mock.calls[0][0] as { barStats: unknown; referenceId: number; matchRate: number }[];
+        expect(restored.map(a => a.barStats)).toEqual([null, barStats, null, []]);
+        // 一致率などの既存の欄は、そのまま
+        expect(restored.map(a => a.matchRate)).toEqual([0.6667, 0.6667, 0.6667, 0.6667]);
+        expect(restored[1].referenceId).toBe(engine.tracks[0].id);
+        pf.resetSections();
     });
 
     it('登録した状態の節は版つきで入り、開くと読み戻される。登録していない節は保存し直しても残る', async () => {
@@ -224,6 +286,94 @@ describe('文書を画面に戻す (applyDocument)', () => {
         expect(comparedOf(restored.result)?.stepsPerBar).toBe(12);
         expect(target.setChartIdOfParts).toHaveBeenCalledWith('song');
         expect((target.setLearnHistory as ReturnType<typeof vi.fn>).mock.calls[0][0][0]).toMatchObject({ referenceId: part.id, attemptId: practice.id });
+    });
+});
+
+describe('小数のステップ（三連・32 分）とスウィング', () => {
+    afterEach(() => { engine.swing = 0.5; });
+
+    it('小数のノートとスウィングは、保存と読み出しで往復する。整数のノートは整数のまま', async () => {
+        engine.swing = 2 / 3;
+        const track = engine.addTrack('ベース');
+        const notes = [note('C', 2, 0, 4 / 3), note('E', 2, 4 / 3, 4 / 3), note('G', 2, 4.5, 0.5), note('C', 3, 8, 4)];
+        const reference = [note('C', 2, 8 / 3, 2 / 3), note('D', 2, 65 / 60, 55 / 60)];
+        track.pianoNotes = notes.map(n => ({ ...n }));
+        track.referenceNotes = reference.map(n => ({ ...n }));
+        const { doc } = await pf.buildDocument(baseInput());
+        expect(doc.grid).toEqual({ bpm: 120, beatsPerBar: 4, gridOffset: 0, swing: 2 / 3 });
+        expect(doc.tracks[0].notes).toEqual(notes);
+
+        // sidecar を通ったあとの形 (JSON の文字にして、読み直す) から戻す
+        const saved = JSON.parse(JSON.stringify(doc)) as PF.ProjectDocument;
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+        engine.swing = 0.5;
+        const setSwing = vi.fn((v: number) => { engine.swing = v; });
+        await pf.applyDocument(saved, applyTarget({ setSwing }));
+        expect(setSwing).toHaveBeenCalledWith(2 / 3);
+        expect(engine.tracks[0].pianoNotes).toEqual(notes);
+        expect(engine.tracks[0].referenceNotes).toEqual(reference);
+        expect(Number.isInteger(engine.tracks[0].pianoNotes[3].step)).toBe(true);
+
+        // もう一度保存しても、同じ値のまま (往復のたびに、位置がずれていかない)
+        const again = await pf.buildDocument(baseInput());
+        expect(again.doc.tracks[0].notes).toEqual(doc.tracks[0].notes);
+        expect(again.doc.tracks[0].referenceNotes).toEqual(doc.tracks[0].referenceNotes);
+        expect(again.doc.grid).toEqual(doc.grid);
+        pf.resetSections();
+    });
+
+    it('スウィングが 50% なら文書に入れない。以前の文書 (swing が無い) は 50% として開き、端数の付いた値はそろえて読む', async () => {
+        engine.addTrack('t');
+        expect((await pf.buildDocument(baseInput())).doc.grid).toEqual({ bpm: 120, beatsPerBar: 4, gridOffset: 0 });
+
+        const doc: PF.ProjectDocument = {
+            version: 1, meta: { name: '曲' }, grid: { bpm: 120, beatsPerBar: 4, gridOffset: 0 },
+            tracks: [{ name: 't', role: null, part: null, practiceOf: null, gain: 0, pan: 0, mute: false, solo: false,
+                notes: [note('C', 4, 1.3333, 4.0000001)], referenceNotes: null, clips: [] }],
+            chart: null, state: {}, history: [],
+        };
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+        // スウィングの setter を渡さない呼び手では、再生エンジンの値を変える
+        engine.swing = 0.62;
+        await pf.applyDocument(doc, applyTarget());
+        expect(engine.swing).toBe(0.5);
+        expect(engine.tracks[0].pianoNotes).toEqual([note('C', 4, 4 / 3, 4)]);
+        // 範囲の外は収め、数でない値は 50% にする
+        await pf.applyDocument({ ...doc, grid: { ...doc.grid, swing: 0.9 } }, applyTarget());
+        expect(engine.swing).toBe(0.75);
+        await pf.applyDocument({ ...doc, grid: { ...doc.grid, swing: 'x' as never } }, applyTarget());
+        expect(engine.swing).toBe(0.5);
+        pf.resetSections();
+    });
+
+    it('スウィングを変えると、保存していない変更の印が付き、元の値に戻すと消える。記録した変更は、元に戻せる（テンポや拍子と同じ）', () => {
+        let daw: DawContextType | null = null;
+        function Probe() {
+            const ctx = useDaw();
+            useEffect(() => { daw = ctx; });
+            return null;
+        }
+        render(<DawProvider><Probe /></DawProvider>);
+        expect(daw!.swing).toBe(0.5);
+        expect(daw!.isDirty).toBe(false);
+        act(() => daw!.setSwing(0.67));
+        // 67% は、ちょうど 2/3 (三連と同じ位置)
+        expect(daw!.swing).toBe(2 / 3);
+        expect(engine.swing).toBe(2 / 3);
+        expect(daw!.isDirty).toBe(true);
+        act(() => daw!.setSwing(0.5));
+        expect(daw!.isDirty).toBe(false);
+        // 範囲に収める
+        act(() => daw!.setSwing(2));
+        expect(daw!.swing).toBe(0.75);
+        act(() => daw!.setSwing(0.5));
+        // 操作として記録した変更 (アシスタントなど) は、元に戻すと戻り、やり直すと戻る
+        act(() => { daw!.record('スウィングを変更', () => daw!.setSwing(0.58)); });
+        expect(daw!.swing).toBe(0.58);
+        act(() => daw!.undo());
+        expect([daw!.swing, engine.swing]).toEqual([0.5, 0.5]);
+        act(() => daw!.redo());
+        expect([daw!.swing, engine.swing]).toEqual([0.58, 0.58]);
     });
 });
 

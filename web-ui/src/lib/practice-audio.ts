@@ -41,9 +41,11 @@ function keyOf(req: Pick<StretchRequest, 'trackId' | 'start' | 'end' | 'rate'>):
     return `${req.trackId}:${req.start.toFixed(4)}:${req.end.toFixed(4)}:${req.rate}`;
 }
 
-/** クリップの並びが同じか（同じ音声・同じ位置）。 */
+/** クリップの並びが同じか（同じ音声・同じ位置・同じ範囲とフェード）。縮めた・フェードを付けたら、作り直す。 */
 function sameClips(a: Clip[], b: Clip[]): boolean {
-    return a.length === b.length && a.every((c, i) => c.buffer === b[i].buffer && c.offset === b[i].offset);
+    return a.length === b.length && a.every((c, i) => c.buffer === b[i].buffer && c.offset === b[i].offset
+        && c.duration === b[i].duration && (c.audioStart ?? 0) === (b[i].audioStart ?? 0)
+        && (c.fadeIn ?? 0) === (b[i].fadeIn ?? 0) && (c.fadeOut ?? 0) === (b[i].fadeOut ?? 0));
 }
 
 /** Web Worker を作る。作れない環境（テストの jsdom など）では null。 */
@@ -137,7 +139,8 @@ export async function prepareStretched(ctx: BaseAudioContext, req: StretchReques
     const buffer = ctx.createBuffer(channels.length, length, sampleRate);
     channels.forEach((ch, i) => buffer.getChannelData(i).set(ch.subarray(skip, skip + length)));
     const audio: StretchedAudio = { trackId: req.trackId, start: req.start, end: req.end, rate: req.rate, buffer };
-    cache.push({ key, clips: req.clips.slice(), audio });
+    // クリップは写して覚える (縮める・フェードの操作は新しいクリップに差し替えるが、動かす操作はその場で書き換える)
+    cache.push({ key, clips: req.clips.map((c) => ({ ...c })), audio });
     while (cache.length > CACHE_SIZE) cache.shift();
     const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
     onInfo?.({ ms: Math.round(ended - started), cached: false });

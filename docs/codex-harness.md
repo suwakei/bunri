@@ -102,7 +102,8 @@ pre-commit は stage 済みパスに応じた軽い検査（生成設定、front
 関連ファイルがあれば停止する。該当ファイルの変更を揃えて stage するか、コミットに含めない変更を退避してから再実行する。
 重いテスト・build・E2E は commit 前の `make check` / `--base` で実行する。
 
-`.github/workflows/harness.yml` でも生成の鮮度とハーネスの回帰テストを検査する。
+`.github/workflows/harness.yml` は、生成の鮮度だけを検査する。CI ではテストを回さない方針なので、ハーネスの回帰テスト
+（`scripts/check.test.mjs`・`scripts/sync-codex-harness.test.mjs`）は、手元の `make check` で回す。
 既存のアプリ用 CI は引き続きアプリの lint・型・build を担当する。
 
 ## 仕様の参照

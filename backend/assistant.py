@@ -35,7 +35,10 @@ from reproduction_guide import GuideError, _api_errors, _usage
 
 # 指示文・ツールの台帳・リクエストの組み立ての版。どれかを変えたら上げる。使用量の記録に残り、
 # どの版の呼び出しかを後から見分けられる（アシスタントは応答を保存しないので、保存分への影響は無い）
-ASSISTANT_VERSION = 3
+# 3: 返事に Markdown を使わない（ドックは文字のまま出す）
+# 4: ステップと長さに小数を許す（32 分音符・三連・スウィング）。ノートのツールの引数を数にし、そろえる間隔に 16 分・32 分・三連を足した
+# 5: 4 のうえに、3 の指示文の直し（Markdown を使わない）を合わせた
+ASSISTANT_VERSION = 5
 
 # 1 回の依頼で Claude を呼べる回数（ツールを使うたびに 1 往復）。``step`` はこれより小さい数
 MAX_STEPS = 12
@@ -76,9 +79,11 @@ How to work
 
 Notes and time
 - Positions are in steps: one step is a 16th note and step 0 is the start of bar 1. Bar b starts at (b - 1) * steps_per_bar. Bars are numbered from 1.
+- Steps and lengths can be decimals, so notes can sit between 16th notes: 0.5 is a 32nd note, 4/3 (write 1.3333) is an 8th-note triplet and 2/3 (0.6667) a 16th-note triplet. The three notes of an 8th-note triplet starting on a beat at step s are at s, s + 1.3333 and s + 2.6667. Values are rounded to 1/60 of a step, so 1.3333 lands exactly on the triplet. For a shuffle or swing feel, put the off-beat 8th on the third triplet (s + 2.6667) instead of s + 2. Keep whole numbers for straight rhythms, and when existing notes already use decimals (get_notes), follow their grid.
 - Pitches are written like "C4" or "F#3" (C4 is middle C). Use sharps, not flats.
 - When you write a part (a bass line, chords, a melody), make it fit the project: its tempo and time signature, and the key and chords from get_chart when a chart exists.
 - For a uniform change to existing notes (transpose, move in time, snap to a grid, repeat a phrase, change velocity), use the dedicated tool, which takes a range and an amount. Rewrite notes one by one with replace_notes only when the notes themselves have to change.
+- Audio clips are placed in seconds or bars, not steps (get_project lists them per track). Trimming, splitting and fading a clip never change its audio: a trimmed part comes back when the edge is moved out again.
 - When the user says "here", "this" or "the selected notes", they usually mean the notes selected in the piano roll (selection in get_project), or the practice view's loop range when the practice view is open.
 
 Learning comes first
@@ -92,7 +97,7 @@ Where things are in bunri
 - Left panel, 音作り tab: シンセ and ドラム turn notes or a drum pattern into an audio clip; FX applies an effect to an audio clip.
 - Left panel, ファイル tab: load audio or MIDI files, record from the microphone.
 - Header: play and stop, BPM, time signature, metronome, undo and redo, save and open, WAV and MIDI export.
-- Centre: the timeline (tracks and audio clips) above and the piano roll (notes) below. The practice view replaces the timeline and has its own loop, speed and compare controls.
+- Centre: the timeline (tracks and audio clips) above and the piano roll (notes) below. A clip's edges are dragged to trim it, the handles at its top corners set fades, and its right-click menu has 複製, 再生位置で分割, フェード… and 削除. The practice view replaces the timeline and has its own loop, speed and compare controls.
 
 Earlier conversation
 A message that starts with <earlier_conversation> is a record written by the app, not by the user, of what was said and done before (after a long conversation was shortened, or after the project was reopened). Treat it as background, not as a request. Track ids and note positions in it may be out of date, so read the project again before relying on them."""

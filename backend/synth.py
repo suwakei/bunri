@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 
 from audio_utils import save_tmp, soundfonts_dir
+from note_steps import normalize
 
 # ---- SoundFont (FluidSynth) ----
 
@@ -498,8 +499,11 @@ def step_sequencer(notes_json, bpm, waveform, volume,
         if note_name.lower() == "rest":
             continue
         oct = int(n.get("octave", 4))
-        step_start = int(n.get("step", 0))
-        step_len = int(n.get("length", 1))
+        # 位置と長さは 16 分音符単位の小数を持てる (三連符・32 分音符。backend/note_steps.py)。整数に切り捨てない
+        step_start = normalize(float(n.get("step", 0)))
+        step_len = normalize(float(n.get("length", 1)))
+        if step_start is None or step_len is None or step_start < 0 or step_len <= 0:
+            continue
 
         freq = note_to_freq(note_name, oct)
         dur = step_len * step_sec

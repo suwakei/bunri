@@ -7,6 +7,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
 
 /** メニューの 1 項目。 */
 export interface MenuItem {
@@ -16,6 +17,11 @@ export interface MenuItem {
     action: () => void;
     /** 押せない項目 (理由は title で伝える) */
     disabled?: boolean;
+    /**
+     * 押せない理由と、どうすれば押せるようになるか (`disabled` のときだけ使う)。押すと、知らせとして出る
+     * (lib/notice.ts の `blockedBy`)。無ければ、説明 (title) が理由として出る
+     */
+    blocked?: string;
     /** 消す操作 (赤で示す) */
     danger?: boolean;
     /** マウスを載せたときの説明 */
@@ -95,6 +101,7 @@ export default function PopupMenu({ request, onClose }: { request: MenuRequest |
                 <button key={item.label} type="button" role="menuitem" tabIndex={-1}
                     className={'popup-menu-item' + (item.danger ? ' danger' : '')}
                     aria-disabled={item.disabled ? 'true' : undefined} {...(item.title ? tip(item.title) : {})}
+                    {...blockedBy(item.disabled && item.blocked)}
                     onClick={() => {
                         if (item.disabled) return;
                         close(item.restoreFocus !== false);

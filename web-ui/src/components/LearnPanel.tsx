@@ -8,14 +8,16 @@
  * - 曲とパート: 曲を取り込む、パートに分ける、パートごとの「このパートを練習する」
  * - カルテ: 楽曲カルテ（第1層）
  * - ガイド: 再現ガイド（第2層）
- * - 差分: 差分チェック（第3層の土台）
+ * - 差分: 練習の地図（曲のどこを比べ終えたか）と、差分チェック（第3層の土台）
  *
  * 画面の文は docs/ui-terms.md の決まりに合わせる。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDaw, type LearnTab } from '../lib/store';
 import engine, { MIDI_PART } from '../lib/engine';
-import { isDrumPart, partTracks, practiceTrackOf, SONG_ACCEPT, useLearnActions } from '../lib/learn';
+import { partTracks, practiceTrackOf, SONG_ACCEPT, useLearnActions } from '../lib/learn';
+import { LEGACY_DRUM_REASON, isLegacyDrumPart } from '../lib/drums';
+import { DRUM_MODEL, modelCached } from '../lib/models';
 import SubTabs from './SubTabs';
 import { tabPanelProps, type TabDef } from '../lib/tabs';
 import ChartPanel from './ChartPanel';
@@ -24,8 +26,10 @@ import { useJob } from '../lib/useJob';
 import { useShowJob } from '../lib/job-focus';
 import { jobErrorMessage, type Job } from '../lib/jobs';
 import { tip } from '../lib/tooltip';
+import { BUSY_REASON, blockedBy } from '../lib/notice';
 import GuidePanel from './GuidePanel';
 import CoachPanel from './CoachPanel';
+import PracticeMap from './PracticeMap';
 
 const LEARN_TABS: TabDef<LearnTab>[] = [
     { key: 'song', label: '曲とパート', tip: '曲を取り込み、パートに分けます' },
@@ -71,6 +75,19 @@ function SongPanel() {
     // 重い処理は同時に 1 つ。どこかで動いている間は、始めるボタンを押せなくする
     const blocked = showProgress || songJob.heavyBusy;
     const [sensitivity, setSensitivity] = useState(0.5);
+    // ドラムを種類ごとに分ける追加のモデルが、手元に在るか (null は、まだ分からない・聞けなかった)。
+    // パート分離が終わるたびに聞き直す (初回のダウンロードが済むと、案内の文が変わる)
+    const [drumModel, setDrumModel] = useState<boolean | null>(null);
+    const partsRunning = partsJob.job !== null;
+    useEffect(() => {
+        let stale = false;
+        void modelCached(DRUM_MODEL).then((cached) => { if (!stale) setDrumModel(cached); });
+        return () => { stale = true; };
+    }, [partsRunning]);
+    // 「ドラムを種類ごとに分ける」の選択。利用者が選ぶまでは、追加のモデルが手元に在るときだけ分ける
+    // (約 160 MB のダウンロードは、利用者が選んだときだけ)
+    const [splitChoice, setSplitChoice] = useState<boolean | null>(null);
+    const splitDrums = splitChoice ?? drumModel === true;
     // 「お手本をノートとして取り込む」を確かめているパート (トラック ID)
     const [confirming, setConfirming] = useState<number | null>(null);
     void trackVersion;
@@ -94,6 +111,7 @@ function SongPanel() {
                 </p>
             )}
             <button className="action-btn" id="btn-import-song" onClick={openSongPicker} disabled={blocked}
+                {...blockedBy(blocked && BUSY_REASON)}
                 {...tip(songFile
                     ? '別の曲のファイルを選んで、取り込み直します'
                     : '教材にする曲のファイル（MP3・WAV など）を選びます。取り込むと、カルテを自動で作ります')}>
@@ -119,7 +137,24 @@ function SongPanel() {
                 <input id="file-transcribe-sensitivity" type="range" min="0.1" max="1" step="0.05"
                     value={sensitivity} onChange={e => setSensitivity(+e.target.value)}
                     {...tip('上げると小さな音まで拾ってお手本にします。余分なノートが多いときは下げてください')} />
-                <button className="action-btn" onClick={() => void separateParts(sensitivity)} disabled={blocked || !songFile}
+                <label htmlFor="learn-split-drums" style={{ marginTop: 8 }}>
+                    <input id="learn-split-drums" type="checkbox" checked={splitDrums} aria-describedby="learn-split-drums-note"
+                        onChange={e => setSplitChoice(e.target.checked)} style={{ marginRight: 4 }}
+                        {...tip(drumModel === false
+                            ? 'ドラムを、キック・スネア・タム・シンバルの音に分けてから採譜します。初めて使うときだけ、追加のモデル（約 160 MB）をダウンロードします'
+                            : 'ドラムを、キック・スネア・タム・シンバルの音に分けてから採譜します。外すと、分けずに採譜します（早く済みますが、同時に鳴った種類が 1 つにまとまります）')} />
+                    ドラムを種類ごとに分ける（キック / スネア / タム / シンバル）
+                </label>
+                <p className="note-text" id="learn-split-drums-note" style={{ marginTop: 2 }}>
+                    {splitDrums
+                        ? `同時に鳴ったキックとシンバルが、どちらもお手本になります。${drumModel === false
+                            ? '初回のみ、追加のモデル（約 160 MB）をダウンロードします。ダウンロードできなければ、分けずに採譜します。'
+                            : drumModel === true ? '追加のモデルは、ダウンロード済みです。' : ''}`
+                        : `分けずに採譜します。同時に鳴った種類は、1 つにまとまります（キックとハイハットが重なると、片方だけがお手本になります）。${drumModel === false
+                            ? 'チェックを入れると、初回のみ、追加のモデル（約 160 MB）をダウンロードします。' : ''}`}
+                </p>
+                <button className="action-btn" onClick={() => void separateParts(sensitivity, undefined, { splitDrums })} disabled={blocked || !songFile}
+                    {...blockedBy(blocked && !!songFile && BUSY_REASON)}
                     {...tip(!songFile
                         ? '先に曲を取り込んでください'
                         : separated.length > 0
@@ -141,20 +176,33 @@ function SongPanel() {
                         {parts.map(part => {
                             const refCount = part.referenceNotes?.length ?? 0;
                             const practice = practiceTrackOf(part.id);
-                            const drum = isDrumPart(part.part);
+                            // 以前の分け方のドラム (お手本を持たず、採譜したリズムが打ち込みに置いてある)。分け直すと練習できる
+                            const legacyDrum = isLegacyDrumPart(part);
                             return (
                                 <li key={part.id} className="part-item" data-part={part.part}>
                                     <div className="part-head">
                                         <strong>{part.name}</strong>
                                         <span className="note-text">
-                                            {drum ? 'ドラム（差分チェックの対象外）'
-                                                : refCount > 0 ? `お手本 ${refCount} ノート${practice ? ` / 打ち込み ${practice.pianoNotes.length} ノート` : ''}`
+                                            {refCount > 0 ? `お手本 ${refCount} ノート${practice ? ` / 打ち込み ${practice.pianoNotes.length} ノート` : ''}`
+                                                : legacyDrum ? `以前の分け方のドラム（お手本なし・${part.pianoNotes.length} ノート）`
                                                     : '採譜できたノートがありません'}
                                         </span>
                                     </div>
+                                    {legacyDrum && (
+                                        <div className="part-actions">
+                                            <button type="button" className="action-btn primary" disabled
+                                                {...blockedBy(LEGACY_DRUM_REASON)}
+                                                aria-label={`「${part.name}」を練習する`}
+                                                {...tip(LEGACY_DRUM_REASON)}>
+                                                このパートを練習する
+                                            </button>
+                                            <p className="note-text">パートを分け直すと、ドラムも練習と差分チェックが使えます。</p>
+                                        </div>
+                                    )}
                                     {refCount > 0 && (
                                         <div className="part-actions">
                                             <button type="button" className="action-btn primary" disabled={showProgress || partsJob.job !== null}
+                                                {...blockedBy((showProgress || partsJob.job !== null) && BUSY_REASON)}
                                                 aria-label={`「${part.name}」を練習する`}
                                                 {...tip('お手本を薄く重ねたピアノロールを開きます。お手本を見ながら、自分でノートを置いていきます')}
                                                 onClick={() => practicePart(part.id)}>
@@ -204,7 +252,7 @@ export default function LearnPanel() {
             <div {...tabPanelProps('learn', 'song', learnTab, 'sub-panel')}><SongPanel /></div>
             <div {...tabPanelProps('learn', 'chart', learnTab, 'sub-panel')}><ChartPanel /></div>
             <div {...tabPanelProps('learn', 'guide', learnTab, 'sub-panel')}><GuidePanel /></div>
-            <div {...tabPanelProps('learn', 'coach', learnTab, 'sub-panel')}><CoachPanel /></div>
+            <div {...tabPanelProps('learn', 'coach', learnTab, 'sub-panel')}><PracticeMap /><CoachPanel /></div>
         </div>
     );
 }

@@ -27,6 +27,8 @@ docs/song-chart-design.md「プロジェクトの保存（.bunri v2）」。
 import sqlite3
 from pathlib import Path
 
+import note_steps
+
 # ファイルフォーマットのバージョン。メジャーが上がると後方互換を壊す変更
 # （2.0: プロジェクト全体を持つようにした。v1 の bunri は v2 のファイルを「新しい形式」として断る）
 FORMAT_VERSION = "2.0"
@@ -151,7 +153,8 @@ CREATE TABLE IF NOT EXISTS project (
     grid_offset_sec REAL,
     created_at      TEXT,
     modified_at     TEXT,
-    uuid            TEXT
+    uuid            TEXT,
+    swing           REAL
 );
 
 CREATE TABLE IF NOT EXISTS project_tracks (
@@ -174,6 +177,8 @@ CREATE TABLE IF NOT EXISTS project_notes (
     position       INTEGER NOT NULL,
     note           TEXT,
     octave         INTEGER,
+    -- step と length は 16 分音符単位で、小数になりうる（三連符・32 分音符。1/60 ステップの倍数）。
+    -- 列の宣言は INTEGER のまま: SQLite は、整数になる値を整数で、整数に直せない実数を実数のまま持つ
     step           INTEGER,
     length         INTEGER,
     velocity       INTEGER,
@@ -181,12 +186,15 @@ CREATE TABLE IF NOT EXISTS project_notes (
 );
 
 CREATE TABLE IF NOT EXISTS project_clips (
-    track_position INTEGER NOT NULL,
-    position       INTEGER NOT NULL,
-    name           TEXT,
-    offset_sec     REAL,
-    duration_sec   REAL,
-    audio_hash     TEXT,
+    track_position  INTEGER NOT NULL,
+    position        INTEGER NOT NULL,
+    name            TEXT,
+    offset_sec      REAL,
+    duration_sec    REAL,
+    audio_hash      TEXT,
+    audio_start_sec REAL,
+    fade_in_sec     REAL,
+    fade_out_sec    REAL,
     PRIMARY KEY (track_position, position)
 );
 
@@ -225,7 +233,8 @@ CREATE TABLE IF NOT EXISTS learning_history (
     extra           INTEGER,
     timing          INTEGER,
     length          INTEGER,
-    explanation_id  TEXT
+    explanation_id  TEXT,
+    bar_stats       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cached_results (
@@ -982,6 +991,10 @@ def _velocity(value):
     return number if 1 <= number <= 127 else None
 
 
+# クリップの、鳴らす範囲とフェードの列（後から足した。``_ensure_schema``）と、文書での項目の名前
+_CLIP_RANGE_COLUMNS = {"audio_start_sec": "audioStart", "fade_in_sec": "fadeIn", "fade_out_sec": "fadeOut"}
+
+
 def _table_columns(conn, table):
     """表の列名の集合を返す（表が無ければ空）。"""
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -992,9 +1005,24 @@ def _ensure_schema(conn):
     conn.executescript(_SCHEMA)
     if "audio_hash" not in _table_columns(conn, "chart_audio"):
         conn.execute("ALTER TABLE chart_audio ADD COLUMN audio_hash TEXT")
+    # グリッドのスウィング (swing) は後から足した列。持たないプロジェクトは NULL のまま (読む側が、項目を付けない)。
+    # ノートの step / length が小数になりうるようにしたときは、列を足していない (宣言は INTEGER のままで、
+    # SQLite が整数に直せない実数をそのまま持つ)
+    if "swing" not in _table_columns(conn, "project"):
+        conn.execute("ALTER TABLE project ADD COLUMN swing REAL")
     # ノートの強さ (velocity) は後から足した列。持たないノートは NULL のまま (読む側が既定の強さとして扱う)
     if "velocity" not in _table_columns(conn, "project_notes"):
         conn.execute("ALTER TABLE project_notes ADD COLUMN velocity INTEGER")
+    # 学習の記録の、小節ごとの結果 (bar_stats) も後から足した列。持たない記録は NULL のまま
+    # (範囲全体の一致率しか分からない記録。画面の側が、そのように扱う)
+    if "bar_stats" not in _table_columns(conn, "learning_history"):
+        conn.execute("ALTER TABLE learning_history ADD COLUMN bar_stats TEXT")
+    # クリップの、音声の中の鳴らし始め (audio_start_sec) とフェードの長さ (fade_in_sec / fade_out_sec) も後から足した列。
+    # 持たないクリップは NULL のまま (読む側が 0 として扱う = 音声の全体をそのまま鳴らす)
+    clip_columns = _table_columns(conn, "project_clips")
+    for column in _CLIP_RANGE_COLUMNS:
+        if column not in clip_columns:
+            conn.execute(f"ALTER TABLE project_clips ADD COLUMN {column} REAL")
 
 
 def migrate(path):
@@ -1058,6 +1086,27 @@ def _num(value, default=0.0):
     return float(value)
 
 
+# クリップの秒数（鳴らす長さ・音声の中の鳴らし始め・フェード）の上限。これを超える値は壊れた値として 0 にする。
+# 根拠: 取り込む音声は曲・練習の録音で、長くても数十分。6 時間はそれより十分に長く、まだ現実にありうる長さの上限
+# （長いライブ録音など）。画面は音声の無いクリップに、この長さまでの無音の置き場所を作るので、極端な値で
+# メモリを使い切ったり、置き場所を作れずにプロジェクト全体が開けなくなったりしないための歯止めでもある。
+# 画面の側（web-ui/src/lib/project-file.ts の MAX_CLIP_SEC）と同じ値にする。
+MAX_CLIP_SECONDS = 6 * 60 * 60
+
+
+def _seconds(value):
+    """クリップの秒数に直す（0 以上 ``MAX_CLIP_SECONDS`` 以下の数。数でない・負・無限・上限を超える値は 0）。
+
+    クリップの、鳴らす長さ・音声の中の鳴らし始め・フェードの長さに使う。0 は「無い」（鳴らす長さなら、音声の残りの全部）。
+    """
+    import math
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    number = float(value)
+    return number if math.isfinite(number) and 0 < number <= MAX_CLIP_SECONDS else 0.0
+
+
 def _int(value, default=0):
     """整数に直す（数でなければ ``default``）。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1068,6 +1117,44 @@ def _int(value, default=0):
 def _text(value, default=None):
     """文字列ならそのまま、それ以外は ``default``。"""
     return value if isinstance(value, str) else default
+
+
+def note_step(value):
+    """ノートの位置（``step``）を、保存する・文書に載せる値にする。
+
+    16 分音符単位で、小数になりうる（三連符・32 分音符）。1/60 ステップの倍数に丸め、整数になる値は
+    整数にする（``note_steps``）。数でなければ 0。
+    """
+    step = note_steps.normalize(value)
+    return 0 if step is None else step
+
+
+def note_length(value):
+    """ノートの長さ（``length``）を、保存する・文書に載せる値にする。
+
+    位置と同じ丸め方。数でない・0 以下は 1（16 分音符 1 個）。丸めると 0 になる短さは、いちばん短い長さ
+    （1/60 ステップ）にする。
+    """
+    ticks = note_steps.to_ticks(value)
+    if ticks is None or value <= 0:
+        return 1
+    return note_steps.from_ticks(max(1, ticks))
+
+
+# グリッドのスウィング（裏の位置を後ろへずらす割合）の範囲。0.5 = ずらさない、2/3 = 三連と同じ位置
+SWING_RANGE = (0.5, 0.75)
+
+
+def swing_value(value):
+    """グリッドのスウィングを、保存する・文書に載せる値にする。範囲の中の数ならその値、それ以外は None。
+
+    値は丸めない（画面が決めた値を、そのまま往復させる。三連と同じ位置の 2/3 が、0.67 にならないように）。
+    None のとき、文書には項目そのものを付けない（スウィングを持たないプロジェクト）。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    low, high = SWING_RANGE
+    return float(value) if low <= value <= high else None
 
 
 def document_audio_hashes(doc):
@@ -1146,13 +1233,15 @@ def write_project(path, doc, blobs, app_version="0.1.0", cached=()):
             ],
         )
         conn.execute(
-            """INSERT INTO project (id, name, bpm, beats_per_bar, grid_offset_sec, created_at, modified_at, uuid)
-               VALUES (1,?,?,?,?,?,?,?)""",
+            """INSERT INTO project (id, name, bpm, beats_per_bar, grid_offset_sec, created_at, modified_at, uuid, swing)
+               VALUES (1,?,?,?,?,?,?,?,?)""",
             (
                 _text(meta.get("name"), "") or "",
                 _num(grid.get("bpm"), 120.0), _int(grid.get("beatsPerBar"), 4), _num(grid.get("gridOffset"), 0.0),
                 _text(meta.get("createdAt")) or now, now,
                 _text(meta.get("uuid")) or uuid.uuid4().hex,
+                # スウィングを持たないプロジェクト（項目が無い・範囲の外）は NULL
+                swing_value(grid.get("swing")),
             ),
         )
 
@@ -1222,20 +1311,79 @@ def _write_tracks(conn, tracks):
                 """INSERT INTO project_notes (track_position, kind, position, note, octave, step, length, velocity)
                    VALUES (?,?,?,?,?,?,?,?)""",
                 [
+                    # 位置と長さは小数になりうる（切り捨てない。整数になる値は整数で入れる）
                     (pos, kind, i, _text(n.get("note"), "C"), _int(n.get("octave"), 4),
-                     _int(n.get("step")), max(1, _int(n.get("length"), 1)), _velocity(n.get("velocity")))
+                     note_step(n.get("step")), note_length(n.get("length")), _velocity(n.get("velocity")))
                     for i, n in enumerate(notes or []) if isinstance(n, dict)
                 ],
             )
+        # duration は鳴らす長さ。audioStart (音声の中の鳴らし始め) とフェードは、無ければ 0 (音声の全体をそのまま鳴らす)
         conn.executemany(
-            """INSERT INTO project_clips (track_position, position, name, offset_sec, duration_sec, audio_hash)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO project_clips (track_position, position, name, offset_sec, duration_sec, audio_hash,
+                                          audio_start_sec, fade_in_sec, fade_out_sec)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             [
-                (pos, i, _text(c.get("name"), "clip"), _num(c.get("offset"), 0.0), _num(c.get("duration"), 0.0),
-                 c.get("audio"))
+                (pos, i, _text(c.get("name"), "clip"), _num(c.get("offset"), 0.0), _seconds(c.get("duration")),
+                 c.get("audio"), _seconds(c.get("audioStart")), _seconds(c.get("fadeIn")), _seconds(c.get("fadeOut")))
                 for i, c in enumerate(track.get("clips") or []) if isinstance(c, dict)
             ],
         )
+
+
+def _bar_stats_json(value):
+    """学習の記録の、小節ごとの結果を、保存する文字列（JSON）にする。
+
+    文書での形は ``[{"bar", "referenceCount", "matched"}, ...]``。ファイルには、小さくするために
+    ``[[小節, お手本のノートの数, 合っていた数], ...]``（小節順）で入れる。形の違う要素は入れない。
+
+    Args:
+        value: 文書の ``barStats``。リストでなければ、小節ごとの結果を持たない記録として扱う。
+
+    Returns:
+        str | None: JSON の文字列。小節ごとの結果を持たない記録（以前の版が残したもの）は None。
+    """
+    import json
+
+    if not isinstance(value, list):
+        return None
+    rows = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        bar, count, matched = item.get("bar"), item.get("referenceCount"), item.get("matched")
+        if any(isinstance(x, bool) or not isinstance(x, int) for x in (bar, count, matched)):
+            continue
+        if bar < 1 or count < 1 or not 0 <= matched <= count:
+            continue
+        rows[bar] = [bar, count, matched]
+    return json.dumps([rows[bar] for bar in sorted(rows)], separators=(",", ":"))
+
+
+def _bar_stats_from_json(text):
+    """保存した文字列から、文書での形（``[{"bar", "referenceCount", "matched"}, ...]``）に戻す。
+
+    Args:
+        text: ``learning_history.bar_stats`` の値。
+
+    Returns:
+        list[dict] | None: 小節ごとの結果。列が空（以前の版が残した記録）か、読めない値なら None。
+    """
+    import json
+
+    if not isinstance(text, str):
+        return None
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for row in rows:
+        if (isinstance(row, list) and len(row) == 3
+                and all(isinstance(x, int) and not isinstance(x, bool) for x in row)):
+            out.append({"bar": row[0], "referenceCount": row[1], "matched": row[2]})
+    return out
 
 
 def _write_history(conn, history):
@@ -1256,12 +1404,13 @@ def _write_history(conn, history):
             _num(entry.get("matchRate"), 0.0),
             *(_int(counts.get(kind)) for kind in _HISTORY_KINDS),
             _text(entry.get("explanationId")),
+            _bar_stats_json(entry.get("barStats")),
         ))
     conn.executemany(
         f"""INSERT INTO learning_history
                (recorded_at, reference_track, attempt_track, part, start_bar, end_bar, reference_count, matched,
-                match_rate, {", ".join(_HISTORY_KINDS)}, explanation_id)
-            VALUES (?,?,?,?,?,?,?,?,?,{",".join("?" * len(_HISTORY_KINDS))},?)""",
+                match_rate, {", ".join(_HISTORY_KINDS)}, explanation_id, bar_stats)
+            VALUES (?,?,?,?,?,?,?,?,?,{",".join("?" * len(_HISTORY_KINDS))},?,?)""",
         rows,
     )
 
@@ -1413,6 +1562,12 @@ def read_project(path):
         if project is None:
             return _chart_only_document(conn, target, chart, state)
 
+        grid = {"bpm": project["bpm"], "beatsPerBar": project["beats_per_bar"],
+                "gridOffset": project["grid_offset_sec"] or 0.0}
+        # スウィングの列は後から足した。列が無い・空のファイルと、範囲の外の値には、項目そのものを付けない
+        swing = swing_value(project["swing"]) if "swing" in project.keys() else None
+        if swing is not None:
+            grid["swing"] = swing
         doc = {
             "version": DOCUMENT_VERSION,
             "meta": {
@@ -1420,8 +1575,7 @@ def read_project(path):
                 "modifiedAt": project["modified_at"], "uuid": project["uuid"],
                 "appVersion": _meta_value(conn, "app_version"),
             },
-            "grid": {"bpm": project["bpm"], "beatsPerBar": project["beats_per_bar"],
-                     "gridOffset": project["grid_offset_sec"] or 0.0},
+            "grid": grid,
             "tracks": _read_tracks(conn),
             "chart": chart,
             "state": state,
@@ -1469,6 +1623,16 @@ def _chart_only_document(conn, target, chart, state):
     }
 
 
+def _stored_steps(value):
+    """ファイルに入っているノートの位置・長さを、文書に載せる値にする。
+
+    数なら 1/60 ステップの倍数に丸める（整数になる値は整数。``4.0`` と入っていても ``4``）。
+    数でない値（空の列など）は、そのまま返す（これまでと同じ）。
+    """
+    steps = note_steps.normalize(value)
+    return value if steps is None else steps
+
+
 def _read_tracks(conn):
     """トラック・ノート・クリップを読む。"""
     import json
@@ -1480,19 +1644,27 @@ def _read_tracks(conn):
         f"SELECT track_position, kind, note, octave, step, length{', velocity' if has_velocity else ''} FROM project_notes "
         "ORDER BY track_position, kind, position"
     ).fetchall():
-        note = {"note": row["note"], "octave": row["octave"], "step": row["step"], "length": row["length"]}
+        # 位置と長さは小数になりうる。整数で入っている値は整数のまま、小数は 1/60 ステップの倍数で返す
+        note = {"note": row["note"], "octave": row["octave"],
+                "step": _stored_steps(row["step"]), "length": _stored_steps(row["length"])}
         # 強さを持たないノートには、項目そのものを付けない (画面の側が、既定の強さとして扱う)
         if has_velocity and row["velocity"] is not None:
             note["velocity"] = row["velocity"]
         notes.setdefault((row["track_position"], row["kind"]), []).append(note)
     clips = {}
-    for row in conn.execute(
-        "SELECT track_position, name, offset_sec, duration_sec, audio_hash FROM project_clips "
-        "ORDER BY track_position, position"
-    ).fetchall():
-        clips.setdefault(row["track_position"], []).append(
-            {"name": row["name"], "offset": row["offset_sec"], "duration": row["duration_sec"],
-             "audio": row["audio_hash"]})
+    # 鳴らす範囲とフェードの列は後から足した。それより前に保存したファイルには列が無く、列が在っても
+    # 以前のクリップは空。縮めていない・フェードの無いクリップには、項目そのものを付けない
+    # (画面の側が 0 として扱う = 音声の全体をそのまま鳴らす。ノートの強さと同じ決まり)
+    clip_columns = _table_columns(conn, "project_clips")
+    for row in conn.execute("SELECT * FROM project_clips ORDER BY track_position, position").fetchall():
+        # 鳴らす長さも上限で確かめる (上限を入れる前に書かれた・壊れたファイルの値で、画面が開けなくならないように)
+        clip = {"name": row["name"], "offset": row["offset_sec"], "duration": _seconds(row["duration_sec"]),
+                "audio": row["audio_hash"]}
+        for column, key in _CLIP_RANGE_COLUMNS.items():
+            value = _seconds(row[column]) if column in clip_columns else 0.0
+            if value > 0:
+                clip[key] = value
+        clips.setdefault(row["track_position"], []).append(clip)
     tracks = []
     for row in conn.execute("SELECT * FROM project_tracks ORDER BY position").fetchall():
         pos = row["position"]
@@ -1512,8 +1684,13 @@ def _read_tracks(conn):
 
 
 def _read_history(conn):
-    """学習の記録を、記録した順に読む。"""
+    """学習の記録を、記録した順に読む。
+
+    小節ごとの結果（``barStats``）は後から足した。それより前に保存したファイルには列が無く、列が在っても
+    以前の記録は空なので、そのときは None（範囲全体の一致率しか分からない記録）。
+    """
     rows = conn.execute("SELECT * FROM learning_history ORDER BY id").fetchall()
+    has_bar_stats = "bar_stats" in _table_columns(conn, "learning_history")
     return [
         {
             "recordedAt": row["recorded_at"], "referenceTrack": row["reference_track"],
@@ -1522,6 +1699,7 @@ def _read_history(conn):
             "referenceCount": row["reference_count"], "matched": row["matched"], "matchRate": row["match_rate"],
             "counts": {kind: row[kind] for kind in _HISTORY_KINDS},
             "explanationId": row["explanation_id"],
+            "barStats": _bar_stats_from_json(row["bar_stats"]) if has_bar_stats else None,
         }
         for row in rows
     ]

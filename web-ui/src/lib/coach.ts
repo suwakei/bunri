@@ -9,11 +9,18 @@
  * 音源から採譜したお手本の強さは当てにならないので、比べない（docs/coach-diff-design.md「強さの違い」）。
  * 強さは、位置・高さ・長さの指摘とは別の欄（`DiffResult.velocity`）に、まとまりで言える違いとして届く。
  *
+ * お手本がドラムのパートのときは、ドラムの比べ方（`mode: 'drums'`。lib/drums.ts の `diffModeOf`）で比べる:
+ * 種類（= 高さ）ごとの叩く位置だけを比べ、長さは比べない。指摘の文は、音名の代わりに種類の名前で書く。
+ * ドラムの差分では、説明（言語化）は頼まない（docs/coach-diff-design.md「ドラムの差分」）。
+ *
  * 差分の説明（言語化。backend/coach_explain.py）は Claude を使う。説明が持てるのは文と、指摘の ID・小節だけ
  * （音符は出さない）。費用まわりの仕組み（保存・1 日の上限・使用量）は再現ガイドと共通。
  */
 import { apiFetch, errorDetail } from './api';
+import { noteLabel, type DiffMode } from './drums';
 import type { PianoNote } from './engine';
+import { stepUnits } from './grid';
+import { spanLabel } from './snap';
 import { GuideRequestError, toError, type GuideToday, type GuideUsage } from './guide';
 
 /** 差分の種類。 */
@@ -30,9 +37,9 @@ export interface DiffIssue {
     expected: PianoNote | null;
     /** 打ち込みのノート。抜けのときは null。 */
     actual: PianoNote | null;
-    /** 位置のずれ（16 分音符単位。正なら遅い）。 */
+    /** 位置のずれ（16 分音符単位。正なら遅い）。三連や 32 分のノートでは、小数になる。 */
     offset_steps: number | null;
-    /** 長さの違い（16 分音符単位。正なら長い）。 */
+    /** 長さの違い（16 分音符単位。正なら長い）。小数になりうる。 */
     length_diff: number | null;
 }
 
@@ -129,6 +136,22 @@ export interface DiffResult {
      * （以前の版が保存した結果には、項目そのものが無い）。
      */
     velocity?: VelocityDiff | null;
+    /**
+     * 小節ごとの、お手本のノートの数と、合っていた数（お手本のノートが在る小節だけ。小節順）。
+     * 数え方は `summary.accuracy` と同じで、全部足すと `summary.reference_count` と一致率の分子になる。
+     * 学習の記録に小節ごとの結果を残すのに使う（lib/learn-history.ts。以前の版が保存した結果には無い）。
+     */
+    bar_stats?: DiffBarStat[];
+}
+
+/** 小節 1 つぶんの一致（`/api/coach/diff` の `bar_stats`）。 */
+export interface DiffBarStat {
+    /** 小節（1 始まり） */
+    bar: number;
+    /** その小節で始まるお手本のノートの数 */
+    reference_count: number;
+    /** そのうち、高さと位置が合っていた数 */
+    matched: number;
 }
 
 /** 比べたときのノートと 1 小節のステップ数。 */
@@ -174,15 +197,21 @@ export const KIND_LABEL: Record<IssueKind, string> = {
  * @param attempt - 打ち込みのノート
  * @param stepsPerBar - 1 小節のステップ数（4/4 なら 16）
  * @param referenceSource - お手本の出どころ。`midi` のときだけ送り、強さも比べる（ほかは、強さに触れない）
+ * @param mode - 比べ方。お手本がドラムのパートのとき `drums`（lib/drums.ts の `diffModeOf` で決める）:
+ *   同じ種類（= 同じ高さ）どうしの叩く位置だけを比べ、長さは比べない。位置の許容は 16 分音符 1 個（ふつうは 2 個）。
+ *   許容は、比べ方に応じて API の側が決める（画面からは送らない）
  * @throws 比べられなかった場合（理由つき）
  */
-export async function requestDiff(reference: PianoNote[], attempt: PianoNote[], stepsPerBar = 16, referenceSource?: ReferenceSource): Promise<DiffResult> {
+export async function requestDiff(
+    reference: PianoNote[], attempt: PianoNote[], stepsPerBar = 16, referenceSource?: ReferenceSource, mode?: DiffMode,
+): Promise<DiffResult> {
     const resp = await apiFetch('/api/coach/diff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             reference, attempt, steps_per_bar: stepsPerBar,
             ...(referenceSource === 'midi' ? { reference_source: referenceSource } : {}),
+            ...(mode ? { mode } : {}),
         }),
     });
     // 理由の文は errorDetail が作る (状態コードや生の JSON を、そのまま画面に出さない)
@@ -195,21 +224,28 @@ export function noteName(note: PianoNote): string {
     return `${note.note}${note.octave}`;
 }
 
-/** 16 分音符 n 個ぶんを、読みやすい長さの言い方にする。 */
+/**
+ * ずれ・違いの幅（ステップ。小数も在る）を、読みやすい言い方にする。
+ * 「1 拍ぶん」「16 分音符 2 個ぶん」。三連や 32 分のずれは、その音符の数で言う（「8 分の三連符 1 個ぶん」「32 分音符 1 個ぶん」。
+ * 「16 分音符 0.67 個ぶん」とは言わない）。どの音符の倍数でもない幅（人が弾いた MIDI のお手本の揺れ）は
+ * 「16 分音符でおよそ 0.8 個ぶん」。言い方の決まりは lib/snap.ts の `spanLabel`。
+ */
 function steps(n: number): string {
-    const abs = Math.abs(n);
-    if (abs % 4 === 0) return `${abs / 4} 拍ぶん`;
-    return `16 分音符 ${abs} 個ぶん`;
+    return `${spanLabel(n)}ぶん`;
 }
 
 /**
  * 指摘を 1 行の文にする。
- * 例: 「2 小節 3 拍目: E4 が抜けています」
+ * 例: 「2 小節 3 拍目: E4 が抜けています」。ドラムの比べ方では、音名の代わりに種類の名前で書く
+ * （「2 小節 3 拍目: スネア が抜けています」。ドラムの行でない高さは、音名のまま）。
+ *
+ * @param issue - 指摘
+ * @param mode - 比べたときの比べ方（lib/drums.ts の `diffModeOf`）
  */
-export function issueText(issue: DiffIssue): string {
+export function issueText(issue: DiffIssue, mode?: DiffMode): string {
     const where = `${issue.bar} 小節 ${issue.beat} 拍目`;
-    const expected = issue.expected ? noteName(issue.expected) : '';
-    const actual = issue.actual ? noteName(issue.actual) : '';
+    const expected = issue.expected ? noteLabel(issue.expected, mode) : '';
+    const actual = issue.actual ? noteLabel(issue.actual, mode) : '';
     switch (issue.kind) {
         case 'missing':
             return `${where}: ${expected} が抜けています`;
@@ -286,8 +322,11 @@ export function velocityFindingText(finding: VelocityFinding, velocity: Velocity
     }
 }
 
-/** ノートの形（強さを除く）。同じ形のノートを探すのに使う。 */
-const shapeOf = (n: Pick<PianoNote, 'note' | 'octave' | 'step' | 'length'>) => `${n.note}${n.octave}@${n.step}+${n.length}`;
+/**
+ * ノートの形（強さを除く）。同じ形のノートを探すのに使う。位置と長さは、1/60 ステップの単位にそろえて比べる
+ * （小数のステップが、API を通って戻ってきたときの文字の違いで、取り違えないように）。
+ */
+export const shapeOf = (n: Pick<PianoNote, 'note' | 'octave' | 'step' | 'length'>) => `${n.note}${n.octave}@${stepUnits(n.step)}+${stepUnits(n.length)}`;
 
 /**
  * まとまりで言える強さの違いに当たるノートの番号（打ち込み・お手本）。

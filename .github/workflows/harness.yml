@@ -7,6 +7,8 @@ on:
     branches: [main]
 
 jobs:
+  # テストは回さない (ci.yml と同じ方針)。生成したファイルが最新かどうかだけを見る。
+  # ハーネスの回帰テスト (scripts/*.test.mjs) は、手元の `make check` で回す
   harness:
     runs-on: ubuntu-latest
     steps:
@@ -16,5 +18,3 @@ jobs:
           node-version: 22
       - name: Check generated Codex files
         run: node scripts/sync-codex-harness.mjs --check
-      - name: Test harness behavior
-        run: node --test scripts/check.test.mjs scripts/sync-codex-harness.test.mjs

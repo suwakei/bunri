@@ -219,6 +219,231 @@ class TestDocument:
         assert tracks[1]["referenceNotes"] == [note("C", 2, 0), note("G", 2, 8)]
         assert tracks[2]["notes"] == [note("C", 2, 0)]
 
+    def test_小数の位置と長さが往復する_整数は整数のまま(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        triplet = 4 / 3  # 8 分の三連（1 拍を 3 つ）
+        # お手本: シャッフル（拍の頭と三連の 3 つ目）と、32 分音符、整数のノート
+        doc["tracks"][1]["referenceNotes"] = [
+            note("C", 2, 0, triplet), note("C", 2, 2 * triplet, triplet), note("G", 2, 8), note("A", 2, 12.5, 0.5),
+        ]
+        doc["tracks"][2]["notes"] = [
+            note("C", 2, 0.0, 4.0), note("D", 2, 1.3333, 0.6667), {**note("E", 2, 8 / 3, triplet), "velocity": 90},
+            # 1/60 ステップより細かい端数は丸める。丸めると 0 になる長さは、いちばん短い長さ（1/60 ステップ）
+            note("F", 2, 7.9999, 1e-9),
+            # 数でない位置は 0、数でない・0 以下の長さは 1（これまでと同じ）
+            note("G", 2, "x", -1), note("A", 2, float("nan"), float("inf")), note("B", 2, 16, 0),
+        ]
+        path = write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part})
+
+        tracks = bunri_file.read_project(path)["tracks"]
+        assert tracks[1]["referenceNotes"] == [
+            note("C", 2, 0, 80 / 60), note("C", 2, 160 / 60, 80 / 60), note("G", 2, 8), note("A", 2, 12.5, 0.5),
+        ]
+        assert tracks[2]["notes"] == [
+            note("C", 2, 0, 4), note("D", 2, 80 / 60, 40 / 60), {**note("E", 2, 160 / 60, 80 / 60), "velocity": 90},
+            note("F", 2, 8, 1 / 60), note("G", 2, 0, 1), note("A", 2, 0, 1), note("B", 2, 16, 1),
+        ]
+        # 整数になる値は、整数で戻る（JSON にしたとき 4.0 ではなく 4）。小数は小数のまま
+        kinds = [[type(n[key]) for key in ("step", "length")] for n in tracks[2]["notes"]]
+        assert kinds == [[int, int], [float, float], [float, float], [int, float], [int, int], [int, int], [int, int]]
+        assert '"step": 8, "length": 4' in json.dumps(tracks[1]["referenceNotes"])
+        # ファイルの中でも、整数は整数、小数は実数で入っている（列の宣言は INTEGER のまま）
+        conn = sqlite3.connect(str(path))
+        stored = conn.execute("SELECT typeof(step), typeof(length) FROM project_notes "
+                              "WHERE track_position = 1 AND kind = 'reference' ORDER BY position").fetchall()
+        conn.close()
+        assert stored == [("integer", "real"), ("real", "real"), ("integer", "integer"), ("real", "real")]
+
+        # 開いたものを保存し直しても、同じ値のまま（往復で値が動かない）
+        doc["tracks"] = tracks
+        again = bunri_file.read_project(write_with(tmp_path / "again.bunri", doc, {hs: song, hp: part}))["tracks"]
+        assert again[1]["referenceNotes"] == tracks[1]["referenceNotes"] and again[2]["notes"] == tracks[2]["notes"]
+
+    def test_グリッドのスウィングが往復する_持たないプロジェクトには項目を付けない(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+
+        def round_trip(swing):
+            doc = sample_document(hs, hp)
+            doc["grid"]["swing"] = swing
+            return bunri_file.read_project(write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part}))["grid"]
+
+        plain = {"bpm": 120.0, "beatsPerBar": 4, "gridOffset": 0.25}
+        # 三連と同じ位置（2/3）は、丸めずにそのまま戻る。範囲の両端も通る
+        for swing in (2 / 3, 0.5, 0.62, 0.75):
+            assert round_trip(swing) == {**plain, "swing": swing}
+        # 範囲の外・数でない値は、スウィングを持たないプロジェクトとして保存する（項目を付けない）
+        for swing in (0.49, 0.76, 0, 1, "0.6", True, None, float("nan")):
+            assert round_trip(swing) == plain
+        # 項目が無い文書（これまでの画面が送る形）も、項目を付けない
+        doc = sample_document(hs, hp)
+        assert bunri_file.read_project(write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part}))["grid"] == plain
+
+    def test_スウィングの列が無い頃のファイルも開ける_上げると列が足される(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        doc["grid"]["swing"] = 0.6
+        path = write_with(tmp_path / "old.bunri", doc, {hs: song, hp: part})
+        # スウィングの列を足す前に保存したファイルの形に戻す
+        conn = sqlite3.connect(str(path))
+        conn.execute("ALTER TABLE project DROP COLUMN swing")
+        conn.commit()
+        conn.close()
+
+        assert bunri_file.read_project(path)["grid"] == {"bpm": 120.0, "beatsPerBar": 4, "gridOffset": 0.25}
+        # 開くときの作業用の写しを上げると、列が足される（形式の版は 2.0 のまま。以前のプロジェクトは空）
+        assert bunri_file.migrate(path) == "2.0"
+        conn = sqlite3.connect(str(path))
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(project)").fetchall()}
+        assert conn.execute("SELECT value FROM bunri_meta WHERE key='format_version'").fetchone()[0] == "2.0"
+        conn.close()
+        assert "swing" in columns
+        assert bunri_file.read_project(path)["grid"] == {"bpm": 120.0, "beatsPerBar": 4, "gridOffset": 0.25}
+
+    def test_クリップの範囲とフェードが往復する_持たないクリップには項目を付けない(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        # 原曲のクリップを分割した 2 つ (同じ音声を指す)。左はフェードイン、右は頭を縮めてフェードアウト
+        doc["tracks"][0]["clips"] = [
+            {"name": "demo.wav", "offset": 0, "duration": 0.2, "audio": hs, "audioStart": 0, "fadeIn": 0.05, "fadeOut": 0},
+            {"name": "demo.wav", "offset": 0.2, "duration": 0.3, "audio": hs, "audioStart": 0.2, "fadeIn": 0, "fadeOut": 0.1},
+        ]
+        # 形の違う値・負の値は、無いものとして扱う
+        doc["tracks"][1]["clips"] = [
+            {"name": "ベース", "offset": 0, "duration": 0.5, "audio": hp, "audioStart": -1, "fadeIn": "長く", "fadeOut": True},
+        ]
+        path = write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part})
+
+        tracks = bunri_file.read_project(path)["tracks"]
+        assert tracks[0]["clips"] == [
+            {"name": "demo.wav", "offset": 0, "duration": 0.2, "audio": hs, "fadeIn": 0.05},
+            {"name": "demo.wav", "offset": 0.2, "duration": 0.3, "audio": hs, "audioStart": 0.2, "fadeOut": 0.1},
+        ]
+        assert tracks[1]["clips"] == [{"name": "ベース", "offset": 0, "duration": 0.5, "audio": hp}]
+        # 分割した 2 つは同じ音声を指すので、音声は 1 つだけ入る (練習のトラックのクリップも、同じ音声)
+        conn = sqlite3.connect(str(path))
+        assert conn.execute("SELECT COUNT(*) FROM audio_blobs").fetchone()[0] == 2
+        conn.close()
+
+    def test_クリップの秒数が上限を超えていたら_壊れた値として無いものにする(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        limit = bunri_file.MAX_CLIP_SECONDS
+        assert limit == 6 * 60 * 60
+        doc["tracks"][0]["clips"] = [
+            {"name": "壊れた", "offset": 0, "duration": 1e12, "audio": hs, "audioStart": 1e15, "fadeIn": limit + 1, "fadeOut": 0.1},
+            {"name": "上限ちょうど", "offset": 0, "duration": limit, "audio": hs, "audioStart": limit},
+        ]
+        path = write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part})
+        assert bunri_file.read_project(path)["tracks"][0]["clips"] == [
+            {"name": "壊れた", "offset": 0, "duration": 0.0, "audio": hs, "fadeOut": 0.1},
+            {"name": "上限ちょうど", "offset": 0, "duration": limit, "audio": hs, "audioStart": limit},
+        ]
+        # 上限を入れる前に書かれた (または手で壊された) ファイルの値も、読むときに無いものにする
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE project_clips SET duration_sec = 1e300, audio_start_sec = 1e300 WHERE position = 1")
+        conn.commit()
+        conn.close()
+        assert bunri_file.read_project(path)["tracks"][0]["clips"][1] == {
+            "name": "上限ちょうど", "offset": 0, "duration": 0.0, "audio": hs}
+
+    def test_クリップの範囲とフェードの列が無い頃のファイルも開ける_上げると列が足される(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        path = write_with(tmp_path / "old.bunri", sample_document(hs, hp), {hs: song, hp: part})
+        # 範囲とフェードの列を足す前に保存したファイルの形に戻す
+        conn = sqlite3.connect(str(path))
+        for column in ("audio_start_sec", "fade_in_sec", "fade_out_sec"):
+            conn.execute(f"ALTER TABLE project_clips DROP COLUMN {column}")
+        conn.commit()
+        conn.close()
+
+        clip = {"name": "同じ音声", "offset": 1.0, "duration": 0.5, "audio": hs}
+        assert bunri_file.read_project(path)["tracks"][2]["clips"] == [clip]
+        # 開くときの作業用の写しは、いまの版に上げる。列が足され、以前のクリップは空のまま (音声の全体を鳴らす)
+        bunri_file.migrate(path)
+        conn = sqlite3.connect(str(path))
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(project_clips)").fetchall()}
+        conn.close()
+        assert {"audio_start_sec", "fade_in_sec", "fade_out_sec"} <= columns
+        assert bunri_file.read_project(path)["tracks"][2]["clips"] == [clip]
+
+    def test_学習の記録の小節ごとの結果が往復する_持たない記録はNone(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        doc = sample_document(hs, hp)
+        # 1 件目は以前の記録（小節ごとの結果を持たない）。2 件目は持つ（小節の順でなくても、小節順にして入れる）
+        doc["history"][1]["barStats"] = [
+            {"bar": 3, "referenceCount": 4, "matched": 1}, {"bar": 1, "referenceCount": 2, "matched": 2},
+        ]
+        # 形の違う要素は入れない（数でない、合っていた数がお手本の数より多い、お手本のノートが無い小節）
+        doc["history"].append({**doc["history"][1], "barStats": [
+            {"bar": 2, "referenceCount": 3, "matched": 0}, {"bar": "4", "referenceCount": 1, "matched": 1},
+            {"bar": 5, "referenceCount": 1, "matched": 2}, {"bar": 6, "referenceCount": 0, "matched": 0},
+            {"bar": 7, "referenceCount": True, "matched": 0}, "8", None,
+        ]})
+        doc["history"].append({**doc["history"][1], "barStats": []})
+        doc["history"].append({**doc["history"][1], "barStats": "1:2:2"})
+        path = write_with(tmp_path / "p.bunri", doc, {hs: song, hp: part})
+
+        history = bunri_file.read_project(path)["history"]
+        assert history[0]["barStats"] is None
+        assert history[1]["barStats"] == [
+            {"bar": 1, "referenceCount": 2, "matched": 2}, {"bar": 3, "referenceCount": 4, "matched": 1},
+        ]
+        assert history[2]["barStats"] == [{"bar": 2, "referenceCount": 3, "matched": 0}]
+        assert history[3]["barStats"] == []
+        assert history[4]["barStats"] is None
+        # 全体の値は、小節ごとの結果を足しても変わらない
+        assert [h["matchRate"] for h in history] == [0.5, 1.0, 1.0, 1.0, 1.0]
+        # 形式の版は上げない（列を足しただけ。知らない列は、前の版の bunri が読み飛ばす）
+        conn = sqlite3.connect(str(path))
+        assert conn.execute("SELECT value FROM bunri_meta WHERE key='format_version'").fetchone()[0] == "2.0"
+        assert conn.execute("SELECT bar_stats FROM learning_history ORDER BY id").fetchall()[1][0] == "[[1,2,2],[3,4,1]]"
+        conn.close()
+
+    def test_小節ごとの結果の列が無い頃のファイルも開ける_上げると列が足される(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        path = write_with(tmp_path / "old.bunri", sample_document(hs, hp), {hs: song, hp: part})
+        # 小節ごとの結果の列を足す前に保存したファイルの形に戻す
+        conn = sqlite3.connect(str(path))
+        conn.execute("ALTER TABLE learning_history DROP COLUMN bar_stats")
+        conn.commit()
+        conn.close()
+
+        history = bunri_file.read_project(path)["history"]
+        assert [h["matchRate"] for h in history] == [0.5, 1.0]
+        assert [h["barStats"] for h in history] == [None, None]
+
+        # 開くときは作業用の写しを上げる。列が足され、以前の記録は小節ごとの結果を持たないまま残る
+        assert bunri_file.migrate(path) == "2.0"
+        conn = sqlite3.connect(str(path))
+        assert "bar_stats" in {row[1] for row in conn.execute("PRAGMA table_info(learning_history)")}
+        conn.close()
+        history = bunri_file.read_project(path)["history"]
+        assert [h["matchRate"] for h in history] == [0.5, 1.0]
+        assert [h["barStats"] for h in history] == [None, None]
+
+    def test_読めない小節ごとの結果は_持たない記録として読む(self, tmp_path):
+        song, part = wav_bytes(seed=1), wav_bytes(seed=2, freq=110)
+        hs, hp = bunri_file.audio_hash(song), bunri_file.audio_hash(part)
+        path = write_with(tmp_path / "p.bunri", sample_document(hs, hp), {hs: song, hp: part})
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE learning_history SET bar_stats = '{こわれた' WHERE id = 1")
+        conn.execute("UPDATE learning_history SET bar_stats = '[[1,2,1],[2,\"x\",0],[3,1]]' WHERE id = 2")
+        conn.commit()
+        conn.close()
+
+        history = bunri_file.read_project(path)["history"]
+        assert history[0]["barStats"] is None
+        assert history[1]["barStats"] == [{"bar": 1, "referenceCount": 2, "matched": 1}]
+
     def test_新しすぎる版は開かない(self, tmp_path):
         song = wav_bytes()
         h = bunri_file.audio_hash(song)
@@ -382,6 +607,43 @@ class TestStore:
         # 以前の形式のファイルは消さない
         assert (data_dir / "projects" / "project_1700000000.json").exists()
 
+    def test_以前の形式のノートも_小数を切り捨てない(self):
+        legacy = {"tracks": [{
+            "name": "Lead",
+            "pianoNotes": [note("C", 4, 0), note("D", 4, 4 / 3, 4 / 3), note("E", 4, 2.5, 0.5), note("F", 4, 8.0, 2.0),
+                           {"note": "G", "octave": 4}],
+            "referenceNotes": [note("C", 4, 8 / 3, 2 / 3)],
+        }]}
+        track = project_store.legacy_document(legacy, "old")["tracks"][0]
+        assert track["notes"] == [note("C", 4, 0), note("D", 4, 80 / 60, 80 / 60), note("E", 4, 2.5, 0.5),
+                                  note("F", 4, 8, 2), note("G", 4, 0, 1)]
+        assert track["referenceNotes"] == [note("C", 4, 160 / 60, 40 / 60)]
+        # 整数になる値は整数（以前の整数のノートは、そのまま）
+        assert [type(n["step"]) for n in track["notes"]] == [int, float, float, int, int]
+
+    @pytest.mark.asyncio
+    async def test_小数のノートとスウィングが_保存と開くのAPIを往復する(self, data_dir):
+        from web.api import app
+        song = wav_bytes()
+        hs = bunri_file.audio_hash(song)
+        doc = sample_document(hs, hs)
+        doc["grid"]["swing"] = 2 / 3
+        doc["tracks"][1]["referenceNotes"] = [note("C", 2, 0, 4 / 3), note("C", 2, 8 / 3, 4 / 3), note("G", 2, 8)]
+        doc["tracks"][2]["notes"] = [note("C", 2, 0.5, 0.5), note("G", 2, 8)]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.put(f"/api/project/audio/{hs}?name=demo.wav", content=song)).status_code == 200
+            r = await client.post("/api/project/document", json={"base": None, "document": doc})
+            assert r.status_code == 200, r.text
+            r = await client.post(f"/api/project/open/{r.json()['token']}")
+            assert r.status_code == 200
+        opened = r.json()
+        assert opened["grid"] == {"bpm": 120.0, "beatsPerBar": 4, "gridOffset": 0.25, "swing": 2 / 3}
+        assert opened["tracks"][1]["referenceNotes"] == [note("C", 2, 0, 80 / 60), note("C", 2, 160 / 60, 80 / 60),
+                                                         note("G", 2, 8)]
+        assert opened["tracks"][2]["notes"] == [note("C", 2, 0.5, 0.5), note("G", 2, 8)]
+        # 整数のノートは、JSON でも整数のまま
+        assert '"step":8,"length":4' in r.text.replace(" ", "")
+
 
 class TestCleanup:
     def test_消してよいものだけを消す(self, data_dir):
@@ -400,7 +662,7 @@ class TestCleanup:
                 put("uploads/new.wav", age=time.time())]
         outside = put("../outside.bunri")
         usage = project_store.storage_usage()
-        assert {c["key"] for c in usage["categories"]} == {"uploads", "results", "charts", "work", "claude", "projects"}
+        assert {c["key"] for c in usage["categories"]} == {"uploads", "results", "charts", "work", "recovery", "claude", "projects"}
 
         result = project_store.cleanup(keep_tokens=["2" * 24], keep_charts=["current"])
         assert result["removed_files"] == len(removable)

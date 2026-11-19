@@ -16,7 +16,7 @@
 時間のかかる API に、クエリ `?async=1` を付けて呼ぶ。フォームの中身は今までと同じ。
 
 ```
-POST /api/decompose?async=1      (multipart: file, bpm, sensitivity)
+POST /api/decompose?async=1      (multipart: file, bpm, grid_offset, sensitivity, split_drums)
 → 202  ジョブの状態（下の「ジョブの状態」）
 ```
 
@@ -109,16 +109,25 @@ GET /api/jobs
 |---|---|---|---|
 | `/api/separate` | `separate` | `model` → `separate` | `separate` |
 | `/api/deep-separate` | `deep_separate` | `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `separate_other`（`depth=0` なら無し） | `drum_model` `separate` `separate_drums` `separate_other` |
-| `/api/decompose` | `decompose` | `tempo`（BPM 指定なら無し）→ `model` → `separate` → `separate_other` → `transcribe` | `separate` `separate_other` `transcribe` |
+| `/api/decompose` | `decompose` | `tempo`（BPM 指定なら無し）→ `drum_model`（`split_drums=true` で、追加のモデルが手元に無いときだけ）→ `model` → `separate` → `separate_drums`（`split_drums=true` のときだけ）→ `separate_other` → `transcribe` | `drum_model` `separate` `separate_drums` `separate_other` `transcribe` |
 | `/api/chart` `/api/chart/regrid` | `chart` `chart_regrid` | `grid` → `key` → `chords` → `sections` → `mix` → `save` | 無し |
 | `/api/analyze` | `analyze` | `transcribe` | 無し |
 
 - **`separate` / `separate_drums` / `separate_other`**: Demucs が処理した区間の数（1 区間は音声 5 秒強）。本物の進み具合
 - **`drum_model`**: ドラムを部位ごとに分ける追加のモデル（`backend/stem_models.py` の `drumsep`、約 160 MB）を
   ダウンロードしている間。ファイルの大きさが分かっているので、落とした量 ÷ 全体の割合が出る。重い処理の前に済ませ、
-  ダウンロードできなければ、分離を始めずに 503 で失敗する。モデルが手元に在れば、このステージは並びに入らない
+  ダウンロードできなければ、分離を始めずに 503 で失敗する。モデルが手元に在れば、このステージは並びに入らない。
+  **分解（`/api/decompose`）は、ダウンロードできなくても失敗にしない**: ドラムを分けずに分離して、これまでの採譜に落とす
+  （結果の `drum_fallback` に理由。このとき `separate_drums` は通らないので、`stage_index` が 1 つ飛ぶ）。
+  キャンセルと書きかけの扱いは、`/api/deep-separate` と同じ（同じ `deep_separate` を通る）
+- **`separate_drums`**: ドラムをキック・スネア・タム・シンバルに分ける Demucs。**分解（`/api/decompose`）では、これが失敗しても
+  （メモリ不足など）ジョブを失敗にしない**: 済んだ 6 パートの分離はそのまま使い、ドラムは分けずに採譜する（結果の
+  `drum_fallback` に理由）。細分化の書きかけはその場で消す（ジョブが成功で終わっても残さない）。ステージは
+  `separate_drums` から次（`separate_other` か `transcribe`）へ進むだけで、飛びも戻りもしない。キャンセルは受け止めず、
+  これまでどおり `cancelled` で終わる。`/api/deep-separate` は、頼まれた細分化ができなければこれまでどおり失敗にする
 - **`transcribe`（分解）**: 済んだパートの数 ÷ パートの総数。表示名にも「2/7: ベース」のように入る。
-  1 つのパートの途中の進み具合は取れない
+  1 つのパートの途中の進み具合は取れない。採譜した音をグリッド（16 分か三連か。結果の `grid_feel`）に丸めるのは、
+  全部のパートが済んだあとの一瞬で、ステージも進み具合も足していない（キャンセルを見るのは、これまでどおりパートの切れ目）
 - **`model`**: モデルを用意している間。モデルが手元に無い（初回）ときは、表示名が
   「モデルをダウンロードしています（初回のみ）」になる。**ダウンロードの量（何 MB 中の何 MB）は出していない**。
   Demucs が使うダウンロードの仕組み（HuggingFace hub / Xet）は合計の量を確かな形で渡してこないため、

@@ -986,6 +986,7 @@ async def api_decompose(
     bpm: float = Form(0),
     grid_offset: float = Form(0),
     sensitivity: float = Form(0.5),
+    split_drums: str = Form("false"),
     run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
@@ -996,26 +997,39 @@ async def api_decompose(
         grid_offset: ノートのステップ 0 を置く位置（秒）。楽曲カルテの 1 拍目の位置を渡すと、
             カルテとピアノロールの小節番号がそろう（``decompose.seconds_to_step``）。
         sensitivity: ノート検出感度（0.0〜1.0）。
+        split_drums: ``"true"`` で、ドラムをキック / スネア / タム / シンバルに分けてから採譜する
+            （同時に鳴った種類が、両方ともイベントになる）。追加のモデルが手元に無ければ、最初にダウンロードする
+            （約 160 MB）。用意できなければ失敗にせず、これまでの振り分けで採譜する（結果の ``drum_fallback`` に理由）。
+            付けなければ、ダウンロードもドラムの分離もしない。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
         分解結果の ``JSONResponse``。各ステムに ``audio_url`` と
         ノートデータ・楽器推定結果が含まれる。``audio_path`` は除去済み。
+        ``drum_source`` は、ドラムのイベントの作り方（``"stems"``: 種類ごとに分けた音から /
+        ``"spectral"``: スペクトル重心の振り分け / null: ドラムのパートが無い）。
+        ``grid_feel`` は、ノートとドラムのイベントを丸めたグリッド（``"straight"``: 16 分音符 /
+        ``"triplet"``: 8 分の三連）。曲全体で 1 つで、各ステムにも同じ値が付く。``"triplet"`` のとき、
+        ノートの ``step`` ``length`` とドラムのイベントの ``step`` は 4/3 の倍数（16 分音符単位の小数。
+        整数になる値は整数）。``"straight"`` のときは、これまでどおり整数。
         ``?async=1`` のときは、ジョブの状態（HTTP 202）。
 
     Raises:
         HTTPException: 処理中に例外が発生した場合（HTTP 500）。
     """
+    import stem_models
     from decompose import decompose_stages
+    from separate import DRUM_MODEL
 
     filename = file.filename
     detected_bpm = bpm if bpm > 0 else None
+    with_drums = split_drums.lower() in ("true", "1", "yes")
 
     def task(job, src):
         from decompose import decompose
         result = decompose(
             str(src), bpm=detected_bpm, sensitivity=sensitivity,
-            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset),
+            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset), split_drums=with_drums,
         )
 
         # 音声ファイルのパスをダウンロードURLに変換
@@ -1033,7 +1047,11 @@ async def api_decompose(
 
     return await job_routes.dispatch(
         "decompose", title="パート分離と採譜", filename=filename,
-        stages=decompose_stages(detect_bpm=detected_bpm is None),
+        # 通らないステージ（テンポを調べない、ドラムを分けない、モデルが手元に在る）は並びに入れない
+        stages=decompose_stages(
+            detect_bpm=detected_bpm is None, split_drums=with_drums,
+            download_drum_model=with_drums and not stem_models.is_cached(DRUM_MODEL),
+        ),
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )
 
@@ -1527,20 +1545,31 @@ async def api_coach_diff(payload: dict = Body(...)):
 
     Args:
         payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みの
-            ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意。
+            ノート列）は必須。``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（どれも整数）。
+            ノートは ``{"note", "octave", "step", "length", "velocity"?}``。``step`` と ``length`` は
+            16 分音符単位で、小数も受け付ける（0.5 = 32 分音符、4/3 = 8 分の三連。``step`` は 0 以上、
+            ``length`` は 0 より大きい有限の数）。1/60 ステップの倍数に丸めてから比べる。
             ``reference_source``（お手本の出どころ）が ``"midi"``（MIDI ファイルから読み込んだお手本）の
             ときだけ、強さ（ベロシティ）も比べる。無い・そのほかの値（``"transcription"`` など）では比べない。
+            ``mode`` が ``"drums"`` なら、ドラムの比べ方（同じ高さ = 同じ種類どうしの位置だけを比べ、長さは見ない。
+            ``timing_tolerance`` を省くと 16 分音符 1 個）。無い・``"notes"`` なら、ふつうの比べ方（省くと 2 個）。
 
     Returns:
-        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars`` ``velocity``）。
-        ``velocity`` は、強さを比べないお手本では null。
+        ``coach_diff.diff_notes`` の結果（``summary`` ``bars`` ``worst_bars`` ``velocity`` ``bar_stats``）。
+        ``velocity`` は、強さを比べないお手本では null。``bar_stats`` は、小節ごとのお手本のノートの数と
+        合っていた数（画面が、学習の記録に小節ごとの結果を残すのに使う）。
+        指摘の ``bar`` ``beat`` は、位置が小数でも整数。ノートの ``step`` ``length`` と、指摘の ``offset_steps``
+        ``length_diff`` は、1/60 ステップの倍数で、整数になる値は整数のまま返る（整数だけのノートに対する
+        結果は、小数を受け付ける前と同じ）。位置のずれ・長さの違いは、差が 0.5 ステップ以上のときだけ指摘になる。
 
     Raises:
-        HTTPException: 入力の形が正しくない、またはお手本が空の場合（HTTP 400）。
+        HTTPException: 入力の形が正しくない（数でない・NaN や無限・負の位置・0 以下の長さを含む）、
+            またはお手本が空の場合（HTTP 400）。
     """
     import coach_diff
 
-    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance") if key in payload}
+    options = {key: payload[key] for key in ("steps_per_bar", "steps_per_beat", "timing_tolerance", "mode")
+               if key in payload}
     try:
         return coach_diff.diff_notes(payload.get("reference"), payload.get("attempt"),
                                      reference_source=_reference_source(payload), **options)
@@ -1613,7 +1642,8 @@ def api_coach_explain(payload: dict = Body(...)):
 
     Args:
         payload: JSON の本文。``reference``（お手本のノート列）と ``attempt``（打ち込みのノート列）は必須。
-            ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ）。
+            ``steps_per_bar`` ``steps_per_beat`` ``timing_tolerance`` は任意（``/api/coach/diff`` と同じ。
+            ノートの ``step`` ``length`` が小数でもよいのも同じ）。
             ``chart_id``（お手本と同じ曲のカルテ）を付けると、キーを事実に足す。さらに ``bpm``
             （お手本を採譜したときのテンポ）も付けると、その場のコードとセクションも足す。
             ``grid_offset_sec``（ピアノロールのステップ 0 の位置。画面ではカルテの 1 拍目の位置）を

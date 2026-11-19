@@ -34,8 +34,9 @@
 import type { PianoNote, Track } from './engine';
 import type { SongChart } from './chart';
 import type { DiffIssue, DiffResult, IssueKind } from './coach';
-import { issueText, noteName } from './coach';
-import { secToStep, stepToBar, stepToSec, stepsPerBar, type ProjectGrid } from './grid';
+import { issueText, shapeOf } from './coach';
+import { noteLabel, type DiffMode } from './drums';
+import { inStepRange, secToStep, stepToBar, stepToSec, stepsPerBar, toTicks, type ProjectGrid } from './grid';
 
 /** 聴く: パート（パートの音声）/ 自分（自分のノート）/ 両方 */
 export type ListenMode = 'part' | 'self' | 'both';
@@ -105,12 +106,21 @@ export function loopSeconds(loop: PracticeLoop, grid: ProjectGrid): { start: num
     return { start: stepToSec(steps.start, grid), end: stepToSec(steps.end, grid) };
 }
 
-/** 秒の範囲（構成の区間など）を、それを覆う小節の区間にする。 */
-export function secondsToLoop(startSec: number, endSec: number, grid: ProjectGrid, enabled = true): PracticeLoop {
+/**
+ * 秒の範囲（構成の区間など）を、それを覆う小節の範囲にする（プロジェクトのグリッドの小節。1 始まり、どちらも含む）。
+ * カルテの小節番号は使わず、秒から換える（カルテとピアノロールのグリッドが別でも、同じ音の場所を指すように）。
+ * 練習画面の「構成」の段・区間ループ・練習の地図（lib/practice-map.ts）は、どれもこの換え方を使う。
+ */
+export function secondsToBars(startSec: number, endSec: number, grid: ProjectGrid): { startBar: number; endBar: number } {
     const per = stepsPerBar(grid);
     const startStep = Math.max(0, Math.round(secToStep(startSec, grid)));
     const endStep = Math.max(startStep + 1, Math.round(secToStep(endSec, grid)));
-    return clampLoop({ startBar: Math.floor(startStep / per) + 1, endBar: Math.ceil(endStep / per), enabled });
+    return { startBar: Math.floor(startStep / per) + 1, endBar: Math.ceil(endStep / per) };
+}
+
+/** 秒の範囲（構成の区間など）を、それを覆う小節の区間にする（長さは `MAX_LOOP_BARS` 小節まで）。 */
+export function secondsToLoop(startSec: number, endSec: number, grid: ProjectGrid, enabled = true): PracticeLoop {
+    return clampLoop({ ...secondsToBars(startSec, endSec, grid), enabled });
 }
 
 /**
@@ -218,7 +228,8 @@ export function speedLabel(speed: number): string {
 /** 範囲の中で始まるノート（範囲が無ければ全部）。 */
 export function notesInRange<T extends Pick<PianoNote, 'step'>>(notes: readonly T[], range: StepRange | null): T[] {
     if (!range) return notes.slice();
-    return notes.filter((n) => n.step >= range.start && n.step < range.end);
+    // 範囲に入るかは、刻みの数 (1/60 ステップの整数) で比べる (小数の位置が、境目で外れないように)
+    return notes.filter((n) => inStepRange(n.step, range.start, range.end));
 }
 
 // ---- 指摘とノートの色 ----
@@ -249,7 +260,8 @@ const OWN_KIND: Partial<Record<IssueKind, NoteMarkKind>> = {
 /** 印の重さ（1 つのノートに 2 つの指摘が付いたとき、重いほうを見せる）。 */
 const MARK_WEIGHT: Record<NoteMarkKind, number> = { ok: 0, rhythm: 1, pitch: 2, extra: 3, missing: 3 };
 
-const keyOf = (n: Pick<PianoNote, 'note' | 'octave' | 'step' | 'length'>) => `${n.note}${n.octave}@${n.step}+${n.length}`;
+// ノートの形の鍵。位置と長さは 1/60 ステップの単位にそろえて比べる (三連・32 分の小数の位置でも、指摘とノートを取り違えない)
+const keyOf = shapeOf;
 
 /** 同じ形のノートの番号を、使った順に取り出せるようにする（同じノートが 2 つ在っても、別々に印を付ける）。 */
 function indexer(notes: readonly PianoNote[], inRange: (n: PianoNote) => boolean) {
@@ -277,7 +289,7 @@ function indexer(notes: readonly PianoNote[], inRange: (n: PianoNote) => boolean
  * @returns `own[i]` が `attempt[i]` の印、`ghost[i]` が `reference[i]` の印（付けないノートは null）
  */
 export function markNotes(result: DiffResult, attempt: readonly PianoNote[], reference: readonly PianoNote[], range: StepRange | null = null): { own: (NoteMark | null)[]; ghost: (NoteMark | null)[] } {
-    const inRange = (n: PianoNote) => !range || (n.step >= range.start && n.step < range.end);
+    const inRange = (n: PianoNote) => !range || inStepRange(n.step, range.start, range.end);
     const own: (NoteMark | null)[] = attempt.map(() => null);
     const ghost: (NoteMark | null)[] = reference.map(() => null);
     const takeOwn = indexer(attempt, inRange);
@@ -315,10 +327,15 @@ export function markNotes(result: DiffResult, attempt: readonly PianoNote[], ref
     return { own, ghost };
 }
 
-/** ノートの読み上げの名前（「E2: 高さが違う。2 小節 1 拍目: E2 → お手本は F2」）。 */
-export function noteMarkLabel(note: PianoNote, mark: NoteMark, ghost = false): string {
-    const head = `${ghost ? 'お手本 ' : ''}${noteName(note)}: ${MARK_LABEL[mark.kind]}`;
-    return mark.issues.length ? `${head}。${mark.issues.map(issueText).join('。')}` : head;
+/**
+ * ノートの読み上げの名前（「E2: 高さが違う。2 小節 1 拍目: E2 → お手本は F2」）。
+ * ドラムの比べ方では、音名の代わりに種類の名前で書く（「スネア: お手本の抜け。1 小節 2 拍目: スネア が抜けています」）。
+ *
+ * @param mode - 比べたときの比べ方（lib/drums.ts の `diffModeOf`）
+ */
+export function noteMarkLabel(note: PianoNote, mark: NoteMark, ghost = false, mode?: DiffMode): string {
+    const head = `${ghost ? 'お手本 ' : ''}${noteLabel(note, mode)}: ${MARK_LABEL[mark.kind]}`;
+    return mark.issues.length ? `${head}。${mark.issues.map((issue) => issueText(issue, mode)).join('。')}` : head;
 }
 
 /**
@@ -333,7 +350,7 @@ export function matchRate(result: DiffResult | null): number | null {
 /** 区間の指摘を、時間の順に並べる（練習画面の右の一覧）。同じ拍では重い種類から。 */
 export function issuesInOrder(result: DiffResult): DiffIssue[] {
     const order: IssueKind[] = ['missing', 'pitch', 'octave', 'extra', 'timing', 'length'];
-    const at = (i: DiffIssue) => (i.expected ?? i.actual)?.step ?? 0;
+    const at = (i: DiffIssue) => toTicks((i.expected ?? i.actual)?.step ?? 0);
     return result.bars.flatMap((b) => b.issues).slice()
         .sort((a, b) => at(a) - at(b) || order.indexOf(a.kind) - order.indexOf(b.kind));
 }

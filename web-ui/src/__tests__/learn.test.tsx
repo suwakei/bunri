@@ -27,7 +27,7 @@ class MockAudioContext {
 globalThis.AudioContext = MockAudioContext;
 
 const { default: engine, MIDI_PART } = await import('../lib/engine');
-const { progressFacts, stepStates, referenceTrackFor, useLearnActions, isDecomposeResult, CHART_RESULT_INVALID } = await import('../lib/learn');
+const { progressFacts, stepStates, referenceTrackFor, useLearnActions, isDecomposeResult, CHART_RESULT_INVALID, alignSnapToReference } = await import('../lib/learn');
 const { jobTracker } = await import('../lib/jobs');
 const { DawProvider, useDaw } = await import('../lib/store');
 const LearnPanel = (await import('../components/LearnPanel')).default;
@@ -166,12 +166,109 @@ describe('曲とパート', () => {
         expect(part.pianoNotes).not.toBe(part.referenceNotes);
     });
 
-    it('ドラムのパートには練習のボタンを出さず、差分チェックの対象外と書く', () => {
+    it('お手本を持つドラムのパートは、ほかのパートと同じく練習できる', () => {
+        addPart('ドラム', 'drums', [note('C', 2, 0, 1), note('D', 2, 4, 1), note('F#', 2, 0, 1)]);
+        renderLearn();
+        expect(screen.getByText('お手本 3 ノート')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: '「ドラム」を練習する' }));
+        expect(engine.tracks.map(t => t.name)).toEqual(['ドラム', 'ドラムの練習']);
+        expect(engine.tracks[1]).toMatchObject({ role: 'practice', part: 'drums', practiceOf: engine.tracks[0].id, pianoNotes: [] });
+    });
+
+    it('お手本が三連の曲なら、練習を始めるときに刻みを 8 分の三連に合わせる（そのパートで 1 回だけ。利用者が変えたら従う）', () => {
+        // シャッフルのベース: 拍の頭と、三連の 3 つ目
+        const shuffle = [0, 8 / 3, 4, 20 / 3, 8, 32 / 3].map((step) => note('C', 2, step, 4 / 3));
+        const part = addPart('ベース', 'bass', shuffle);
+        let snap = '1/4';
+        const set: [string, unknown][] = [];
+        const pr = { snapId: () => snap, setSnapId: (id: string, options?: { remember?: boolean }) => { set.push([id, options]); snap = id; return true; } };
+
+        // 合わせて、その旨の文を返す。利用者が覚えさせた刻みは書き換えない (remember: false)
+        expect(alignSnapToReference(pr, part)).toBe('お手本が三連の曲なので、刻みを「8 分の三連」に合わせました（ピアノロールの上の「刻み」で変えられます）');
+        expect(set).toEqual([['1/8T', { remember: false }]]);
+        // 利用者が刻みを変えたあとに入り直しても、戻さない
+        snap = '1/16';
+        expect(alignSnapToReference(pr, part)).toBe('');
+        expect(snap).toBe('1/16');
+        expect(set).toHaveLength(1);
+
+        // すでに三連の刻みなら、変えない (16 分の三連を選んでいる人を、8 分の三連に戻さない)
+        snap = '1/16T';
+        expect(alignSnapToReference(pr, addPart('ギター', 'guitar', shuffle))).toBe('');
+        expect(snap).toBe('1/16T');
+        // ストレートのお手本では、何もしない (三連を選んだままでも、戻さない)
+        expect(alignSnapToReference(pr, addPart('ピアノ', 'piano'))).toBe('');
+        expect(set).toHaveLength(1);
+        // 刻みを持たないピアノロール (まだ用意できていない) でも落ちない
+        expect(alignSnapToReference(null, addPart('その他', 'other', shuffle))).toBe('');
+    });
+
+    it('三連のお手本の「このパートを練習する」: 練習のトラックを開いてから、刻みを合わせる', () => {
+        addPart('ベース', 'bass', [0, 8 / 3, 4, 20 / 3].map((step) => note('E', 2, step, 4 / 3)));
+        const { pr } = renderLearn();
+        const snaps: string[] = [];
+        Object.assign(pr, { snapId: () => '1/4', setSnapId: (id: string) => { snaps.push(id); pr.calls.push(`snap:${id}`); return true; } });
+        fireEvent.click(screen.getByRole('button', { name: '「ベース」を練習する' }));
+        const practice = engine.tracks.find(t => t.role === 'practice')!;
+        expect(pr.calls).toEqual([`switch:${practice.id}`, 'ghost:4', 'pitch:E2', 'step:0', 'snap:1/8T']);
+        // もう一度押しても、合わせ直さない
+        fireEvent.click(screen.getByRole('button', { name: '「ベース」を練習する' }));
+        expect(snaps).toEqual(['1/8T']);
+    });
+
+    it('以前の分け方のドラム（お手本なし）は、練習のボタンを押せない。理由と、分け直すと使えることを出す', () => {
         const drum = engine.addTrack('ドラム'); drum.role = 'part'; drum.part = 'drums';
         drum.pianoNotes = [note('C', 2, 0, 1)];
         renderLearn();
-        expect(screen.getByText('ドラム（差分チェックの対象外）')).toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: '「ドラム」を練習する' })).not.toBeInTheDocument();
+        expect(screen.getByText('以前の分け方のドラム（お手本なし・1 ノート）')).toBeInTheDocument();
+        const button = screen.getByRole('button', { name: '「ドラム」を練習する' });
+        expect(button).toBeDisabled();
+        // 押せない理由 (押すと、知らせとして出る)
+        expect(button.getAttribute('data-blocked')).toContain('もう一度「パートに分ける」を押すと');
+        expect(screen.getByText('パートを分け直すと、ドラムも練習と差分チェックが使えます。')).toBeInTheDocument();
+        // 打ち込みに置いてあるノートは、そのまま (開けて、鳴らせる)
+        expect(drum.pianoNotes).toEqual([note('C', 2, 0, 1)]);
+        expect(engine.tracks).toHaveLength(1);
+    });
+
+    it('「ドラムを種類ごとに分ける」は、追加のモデルが手元に在るときだけ最初から選ばれ、選択を分離に渡す', async () => {
+        let cached = false;
+        const posted: FormData[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            if (String(url).includes('/api/models/drumsep/status')) return new Response(JSON.stringify({ model: 'drumsep', cached, missing: cached ? 0 : 1 }));
+            if (String(url).includes('/api/models/')) return new Response(JSON.stringify({ cached: true }));
+            if (String(url).includes('/api/decompose')) { posted.push(init!.body as FormData); return new Response(JSON.stringify({ detail: 'テストでは始めません' }), { status: 400 }); }
+            return new Response('{}', { status: 404 });
+        }));
+        function WithSong() {
+            const { setSongFile } = useDaw();
+            useEffect(() => { setSongFile(new File(['x'], 'song.wav')); }, [setSongFile]);
+            return <LearnPanel />;
+        }
+        const view = render(<DawProvider><WithSong /></DawProvider>);
+        const box = screen.getByRole('checkbox', { name: /ドラムを種類ごとに分ける/ }) as HTMLInputElement;
+        // モデルが手元に無い: 選ばれていない (勝手に 160 MB を落とさない)。選ぶとダウンロードが入る、と書く
+        await act(async () => { await Promise.resolve(); });
+        expect(box.checked).toBe(false);
+        expect(document.getElementById('learn-split-drums-note')!.textContent).toContain('チェックを入れると、初回のみ、追加のモデル（約 160 MB）をダウンロードします');
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: /パートに分けて採譜する/ })); });
+        await vi.waitFor(() => expect(posted).toHaveLength(1));
+        expect(posted[0].get('split_drums')).toBe('false');
+
+        // 利用者が選ぶと、分ける (ダウンロードが入る旨を出す)
+        fireEvent.click(box);
+        expect(document.getElementById('learn-split-drums-note')!.textContent).toContain('初回のみ、追加のモデル（約 160 MB）をダウンロードします。ダウンロードできなければ、分けずに採譜します');
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: /パートに分けて採譜する/ })); });
+        await vi.waitFor(() => expect(posted).toHaveLength(2));
+        expect(posted[1].get('split_drums')).toBe('true');
+        view.unmount();
+
+        // モデルが手元に在る: 最初から選ばれている
+        cached = true;
+        render(<DawProvider><WithSong /></DawProvider>);
+        await vi.waitFor(() => expect((screen.getByRole('checkbox', { name: /ドラムを種類ごとに分ける/ }) as HTMLInputElement).checked).toBe(true));
+        expect(document.getElementById('learn-split-drums-note')!.textContent).toContain('追加のモデルは、ダウンロード済みです');
+        vi.unstubAllGlobals();
     });
 });
 
@@ -301,5 +398,59 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(engine.tracks.map(t => t.name)).toEqual(['原曲', 'Lead', 'Lead の練習', 'ボーカル']);
         expect(engine.getTrack(midiPractice.id)?.practiceOf).toBe(midiPart.id);
         expect(engine.getTrack(midiPractice.id)?.pianoNotes).toEqual([note]);
+    });
+
+    const drumStem = (events: { type: string; step: number; velocity: number }[], source: 'stems' | 'spectral') =>
+        ({ gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [], drum_events: events, drum_source: source });
+
+    it('ドラムの打音は、種類ごとに決まった高さのお手本になる（打ち込みは空のまま）', async () => {
+        render(<DawProvider><Harness /></DawProvider>);
+        const events = [
+            { type: 'kick', step: 0, velocity: 100 }, { type: 'cymbals', step: 0, velocity: 80 },
+            { type: 'snare', step: 4, velocity: 96 }, { type: 'toms', step: 14, velocity: 90 },
+            // 知らない種類は置かない
+            { type: 'cowbell', step: 2, velocity: 90 },
+        ];
+        await act(async () => {
+            await latest.actions!.applyParts({ bpm: 120, drum_source: 'stems', drum_fallback: null, stems: { drums: drumStem(events, 'stems') } });
+        });
+        const drums = engine.tracks.find(t => t.part === 'drums')!;
+        expect(drums.role).toBe('part');
+        expect(drums.pianoNotes).toEqual([]);
+        expect(drums.referenceNotes).toEqual([
+            { note: 'C', octave: 2, step: 0, length: 1, velocity: 100 },
+            { note: 'F#', octave: 2, step: 0, length: 1, velocity: 80 },
+            { note: 'D', octave: 2, step: 4, length: 1, velocity: 96 },
+            { note: 'A', octave: 2, step: 14, length: 1, velocity: 90 },
+        ]);
+        expect(latest.daw!.status).toContain('お手本 1 パート');
+        expect(latest.daw!.status).toContain('ドラムは、種類ごとに分けて採譜しました');
+        expect(latest.daw!.statusKind).toBe('info');
+    });
+
+    it('ドラムを分けずに採譜した結果（kick / snare / hihat）も、お手本になる。分けるよう頼んでいたら、分けられなかった理由を知らせる', async () => {
+        render(<DawProvider><Harness /></DawProvider>);
+        const events = [{ type: 'kick', step: 0, velocity: 100 }, { type: 'hihat', step: 2, velocity: 60 }, { type: 'snare', step: 4, velocity: 96 }];
+        await act(async () => {
+            await latest.actions!.applyParts({
+                bpm: 120, drum_source: 'spectral', drum_fallback: '分離用の追加モデルをダウンロードできませんでした。ネットワークの接続を確かめてください。',
+                stems: { drums: drumStem(events, 'spectral') },
+            });
+        });
+        const drums = engine.tracks.find(t => t.part === 'drums')!;
+        expect(drums.pianoNotes).toEqual([]);
+        expect(drums.referenceNotes!.map(n => `${n.note}${n.octave}@${n.step}`)).toEqual(['C2@0', 'F#2@2', 'D2@4']);
+        expect(latest.daw!.statusKind).toBe('hint');
+        expect(latest.daw!.status).toContain('ドラムは、種類ごとに分けずに採譜しました（分離用の追加モデルをダウンロードできませんでした。ネットワークの接続を確かめてください）');
+        expect(latest.daw!.status).toContain('同時に鳴った種類は、1 つにまとまっています');
+    });
+
+    it('以前の版の結果（ドラムの作り方の項目が無い）も、そのまま当てられる', async () => {
+        render(<DawProvider><Harness /></DawProvider>);
+        const stem = { gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [], drum_events: [{ type: 'kick', step: 8, velocity: 90 }] };
+        await act(async () => { await latest.actions!.applyParts({ bpm: 120, stems: { drums: stem } }); });
+        expect(engine.tracks.find(t => t.part === 'drums')!.referenceNotes).toEqual([{ note: 'C', octave: 2, step: 8, length: 1, velocity: 90 }]);
+        expect(latest.daw!.statusKind).toBe('info');
+        expect(latest.daw!.status).not.toContain('ドラムは');
     });
 });

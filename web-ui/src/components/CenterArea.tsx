@@ -16,13 +16,25 @@ import GhostBar from './GhostBar';
 import VelocityBar from './VelocityBar';
 import { VELOCITY_STEP, applyVelocity, sameSummary, summarizeVelocity } from '../lib/velocity';
 import { PracticeBands, PracticeControls, PracticeHeader, PracticeProvider, PracticeSide } from './PracticeView';
-import { secToStep, stepSeconds } from '../lib/grid';
+import { normNote, normStep, secToStep, stepSeconds, stepUnits } from '../lib/grid';
+import {
+    cellLength, gridLines, isSnapId, isSwung, nudgeSteps, readSnapPrefs, snapEnd, snapFloor, snapGrid, snapIndexFloor, snapLength,
+    snapLengthCeil, snapPos, snapRound, snapSteps, stepText, writeSnapPref,
+} from '../lib/snap';
+import SnapBar from './SnapBar';
 import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
 import PopupMenu from './PopupMenu';
 import RecentProjects from './RecentProjects';
 import { cursorLabel } from '../lib/midi-input';
 import { tip } from '../lib/tooltip';
+import { blockedBy } from '../lib/notice';
+import { firstRegionEndingAfter, inMask } from '../lib/pitch-hints';
+import { DRUM_ROWS, drumRowOfPitch, isDrumTrack } from '../lib/drums';
+import PitchHintBar from './PitchHintBar';
+import { MIN_CLIP_SEC, audioStartOf, fadeGain, fadeInOf, fadeOutOf, formatSeconds, playLength, setClipFades, setClipRange, splitClip } from '../lib/clip';
+import { onPeaksReady, peakColumns, peaksOf } from '../lib/waveform';
+import ClipFadeDialog from './ClipFadeDialog';
 
 /** 音名を低い順に並べたもの (MIDI ノート番号を出すのに使う)。 */
 const CHROMATIC = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -37,6 +49,12 @@ const TIMELINE_MIN_HEIGHT = 200;
 const RESIZE_KEY_STEP = 24;
 /** タイムラインのトラックの見出しの幅 (px)。CSS の .track-header と合わせる。クリップを置く領域はこの右から始まる */
 const TRACK_HEADER_WIDTH = 200;
+/** クリップの中の高さ (px)。CSS の .clip の高さ (52px) から、上下の縁を引いたもの。波形はこの高さで描く */
+const CLIP_INNER_HEIGHT = 50;
+/** 波形を、見えている範囲の左右にどれだけ余分に描いておくか (px)。少しのスクロールでは描き直さない */
+const WAVE_MARGIN = 240;
+/** フェードのつまみを出す、クリップの幅の下限 (px)。これより狭いクリップでは、メニューの「フェード…」を使う */
+const FADE_HANDLE_MIN_WIDTH = 36;
 
 /**
  * Canvas ベースのピアノロールエディタエンジン。
@@ -47,7 +65,7 @@ const TRACK_HEADER_WIDTH = 200;
  * React コンポーネントから `pianoRollRef.current` 経由で操作する。
  *
  * 選択は複数持てる（ドラッグで囲む・Shift+クリック・Cmd+A）。選んだノートはまとめて動かし、
- * 矢印キーで動かし（←→ はグリッドの刻み、↑↓ は半音、Shift+↑↓ はオクターブ）、
+ * 矢印キーで動かし（←→ は選んだ刻み 1 つぶん、↑↓ は半音、Shift+↑↓ はオクターブ）、
  * コピー・切り取り・貼り付け・複製ができる。お手本（ghost）のノートは選べない。
  *
  * ノートを書き換える操作は、すべて `history`（ストアの `record` / `beginEdit`）で囲んで、
@@ -63,18 +81,34 @@ const TRACK_HEADER_WIDTH = 200;
  * - `getActiveTrackId()` — アクティブなトラック ID を返す
  * - `selectAll()` / `copySelection()` / `cutSelection()` / `paste()` / `duplicateSelection()`
  * - `zoomX(dir)` / `zoomY(dir)` — 表示の大きさを変える
+ * - `snapId()` / `setSnapId(id, { remember? })` / `refreshSnap()` — 刻み（ノートを置く・動かすときに吸い付く間隔。lib/snap.ts）。
+ *   三連・32 分・スウィングでは、ノートの位置と長さが小数のステップになる（1/60 ステップの倍数にそろえて持つ。lib/grid.ts）
  * - `clear()` — 全ノートを削除する
  */
 // ---- PianoRoll クラス（Canvasベース）----
 /** コピーしたノート（先頭のノートの位置を 0 にした並び）。トラックをまたいで貼り付けられる。 */
 let noteClipboard = null;
 
-/** 横の大きさの段階 (1 ステップの幅、px)。既定は 20。 */
-const ZOOM_X_LEVELS = [5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 50, 60];
+/**
+ * 横の大きさの段階 (1 ステップの幅、px)。既定は 20。上の 2 つ (80・100) は、32 分音符や 16 分の三連を
+ * 置きやすくするためのもの (100 で、32 分音符 1 つが 50px)。
+ */
+const ZOOM_X_LEVELS = [5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 50, 60, 80, 100];
 /** 縦の大きさの段階 (1 行の高さ、px)。既定は 14。鍵盤の音名 (10px) が読める高さより下げない */
 const ZOOM_Y_LEVELS = [10, 12, 14, 17, 20, 24];
+/** ノートの幅の下限 (px)。細かい刻みのノートを縮めて見ているときも、見えて、押せるように */
+const NOTE_MIN_WIDTH = 2;
+/** ノートの右端の、長さを変えるつかみしろ (px)。幅の狭いノートでは、幅の 3 分の 1 まで (残りは、動かすつかみしろ) */
+const RESIZE_GRIP = 10;
 /** ドラッグで囲み始めたとみなす動きの大きさ (px)。これより小さければ、ただのクリック */
 const BAND_THRESHOLD = 3;
+/**
+ * キーの音・コードの音の色の濃さ (0〜1)。背景の層なので薄くする。色そのものはトークン
+ * (キーは --accent、コードは --secondary) から引き、ここでは濃さだけを決める。
+ * いちばん濃く重なる行 (主音がコードのルートでもある行) の上でも、ノートの色 (--accent) とお手本の縁 (--ghost) が
+ * 4.5:1 以上のコントラストを保つ値にしてある (e2e/pitch-hints.spec.ts が、描いた色から確かめる)。
+ */
+const HINT_ALPHA = { keyTone: 0.06, keyTonic: 0.12, chordTone: 0.1, chordRoot: 0.18 };
 
 class PianoRollEngine {
     constructor() {
@@ -103,7 +137,15 @@ class PianoRollEngine {
         this._drag = null; this._band = null;
         // 試し聴きの音を止めるタイマー (キーは MIDI ノート番号) と、押している鍵盤
         this._auditionTimers = new Map(); this._heldKey = null;
-        this.snapToGrid = true; this.gridSize = 4;
+        // 刻み (ノートを置く・動かすときに吸い付く間隔。lib/snap.ts)。選んだ刻みは、ふつうのトラックとドラムのトラックで
+        // 別々に覚える。既定は、これまでの動きと同じ (ふつうは 1 拍、ドラムは 16 分音符)。
+        // snap が吸い付く位置の並び (スウィングを含む)、gridSize は刻み 1 つぶんのステップ数
+        this.snapToGrid = true;
+        this.snapPrefs = readSnapPrefs();
+        this.snap = snapGrid(this.snapPrefs.normal, engine.swing);
+        this.gridSize = snapSteps(this.snap);
+        // 刻みが変わったとき (SnapBar が渡す。選択欄に、いまの刻みを出す)
+        this.onSnap = null;
         this.totalRows = (this.octaveRange[1] - this.octaveRange[0]) * 12;
         this.onTrackSwitch = null;
         // ノートの数が変わったとき (CenterArea が渡す)
@@ -134,6 +176,169 @@ class PianoRollEngine {
         // 選択か、選んだノートの強さが変わったとき (CenterArea が渡す。見出しの「強さ」の欄に出す)
         this.onSelection = null;
         this._lastSummary = null;
+        // キーの音・コードの音の色分け (setPitchHints)。グリッドの背景に描く
+        this.pitchHints = { key: null, chords: [] };
+        // 行 (12 行で 1 オクターブ) → 高さの番号 (C = 0)
+        this._rowPitchClass = this.noteNames.map(name => CHROMATIC.indexOf(name));
+        // ドラムのトラックを開いているか (_syncDrumMode)。鍵盤の列に種類の名前を出し、試し聴きをドラムの音にする
+        this.drumMode = false;
+    }
+    /**
+     * 開いているトラックがドラムか (ドラムのパートと、その練習のトラック。lib/drums.ts) を見て、鍵盤の列を切り替える。
+     * ドラムのあいだは、ドラムの行 (キック・スネア・ハイハット・シンバル・タム) に種類の名前を出し、列を広げる。
+     * いまドラムかどうかは、グリッドの枠の `data-drums` で読める。
+     */
+    _syncDrumMode() {
+        const track = this.activeTrackId !== null ? engine.getTrack(this.activeTrackId) : null;
+        const drums = isDrumTrack(track, (id) => engine.getTrack(id));
+        if (drums === this.drumMode) return;
+        this.drumMode = drums;
+        // ドラムのトラックは、ドラム用に覚えた刻み (既定は 16 分音符。ふだんの 1 拍の刻みだと、8 分や 16 分で刻む
+        // ハイハットを、マウスで置けない)。ほかのトラックに戻ったら、ふだんの刻みに戻す
+        this._applySnap();
+        if (this.wrap) { if (drums) this.wrap.dataset.drums = 'true'; else delete this.wrap.dataset.drums; }
+        this._labelKeys();
+        // 鍵盤の列の幅が変わる。グリッドの大きさを取り直し、横の位置をそろえている部品 (練習画面の段) に知らせる
+        if (this.canvas) { this._resize(); this._drawGrid(); this._emitView(); }
+    }
+    /** いま効いている刻みの種類 (覚える置き場)。ドラムのトラックを開いているあいだは `drums`。 */
+    snapKind() { return this.drumMode ? 'drums' : 'normal'; }
+    /** いま効いている刻みの名前 (`1/8T` など。lib/snap.ts の `SnapId`)。 */
+    snapId() { return this.snapPrefs[this.snapKind()]; }
+    /**
+     * 刻みを選ぶ。いま開いているトラックの種類 (ふつう / ドラム) の刻みが変わる。
+     * ノートを置く・動かす・伸ばす・貼る・複製する・矢印キーで動かす、がこの刻みに従い、グリッドの線も描き直す。
+     * いまの刻みは、グリッドの枠の `data-snap` で読める。
+     *
+     * @param id - 刻み (`1/4` `1/8` `1/16` `1/32` `1/8T` `1/16T`)
+     * @param options.remember - false なら、覚えない (開き直すと、利用者が最後に選んだ刻みに戻る)。
+     *   お手本が三連の曲の練習を始めたときに、アプリが合わせるのに使う。省略すると覚える
+     * @returns 変えたら true (同じ刻みなら false)
+     */
+    setSnapId(id, options = {}) {
+        if (!isSnapId(id)) return false;
+        const kind = this.snapKind();
+        if (options.remember !== false) writeSnapPref(kind, id);
+        if (this.snapPrefs[kind] === id) return false;
+        this.snapPrefs = { ...this.snapPrefs, [kind]: id };
+        this._applySnap();
+        return true;
+    }
+    /** スウィング (プロジェクトの値。engine.swing) が変わったあとに呼ぶ。吸い付く位置とグリッドの線を作り直す。 */
+    refreshSnap() { this._applySnap(); }
+    /** 吸い付く位置の並びを、いまの刻みとスウィングから作り直す。変わっていれば、グリッドを描き直して知らせる。 */
+    _applySnap() {
+        const next = snapGrid(this.snapId(), engine.swing);
+        const changed = next.id !== this.snap.id || next.cell !== this.snap.cell || next.off !== this.snap.off;
+        this.snap = next;
+        this.gridSize = snapSteps(next);
+        if (this.wrap) this.wrap.dataset.snap = next.id;
+        if (!changed) return;
+        if (this.canvas) this._drawGrid();
+        if (this.onSnap) this.onSnap(next.id);
+    }
+    /**
+     * 鍵盤の列の文字と説明を付ける。ドラムのトラックを開いているあいだは、ドラムの行に種類の名前を出す。
+     * 最後に、キーの音のしるしを付け直す (_markKeys は、ここで決めた説明の後ろに書き足す。2 つを食い違わせない)。
+     */
+    _labelKeys() {
+        if (!this.keysDiv) return;
+        this.keysDiv.classList.toggle('drum-keys', this.drumMode);
+        for (const el of this.keysDiv.querySelectorAll('.piano-key')) {
+            const row = this.drumMode ? drumRowOfPitch(Number(el.dataset.pitch)) : null;
+            el.textContent = row ? row.label : el.dataset.name;
+            el.classList.toggle('drum-row', !!row);
+            if (row) el.dataset.drum = row.voice; else delete el.dataset.drum;
+            el.dataset.base = row
+                ? `${row.label}（${el.dataset.name}）。押すと、この音が鳴ります`
+                : `${el.dataset.name}。押すと、この高さの音が鳴ります`;
+        }
+        this._markKeys();
+    }
+    /** ドラムの行 (キック〜タム) が全部は見えていなければ、その真ん中の行へ縦にスクロールする。 */
+    _revealDrumRows() {
+        if (!this.wrap) return;
+        const rows = DRUM_ROWS.map(r => this._noteToRow(r.note, r.octave));
+        const top = Math.min(...rows), bottom = Math.max(...rows);
+        const first = this.wrap.scrollTop / this.noteHeight;
+        const last = (this.wrap.scrollTop + this.wrap.clientHeight) / this.noteHeight;
+        if (top >= first && bottom + 1 <= last) return;
+        this._centerOnRow(Math.round((top + bottom) / 2));
+    }
+    /**
+     * キーの音・コードの音の色分けを入れ替える (lib/pitch-hints.ts の buildPitchHints)。
+     * グリッドの背景 (ノートとお手本の下) に描き、鍵盤の列にキーの音のしるしを付ける。
+     * いま出しているものは、グリッドの枠の `data-key-hint` (「C major」) と `data-chord-hint` (区間の数) で読める
+     * (canvas の中身は外から読みにくいので、テストが読めるように出す)。
+     *
+     * @param hints - `{ key, chords }`。key は null で出さない。chords は始まりの順に並んだ、重ならない区間
+     */
+    setPitchHints(hints) {
+        const key = hints?.key ?? null, chords = hints?.chords ?? [];
+        // 前と同じものなら、描き直さない (呼ぶ側は、カルテかグリッドが変わったときだけ作り直した値を渡す)
+        const prev = this.pitchHints;
+        if (key === prev.key && (chords === prev.chords || (chords.length === 0 && prev.chords.length === 0))) return;
+        this.pitchHints = { key, chords };
+        if (this.wrap) {
+            if (key) this.wrap.dataset.keyHint = `${key.tonic} ${key.mode}`; else delete this.wrap.dataset.keyHint;
+            if (chords.length > 0) this.wrap.dataset.chordHint = String(chords.length); else delete this.wrap.dataset.chordHint;
+        }
+        this._markKeys();
+        if (this.canvas) this._drawGrid();
+    }
+    /** 鍵盤の列に、キーの音 (音階の音と主音) のしるしと説明を付ける。 */
+    _markKeys() {
+        if (!this.keysDiv) return;
+        const key = this.pitchHints.key;
+        for (const el of this.keysDiv.querySelectorAll('.piano-key')) {
+            const pc = Number(el.dataset.pitch) % 12;
+            const tonic = !!key && pc === key.tonicPc, inKey = !!key && inMask(key.mask, pc);
+            el.classList.toggle('in-key', inKey);
+            el.classList.toggle('key-tonic', tonic);
+            // 鍵盤の文字と、説明の頭は _labelKeys が決める (ドラムの行は、種類の名前)
+            const base = el.dataset.base ?? `${el.textContent}。押すと、この高さの音が鳴ります`;
+            el.dataset.tip = tonic ? `${base}\nキー（${key.label}）の主音です`
+                : inKey ? `${base}\nキー（${key.label}）の音階に入る音です` : base;
+        }
+    }
+    /**
+     * キーの音・コードの音を、グリッドの背景に描く。見えている行と、見えている範囲に掛かるコードの区間だけを描く
+     * (区間は始まりの順に並んでいるので、最初の 1 つを二分探索で探す)。スクロールや再生のたびに呼ばれるので、
+     * ここでは計算し直さない (構成音と区間は、lib/pitch-hints.ts で前もって出してある)。
+     */
+    _drawPitchHints(ctx, w, h, sx, sy) {
+        const { key, chords } = this.pitchHints;
+        if (!key && chords.length === 0) return;
+        const nh = this.noteHeight, sw = this.stepWidth;
+        const firstRow = Math.max(0, Math.floor(sy / nh));
+        const lastRow = Math.min(this.totalRows, Math.ceil((sy + h) / nh));
+        ctx.save();
+        if (key) {
+            ctx.fillStyle = cssVar('--accent', '#d4a44c');
+            for (let row = firstRow; row < lastRow; row++) {
+                const pc = this._rowPitchClass[row % 12];
+                if (!inMask(key.mask, pc)) continue;
+                ctx.globalAlpha = pc === key.tonicPc ? HINT_ALPHA.keyTonic : HINT_ALPHA.keyTone;
+                ctx.fillRect(0, row * nh - sy, w, nh);
+            }
+        }
+        if (chords.length > 0) {
+            ctx.fillStyle = cssVar('--secondary', '#4ecdc4');
+            const lastStep = (sx + w) / sw;
+            for (let i = firstRegionEndingAfter(chords, sx / sw); i < chords.length && chords[i].start < lastStep; i++) {
+                const chord = chords[i];
+                // 区間の右端を 1px 空けて、隣のコードとの境目が見えるようにする (ノートの幅と同じ決まり)
+                const x0 = Math.max(0, Math.round(chord.start * sw - sx)), x1 = Math.min(w, Math.round(chord.end * sw - sx) - 1);
+                if (x1 <= x0) continue;
+                for (let row = firstRow; row < lastRow; row++) {
+                    const pc = this._rowPitchClass[row % 12];
+                    if (!inMask(chord.mask, pc)) continue;
+                    ctx.globalAlpha = pc === chord.rootPc ? HINT_ALPHA.chordRoot : HINT_ALPHA.chordTone;
+                    ctx.fillRect(x0, row * nh - sy, x1 - x0, nh);
+                }
+            }
+        }
+        ctx.restore();
     }
     /**
      * 見えている範囲が変わったときに呼ばれる関数を足す。
@@ -207,6 +412,7 @@ class PianoRollEngine {
         this.playhead.className = 'playhead'; this.playhead.id = 'piano-playhead';
         this.playhead.setAttribute('aria-hidden', 'true');
         this.wrap.appendChild(this.playhead);
+        this.wrap.dataset.snap = this.snap.id;
         this._buildKeys(); this._resize(); this._drawGrid(); this._bindEvents();
         // グリッドは見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す。
         // 鍵盤の列は別の要素なので、縦のスクロール位置を合わせる
@@ -349,7 +555,9 @@ class PianoRollEngine {
         this.activeTrackId = trackId !== null ? Number(trackId) : null;
         this.selection = new Set();
         if (changed) this.diffMarks = null;
-        this._loadFromEngine(); this._fitLength(); this._renderNotes(); this._revealNotes();
+        this._loadFromEngine(); this._syncDrumMode(); this._fitLength(); this._renderNotes(); this._revealNotes();
+        // ドラムのトラックを開いたら、種類の名前の付いた行が見える位置へ
+        if (changed && this.drumMode) this._revealDrumRows();
         if (this.onTrackSwitch) this.onTrackSwitch(this.activeTrackId);
     }
     /**
@@ -364,6 +572,8 @@ class PianoRollEngine {
         this.selection = new Set();
         const before = this.notes;
         this._loadFromEngine();
+        // 元に戻して、開いているトラックの役割が変わっていたら (パートの入れ替えなど)、鍵盤の列も合わせる
+        this._syncDrumMode();
         if (!sameNotes(before, this.notes)) { this.diffMarks = null; this._emitNotesEdited(); }
         this._fitLength(); this._renderNotes();
     }
@@ -398,10 +608,14 @@ class PianoRollEngine {
                 div.textContent = `${name}${oct}`;
                 div.style.height = this.noteHeight + 'px';
                 div.dataset.pitch = String(this._pitchOf(name, oct));
+                div.dataset.name = `${name}${oct}`;
                 div.dataset.tip = `${name}${oct}。押すと、この高さの音が鳴ります`;
                 this.keysDiv.appendChild(div);
             }
         }
+        // 鍵盤を作り直したら (縦の大きさを変えたとき)、ドラムの種類の名前と、キーの音のしるしも付け直す
+        // (_labelKeys が、最後に _markKeys を呼ぶ)
+        this._labelKeys();
     }
     _resize() {
         // ノートを置く層が、スクロールできる範囲の大きさを決める
@@ -423,6 +637,8 @@ class PianoRollEngine {
         const sx = this.wrap.scrollLeft, sy = this.wrap.scrollTop;
         const bar = this._stepsPerBar();
         ctx.clearRect(0, 0, w, h);
+        // キーの音・コードの音。いちばん下の層 (この上に、区間の外の暗さ・行と拍の線が重なる)
+        this._drawPitchHints(ctx, w, h, sx, sy);
         // 区間ループ: 区間の外を暗くし、区間の端に金色の線を引く
         if (this.loopRange) {
             const x0 = this.loopRange.start * this.stepWidth - sx, x1 = this.loopRange.end * this.stepWidth - sx;
@@ -442,14 +658,30 @@ class PianoRollEngine {
             ctx.strokeStyle = noteIdx === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)';
             ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
         }
-        // 縦線 (ステップ・拍・小節)。見えているステップだけ。縮めて刻みが詰まったら、ステップの線は省く
+        // 縦線。見えている範囲だけ
         const firstStep = Math.max(0, Math.floor(sx / this.stepWidth));
         const lastStep = Math.min(this.totalSteps, Math.ceil((sx + w) / this.stepWidth));
         const bottom = Math.min(h, this.totalRows * this.noteHeight - sy);
-        for (let step = firstStep; step <= lastStep; step++) {
-            const x = step * this.stepWidth - sx, isBeat = step % 4 === 0, isBar = step % bar === 0;
-            if (!isBeat && this.stepWidth < 8) continue;
-            ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.25)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.03)';
+        // 拍のあいだの線: 選んだ刻みの位置に引く (三連なら三連の位置、スウィングならずらした位置。4 分・8 分・16 分は、
+        // これまでと同じ 16 分音符の線)。縮めて詰まるときは、粗い線に間引くか、省く (lib/snap.ts の gridLines)
+        const lines = gridLines(this.snap, this.stepWidth);
+        if (lines) {
+            for (let k = snapIndexFloor(lines, firstStep); ; k++) {
+                const step = snapPos(lines, k);
+                if (step > lastStep) break;
+                const units = stepUnits(step);
+                // 拍と小節の線は、下でまとめて引く
+                if (units % 240 === 0) continue;
+                // 16 分音符の位置に無い線 (32 分・三連・スウィングの裏) は、少しだけ濃くして見分けやすくする
+                ctx.strokeStyle = units % 60 === 0 ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.05)';
+                const x = Math.round(step * this.stepWidth) - sx;
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
+            }
+        }
+        // 拍と小節の線 (必ず引く)
+        for (let step = Math.ceil(firstStep / 4) * 4; step <= lastStep; step += 4) {
+            const x = step * this.stepWidth - sx, isBar = step % bar === 0;
+            ctx.strokeStyle = isBar ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.1)';
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, bottom); ctx.stroke();
             if (this.loopRange && (step === this.loopRange.start || step === this.loopRange.end)) {
                 ctx.strokeStyle = cssVar('--accent', '#d4a44c'); ctx.lineWidth = 2;
@@ -475,16 +707,24 @@ class PianoRollEngine {
     }
     _bindEvents() {
         this.noteLayer.addEventListener('dblclick', (e) => {
-            if (this.activeTrackId === null) return;
+            if (this.activeTrackId === null) {
+                // 黙って何も置かないままにしない (なぜ置けないかを知らせる)
+                if (this.onStatus) this.onStatus('ノートを置くトラックが、まだ開いていません。上のトラックの名前をクリックしてピアノロールを開いてから、ここをダブルクリックしてください（トラックが無ければ「＋ トラックを追加」）', 'hint');
+                return;
+            }
             if (e.target.classList.contains('note-block')) return;
             // ノートの層は中身と一緒にスクロールするので、層の左上からの距離がそのまま曲の中の位置になる
             const { x, y } = this._layerPoint(e);
-            let step = Math.floor(x / this.stepWidth);
-            if (this.snapToGrid) step = Math.floor(step / this.gridSize) * this.gridSize;
             const row = Math.floor(y / this.noteHeight);
-            if (row < 0 || row >= this.totalRows || step < 0) return;
+            if (row < 0 || row >= this.totalRows || x < 0) return;
+            // 押した位置の手前の刻みに置く。長さは刻み 1 つぶん (スウィングのときは、次の刻みまで)
+            let step = Math.floor(x / this.stepWidth), length = 1;
+            if (this.snapToGrid) {
+                const k = snapIndexFloor(this.snap, x / this.stepWidth);
+                step = snapPos(this.snap, k); length = cellLength(this.snap, k);
+            }
             const { note, octave } = this._rowToNote(row);
-            this._addNote(note, octave, step, this.gridSize);
+            this._addNote(note, octave, step, length);
             // 置いた高さを耳で確かめられるように鳴らす
             this._audition(note, octave);
         });
@@ -496,7 +736,8 @@ class PianoRollEngine {
             this._releaseKey();
             const pitch = Number(key.dataset.pitch);
             this._clearAudition(pitch);
-            engine.liveNoteOn(pitch, 96);
+            // ドラムのトラックでは、ドラムの行は種類ごとの音で鳴る (再生と同じ音)
+            engine.liveNoteOn(pitch, 96, { drums: this.drumMode });
             key.classList.add('sounding');
             this._heldKey = { pitch, el: key };
         });
@@ -553,8 +794,10 @@ class PianoRollEngine {
         // 押した場所 (右端か、それ以外か) は、選ぶ前に測る。選ぶとノートを描き直すので、
         // 押した要素は画面から外れて、大きさが 0 になる (以前はここで必ず「右端」と判定されて、
         // どこをつかんでも長さの変更になり、ノートを動かせなかった)
+        // 右端のつかみしろは 10px。幅の狭いノート (細かい刻み・縮めた表示) では、幅の 3 分の 1 までにして、
+        // 残りを「動かす」に空ける (全部が右端になって、動かせなくならないように)
         const rect = e.target.getBoundingClientRect();
-        const resize = e.clientX > rect.right - 10;
+        const resize = e.clientX > rect.right - Math.min(RESIZE_GRIP, rect.width / 3);
         const wasSelected = this.selection.has(anchor);
         if (e.shiftKey) {
             // Shift+クリックで、選択に足す・外す。外したノートはつかまない
@@ -576,13 +819,17 @@ class PianoRollEngine {
     }
     _moveNoteDrag(e) {
         const d = this._drag;
-        const dSteps = Math.round((e.clientX - d.startX) / this.stepWidth);
+        // 動かした幅 (ステップ)。刻みが 16 分音符以上でスウィングも無いとき (これまでの刻み) は、これまでどおり、
+        // 先に 16 分音符の単位に丸めてから刻みに吸い付ける。細かい刻み・三連・スウィングでは、丸めずに吸い付ける
+        const coarse = !isSwung(this.snap) && stepUnits(this.gridSize) % 60 === 0;
+        const moved = (e.clientX - d.startX) / this.stepWidth;
+        const dSteps = coarse || !this.snapToGrid ? Math.round(moved) : moved;
         let changed = false;
         if (d.mode === 'move') {
             // 位置: つかんだノートをグリッドに吸い付け、ほかのノートは同じだけずらす。0 より前には出さない
             const a = d.origins.get(d.anchor);
             let ns = a.step + dSteps;
-            if (this.snapToGrid) ns = Math.round(ns / this.gridSize) * this.gridSize;
+            if (this.snapToGrid) ns = snapRound(this.snap, ns);
             let delta = ns - a.step;
             let minStep = Infinity, minRow = Infinity, maxRow = -Infinity;
             for (const o of d.origins.values()) { minStep = Math.min(minStep, o.step); minRow = Math.min(minRow, o.row); maxRow = Math.max(maxRow, o.row); }
@@ -593,7 +840,7 @@ class PianoRollEngine {
             const anchorBefore = `${d.anchor.note}${d.anchor.octave}`;
             for (const [n, o] of d.origins) {
                 const next = this._rowToNote(o.row + dRows);
-                const step = o.step + delta;
+                const step = normStep(o.step + delta);
                 if (n.step !== step || n.note !== next.note || n.octave !== next.octave) changed = true;
                 n.step = step; n.note = next.note; n.octave = next.octave;
             }
@@ -601,7 +848,11 @@ class PianoRollEngine {
         } else {
             for (const [n, o] of d.origins) {
                 let nl = o.length + dSteps;
-                nl = this.snapToGrid ? Math.max(this.gridSize, Math.round(nl / this.gridSize) * this.gridSize) : Math.max(1, nl);
+                // 長さは刻みの倍数にそろえる (刻み 1 つぶんより短くはしない)。スウィングのときは、終わりを吸い付く位置にそろえる
+                if (!this.snapToGrid) nl = Math.max(1, nl);
+                else if (isSwung(this.snap)) nl = snapEnd(this.snap, o.step, o.step + nl);
+                else nl = snapLength(this.snap, nl);
+                nl = normStep(nl);
                 if (n.length !== nl) changed = true;
                 n.length = nl;
             }
@@ -666,7 +917,12 @@ class PianoRollEngine {
         const mod = hasPrimaryModifier(e);
         if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) {
             // タイムライン (クリップ・トラックの見出し) の上の Delete は、そちらの操作
-            if (this.selection.size === 0 || (e.target instanceof Element && e.target.closest('#tracks-container'))) return;
+            if (e.target instanceof Element && e.target.closest('#tracks-container')) return;
+            if (this.selection.size === 0) {
+                // ピアノロールを触っているときだけ知らせる (ほかの場所での Delete には口を出さない)
+                if (this.activeTrackId !== null && this._hasFocus()) this._needSelection('削除');
+                return;
+            }
             e.preventDefault();
             this.deleteSelection();
             return;
@@ -679,6 +935,9 @@ class PianoRollEngine {
             else if (key === 'x' && this.selection.size > 0) { e.preventDefault(); this.cutSelection(); }
             else if (key === 'v' && noteClipboard) { e.preventDefault(); this.paste(); }
             else if (key === 'd' && this.selection.size > 0) { e.preventDefault(); this.duplicateSelection(); }
+            // 選ばずに押した・コピーせずに貼り付けた: 何も起きない理由を知らせる
+            else if (key === 'c' || key === 'x' || key === 'd') this._needSelection({ c: 'コピー', x: '切り取り', d: '複製' }[key]);
+            else if (key === 'v' && this.onStatus) this.onStatus('貼り付けるノートが、まだありません。先に、ノートを選んでコピーしてください', 'hint');
             return;
         }
         if (e.key === 'Escape' && this.selection.size > 0) { e.preventDefault(); this.selection = new Set(); this._refreshSelection(); return; }
@@ -690,8 +949,11 @@ class PianoRollEngine {
             return;
         }
         if (this.selection.size === 0 || e.altKey || mod) return;
+        // ←→ は、選んだ刻み 1 つぶん (スウィングのときは、隣の吸い付く位置まで。いちばん前のノートを基準にする)
+        const horizontal = e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+        const first = horizontal ? Math.min(...[...this.selection].map(n => n.step)) : 0;
         const moves = {
-            ArrowLeft: [-this.gridSize, 0], ArrowRight: [this.gridSize, 0],
+            ArrowLeft: [horizontal ? nudgeSteps(this.snap, first, -1) : 0, 0], ArrowRight: [horizontal ? nudgeSteps(this.snap, first, 1) : 0, 0],
             ArrowUp: [0, e.shiftKey ? -12 : -1], ArrowDown: [0, e.shiftKey ? 12 : 1],
         };
         const move = moves[e.key];
@@ -716,7 +978,7 @@ class PianoRollEngine {
     _audition(name, octave) {
         const pitch = this._pitchOf(name, octave);
         this._clearAudition(pitch);
-        engine.liveNoteOn(pitch, 96);
+        engine.liveNoteOn(pitch, 96, { drums: this.drumMode });
         this._auditionTimers.set(pitch, setTimeout(() => {
             this._auditionTimers.delete(pitch);
             engine.liveNoteOff(pitch);
@@ -746,6 +1008,10 @@ class PianoRollEngine {
         }, push);
         this._fitLength(); this._renderNotes();
     }
+    /** ノートを選ばずに、選んだノートへの操作をしようとしたときの知らせ。 */
+    _needSelection(action) {
+        if (this.onStatus) this.onStatus(`${action}するノートが選ばれていません。ノートをクリックするか、何もないところからドラッグして囲んで選んでから、もう一度押してください`, 'hint');
+    }
     /** 選んでいるノートを消す (元に戻せる)。 */
     deleteSelection() {
         const count = this.selection.size;
@@ -768,8 +1034,8 @@ class PianoRollEngine {
         const list = [...this.selection].sort((a, b) => a.step - b.step);
         const base = list[0].step;
         return {
-            notes: list.map(n => ({ ...cloneNote(n), step: n.step - base })),
-            span: Math.max(...list.map(n => n.step + n.length)) - base,
+            notes: list.map(n => ({ ...cloneNote(n), step: normStep(n.step - base) })),
+            span: normStep(Math.max(...list.map(n => n.step + n.length)) - base),
         };
     }
     /** 選んでいるノートをコピーする (アプリの中だけ。トラックをまたいで貼り付けられる)。 */
@@ -797,7 +1063,7 @@ class PianoRollEngine {
      */
     _placeClip(clip, at, label) {
         const start = Math.max(0, Math.min(this.maxSteps - clip.span, at));
-        const placed = clip.notes.map(n => ({ ...cloneNote(n), step: start + n.step }));
+        const placed = clip.notes.map(n => ({ ...cloneNote(n), step: normStep(start + n.step) }));
         this.history.record(label, () => {
             this.notes = this.notes.concat(placed);
             this._saveToEngine();
@@ -811,8 +1077,10 @@ class PianoRollEngine {
     paste() {
         if (!noteClipboard || this.activeTrackId === null) return;
         const sec = engine.getCurrentTime();
-        let at = Math.max(0, Math.floor(secToStep(sec, engine.grid)));
-        if (this.snapToGrid) at = Math.floor(at / this.gridSize) * this.gridSize;
+        // 再生位置の手前の刻みへ。秒 → ステップの計算の誤差で、刻みちょうどの再生位置が 1 つ手前に落ちないようにする
+        const raw = Math.max(0, secToStep(sec, engine.grid));
+        let at = Math.floor(raw + 1e-6);
+        if (this.snapToGrid) at = snapFloor(this.snap, raw + 1e-6);
         const count = this._placeClip(noteClipboard, at, `${noteClipboard.notes.length} ノートを貼り付け`);
         if (this.onStatus) this.onStatus(`${count} ノートを貼り付けました（再生位置から）`);
     }
@@ -821,8 +1089,15 @@ class PianoRollEngine {
         if (this.selection.size === 0) return;
         const clip = this._selectionAsClip();
         const base = Math.min(...[...this.selection].map(n => n.step));
-        const span = this.snapToGrid ? Math.max(this.gridSize, Math.ceil(clip.span / this.gridSize) * this.gridSize) : clip.span;
-        const count = this._placeClip(clip, base + span, `${clip.notes.length} ノートを複製`);
+        // 選んだノートの長さを、刻みの倍数に切り上げた先へ置く。スウィングのときは、置く先を吸い付く位置にそろえる
+        // (表から始まるまとまりは表へ、の形を保つために、刻み 2 つぶん (表と裏の 1 組) の倍数だけ先へ)
+        let span = clip.span;
+        if (this.snapToGrid) {
+            span = isSwung(this.snap)
+                ? Math.max(1, Math.ceil(stepUnits(clip.span) / (2 * this.snap.cell))) * 2 * this.gridSize
+                : snapLengthCeil(this.snap, clip.span);
+        }
+        const count = this._placeClip(clip, normStep(base + span), `${clip.notes.length} ノートを複製`);
         if (this.onStatus) this.onStatus(`${count} ノートを複製しました`);
     }
     /**
@@ -835,13 +1110,20 @@ class PianoRollEngine {
         const list = [...this.selection];
         const fits = list.every(n => {
             const row = this._noteToRow(n.note, n.octave) + dRows;
-            return n.step + dSteps >= 0 && n.step + n.length + dSteps <= this.maxSteps && row >= 0 && row < this.totalRows;
+            // 小数のステップ (三連など) の足し算の誤差で、端のノートを止めない
+            return normStep(n.step + dSteps) >= 0 && normStep(n.step + n.length + dSteps) <= this.maxSteps && row >= 0 && row < this.totalRows;
         });
-        if (!fits || list.length === 0) return;
+        if (list.length === 0) return;
+        if (!fits) {
+            if (this.onStatus) this.onStatus(dRows !== 0
+                ? 'これ以上は、その向きに動かせません。選んだノートのどれかが、ピアノロールの音域の外に出てしまいます'
+                : 'これ以上は、その向きに動かせません。選んだノートのどれかが、曲の頭より前か、末尾より後ろに出てしまいます', 'hint');
+            return;
+        }
         this.history.record(dRows !== 0 ? 'ノートの高さを変更' : 'ノートを移動', () => {
             for (const n of list) {
                 const next = this._rowToNote(this._noteToRow(n.note, n.octave) + dRows);
-                n.step += dSteps; n.note = next.note; n.octave = next.octave;
+                n.step = normStep(n.step + dSteps); n.note = next.note; n.octave = next.octave;
             }
             this._saveToEngine();
         }, { coalesceKey: dRows !== 0 ? 'nudge-pitch' : 'nudge-step' });
@@ -879,7 +1161,10 @@ class PianoRollEngine {
             changed = applyVelocity(list, next);
             this._saveToEngine();
         }, options);
-        if (changed === 0) return;
+        if (changed === 0) {
+            if (this.onStatus) this.onStatus('強さは変わりませんでした。すでにその値になっているか、端（1 か 127）に達しています', 'hint');
+            return;
+        }
         this._renderNotes();
         const s = summarizeVelocity(list);
         if (this.onStatus) this.onStatus(s.value !== null ? `強さを ${s.value} にしました` : `${changed} ノートの強さを変えました`);
@@ -918,7 +1203,7 @@ class PianoRollEngine {
             el.className = 'note-ghost';
             el.dataset.index = String(i);
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
-            el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
+            el.style.width = Math.max(NOTE_MIN_WIDTH, n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.dataset.tip = `お手本 ${n.note}${n.octave}`;
             const mark = ghostMarks?.[i];
             if (mark) {
@@ -936,11 +1221,12 @@ class PianoRollEngine {
             const el = document.createElement('div');
             el.className = 'note-block' + (this.selection.has(n) ? ' selected' : '');
             el.style.left = (n.step * this.stepWidth) + 'px'; el.style.top = (row * this.noteHeight) + 'px';
-            el.style.width = (n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
+            el.style.width = Math.max(NOTE_MIN_WIDTH, n.length * this.stepWidth - 1) + 'px'; el.style.height = (this.noteHeight - 1) + 'px';
             el.dataset.index = i;
             const hasVelocity = typeof n.velocity === 'number';
-            // data-note は機械が読む形 (テストが音の高さ・位置・強さを読む)。説明 (data-tip) は人が読む形
-            el.dataset.note = `${n.note}${n.octave} step:${n.step} len:${n.length}` + (hasVelocity ? ` 強さ:${n.velocity}` : '');
+            // data-note は機械が読む形 (テストが音の高さ・位置・強さを読む)。説明 (data-tip) は人が読む形。
+            // 小数のステップ (三連・32 分) は、小数 2 桁で出す (8 分の三連の 2 つ目は step:1.33)
+            el.dataset.note = `${n.note}${n.octave} step:${stepText(n.step)} len:${stepText(n.length)}` + (hasVelocity ? ` 強さ:${n.velocity}` : '');
             el.dataset.tip = `${n.note}${n.octave}（${cursorLabel(n.step, engine.beatsPerBar || 4)}${hasVelocity ? `、強さ ${n.velocity}` : ''}）`;
             // 強さを持つノートは、弱いほど薄く見せる (強さを持たないノートは、これまでどおり)
             if (hasVelocity) el.style.opacity = String(0.45 + 0.55 * Math.max(1, Math.min(127, n.velocity)) / 127);
@@ -978,7 +1264,7 @@ class PianoRollEngine {
      */
     setNotes(notes, label = 'ノートを置き換え') {
         this.history.record(label, () => {
-            this.notes = notes.map(n => ({ ...n })); this.selection = new Set(); this._saveToEngine();
+            this.notes = notes.map(n => normNote(n)); this.selection = new Set(); this._saveToEngine();
         });
         this._fitLength(); this._renderNotes(); this._revealNotes();
     }
@@ -1087,7 +1373,12 @@ class PianoRollEngine {
  *
  * 全トラックとそのクリップを DOM として描画し、以下の操作を提供する:
  * - クリップのドラッグ移動（拍グリッドにスナップ）
- * - クリップの右クリック（とキーボードのメニューキー）でメニュー（複製・削除）
+ * - クリップの左右の端のドラッグで、縮める・伸ばす（音声は書き換えない。拍にスナップ。Option / Alt を押しているあいだは吸い付けない）
+ * - クリップの上の角のつまみのドラッグで、フェードイン・フェードアウト（スナップしない）
+ * - クリップの右クリック（とキーボードのメニューキー）でメニュー（複製・再生位置で分割・フェード…・削除）。
+ *   フォーカスしたクリップでは S キーでも、再生位置で分割する
+ * - クリップに、音声の波形とフェードの形を描く（山の値は lib/waveform.ts が音声ごとに 1 度だけ作る。
+ *   描くのは見えている範囲だけで、スクロールしたら描き足す）
  * - WAV ファイルのドラッグ＆ドロップによるインポート
  * - トラックヘッダーのクリックによるピアノロール切り替え
  * - ミュート / ソロ / トラック単体再生 / 音量とパンのつまみ / メニュー（名前の変更・並びの変更・削除）
@@ -1130,6 +1421,10 @@ class TimelineEngine {
         this.renamingId = null;
         // 練習画面の区間ループ (秒)。小節番号の段に帯で描く (setLoopRange)
         this.loopRange = null;
+        // クリップの端かフェードのつまみを動かしている途中 (_beginClipDrag)
+        this.clipEdit = null;
+        // フェードの長さを秒で決める窓を開くとき (CenterArea が渡す)
+        this.onFadeDialog = null;
     }
     /**
      * 練習画面の区間を、小節番号の段に描く (null で消す)。
@@ -1161,15 +1456,189 @@ class TimelineEngine {
         this._drawHeader(); this._bindGlobalEvents();
         // 小節番号の段は見えている範囲だけを描くので、スクロールや大きさの変化のたびに描き直す
         if (this.scroller) {
-            this.scroller.addEventListener('scroll', () => this._drawHeader());
+            // クリップの波形も、見えている範囲だけを描いているので、スクロールで描き足す
+            this.scroller.addEventListener('scroll', () => { this._drawHeader(); this._scheduleWaves(false); });
             if (typeof ResizeObserver !== 'undefined') {
                 this._resizeObserver = new ResizeObserver(() => {
                     cancelAnimationFrame(this._resizeFrame);
-                    this._resizeFrame = requestAnimationFrame(() => this._drawHeader());
+                    this._resizeFrame = requestAnimationFrame(() => { this._drawHeader(); this._drawWaves(false); });
                 });
                 this._resizeObserver.observe(this.scroller);
             }
         }
+        // 長い音声の山の値は、少しずつ作られる。できたら、波形だけを描き足す (行は作り直さない)
+        onPeaksReady(() => this._scheduleWaves(true));
+    }
+    /** 次の描画のときに、クリップの波形を描き直す (続けて呼ばれても 1 回にまとめる)。 */
+    _scheduleWaves(force) {
+        this._wavesForce = this._wavesForce || force;
+        if (this._wavesFrame) return;
+        const run = () => { this._wavesFrame = 0; const f = this._wavesForce; this._wavesForce = false; this._drawWaves(f); };
+        this._wavesFrame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16);
+    }
+    /**
+     * 全部のクリップの波形を描く。
+     * @param force - false なら、見えている範囲が前に描いた範囲に収まっているクリップは描き直さない (スクロールのとき)
+     */
+    _drawWaves(force) {
+        if (!this.container) return;
+        this.container.querySelectorAll('.clip').forEach((el) => { if (el._clip) this._drawClipWave(el, el._clip, force); });
+    }
+    /**
+     * クリップの波形と、フェードの形を描く。描くのは、見えている範囲 (と左右の余白) だけ。
+     * 曲全体の幅の canvas にはしない (長い曲でブラウザの canvas の上限を超え、メモリも使う)。
+     * 山の値は lib/waveform.ts が音声ごとに覚えている。ここでは、見えている幅のぶんを引いて描くだけ。
+     *
+     * 波形の高さには、フェードの音量を掛ける (鳴る音の形に近づける)。フェードの範囲は、暗い三角と線でも示す。
+     */
+    _drawClipWave(clipEl, clip, force = true) {
+        const canvas = clipEl.querySelector('.clip-wave');
+        if (!canvas || !this.scroller) return;
+        const pps = this.pixelsPerSecond, len = playLength(clip), width = len * pps, clipLeft = clip.offset * pps;
+        const viewStart = this.scroller.scrollLeft - clipLeft;
+        const viewEnd = viewStart + this.scroller.clientWidth - this.headerWidth;
+        const needStart = Math.max(0, viewStart), needEnd = Math.min(width, viewEnd);
+        if (needEnd <= needStart) { canvas.style.display = 'none'; canvas._range = null; return; }
+        if (!force && canvas._range && canvas._range.start <= needStart && canvas._range.end >= needEnd) return;
+        const start = Math.max(0, Math.floor(viewStart - WAVE_MARGIN)), end = Math.min(width, Math.ceil(viewEnd + WAVE_MARGIN));
+        const w = Math.max(1, Math.round(end - start));
+        const ctx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+        if (!ctx) return;
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        canvas.style.display = 'block'; canvas.style.left = start + 'px'; canvas.style.width = w + 'px';
+        // 大きさを設定し直すと canvas は消える (描き直しの前の消去を兼ねる)
+        canvas.width = Math.round(w * dpr); canvas.height = Math.round(CLIP_INNER_HEIGHT * dpr);
+        canvas._range = { start, end };
+        const cols = canvas.width, h = canvas.height, mid = h / 2, amp = h / 2 - dpr;
+        const fadeIn = fadeInOf(clip), fadeOut = fadeOutOf(clip);
+        const secPerCol = 1 / (pps * dpr), fromSec = start / pps;
+        // 音声の無いクリップ (無音の置き場所) には、波形を描かない
+        const peaks = clip.missing ? null : peaksOf(clip.buffer);
+        if (peaks) {
+            const { min, max } = peakColumns(peaks, audioStartOf(clip) + fromSec, secPerCol, cols);
+            ctx.fillStyle = cssVar('--accent', '#d4a44c'); ctx.globalAlpha = 0.5;
+            for (let x = 0; x < cols; x++) {
+                const gain = fadeGain(fromSec + (x + 0.5) * secPerCol, len, fadeIn, fadeOut);
+                const top = mid - max[x] * gain * amp, bottom = mid - min[x] * gain * amp;
+                ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
+            }
+            ctx.globalAlpha = 1;
+        }
+        // フェードの形: 音量が下がっているところを暗くし、音量の線を引く
+        const px = (sec) => (sec - fromSec) * pps * dpr;
+        const shape = (x0, x1, lowAtStart) => {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.38)';
+            ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x1, 0); ctx.lineTo(lowAtStart ? x0 : x1, h); ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = cssVar('--text', '#e8e4de'); ctx.lineWidth = dpr; ctx.globalAlpha = 0.85;
+            ctx.beginPath(); ctx.moveTo(x0, lowAtStart ? h : 0); ctx.lineTo(x1, lowAtStart ? 0 : h); ctx.stroke();
+            ctx.globalAlpha = 1;
+        };
+        if (fadeIn > 0) shape(px(0), px(fadeIn), true);
+        if (fadeOut > 0) shape(px(len - fadeOut), px(len), false);
+    }
+    /**
+     * クリップの要素に、位置・幅・説明・つまみの位置を当てて、波形を描く。
+     * 描き直し (render) と、端やつまみを動かしている途中の見た目 (まだトラックには入れていないクリップ) の両方で使う。
+     */
+    _layoutClip(clipEl, clip, track) {
+        const pps = this.pixelsPerSecond, len = playLength(clip), width = len * pps;
+        const fadeIn = fadeInOf(clip), fadeOut = fadeOutOf(clip), audioStart = audioStartOf(clip);
+        clipEl._clip = clip;
+        clipEl.style.left = (clip.offset * pps) + 'px';
+        clipEl.style.width = width + 'px';
+        // 説明と読み上げ。1 行目の形 (名前・位置・長さ) は変えない。縮めた・フェードを付けたクリップは、その値を足す
+        const extra = [
+            audioStart > 0 ? `音声の ${formatSeconds(audioStart)} 秒目から` : '',
+            fadeIn > 0 ? `フェードイン ${formatSeconds(fadeIn)} 秒` : '',
+            fadeOut > 0 ? `フェードアウト ${formatSeconds(fadeOut)} 秒` : '',
+        ].filter(Boolean).join('、');
+        clipEl.dataset.tip = `${clip.name}（${clip.offset.toFixed(1)} 秒から、長さ ${len.toFixed(1)} 秒）${extra ? `\n${extra}` : ''}`
+            + '\nドラッグで移動、左右の端をドラッグで縮める・伸ばす、上の角のつまみでフェード\n右クリックでメニュー（複製・分割・フェード・削除）';
+        clipEl.setAttribute('aria-label', `クリップ「${clip.name}」（「${track.name}」、${clip.offset.toFixed(1)} 秒から、長さ ${len.toFixed(1)} 秒${extra ? `、${extra}` : ''}）`);
+        // フェードのつまみは、フェードの終わり (始まり) の位置に置く。端のつまみ (6px) とは重ねない
+        const showFades = width >= FADE_HANDLE_MIN_WIDTH;
+        const place = (el, px, side, on) => {
+            if (!el) return;
+            el.style.display = showFades ? '' : 'none';
+            el.style[side] = Math.max(6, Math.min(width - 28, px - 5)) + 'px';
+            el.classList.toggle('set', on);
+        };
+        place(clipEl.querySelector('.clip-fade.in'), fadeIn * pps, 'left', fadeIn > 0);
+        place(clipEl.querySelector('.clip-fade.out'), fadeOut * pps, 'right', fadeOut > 0);
+        this._drawClipWave(clipEl, clip, true);
+    }
+    /** 秒の位置を、拍の線 (1 小節目の位置から数えた拍) に吸い付ける。クリップの移動と同じ決まり。 */
+    _snapSec(sec) {
+        const beatSec = 60 / engine.bpm, origin = engine.gridOffset;
+        let snapped = origin + Math.round((sec - origin) / beatSec) * beatSec;
+        if (snapped < 0) snapped += beatSec * Math.ceil(-snapped / beatSec);
+        return snapped;
+    }
+    /**
+     * クリップの端 (縮める・伸ばす) か、フェードのつまみを動かし始める。
+     * 動かしているあいだは見た目だけを変え、離したときに 1 つの記録としてトラックに入れる (クリップの移動と同じ)。
+     * @param kind - 'trim-start' / 'trim-end' / 'fade-in' / 'fade-out'
+     */
+    _beginClipDrag(e, kind, trackId, clipIndex, clipEl) {
+        // 右クリックは、クリップのメニューに任せる
+        if (e.button !== 0) return;
+        e.preventDefault(); e.stopPropagation();
+        const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
+        if (!clip) return;
+        const len = playLength(clip);
+        // つまんだ位置と、動かすもの (端・フェードの終わり) の位置のずれ。押しただけでは動かないようにする
+        const at = kind === 'trim-start' ? clip.offset : kind === 'trim-end' ? clip.offset + len
+            : kind === 'fade-in' ? clip.offset + fadeInOf(clip) : clip.offset + len - fadeOutOf(clip);
+        const x = e.clientX - clipEl.parentElement.getBoundingClientRect().left;
+        this.clipEdit = { kind, trackId, clipIndex, element: clipEl, original: clip, next: clip, grab: x - at * this.pixelsPerSecond, at, moved: false };
+        clipEl.classList.add('dragging');
+    }
+    /** 端かつまみを動かしている途中: マウスの位置から、動かした後のクリップを作って、見た目に当てる。 */
+    _moveClipDrag(e) {
+        const d = this.clipEdit, track = engine.getTrack(d.trackId);
+        if (!track || !d.element.parentElement) return;
+        const x = e.clientX - d.element.parentElement.getBoundingClientRect().left - d.grab;
+        let sec = Math.max(0, x / this.pixelsPerSecond);
+        const original = d.original;
+        // 動かそうとした向きと、拍にそろえたか (離したときに何も変わらなかったら、理由を知らせるのに使う)
+        d.moved = true; d.wantedDelta = x / this.pixelsPerSecond - (d.at ?? 0); d.snapped = !e.altKey;
+        if (d.kind === 'trim-start' || d.kind === 'trim-end') {
+            // 端は拍に吸い付ける。Option / Alt を押しているあいだは、吸い付けない (波形を見て、細かく決められる)
+            if (!e.altKey) sec = this._snapSec(sec);
+            d.next = setClipRange(original, d.kind === 'trim-start' ? { start: sec } : { end: sec });
+        } else if (d.kind === 'fade-in') {
+            d.next = setClipFades(original, { fadeIn: sec - original.offset });
+        } else {
+            d.next = setClipFades(original, { fadeOut: original.offset + playLength(original) - sec });
+        }
+        this._layoutClip(d.element, d.next, track);
+    }
+    /** 端かつまみを離した: 動かした後のクリップをトラックに入れる (動かしていなければ、何もしない)。 */
+    _endClipDrag() {
+        const d = this.clipEdit;
+        this.clipEdit = null;
+        d.element.classList.remove('dragging');
+        const track = engine.getTrack(d.trackId);
+        // 動かしているあいだに、クリップが入れ替わっていたら (元に戻す、アシスタントの操作)、入れない
+        if (track && track.clips[d.clipIndex] === d.original) {
+            const changed = this._commitClip(d.trackId, d.clipIndex, d.next, d.kind.startsWith('fade') ? 'fade' : 'range');
+            // ドラッグしたのに何も変わらなかったときは、黙って戻さずに、理由を知らせる
+            if (!changed && d.moved && this.onStatus) this.onStatus(this._dragBlocked(d), 'hint');
+        } else {
+            this.render(this._pianoRoll);
+        }
+    }
+    /** 端かつまみをドラッグしたのに、何も変わらなかった理由 (と、どうすれば変えられるか)。 */
+    _dragBlocked(d) {
+        const outward = d.kind === 'trim-start' || d.kind === 'fade-in' ? d.wantedDelta < 0 : d.wantedDelta > 0;
+        if (d.kind === 'trim-start' || d.kind === 'trim-end') {
+            if (outward) return 'クリップの端は、音声の端より外へは伸ばせません。縮めたぶんだけ、引き戻せます';
+            return d.snapped
+                ? '端は拍にそろうので、動きませんでした。もう少し大きく動かすか、Option（Alt）を押しながらドラッグすると、細かく動かせます'
+                : 'クリップは、これより短くできません';
+        }
+        if (outward) return 'フェードを付けるには、つまみをクリップの内側へドラッグしてください';
+        return 'フェードは、これより長くできません（フェードインとフェードアウトは、重ねられません）';
     }
     /** タイムラインの長さ (秒)。曲の終わりの後ろに 10 秒の余白を置く。最短は 30 秒。 */
     _totalSeconds() { return Math.max(30, engine.getTotalDuration() + 10); }
@@ -1251,6 +1720,11 @@ class TimelineEngine {
      */
     render(pianoRoll) {
         if (!this.container) return;
+        // キーボードで選んでいたクリップを覚えておく。行を作り直した後、同じ場所のクリップにフォーカスを戻す
+        // (分割やフェードの後に、続けてキーで操作できるように。描き直しは、ノートの変更などでも起きる)
+        const active = document.activeElement;
+        const focusedClip = active instanceof HTMLElement && active.classList.contains('clip') && this.container.contains(active)
+            ? { trackId: active.dataset.trackId, clipIndex: active.dataset.clipIndex } : null;
         this.container.innerHTML = ''; this._drawHeader();
         engine.tracks.forEach((track) => {
             const row = document.createElement('div'); row.className = 'track-row';
@@ -1355,15 +1829,29 @@ class TimelineEngine {
             canvasWrap.style.width = (this._totalSeconds() * this.pixelsPerSecond) + 'px';
             track.clips.forEach((clip, ci) => {
                 const clipEl = document.createElement('div'); clipEl.className = 'clip';
-                clipEl.style.left = (clip.offset * this.pixelsPerSecond) + 'px';
-                clipEl.style.width = (clip.duration * this.pixelsPerSecond) + 'px';
-                clipEl.textContent = clip.name; clipEl.dataset.trackId = track.id; clipEl.dataset.clipIndex = ci;
-                clipEl.dataset.tip = `${clip.name}（${clip.offset.toFixed(1)} 秒から、長さ ${clip.duration.toFixed(1)} 秒）\nドラッグで移動、右クリックで複製・削除`;
-                // キーボードでも選べる。Delete で削除、Shift+F10 かメニューキーでメニュー
+                clipEl.dataset.trackId = track.id; clipEl.dataset.clipIndex = ci;
+                // 波形 (canvas) の手前に、名前を文字として出す。クリップの中の文字は、名前だけにする
+                const wave = document.createElement('canvas'); wave.className = 'clip-wave'; wave.setAttribute('aria-hidden', 'true');
+                const nameEl = document.createElement('span'); nameEl.className = 'clip-name'; nameEl.textContent = clip.name;
+                clipEl.append(wave, nameEl);
+                // 左右の端 (縮める・伸ばす) と、上の角のつまみ (フェード)。マウスで使う。
+                // キーボードでは、メニューの「再生位置で分割」「フェード…」を使う
+                [
+                    ['trim-start', 'clip-edge left', '左右にドラッグすると、クリップの頭を縮めます（音の位置は動きません）。縮めたぶんは、引き戻せば戻ります\n拍にそろいます。Option（Alt）を押しているあいだは、そろえません'],
+                    ['trim-end', 'clip-edge right', '左右にドラッグすると、クリップの終わりを縮めます。縮めたぶんは、引き戻せば戻ります\n拍にそろいます。Option（Alt）を押しているあいだは、そろえません'],
+                    ['fade-in', 'clip-fade in', '右へドラッグすると、頭の音量をだんだん上げます（フェードイン）。左の端まで戻すと外れます'],
+                    ['fade-out', 'clip-fade out', '左へドラッグすると、終わりの音量をだんだん下げます（フェードアウト）。右の端まで戻すと外れます'],
+                ].forEach(([kind, className, tipText]) => {
+                    const handle = document.createElement('span');
+                    handle.className = className; handle.dataset.tip = tipText; handle.setAttribute('aria-hidden', 'true');
+                    handle.addEventListener('mousedown', (e) => this._beginClipDrag(e, kind, track.id, ci, clipEl));
+                    clipEl.appendChild(handle);
+                });
+                // キーボードでも選べる。Delete で削除、S で再生位置で分割、Shift+F10 かメニューキーでメニュー
                 clipEl.tabIndex = 0;
                 clipEl.setAttribute('role', 'button');
                 clipEl.setAttribute('aria-haspopup', 'menu');
-                clipEl.setAttribute('aria-label', `クリップ「${clip.name}」（「${track.name}」、${clip.offset.toFixed(1)} 秒から）`);
+                clipEl.setAttribute('aria-keyshortcuts', 'S Delete Shift+F10');
                 clipEl.addEventListener('mousedown', (e) => {
                     // 右クリックは動かさない (メニューを出す)
                     if (e.button !== 0) return;
@@ -1384,9 +1872,15 @@ class TimelineEngine {
                     } else if (e.key === 'Delete' || e.key === 'Backspace') {
                         e.preventDefault(); e.stopPropagation();
                         this.deleteClip(track.id, ci);
+                    } else if ((e.key === 's' || e.key === 'S') && !hasPrimaryModifier(e) && !e.altKey) {
+                        // S: 再生位置で分割 (⌘S の保存とは別。修飾キーが在るときは受けない)
+                        e.preventDefault(); e.stopPropagation();
+                        this.splitClipAtPlayhead(track.id, ci);
                     }
                 });
                 canvasWrap.appendChild(clipEl);
+                // 行に入れてから、位置と波形を当てる (波形は、見えている範囲を行の中の位置から決める)
+                this._layoutClip(clipEl, clip, track);
             });
             canvasWrap.addEventListener('dragover', (e) => e.preventDefault());
             canvasWrap.addEventListener('drop', async (e) => {
@@ -1416,12 +1910,19 @@ class TimelineEngine {
                     if (rejected.length > 0) this.onStatus(`音声ではないファイルは追加できません: ${rejected.join('、')}。WAV・MP3・FLAC などの音声ファイルを追加してください`, 'error');
                     else if (failed.length > 0) this.onStatus(`${failed.join('、')} を読み込めませんでした。WAV に変換してから追加してください`, 'error');
                     else if (added.length > 0) this.onStatus(`${added.join('、')} を「${track.name}」に追加しました`);
+                    // ファイルではないもの (文字や画像の一部など) を落とした
+                    else this.onStatus('追加できるファイルがありませんでした。音声ファイル（WAV・MP3・FLAC など）を、ここへドロップしてください', 'hint');
                 }
                 if (added.length > 0 && this.onTracksChanged) this.onTracksChanged();
             });
             row.appendChild(canvasWrap); this.container.appendChild(row);
         });
         this._bindTrackEvents(pianoRoll);
+        // 選んでいたクリップに、フォーカスを戻す (スクロールは動かさない)
+        if (focusedClip) {
+            this.container.querySelector(`.clip[data-track-id="${focusedClip.trackId}"][data-clip-index="${focusedClip.clipIndex}"]`)
+                ?.focus({ preventScroll: true });
+        }
         // 名前の変更中なら、入力欄にフォーカスを移して全体を選ぶ
         const renaming = this.container.querySelector('.track-name-input');
         if (renaming) { renaming.focus(); renaming.select(); }
@@ -1452,7 +1953,14 @@ class TimelineEngine {
                 const id = parseInt(btn.dataset.track), track = engine.getTrack(id);
                 if (!track) return;
                 if (engine.isPlaying && engine.soloTrackId === id) { engine.pause(); if (this.onStatus) this.onStatus('一時停止'); }
-                else { engine.playSingleTrack(id); if (this.onStatus) this.onStatus(`再生中: ${track.name}`); }
+                else {
+                    engine.playSingleTrack(id);
+                    // 鳴らすものが無い・ミュート中のときは、再生は進むが何も聞こえない。その理由を知らせる
+                    if (!this.onStatus) { /* 知らせる先が無い */ }
+                    else if (engine.getTrackDuration(id) <= 0) this.onStatus(`「${track.name}」には、まだ鳴らすものがありません。ノートを置くか、音声ファイルを追加すると鳴ります`, 'hint');
+                    else if (track.mute) this.onStatus(`「${track.name}」はミュート中なので、再生しても聞こえません。M を押してミュートを解くと鳴ります`, 'hint');
+                    else this.onStatus(`再生中: ${track.name}`);
+                }
                 this._renderKeepingFocus(pianoRoll, '.btn-track-play', id);
             });
         });
@@ -1578,7 +2086,7 @@ class TimelineEngine {
         });
     }
     /**
-     * クリップのメニュー (複製・削除) を開く。
+     * クリップのメニュー (複製・再生位置で分割・フェード…・削除) を開く。
      * @param trackId - トラック ID
      * @param clipIndex - クリップの番号
      * @param x - 左上の位置 (画面の座標)
@@ -1587,15 +2095,124 @@ class TimelineEngine {
     openClipMenu(trackId, clipIndex, x, y) {
         const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
         if (!clip || !this.onMenu) return;
+        const blocked = this.splitBlocked(clip);
         this.onMenu({
             label: `クリップ「${clip.name}」のメニュー`, x, y,
             returnFocus: () => this.container.querySelector(`.clip[data-track-id="${trackId}"][data-clip-index="${clipIndex}"]`),
             items: [
-                { label: '複製', action: () => this.duplicateClip(trackId, clipIndex), title: 'すぐ後ろに同じクリップを置きます' },
+                { label: '複製', action: () => this.duplicateClip(trackId, clipIndex), title: 'すぐ後ろに同じクリップを置きます（縮めた範囲とフェードも、そのまま写します）' },
+                // 再生位置がクリップの外なら押せない。理由は説明に出し、押すと知らせとしても出る (lib/notice.ts の blockedBy)
+                {
+                    label: '再生位置で分割', action: () => this.splitClipAtPlayhead(trackId, clipIndex),
+                    disabled: !!blocked, blocked: blocked ?? undefined,
+                    title: blocked ?? '再生位置の線のところで、クリップを 2 つに分けます（S キーでも分けられます）',
+                },
+                {
+                    label: 'フェード…', action: () => this.onFadeDialog?.({ trackId, clipIndex }), restoreFocus: false,
+                    title: '頭と終わりの音量を、だんだん上げる・下げる長さを、秒で決めます',
+                },
                 { label: '削除', action: () => this.deleteClip(trackId, clipIndex), danger: true, title: '削除した後も、「元に戻す」で戻せます' },
             ],
         });
     }
+    /**
+     * 再生位置でクリップを分割できない理由。分割できるなら null。
+     * 再生位置は、クリップの中 (両側に少しでも残る位置) に無ければならない。
+     */
+    splitBlocked(clip) {
+        const at = engine.getCurrentTime(), start = clip.offset, end = clip.offset + playLength(clip);
+        if (at <= start || at >= end) {
+            return `再生位置（${at.toFixed(1)} 秒）が、このクリップの中（${start.toFixed(1)}〜${end.toFixed(1)} 秒）に在りません。分けたい場所へ再生位置を動かしてから、分割してください`;
+        }
+        if (at < start + MIN_CLIP_SEC || at > end - MIN_CLIP_SEC) return '再生位置が、クリップの端に近すぎます。端から少し離れた場所で分割してください';
+        return null;
+    }
+    /**
+     * 範囲かフェードを変えたクリップを、トラックに入れる (元に戻せる)。変わっていなければ、描き直すだけ。
+     * 端やつまみのドラッグ・フェードの窓・アシスタントが、どれもここを通る。
+     * @param kind - 'range' (縮める・伸ばす) / 'fade'
+     * @returns 変えたら true
+     */
+    _commitClip(trackId, clipIndex, next, kind) {
+        const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
+        if (!clip) return false;
+        const before = { offset: clip.offset, len: playLength(clip), fadeIn: fadeInOf(clip), fadeOut: fadeOutOf(clip) };
+        const after = { offset: next.offset, len: playLength(next), fadeIn: fadeInOf(next), fadeOut: fadeOutOf(next) };
+        const same = (a, b) => Math.abs(a - b) < 1e-9;
+        const rangeChanged = !same(before.offset, after.offset) || !same(before.len, after.len);
+        const changed = rangeChanged || !same(before.fadeIn, after.fadeIn) || !same(before.fadeOut, after.fadeOut);
+        if (changed) {
+            this.history.record(kind === 'fade' ? `クリップ「${clip.name}」のフェードを変更` : `クリップ「${clip.name}」の長さを変更`,
+                () => { track.clips[clipIndex] = next; });
+        }
+        // 描き直しても、キーボードで選んでいたクリップにフォーカスが残る (render が戻す)
+        this.render(this._pianoRoll);
+        if (!changed) return false;
+        if (this.onStatus) {
+            if (kind === 'fade') {
+                this.onStatus(after.fadeIn === 0 && after.fadeOut === 0
+                    ? `クリップ「${clip.name}」のフェードを外しました`
+                    : `クリップ「${clip.name}」のフェード: フェードイン ${formatSeconds(after.fadeIn)} 秒、フェードアウト ${formatSeconds(after.fadeOut)} 秒`);
+            } else {
+                const verb = after.len < before.len - 1e-9 ? '縮めました' : after.len > before.len + 1e-9 ? '伸ばしました' : '変えました';
+                this.onStatus(`クリップ「${clip.name}」を${verb}（${after.offset.toFixed(1)} 秒から、長さ ${after.len.toFixed(1)} 秒）`);
+            }
+        }
+        if (this.onTracksChanged) this.onTracksChanged();
+        return true;
+    }
+    /**
+     * クリップの端を動かす (縮める・伸ばす。元に戻せる)。音声は書き換えず、音の位置も動かない。
+     * 端のドラッグと同じ処理 (lib/clip.ts の `setClipRange`)。アシスタントが使う。
+     * @param range.start - 新しい左の端 (曲の時刻、秒)
+     * @param range.end - 新しい右の端 (曲の時刻、秒)
+     * @returns 変えたら true
+     */
+    trimClip(trackId, clipIndex, range) {
+        const clip = engine.getTrack(trackId)?.clips[clipIndex];
+        if (!clip) return false;
+        const changed = this._commitClip(trackId, clipIndex, setClipRange(clip, range), 'range');
+        if (!changed && this.onStatus) this.onStatus(`クリップ「${clip.name}」は、すでにその範囲です（音声の端より外へは伸ばせません）`, 'hint');
+        return changed;
+    }
+    /**
+     * フェードインとフェードアウトの長さを決める (元に戻せる)。0 で外す。指定しなかったほうは変えない。
+     * つまみのドラッグ・フェードの窓・アシスタントが使う (lib/clip.ts の `setClipFades`)。
+     * @returns 変えたら true
+     */
+    setClipFades(trackId, clipIndex, fades) {
+        const clip = engine.getTrack(trackId)?.clips[clipIndex];
+        if (!clip) return false;
+        const changed = this._commitClip(trackId, clipIndex, setClipFades(clip, fades), 'fade');
+        if (!changed && this.onStatus) this.onStatus(`クリップ「${clip.name}」のフェードは、すでにその長さです`, 'hint');
+        return changed;
+    }
+    /**
+     * クリップを、曲の時刻 `atSec` で 2 つに分ける (元に戻せる)。2 つは同じ音声を指す (音声は写さない)。
+     * メニュー・S キー・アシスタントが使う (lib/clip.ts の `splitClip`)。
+     * @returns 分けたら true (位置がクリップの外なら false)
+     */
+    splitClipAt(trackId, clipIndex, atSec) {
+        const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
+        if (!clip) return false;
+        const parts = splitClip(clip, atSec);
+        if (!parts) return false;
+        this.history.record(`クリップ「${clip.name}」を分割`, () => { track.clips.splice(clipIndex, 1, ...parts); });
+        // 描き直しても、キーボードで選んでいたクリップにフォーカスが残る (render が戻す)
+        this.render(this._pianoRoll);
+        if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を、${formatSeconds(atSec)} 秒の位置で 2 つに分けました`);
+        if (this.onTracksChanged) this.onTracksChanged();
+        return true;
+    }
+    /** 再生位置でクリップを分割する。再生位置がクリップの外なら、分けずに理由を知らせる。 */
+    splitClipAtPlayhead(trackId, clipIndex) {
+        const clip = engine.getTrack(trackId)?.clips[clipIndex];
+        if (!clip) return false;
+        const blocked = this.splitBlocked(clip);
+        if (blocked) { if (this.onStatus) this.onStatus(blocked, 'hint'); return false; }
+        return this.splitClipAt(trackId, clipIndex, engine.getCurrentTime());
+    }
+
     /**
      * トラックを消す (元に戻せる)。確かめの窓は出さず、「元に戻す」付きの知らせを出す。
      * @param options.toast - false なら、「元に戻す」付きの知らせを出さない (アシスタントが消したとき。
@@ -1639,15 +2256,17 @@ class TimelineEngine {
         if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を ${Math.max(0, offsetSec).toFixed(1)} 秒へ動かしました`);
         if (this.onTracksChanged) this.onTracksChanged();
     }
-    /** クリップを複製して、すぐ後ろに置く (同じ音声を指す。元に戻せる)。 */
+    /** クリップを複製して、すぐ後ろに置く (同じ音声を指す。縮めた範囲とフェードも、そのまま写す。元に戻せる)。 */
     duplicateClip(trackId, clipIndex) {
         const track = engine.getTrack(trackId), clip = track?.clips[clipIndex];
         if (!clip) return;
+        // すぐ後ろ = 見えている範囲 (鳴らす長さ) の終わり
+        const at = clip.offset + playLength(clip);
         this.history.record(`クリップ「${clip.name}」を複製`, () => {
-            track.clips.splice(clipIndex + 1, 0, { ...clip, offset: clip.offset + clip.duration });
+            track.clips.splice(clipIndex + 1, 0, { ...clip, offset: at });
         });
         this.render(this._pianoRoll);
-        if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を複製しました（${(clip.offset + clip.duration).toFixed(1)} 秒から）`);
+        if (this.onStatus) this.onStatus(`クリップ「${clip.name}」を複製しました（${at.toFixed(1)} 秒から）`);
         if (this.onTracksChanged) this.onTracksChanged();
     }
     /** トラックを 1 つ上 (dir = -1) か下 (dir = 1) へ動かす (元に戻せる)。 */
@@ -1680,6 +2299,8 @@ class TimelineEngine {
             const before = track.name;
             this.history.record(`「${before}」の名前を変更`, () => { track.name = next; });
             if (this.onStatus) this.onStatus(`「${before}」の名前を「${next}」に変えました`);
+        } else if (track && name !== null && name !== undefined && !next) {
+            if (this.onStatus) this.onStatus(`名前が空なので、「${track.name}」のままにしました`, 'hint');
         }
         this.render(this._pianoRoll);
         if (this.onTracksChanged) this.onTracksChanged();
@@ -1699,6 +2320,8 @@ class TimelineEngine {
     }
     _bindGlobalEvents() {
         document.addEventListener('mousemove', (e) => {
+            // 端 (縮める) かフェードのつまみを動かしている途中
+            if (this.clipEdit) { this._moveClipDrag(e); return; }
             if (!this.draggingClip) return;
             const el = this.draggingClip.element, parent = el.parentElement;
             let x = e.clientX - parent.getBoundingClientRect().left - this.dragOffsetX;
@@ -1710,6 +2333,7 @@ class TimelineEngine {
             el.style.left = snapped + 'px';
         });
         document.addEventListener('mouseup', () => {
+            if (this.clipEdit) { this._endClipDrag(); return; }
             if (!this.draggingClip) return;
             const { trackId, clipIndex, element } = this.draggingClip;
             const offset = parseFloat(element.style.left) / this.pixelsPerSecond;
@@ -1823,7 +2447,7 @@ function EmptyState() {
 // ---- メイン CenterArea コンポーネント ----
 export default function CenterArea() {
     const {
-        setStatus, bumpTracks, pianoRollRef, timelineRef, midiRef, trackVersion, bpm, beatsPerBar, gridOffset, followPlayhead,
+        setStatus, bumpTracks, pianoRollRef, timelineRef, midiRef, trackVersion, bpm, beatsPerBar, gridOffset, swing, followPlayhead,
         record, beginEdit, showUndoToast, practiceOpen, openPractice,
     } = useDaw();
     const { practicePart } = useLearnActions();
@@ -1838,6 +2462,8 @@ export default function CenterArea() {
     useEffect(() => { openPracticeRef.current = openPractice; }, [openPractice]);
     // 開いているメニュー (クリップの右クリック、トラックの「…」)
     const [menu, setMenu] = useState(null);
+    // フェードの長さを秒で決める窓 (クリップのメニューの「フェード…」)。開いていなければ null
+    const [fadeTarget, setFadeTarget] = useState(null);
     // ピアノロールの表示の大きさ (+/- のボタンの押せる・押せない)
     const [zoom, setZoom] = useState({ canZoomInX: true, canZoomOutX: true, canZoomInY: true, canZoomOutY: true });
     // 選んでいるノートの強さ (見出しの「強さ」の欄)
@@ -1901,6 +2527,7 @@ export default function CenterArea() {
             setStatus(`「${track.name}」を練習画面で開きました（Esc でアレンジに戻ります）`);
         };
         tl.onMenu = setMenu;
+        tl.onFadeDialog = setFadeTarget;
         tl.onUndoToast = showUndoToast;
         tl.history = history;
         tl._pianoRoll = pr;
@@ -1954,6 +2581,10 @@ export default function CenterArea() {
         const pr = pianoRollRef.current;
         if (pr?.canvas) { pr._fitLength(); pr._drawGrid(); pr.setPlayhead(engine.getCurrentTime()); }
     }, [bpm, beatsPerBar, gridOffset, timelineRef, pianoRollRef]);
+
+    // スウィング (プロジェクトの値) が変わったら、吸い付く位置とグリッドの線を作り直す
+    // (選び直したとき、プロジェクトを開いたとき、元に戻したとき)
+    useEffect(() => { pianoRollRef.current?.refreshSnap?.(); }, [swing, pianoRollRef]);
 
     const handleAddTrack = useCallback(() => { timelineRef.current?.addTrack(); }, [timelineRef]);
 
@@ -2033,7 +2664,7 @@ export default function CenterArea() {
             <div id="timeline-area" ref={timelineAreaRef}>
                 {/* 見出しと小節番号の段は、スクロールしても枠の上端・左端に留める */}
                 <div id="timeline-top">
-                    <div className="area-label">タイムライン <span className="area-hint">（音声ファイルをドロップして追加 / クリップをドラッグで移動 / 右クリックでメニュー）</span></div>
+                    <div className="area-label">タイムライン <span className="area-hint">（音声ファイルをドロップして追加 / クリップをドラッグで移動、端をドラッグで縮める / 右クリックでメニュー）</span></div>
                     <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
                 </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
@@ -2060,16 +2691,20 @@ export default function CenterArea() {
                     <VelocityBar summary={velocity} open={activeTrackId !== null}
                         onSet={(v) => pianoRollRef.current?.setSelectionVelocity(v)}
                         onNudge={(d) => pianoRollRef.current?.nudgeSelectionVelocity(d)} />
+                    {/* 刻み (ノートを置く・動かすときに吸い付く間隔) とスウィング。練習画面でも同じものを出す */}
+                    <SnapBar activeTrackId={activeTrackId} />
+                    {/* キーの音・コードの音の色分け (カルテから。練習画面でも同じものを出す) */}
+                    <PitchHintBar activeTrackId={activeTrackId} />
                     {/* 表示の大きさ。Cmd (Ctrl) + ホイールか、トラックパッドのピンチでも横の大きさを変えられる */}
                     <span className="piano-zoom" role="group" aria-label="ピアノロールの表示の大きさ">
                         <span className="area-hint" aria-hidden="true">横</span>
                         <button type="button" aria-label="横に縮める" {...tip('横に縮めて、広い範囲を見渡します\nCmd か Ctrl を押しながらホイールでも変わります')}
-                            disabled={!zoom.canZoomOutX} onClick={() => zoomBy('x', -1)}>−</button>
+                            disabled={!zoom.canZoomOutX} {...blockedBy(!zoom.canZoomOutX && 'これ以上は、横に縮められません（いちばん広く見渡せる大きさです）')} onClick={() => zoomBy('x', -1)}>−</button>
                         <button type="button" aria-label="横に広げる" {...tip('横に広げて、細かいタイミングを見やすくします\nCmd か Ctrl を押しながらホイールでも変わります')}
-                            disabled={!zoom.canZoomInX} onClick={() => zoomBy('x', 1)}>＋</button>
+                            disabled={!zoom.canZoomInX} {...blockedBy(!zoom.canZoomInX && 'これ以上は、横に広げられません（いちばん細かく見える大きさです）')} onClick={() => zoomBy('x', 1)}>＋</button>
                         <span className="area-hint" aria-hidden="true">縦</span>
-                        <button type="button" aria-label="縦に縮める" {...tip('縦に縮めて、広い音域を見渡します')} disabled={!zoom.canZoomOutY} onClick={() => zoomBy('y', -1)}>−</button>
-                        <button type="button" aria-label="縦に広げる" {...tip('縦に広げて、ノートを押しやすくします')} disabled={!zoom.canZoomInY} onClick={() => zoomBy('y', 1)}>＋</button>
+                        <button type="button" aria-label="縦に縮める" {...tip('縦に縮めて、広い音域を見渡します')} disabled={!zoom.canZoomOutY} {...blockedBy(!zoom.canZoomOutY && 'これ以上は、縦に縮められません（いちばん広い音域が見える大きさです）')} onClick={() => zoomBy('y', -1)}>−</button>
+                        <button type="button" aria-label="縦に広げる" {...tip('縦に広げて、ノートを押しやすくします')} disabled={!zoom.canZoomInY} {...blockedBy(!zoom.canZoomInY && 'これ以上は、縦に広げられません（いちばん大きい表示です）')} onClick={() => zoomBy('y', 1)}>＋</button>
                     </span>
                 </div>
                 {practiceOpen && <PracticeBands />}
@@ -2086,6 +2721,7 @@ export default function CenterArea() {
             {practiceOpen && <PracticeSide />}
             {practiceOpen && <PracticeControls />}
             <PopupMenu request={menu} onClose={() => setMenu(null)} />
+            {fadeTarget && <ClipFadeDialog target={fadeTarget} timelineRef={timelineRef} onClose={() => setFadeTarget(null)} />}
         </div>
         </PracticeProvider>
     );
