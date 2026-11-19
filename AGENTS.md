@@ -21,8 +21,10 @@
 
 ## 検証
 
-`make check-plan` で対象を確認し、`make check` で変更した領域を検査する。
-UI の変更はブラウザ E2E も含む。ネイティブ・CSP・フォント等は `.claude/CLAUDE.md` に沿って本物の窓でも検証する。
+変えたところに当たる検証だけを選んで回す（触ったモジュールのテスト・lint・型、関係する E2E の spec だけ。
+選び方は `.claude/CLAUDE.md`「テスト」）。変更のたびに `make check` の全部を回さない。
+ネイティブ・CSP・フォント等は `.claude/CLAUDE.md` に沿って、関係する本物の窓のテストで検証する。
+広い範囲を変えたとき・利用者に頼まれたときは、`make check-plan` で対象を確認して `make check`、
 ブランチ全体は `node scripts/check.mjs --base main`、全領域は `make check-all`。
 実行できない検査は、その理由と未検証範囲を報告する。検証エラーを隠す、無関係なテストを無効にする、依存を勝手に更新することで通さない。
 

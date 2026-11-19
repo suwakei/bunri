@@ -7,7 +7,8 @@ description: bunri の変更に必要な検証を選んで実行し、失敗を�
 
 共通規約 `.claude/CLAUDE.md` を読み、ユーザーの依頼範囲と差分を確認する。
 
-- 未コミット変更: `make check-plan` で対象を見て `make check`。
+- 小さな変更: 変えたところに当たる検証だけを選ぶ（`.claude/CLAUDE.md`「テスト」）。変更のたびに全部を回さない。
+- 未コミット変更の全部を確かめるよう頼まれたとき: `make check-plan` で対象を見て `make check`。
 - ブランチ全体: `node scripts/check.mjs --base main --list` で対象を見て、`--list` を外して実行。
 - 全領域: `make check-all`。特定領域: `node scripts/check.mjs --scope backend` 等。
 - 本物の窓: `node scripts/check.mjs --scope desktop --desktop-e2e`（macOS）。

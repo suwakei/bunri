@@ -30,11 +30,24 @@ make lint
 make e2e     # ブラウザを自動操作するテスト（Playwright。サーバは自分で起動して止める）
 make e2e-desktop  # 本物の窓（テスト用にビルドしたデスクトップアプリ）を自動操作するテスト（mac のみ）
 ```
-通常の開発では `make check` を使う。Python のテスト出力は毎回新しい一時 `BUNRI_DATA_DIR` に隔離する。
-ブランチ全体の差分を確かめるときは `node scripts/check.mjs --base main`。
+**検証は、変えたところに当たるものだけを選んで回す**（2026-11-19 の利用者の指示）。変更のたびに `make check` の全部を
+回さない（ブラウザの E2E 全体だけで 15 分ほどかかり、そのあいだに main が動いて結果が古くなる）。
+
+- Python: 触ったモジュールのテストファイルと lint（`uv run --frozen python -m pytest test/back/test_<名前>.py -q`、
+  `uv run --frozen ruff check backend test/back`）
+- 画面: 触った部品・`lib/` の単体テスト（`cd web-ui && npx vitest run src/__tests__/<名前>`）と、lint・型。
+  操作の流れを変えたら、関係する spec だけ（`npm run e2e -- <名前>.spec.ts`）
+- Rust: `cargo fmt --all --check`・`cargo clippy`・触ったモジュールの `cargo test <名前>`。本物の窓でしか確かめられないものは、
+  関係するテストだけ（`cd web-ui && node e2e-desktop/build.mjs && npx vitest run --config e2e-desktop/vitest.config.ts -t "<名前>"`）
+- 文言・コメント・文書だけの変更では、E2E を回さない
+- `make check`（変更した領域の全部）と `make check-all` は、広い範囲を変えたときと、利用者に頼まれたときに使う
+- 何を回して、何を回していないかを、報告に書く
+
+Python のテスト出力は、`make check` 経由なら毎回新しい一時 `BUNRI_DATA_DIR` に隔離される。pytest を直接呼ぶときも、
+利用者のデータ置き場に書かないようにする。ブランチ全体の差分を確かめるときは `node scripts/check.mjs --base main`。
 隠しファイル込みの探索や lint で `.claude/worktrees/` の別チェックアウトを巻き込まない。
 `make clean` はユーザーの `uploads/`・`results/`・`projects/` を削除するので、通常の検証では使わない。
-画面を触る変更をしたら `make e2e` まで回す。単体テストが通っていても、画面に出ない・押せないといった
+画面の操作の流れを変えたら、関係する spec をブラウザで回す。単体テストが通っていても、画面に出ない・押せないといった
 不具合は、ブラウザで実際に操作しないと見つからない（[docs/ui-testing.md](../docs/ui-testing.md) に実例）。
 `make e2e` の画面にはデスクトップ版と同じ CSP が掛かっていて、違反があれば失敗する。
 
@@ -53,7 +66,8 @@ MCP の共通ソースは `.mcp.json`、Codex 向け設定は `make harness-sync
 **変更は main に直接 commit して push する**（ブランチも PR も作らない。2026-11-19 の利用者の指示）。
 頼まれた実装・修正が終わり、検証が通ったら、聞かずに main へ commit・push してよい。
 
-- push の前に `make check` を通す。落ちたまま push しない（CI はリント・型・ビルドだけで、テストは回さない）
+- push の前に、変えたところに当たる検証を通す（「テスト」の節。全部は回さない）。落ちたまま push しない
+  （CI はリント・型・ビルドだけで、テストは回さない）
 - 作業の前に `git switch main && git pull --ff-only` で最新にする。push が拒まれたら `git pull --rebase` で取り込み直す
 - 同じ作業ツリーを複数のセッションが使うことがある。`git add -A` の前に `git status --short` を見て、
   自分の作業でない変更が混ざっていないか確かめる（混ざっていたら、相手か利用者に確かめる）
