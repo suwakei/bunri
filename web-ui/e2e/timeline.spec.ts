@@ -196,9 +196,9 @@ test.describe('トラックとクリップ', () => {
         // 全部消してから足すと、Track 1 から
         for (const name of await trackNames(page)) await deleteTrack(page, name);
         await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
-        // 全部消すと、起動したときと同じ空の状態の案内に戻る。「自由に作る」で足す
-        await expect(page.locator('#empty-state')).toBeVisible();
-        await page.getByRole('button', { name: '自由に作る' }).click();
+        // 全部消しても通常の編集画面が残り、「+ トラック追加」で足せる
+        await expect(page.getByRole('button', { name: '+ トラック追加' })).toBeVisible();
+        await page.getByRole('button', { name: '+ トラック追加' }).click();
         expect(await trackNames(page)).toEqual(['Track 1']);
     });
 

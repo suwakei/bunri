@@ -13,7 +13,7 @@ function shortTime(sec: number | null): string {
     return new Date(sec * 1000).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-/** 開く一覧の 1 行（空の状態の「最近使ったプロジェクト」でも使う）。 */
+/** プロジェクトを開く一覧の 1 行。 */
 export function OpenEntryRow({ entry, onOpen, onRemove }: { entry: OpenEntry; onOpen: () => void; onRemove?: () => void }) {
     return (
         <li className={'project-entry' + (entry.exists ? '' : ' missing')}>

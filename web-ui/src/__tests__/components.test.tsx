@@ -91,12 +91,12 @@ describe('StatusBar', () => {
 });
 
 describe('WelcomeGuide', () => {
-    beforeEach(() => cleanup());
-    it('初回表示時にガイドモーダルが表示される', () => {
+    beforeEach(() => { cleanup(); window.history.replaceState({}, '', '/'); });
+    afterEach(() => window.history.replaceState({}, '', '/'));
+    it('初回でも案内を自動表示しない', () => {
         localStorage.removeItem('bunri-guide-seen');
         renderWithDaw(<WelcomeGuide />);
-        expect(screen.getByText('bunri DAW へようこそ')).toBeInTheDocument();
-        expect(screen.getByText('はじめる')).toBeInTheDocument();
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
     it('ガイド済みの場合は非表示', () => {
@@ -107,6 +107,7 @@ describe('WelcomeGuide', () => {
 
     it('画面を覆う窓として組んであり、最初のフォーカスが「はじめる」に入る', () => {
         localStorage.removeItem('bunri-guide-seen');
+        window.history.replaceState({}, '', '/?guide=1');
         renderWithDaw(<WelcomeGuide />);
         const dialog = screen.getByRole('dialog', { name: 'bunri DAW へようこそ' });
         expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -115,6 +116,7 @@ describe('WelcomeGuide', () => {
 
     it('Esc キーで閉じて、次からは出ない', () => {
         localStorage.removeItem('bunri-guide-seen');
+        window.history.replaceState({}, '', '/?guide=1');
         renderWithDaw(<WelcomeGuide />);
         fireEvent.keyDown(document, { key: 'Escape' });
         expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -123,6 +125,7 @@ describe('WelcomeGuide', () => {
 
     it('学ぶ流れの 5 つの段階が、進み具合と同じ名前で表示される', () => {
         localStorage.removeItem('bunri-guide-seen');
+        window.history.replaceState({}, '', '/?guide=1');
         renderWithDaw(<WelcomeGuide />);
         for (const title of ['曲を取り込む', 'カルテを見る', 'パートに分ける', '打ち込む', '差分で直す']) {
             expect(screen.getByText(title)).toBeInTheDocument();

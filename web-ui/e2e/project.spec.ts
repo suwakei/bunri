@@ -108,9 +108,9 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
     // 画面を開き直す (トラックもカルテも無い)
     await page.reload();
     await page.getByText('準備完了').waitFor();
-    await expect(page.locator('#empty-state')).toBeVisible();
-    // 空の状態に、最近使ったプロジェクトとして出る
-    await expect(page.locator('#empty-state').getByRole('list', { name: '最近使ったプロジェクト' })).toContainText(name);
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
+    // 最近使ったプロジェクトは「開く」から選べる
+    await expect(page.getByRole('button', { name: '開く', exact: true })).toBeVisible();
     await openProject(page, name);
 
     expect((await trackSummary(page)).map((t) => t.name)).toEqual(['原曲', 'ベース', 'ベースの練習']);
@@ -155,7 +155,7 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
 
 test('保存していない変更があると、開く・新しいプロジェクトの前に確かめる。キャンセルすればそのまま、保存しないなら捨てる', async ({ page }, testInfo) => {
     await openDaw(page);
-    await page.getByRole('button', { name: '自由に作る' }).click();
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
     const name = await saveProject(page, `確かめ-${testInfo.project.name}-${Date.now()}`);
     await expect(page.locator('#project-title .unsaved-mark')).toHaveCount(0);
     await page.locator('#tracks-container .track-name').first().click();
@@ -189,7 +189,7 @@ test('保存していない変更があると、開く・新しいプロジェ�
     await page.getByRole('button', { name: 'プロジェクトのメニュー' }).click();
     await page.getByRole('menuitem', { name: '新しいプロジェクト' }).click();
     await guard.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(page.locator('#empty-state')).toBeVisible();
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
     await expect(page.locator('#project-title')).toHaveText('無題のプロジェクト');
     await openProject(page, name);
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('1');

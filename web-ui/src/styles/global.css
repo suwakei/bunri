@@ -867,50 +867,6 @@ button.link-btn:hover {
 }
 
 /* ---- 空の状態 (トラックが 1 本も無いとき、タイムラインの場所に出す案内) ---- */
-#empty-state {
-    max-width: 460px;
-    margin: 32px auto;
-    padding: 24px 28px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-lg);
-    text-align: center;
-    position: sticky;
-    left: 0;
-}
-
-#empty-state h2 {
-    font-size: 15px;
-    color: var(--accent);
-    margin-bottom: 10px;
-}
-
-#empty-state p {
-    font-size: 12px;
-    line-height: 1.7;
-    color: var(--text-mid);
-}
-
-#empty-state .empty-actions {
-    display: flex;
-    gap: 10px;
-    margin-top: 6px;
-}
-
-#empty-state .empty-actions .action-btn.primary {
-    flex: 2;
-}
-
-#empty-state .empty-actions .action-btn.secondary {
-    flex: 1;
-}
-
-#empty-state .empty-note {
-    margin-top: 10px;
-    font-size: 11px;
-    color: var(--text-dim);
-}
-
 /* ---- 再生位置の線 (タイムラインとピアノロール) ----
    再生中は毎フレーム動くので、位置は transform で動かす (CenterArea.tsx の setPlayhead) */
 .playhead {
@@ -2303,9 +2259,6 @@ body:has(#health-banner) #notice-region {
     border-top: 1px solid var(--border);
     margin: 16px 0;
 }
-
-/* 空の状態のあいだは「+ トラック追加」を出さない (案内の「自由に作る」が同じことをする) */
-#btn-add-track[hidden] { display: none; }
 
 /* ---- 時間のかかる処理の進み具合のカード (components/JobCard.tsx) ---- */
 .job-card {
@@ -3982,7 +3935,3 @@ body:has(#health-banner) #notice-region {
 .music-library ul { list-style: none; margin-top: 8px; padding: 0; max-height: 190px; overflow-y: auto; }
 .music-library li + li { margin-top: 6px; }
 .music-library li .action-btn { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
-
-/* 曲を選ぶ前は案内と一覧に高さを使い、取り込むと編集画面を出す。 */
-#center.empty-mode #piano-roll-area,
-#center.empty-mode #resize-piano { display: none; }

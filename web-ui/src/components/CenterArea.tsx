@@ -25,8 +25,6 @@ import SnapBar from './SnapBar';
 import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
 import PopupMenu from './PopupMenu';
-import RecentProjects from './RecentProjects';
-import MusicLibrary from './MusicLibrary';
 import { cursorLabel } from '../lib/midi-input';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
@@ -2438,35 +2436,6 @@ function SeekBar() {
 }
 
 /**
- * トラックが 1 本も無いときに、タイムラインの場所に出す案内。
- * 主な操作は「曲を取り込んで始める」(学ぶ流れ)。曲を使わずに作るなら「自由に作る」で空のトラックを作る。
- */
-function EmptyState() {
-    const { openSongPicker, openLearn } = useDaw();
-    const { startFree } = useLearnActions();
-    return (
-        <div id="empty-state" role="region" aria-label="はじめに">
-            <h2>曲を取り込んで、自分で再現してみましょう</h2>
-            <p>
-                取り込んだ曲を解析してカルテを作り、パートに分けたお手本を見ながら、ピアノロールに自分で打ち込みます。
-                最後に差分チェックで、お手本との違いを確かめます。
-            </p>
-            <div className="empty-actions">
-                <button type="button" className="action-btn primary" onClick={() => { openLearn('song'); openSongPicker(); }}
-                    {...tip('教材にする曲のファイルを選びます。取り込むと、カルテを自動で作ります')}>
-                    曲を取り込んで始める
-                </button>
-                <button type="button" className="action-btn secondary" onClick={startFree}
-                    {...tip('曲を使わずに、空のトラックを 1 本作って始めます')}>自由に作る</button>
-            </div>
-            <p className="empty-note">MP3・WAV・FLAC・M4A などの曲のファイルを選びます。「自由に作る」は、空のトラックを 1 本作ります。</p>
-            <MusicLibrary />
-            <RecentProjects />
-        </div>
-    );
-}
-
-/**
  * 中央エリアコンポーネント。
  * タイムラインとピアノロールを縦に並べて表示する。あいだの境目を動かすと、ピアノロールの高さが変わる。
  *
@@ -2569,11 +2538,11 @@ export default function CenterArea() {
         tl._pianoRoll = pr;
         timelineRef.current = tl;
 
-        // 起動したときはトラックを作らない。空の状態の案内 (EmptyState) から、曲を取り込むか、自由に作る
+        // 起動したときはトラックを作らず、通常の編集画面を開く
         tl.render(pr);
         bumpTracks();
 
-        setStatus('準備完了 — 「曲を取り込んで始める」から始めます');
+        setStatus('準備完了');
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // 再生位置の線。再生中だけ毎フレーム (requestAnimationFrame) 動かす。止まっているあいだは、
@@ -2693,7 +2662,7 @@ export default function CenterArea() {
 
     return (
         <PracticeProvider midi={midi}>
-        <div id="center" ref={centerRef} className={practiceOpen ? 'practice-mode' : engine.tracks.length === 0 ? 'empty-mode' : undefined}>
+        <div id="center" ref={centerRef} className={practiceOpen ? 'practice-mode' : undefined}>
             {/* 練習画面の見出し。練習画面のあいだは、タイムラインと境目を隠す (外さない。CSS の .practice-mode) */}
             {practiceOpen && <PracticeHeader />}
             {/* タイムライン */}
@@ -2704,8 +2673,7 @@ export default function CenterArea() {
                     <canvas ref={headerCanvasRef} id="timeline-header-canvas" />
                 </div>
                 <div ref={tracksContainerRef} id="tracks-container" />
-                {engine.tracks.length === 0 && <EmptyState />}
-                <button id="btn-add-track" onClick={handleAddTrack} hidden={engine.tracks.length === 0}
+                <button id="btn-add-track" onClick={handleAddTrack}
                     {...tip('空のトラックを 1 本、いちばん下に足します')}>+ トラック追加</button>
                 <SeekBar />
             </div>

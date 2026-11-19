@@ -67,13 +67,15 @@ describe('DawProvider / useDaw', () => {
     });
 
     it('closeGuide でガイドを閉じる', async () => {
-        // localStorage をクリアして showGuide = true にする
+        // 使い方からのリンクで案内を開く
         localStorage.removeItem('bunri-guide-seen');
+        window.history.replaceState({}, '', '/?guide=1');
         render(<DawProvider><TestConsumer /></DawProvider>);
         expect(screen.getByTestId('guide').textContent).toBe('open');
         await userEvent.click(screen.getByTestId('close-guide'));
         expect(screen.getByTestId('guide').textContent).toBe('closed');
         expect(localStorage.getItem('bunri-guide-seen')).toBe('1');
+        window.history.replaceState({}, '', '/');
     });
 
     it('DawProvider の外で useDaw を呼ぶとエラー', () => {

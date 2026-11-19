@@ -40,8 +40,7 @@ const LEARN_TABS: TabDef<LearnTab>[] = [
 ];
 
 /**
- * 原曲のファイルを選ぶ欄。画面に 1 つだけ置き、「曲を取り込んで始める」（中央の空の状態）と
- * 「曲を取り込む」（このタブ）の両方から開く。選ぶと、すぐに取り込みが始まる。
+ * 原曲のファイルを選ぶ欄。「曲を取り込む」から開き、選ぶとすぐに取り込みが始まる。
  */
 export function SongPicker() {
     const { songPickerRef, autoBpm } = useDaw();

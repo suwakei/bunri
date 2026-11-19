@@ -20,8 +20,8 @@ test('API に届かなくなると、止まったことと起動し直し方が�
     await expect(banner).toContainText('make dev-web');
     await expect(banner.getByRole('button', { name: '再起動' })).toHaveCount(0);
     // 知らせは操作を止めない (モーダルではない)。止まっている間も画面は使える
-    await page.getByRole('button', { name: '自由に作る' }).click();
-    await expect(statusText(page)).toContainText('「Track 1」を作りました');
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
+    await expect(statusText(page)).toContainText('「Track 1」を追加しました');
     await test.info().attach('health-banner', { body: await banner.screenshot(), contentType: 'image/png' });
 
     await page.unroute('**/api/**');

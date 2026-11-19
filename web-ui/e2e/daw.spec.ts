@@ -4,31 +4,25 @@
 import { expect, test } from '@playwright/test';
 import { openDaw, openTab, startFree } from './helpers';
 
-test('初めて開くと案内が出て、閉じると次からは出ない', async ({ page }) => {
+test('初めて開いても案内を出さず、通常の編集画面が使える', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('#guide-overlay')).toBeVisible();
-    await page.getByRole('button', { name: 'はじめる' }).click();
+    await page.getByText('準備完了', { exact: true }).waitFor();
     await expect(page.locator('#guide-overlay')).toHaveCount(0);
-    await page.reload();
-    await page.getByText('準備完了').waitFor();
-    await expect(page.locator('#guide-overlay')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'はじめに' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '+ トラック追加' })).toBeVisible();
+    await expect(page.locator('#piano-roll-area')).toBeVisible();
 });
 
-test('初回の案内は、画面を覆う窓として組んであり、Esc キーで閉じられる', async ({ page }) => {
-    await page.goto('/');
+test('使い方から開いた案内は、画面を覆う窓で Esc キーで閉じられる', async ({ page }) => {
+    await page.goto('/?guide=1');
     const dialog = page.getByRole('dialog', { name: 'bunri DAW へようこそ' });
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
-    // 開いたとき、フォーカスは窓の中 (「はじめる」) に入る
     await expect(page.getByRole('button', { name: 'はじめる' })).toBeFocused();
-    // Tab を押しても、フォーカスは窓の外 (下に隠れている画面) へ出ない
     await page.keyboard.press('Tab');
     await expect(page.getByRole('button', { name: 'はじめる' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
-    await page.reload();
-    await page.getByText('準備完了').waitFor();
-    await expect(page.locator('#guide-overlay')).toHaveCount(0);
 });
 
 test('使い方の画面から、初回の案内をもう一度出せる', async ({ page }) => {
@@ -58,17 +52,15 @@ test('外した機能 (AI のタブ、オートメーションの欄、重複し
     expect(Math.round(piano.y + piano.height)).toBe(Math.round(center.y + center.height));
 });
 
-test('起動したときは、空のトラックを作らず、曲を取り込むところから始める案内が出る。API とつながっている', async ({ page }) => {
+test('起動したときは、空のトラックを作らず、通常の編集画面が出る。API とつながっている', async ({ page }) => {
     const gm = page.waitForResponse((r) => r.url().endsWith('/api/gm-instruments') && r.ok());
     await openDaw(page);
     await gm;
     await expect(page.locator('#tracks-container .track-name')).toHaveCount(0);
-    const empty = page.getByRole('region', { name: 'はじめに' });
-    await expect(empty).toBeVisible();
-    await expect(empty.getByRole('button', { name: '曲を取り込んで始める' })).toBeVisible();
-    await expect(empty.getByRole('button', { name: '自由に作る' })).toBeVisible();
-    // 「+ トラック追加」は、案内の「自由に作る」と同じなので出さない
-    await expect(page.getByRole('button', { name: '+ トラック追加' })).toBeHidden();
+    await expect(page.getByRole('region', { name: 'はじめに' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '曲を取り込んで始める' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '自由に作る' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '+ トラック追加' })).toBeVisible();
     // 左パネルは「学ぶ」の「曲とパート」
     await expect(page.getByRole('tab', { name: '学ぶ', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('tab', { name: '曲とパート' })).toHaveAttribute('aria-selected', 'true');
@@ -77,23 +69,23 @@ test('起動したときは、空のトラックを作らず、曲を取り込�
     }
 });
 
-test('「曲を取り込んで始める」は、原曲のファイルの選択を開く', async ({ page }) => {
+test('「曲を取り込む」は、原曲のファイルの選択を開く', async ({ page }) => {
     await openDaw(page);
     const chooser = page.waitForEvent('filechooser');
-    await page.getByRole('button', { name: '曲を取り込んで始める' }).click();
+    await page.getByRole('button', { name: '曲を取り込む', exact: true }).click();
     const picked = await chooser;
     expect(picked.isMultiple()).toBe(false);
     expect(await picked.element().getAttribute('accept')).toContain('.mp3');
 });
 
-test('「自由に作る」で空のトラックが 1 本でき、ピアノロールで開く', async ({ page }) => {
+test('トラックを追加して、ピアノロールで開く', async ({ page }) => {
     await openDaw(page);
-    await page.getByRole('button', { name: '自由に作る' }).click();
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
     await expect(page.locator('#tracks-container .track-name')).toHaveText(['Track 1']);
     await expect(page.locator('#empty-state')).toHaveCount(0);
+    await page.locator('#tracks-container .track-name').first().click();
     await expect(page.locator('#piano-roll-area .area-label')).toContainText('Track 1');
-    // 音を作るタブが開く
-    await expect(page.getByRole('tab', { name: '音作り' })).toHaveAttribute('aria-selected', 'true');
+
 });
 
 test('トラックを選んでピアノロールをダブルクリックすると、ノートが入る', async ({ page }) => {

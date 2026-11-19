@@ -86,11 +86,15 @@ describe('起動', () => {
         expect(boot.phase).toBe('ready');
     });
 
-    it('データ置き場が空なら、初回の案内が出て、閉じられる', async () => {
-        await app.waitFor('初回の案内', () => document.querySelector('[role="dialog"]') !== null, []);
-        await app.click('//*[@role="dialog"]//button[normalize-space()="はじめる"]');
-        await app.waitFor('案内が閉じる', () => document.querySelector('[role="dialog"]') === null, []);
+    it('データ置き場が空でも案内を出さず、編集画面を使える', async () => {
         await waitStatus('準備完了');
+        const initial = await app.run(() => ({
+            guide: document.querySelector('#guide-overlay') !== null,
+            welcome: document.querySelector('#empty-state') !== null,
+            add: (document.querySelector('#btn-add-track') as HTMLButtonElement)?.hidden === false,
+            piano: getComputedStyle(document.querySelector('#piano-roll-area')!).display !== 'none',
+        }));
+        expect(initial).toEqual({ guide: false, welcome: false, add: true, piano: true });
     });
 
     it('music の曲をネイティブで一覧表示し、選択して原曲へ取り込む', async () => {
@@ -117,6 +121,7 @@ describe('起動', () => {
             }, name);
             expect(result).toEqual({ listed: true, length: wav.length, rejected: true });
 
+            await app.click('//button[normalize-space()="曲の一覧"]');
             await app.waitFor('music の一覧', () => document.querySelector('.music-library') !== null, []);
             await app.run(() => {
                 Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
@@ -126,7 +131,7 @@ describe('起動', () => {
                 Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
                     .some(button => button.textContent?.trim() === filename && !button.disabled), [name]);
             expect(await app.run(() => Array.from(document.querySelectorAll('button'))
-                .some(button => button.textContent?.trim() === '曲を取り込んで始める'))).toBe(true);
+                .some(button => button.textContent?.trim() === '曲を取り込んで始める'))).toBe(false);
             await app.run((filename: string) => {
                 const button = Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
                     .find(button => button.textContent?.trim() === filename);
@@ -155,7 +160,7 @@ describe('起動', () => {
                 await app.click('//*[@role="alertdialog"]//button[normalize-space()="保存しない"]');
             }
             await waitStatus('新しいプロジェクトにしました');
-            await app.waitFor('空のプロジェクト', () => document.querySelector('#empty-state') !== null
+            await app.waitFor('空のプロジェクト', () => document.querySelectorAll('#tracks-container .track-row').length === 0
                 && document.querySelectorAll('#tracks-container .clip').length === 0, []);
         }
     });
@@ -396,8 +401,8 @@ describe('sidecar の鍵', () => {
 
 describe('音声', () => {
     it('WAV をタイムラインに置くと、クリップが出て、再生と停止ができる', async () => {
-        // 起動したときはトラックが無い (空の状態の案内)。「自由に作る」で Track 1 を作る
-        await app.click('//button[normalize-space()="自由に作る"]');
+        // 起動したときはトラックが無い。「+ トラック追加」で Track 1 を作る
+        await app.click('//button[normalize-space()="+ トラック追加"]');
         await app.waitFor('トラックが出る', () => document.querySelector('#tracks-container .track-canvas-wrap') !== null, []);
         const wav = makeWav(2, [440, 660]).toString('base64');
         await app.run(async (data: string) => {

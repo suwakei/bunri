@@ -58,9 +58,8 @@ test('保存して開き直し、開くと、テンポ・トラック・ノー�
 
     await page.reload();
     await page.getByText('準備完了').waitFor();
-    // 開き直したときはトラックが無く、空の状態の案内が出る
+    // 開き直したときは、トラックが無い編集画面になる
     await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
-    await expect(page.locator('#empty-state')).toBeVisible();
     await openProject(page, name);
 
     await expect(page.locator('#transport input[type="number"]')).toHaveValue('96');

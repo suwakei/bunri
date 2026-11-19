@@ -63,7 +63,7 @@ test.afterEach(async ({ request }) => { await request.delete(RECOVERY); });
 
 test('保存していない変更は自動で残り、開き直すと尋ねられる。続きを開くと、ノート・音声・名前が戻って保存していない変更になり、保存すると元のプロジェクトに入る', async ({ page, request }, testInfo) => {
     await openDaw(page, { autosave: FAST });
-    await page.getByRole('button', { name: '自由に作る' }).click();
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
     const name = await saveProject(page, `自動保存-${testInfo.project.name}-${Date.now()}`);
     await expect(page.locator('#project-title .unsaved-mark')).toHaveCount(0);
     // 保存した直後は、復旧用の写しは無い
@@ -129,7 +129,7 @@ test('保存していない変更は自動で残り、開き直すと尋ねら�
     // 保存したあとは、開き直しても尋ねられない。保存した中身に、続きの変更が入っている
     await reopen(page);
     await expect(page.getByRole('alertdialog')).toHaveCount(0);
-    await expect(page.locator('#empty-state')).toBeVisible();
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
     await openProject(page, name);
     expect(await trackSummary(page)).toEqual([{ name: 'Track 1', clips: ['autosave-take.wav'] }]);
     await expect(page.locator('#tracks-container .track-row').first().locator('.notes-badge')).toHaveText('2');
@@ -138,7 +138,7 @@ test('保存していない変更は自動で残り、開き直すと尋ねら�
 test('「捨てる」を選ぶと、前回の変更を消して、何も開かない。次に開き直しても尋ねられない', async ({ page, request }) => {
     await openDaw(page, { autosave: FAST });
     const written = autosaved(page, (doc) => doc.tracks[0]?.notes.length === 1);
-    await page.getByRole('button', { name: '自由に作る' }).click();
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
     await page.locator('#tracks-container .track-name').first().click();
     await placeNote(page, 10, 100);
     await written;
@@ -151,18 +151,18 @@ test('「捨てる」を選ぶと、前回の変更を消して、何も開か�
     await dialog.getByRole('button', { name: '捨てる' }).click();
     await expect(statusText(page)).toHaveText('前回の、保存していない変更を捨てました');
     await expect(dialog).toHaveCount(0);
-    await expect(page.locator('#empty-state')).toBeVisible();
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
     await expect(page.locator('#project-title')).toHaveText('無題のプロジェクト');
     expect(await recovery(request)).toBeNull();
 
     await reopen(page);
     await expect(page.getByRole('alertdialog')).toHaveCount(0);
-    await expect(page.locator('#empty-state')).toBeVisible();
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
 });
 
 test('保存したあと・元に戻して保存したときと同じにしたあとは、開き直しても尋ねられない', async ({ page, request }, testInfo) => {
     await openDaw(page, { autosave: FAST });
-    await page.getByRole('button', { name: '自由に作る' }).click();
+    await page.getByRole('button', { name: '+ トラック追加' }).click();
     await page.locator('#tracks-container .track-name').first().click();
 
     // 変更 → 自動保存 → 保存: 復旧用の写しは消える
@@ -199,7 +199,7 @@ test('保存したあと・元に戻して保存したときと同じにした�
     await page.getByRole('button', { name: 'プロジェクトのメニュー' }).click();
     await page.getByRole('menuitem', { name: '新しいプロジェクト' }).click();
     await page.getByRole('alertdialog', { name: '保存していない変更があります' }).getByRole('button', { name: '保存しない' }).click();
-    await expect(page.locator('#empty-state')).toBeVisible();
+    await expect(page.locator('#tracks-container .track-row')).toHaveCount(0);
     await expect.poll(() => recovery(request)).toBeNull();
     await reopen(page);
     await expect(page.getByRole('alertdialog')).toHaveCount(0);

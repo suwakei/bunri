@@ -101,15 +101,16 @@ export async function openTab(page: Page, label: string): Promise<void> {
 }
 
 /**
- * 「自由に作る」で始める (曲を取り込まずに、空のトラックを作る)。
+ * 曲を取り込まず、トラックを追加して始める。
  * 起動したときはトラックが無いので、トラックを使うテストはこれで用意する。
  *
  * @param tracks - 作るトラックの数 (Track 1, Track 2, …)
  */
 export async function startFree(page: Page, tracks = 2): Promise<void> {
-    await page.getByRole('button', { name: '自由に作る' }).click();
-    for (let i = 1; i < tracks; i++) await page.getByRole('button', { name: '+ トラック追加' }).click();
+    for (let i = 0; i < tracks; i++) await page.getByRole('button', { name: '+ トラック追加' }).click();
     await page.locator('#tracks-container .track-row').nth(tracks - 1).waitFor();
+    await page.locator('#tracks-container .track-name').first().click();
+    await openTab(page, 'シンセ');
 }
 
 /**

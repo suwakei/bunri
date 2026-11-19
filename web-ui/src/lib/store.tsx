@@ -455,9 +455,9 @@ export function DawProvider({ children }: { children: ReactNode }) {
     // 走っている処理の数。0 より大きいあいだ、プログレスバーを出す
     // (フラグ 1 つだと、2 つの処理が重なったときに、先に終わったほうがバーを消してしまう)
     const [progressCount, setProgressCount] = useState(0);
-    // 初めて開いたときに案内を出す。使い方の画面からは `/?guide=1` で、もう一度出せる
+    // 案内は使い方の画面から `/?guide=1` で開いたときだけ出す
     const [showGuide, setShowGuide] = useState(
-        () => !readStored('bunri-guide-seen') || new URLSearchParams(window.location.search).has('guide'),
+        () => new URLSearchParams(window.location.search).has('guide'),
     );
     // 起動したときは「学ぶ」タブ。曲を取り込むところから始める
     const [leftTab, setLeftTab] = useState<LeftTab>('learn');

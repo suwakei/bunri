@@ -16,7 +16,7 @@ interface GuideStep {
 }
 
 const STEPS: GuideStep[] = [
-    { title: '曲を取り込む', desc: '「曲を取り込んで始める」を押して、MP3 や WAV などの曲のファイルを選びます。音声が「原曲」のトラックに置かれます。' },
+    { title: '曲を取り込む', desc: '「学ぶ」の「曲とパート」で「曲の一覧」か「曲を取り込む」を押し、MP3 や WAV などの曲のファイルを選びます。音声が「原曲」のトラックに置かれます。' },
     { title: 'カルテを見る', desc: '取り込むと、キー・コード進行・構成・ミックスをまとめたカルテが「学ぶ」タブに出ます。コードを押すと、その小節へ移動します。' },
     { title: 'パートに分ける', desc: '「パートに分けて採譜する」で、ボーカル・ベースなどのパートに分けます（数分）。採譜したノートはお手本になります。' },
     { title: '打ち込む', desc: 'パートの「このパートを練習する」を押すと、水色のお手本を重ねたピアノロールが開きます。お手本と原曲を聴きながら、ノートを置きます。' },
@@ -24,10 +24,10 @@ const STEPS: GuideStep[] = [
 ];
 
 /**
- * 初回起動時に表示するウェルカムガイドモーダル。
+ * 使い方から手動で開くウェルカムガイドモーダル。
  * `showGuide` が false の場合は何もレンダリングしない。
- * オーバーレイ外クリック・Esc キー・「はじめる」ボタンで閉じると、
- * localStorage に既読フラグが保存されて次回以降は表示されない。
+ * オーバーレイ外クリック・Esc キー・「はじめる」ボタンで閉じる。
+ * 通常起動では、既読かどうかによらず表示しない。
  * @returns ガイドモーダルの JSX 要素、非表示時は null
  */
 export default function WelcomeGuide(): React.ReactElement | null {
@@ -51,7 +51,7 @@ export default function WelcomeGuide(): React.ReactElement | null {
                         </div>
                     ))}
                 </div>
-                <p className="guide-tip">いまどの段階かは、画面の上の「進み具合」に出ます。曲を使わずに作るときは「自由に作る」を押します。ボタンにマウスを載せると、そばに説明が出ます。</p>
+                <p className="guide-tip">いまどの段階かは、画面の上の「進み具合」に出ます。曲を使わずに作るときは「+ トラック追加」を押します。ボタンにマウスを載せると、そばに説明が出ます。</p>
                 <button className="action-btn" data-autofocus onClick={closeGuide}>はじめる</button>
             </div>
         </div>
