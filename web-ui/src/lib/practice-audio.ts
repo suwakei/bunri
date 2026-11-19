@@ -86,7 +86,7 @@ async function runStretch(channels: Float32Array[], rate: number, sampleRate: nu
         } catch (e) {
             if ((e as Error).message !== 'worker') throw e;
             // Worker が落ちたときは、その場で計算する (サンプルは移してしまったので、呼ぶ側で作り直す)
-            throw new Error('retry');
+            throw new Error('retry', { cause: e });
         }
     }
     // 画面の描画に一度譲ってから計算する (「用意しています」の表示を先に出す)

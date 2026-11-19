@@ -4,7 +4,7 @@
  * 中央エリアが 1 つだけ持ち、ふだんのピアノロールの見出し（components/MidiInputBar.tsx）と、
  * 練習画面の「入力」（components/PracticeView.tsx）の両方から使う（MIDI の処理を二重にしない）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDaw } from './store';
 import engine, { type PianoNote } from './engine';
 import { secToStep } from './grid';
@@ -133,12 +133,14 @@ export function useMidiInput(): MidiInputController {
     const messageAgeRef = useRef(0);
     // 動きの記録に、ノートを置いた位置を「小節・拍」で出すため
     const beatsPerBarRef = useRef(beatsPerBar);
-    beatsPerBarRef.current = beatsPerBar;
-    latencyRef.current = (manualLatency ?? autoLatency) / 1000;
+    useLayoutEffect(() => { beatsPerBarRef.current = beatsPerBar; }, [beatsPerBar]);
+    useLayoutEffect(() => { latencyRef.current = (manualLatency ?? autoLatency) / 1000; }, [manualLatency, autoLatency]);
 
-    // 録り方を決める部品。ピアノロールと再生位置を、呼ばれたときに見にいく
-    if (recorderRef.current === null) {
-        recorderRef.current = new MidiNoteRecorder({
+    // 録り方を決める部品。ピアノロールと再生位置を、呼ばれたときに見にいく。
+    // 描画のあいだには作らず、最初に使うところ (鍵盤の受け口・録り方の切り替え・最初の録り方を伝える effect) で作る
+    const getRecorder = useCallback((): MidiNoteRecorder => {
+        if (recorderRef.current) return recorderRef.current;
+        const recorder = new MidiNoteRecorder({
             position: () => {
                 const sec = engine.getPlayPosition();
                 if (sec === null) return null;
@@ -150,7 +152,7 @@ export function useMidiInput(): MidiInputController {
             },
             // 元に戻せる。リアルタイム録音は、弾き続けているあいだのノートを 1 つの記録にまとめる
             addNote: (n) => {
-                const recordMode = recorderRef.current?.mode ?? 'off';
+                const recordMode = recorder.mode;
                 if (hooksRef.current?.addNote(n, recordMode)) return;
                 pianoRollRef.current?._addNote(n.note, n.octave, n.step, n.length, recordMode === 'realtime'
                     ? { label: 'MIDI 入力の録音', coalesceKey: 'midi-realtime', coalesceMs: 4000, velocity: n.velocity }
@@ -173,12 +175,14 @@ export function useMidiInput(): MidiInputController {
                 return isSnapId(id) ? realtimeQuantum(id) : 1;
             },
         });
-    }
+        recorderRef.current = recorder;
+        return recorder;
+    }, [pianoRollRef]);
 
     const handleMessage = useCallback((bytes: ArrayLike<number>, receivedAt?: number) => {
         const event = parseMidiMessage(bytes);
-        const recorder = recorderRef.current;
-        if (!event || !recorder) return;
+        if (!event) return;
+        const recorder = getRecorder();
         noteMidiMessage();
         // 機器から届いた時刻が分かれば、ここで処理するまでの待ちも、遅れとして差し引く (長すぎる値は信用しない)
         const age = typeof receivedAt === 'number' ? (performance.now() - receivedAt) / 1000 : 0;
@@ -221,7 +225,7 @@ export function useMidiInput(): MidiInputController {
             }[result.reason]);
         }
         setCursorState(recorder.cursor);
-    }, [pianoRollRef, setStatus, bumpTracks]);
+    }, [pianoRollRef, setStatus, bumpTracks, getRecorder]);
 
     const connect = useCallback(async () => {
         const source = pickMidiSource();
@@ -259,7 +263,7 @@ export function useMidiInput(): MidiInputController {
     // 「つないだのに何も起きない」の理由を、画面を開いたときに 1 回だけ知らせる (調べられるのは、デスクトップ版だけ)。
     // 一度でも MIDI 入力を始めたか、知らせを ✕ で閉じたあとは、もう出さない (`MIDI_INTRO_KEY`)
     const connectedRef = useRef(false);
-    connectedRef.current = connected;
+    useLayoutEffect(() => { connectedRef.current = connected; }, [connected]);
     useEffect(() => {
         const source = portsAnnounced || readSetting(MIDI_INTRO_KEY) === '1' ? null : pickMidiSource();
         if (!source?.ports) return;
@@ -298,21 +302,21 @@ export function useMidiInput(): MidiInputController {
     const setMode = useCallback((next: RecordMode) => {
         blockedHintRef.current = null;
         setModeState(next);
-        recorderRef.current?.setMode(next);
-    }, []);
+        getRecorder().setMode(next);
+    }, [getRecorder]);
 
     const setStepLength = useCallback((length: number) => {
         const value = Number.isFinite(length) && length > 0 ? length : STEP_FOLLOWS_SNAP;
         setStepLengthState(value);
         stepLengthRef.current = value;
         // 刻みに従うあいだは、録る部品の長さは使われない (刻みが分からないときの控えとして、4 分音符にしておく)
-        if (recorderRef.current) recorderRef.current.stepLength = value > 0 ? value : 4;
-    }, []);
+        getRecorder().stepLength = value > 0 ? value : 4;
+    }, [getRecorder]);
 
     const setCursor = useCallback((step: number) => {
-        if (recorderRef.current) recorderRef.current.cursor = step;
+        getRecorder().cursor = step;
         setCursorState(step);
-    }, []);
+    }, [getRecorder]);
 
     const setPracticeHooks = useCallback((hooks: MidiPracticeHooks | null) => { hooksRef.current = hooks; }, []);
 
@@ -334,7 +338,7 @@ export function useMidiInput(): MidiInputController {
     }, [connected, mode, countIn, beatsPerBar]);
 
     // 最初の録り方を、録る部品にも伝えておく
-    useEffect(() => { recorderRef.current?.setMode(mode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => { getRecorder().setMode(mode); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     return {
         available, connected, devices, mode, setMode, stepLength, setStepLength, cursor, setCursor, connect, disconnect, setPracticeHooks,

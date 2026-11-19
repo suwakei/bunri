@@ -313,12 +313,12 @@ function FxPanel() {
     const { setStatus, withProgress, showProgress, bumpTracks, record } = useDaw();
     const [fxTrack, setFxTrack] = useState('');
     const [fxType, setFxType] = useState('eq');
-    const defaultParams = useCallback(() => defaultFxParams(fxType), [fxType]);
-    const [params, setParams] = useState<Record<string, number>>(defaultParams);
-
-    useEffect(() => {
-        setParams(defaultParams());
-    }, [defaultParams]);
+    const [params, setParams] = useState<Record<string, number>>(() => defaultFxParams('eq'));
+    // 種類を変えたら、値はその種類の既定に戻す
+    const changeFxType = useCallback((next: string) => {
+        setFxType(next);
+        setParams(defaultFxParams(next));
+    }, []);
 
     const handleApply = useCallback(async () => {
         const track = engine.getTrack(resolveTrackId(fxTrack));
@@ -347,7 +347,7 @@ function FxPanel() {
             <TrackSelector id="fx-track" value={fxTrack} onChange={setFxTrack}
                 tipText="効果をかけるトラック。そのトラックの最初のクリップにかかります" />
             <label htmlFor="fx-type">エフェクト</label>
-            <select id="fx-type" value={fxType} onChange={e => setFxType(e.target.value)} {...tip(FX_TIPS[fxType] ?? '')}>
+            <select id="fx-type" value={fxType} onChange={e => changeFxType(e.target.value)} {...tip(FX_TIPS[fxType] ?? '')}>
                 {Object.entries(FX_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
             <div id="fx-params">
