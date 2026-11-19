@@ -78,12 +78,13 @@ def test_missing_ffmpeg_does_not_start_download(monkeypatch, tmp_path):
 
 
 def test_interactive_format_retry(monkeypatch):
-    answers = iter(["https://youtu.be/abc", "flac", "WAV"])
+    url = "https://www.youtube.com/watch?v=abc&list=def&start_radio=1"
+    answers = iter([url, "flac", "WAV"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     download = Mock(return_value=0)
     monkeypatch.setattr(youtube_audio, "download", download)
     assert youtube_audio.main([]) == 0
-    download.assert_called_once_with("https://youtu.be/abc", "wav")
+    download.assert_called_once_with(url, "wav")
 
 
 def test_default_format(monkeypatch):
@@ -140,6 +141,7 @@ def test_interrupt_terminates_child(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("url", [
+    None,
     "https://youtu.be/abc",
     "https://www.youtube.com/watch?v=abc&list=def",
     "https://youtu.be/abc?si=some-token",
@@ -151,16 +153,16 @@ def test_make_dl_passes_url_as_one_argument(tmp_path, url):
     uv.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
     uv.chmod(0o755)
     result = subprocess.run(
-        ["make", "--no-print-directory", "dl", url], cwd=SCRIPT.parent.parent,
+        ["make", "--no-print-directory", "dl", *([url] if url else [])], cwd=SCRIPT.parent.parent,
         env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["run", "scripts/youtube_audio.py", url]
+    assert result.stdout.splitlines() == ["run", "scripts/youtube_audio.py", *([url] if url else [])]
 
 
-@pytest.mark.parametrize("arguments", [[], ["https://youtu.be/abc", "clean"], ["bad-url"]])
-def test_make_dl_rejects_missing_or_extra_arguments(arguments):
+@pytest.mark.parametrize("arguments", [["https://youtu.be/abc", "clean"], ["bad-url"]])
+def test_make_dl_rejects_invalid_or_extra_arguments(arguments):
     # -n でレシピを実行せず、危険な別ターゲットが混ざった場合も入口で拒否する。
     result = subprocess.run(
         ["make", "-n", "dl", *arguments], cwd=SCRIPT.parent.parent, capture_output=True, text=True,

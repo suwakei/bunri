@@ -13,6 +13,15 @@ brew install uv ffmpeg deno
 リポジトリ直下で実行する:
 
 ```bash
+make dl
+```
+
+「YouTube のURLを貼り付けてください」と出たら、URL をそのまま貼り付けて Enter を押す。
+この入力では `&` や `?` を含む URL も引用符で囲む必要はない。そのあと保存形式を選ぶ。
+
+URL を引数で渡す使い方もできる:
+
+```bash
 make dl 'https://www.youtube.com/watch?v=動画ID'
 ```
 
@@ -29,7 +38,7 @@ make dl 'https://www.youtube.com/watch?v=動画ID'
 形式の入力で Enter だけを押すと MP3。依存の `yt-dlp` は uv が専用環境に用意する。
 bunri 本体の Python 依存やデスクトップアプリのインストールは不要。
 
-形式を直接指定する場合や URL も対話入力したい場合は、Python の入口を使う:
+形式を直接指定する場合は、Python の入口を使う:
 
 ```bash
 uv run scripts/youtube_audio.py 'https://www.youtube.com/watch?v=動画ID' --format mp3
