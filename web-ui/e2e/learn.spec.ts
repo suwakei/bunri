@@ -55,7 +55,7 @@ const VOCALS = [note('E', 4, 0, 8), note('G', 4, 8, 8)];
 
 /** パート分離の応答 (ボーカル・ドラム・ベース)。音声は 8 秒の WAV を返す。 */
 function fakeDecompose() {
-    const stem = (extra: object) => ({ gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [], drum_events: [], ...extra });
+    const stem = (extra: object) => ({ gm_program: null, mix: { volume_db: -26, pan: 0.4, reverb_wet: 0 }, notes: [], drum_events: [], ...extra });
     return {
         bpm: 120,
         grid_offset_sec: DOWNBEAT,
@@ -217,6 +217,27 @@ test('パートに分けると、お手本は重ねて見せるだけで、打�
     // 指摘を押すと、その場所 (小節と高さ) へ移る
     await coach.getByRole('button', { name: /G2 が抜けています/ }).click();
     await expect(page.locator('#time-display')).toHaveText(/0:01\.[78]/);
+});
+
+test('分離した音声は音量とパンを二重適用せず、ミュートを保ったまま単体試聴できる', async ({ page }) => {
+    await fakeBackend(page);
+    await openDaw(page);
+    await importSong(page, mp3());
+    await expect(statusText(page)).toContainText('カルテを作りました');
+    await openTab(page, '曲とパート');
+    await page.getByRole('button', { name: /パートに分けて採譜する/ }).click();
+    await expect(statusText(page)).toContainText('パートに分けました');
+    const gain = page.getByRole('slider', { name: '「ベース」の音量' });
+    const pan = page.getByRole('slider', { name: '「ベース」のパン' });
+    await expect(gain).toHaveValue('0');
+    await expect(pan).toHaveValue('0');
+    const mute = page.getByRole('button', { name: '「ベース」をミュート', exact: true });
+    await expect(mute).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: '「ベース」だけを再生', exact: true }).click();
+    await expect(statusText(page)).toContainText('再生中: ベース');
+    await expect(mute).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: '「ベース」の再生を一時停止', exact: true }).click();
+    await expect(statusText(page)).toContainText('一時停止');
 });
 
 test('カルテのコードを押すと、その小節へ移る。カルテの小節とタイムライン・ピアノロールの小節が同じ時刻を指す (1 拍目が 0 秒に無い曲)', async ({ page }) => {

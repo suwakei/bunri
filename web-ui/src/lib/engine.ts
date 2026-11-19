@@ -355,8 +355,9 @@ class AudioEngine {
      * トラック単体の再生ならそのトラックだけ、ふつうの再生なら `playbackTracks()`（ミュート・ソロ・「聴く」）。
      */
     private _nativeAudible(track: Track, playing: Track[] = this.playbackTracks()): boolean {
+        // 単体の試聴は、そのトラックを選んだ操作を優先する。通常再生の設定は書き換えない。
+        if (this.soloTrackId !== null) return track.id === this.soloTrackId;
         const on = this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
-        if (this.soloTrackId !== null) return on && track.id === this.soloTrackId;
         return on && playing.includes(track);
     }
 
@@ -524,11 +525,13 @@ class AudioEngine {
     }
 
     /**
-     * トラックの音量を、再生のつなぎに当てる。ミュート中は 0。
-     * 練習画面の「聴く」（`listenOverride`）が在るときは、そこに在るトラックだけを鳴らす。
+     * トラックの音量を、再生のつなぎに当てる。単体試聴中は選んだトラックを鳴らす。
+     * 通常再生は練習画面の「聴く」（`listenOverride`）、無ければミュートに従う。
      */
     applyTrackGain(track: Track): void {
-        const on = this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
+        const on = this.isPlaying && this.soloTrackId !== null
+            ? track.id === this.soloTrackId
+            : this.listenOverride ? this.listenOverride.has(track.id) : !track.mute;
         track.gainNode.gain.value = on ? Math.pow(10, track.gain / 20) : 0;
         this._sendNativeMix(track);
     }
@@ -699,6 +702,8 @@ class AudioEngine {
         this.init();
         if (this.isPlaying) this.stop();
         if (fromSec !== null) this.playOffset = fromSec;
+        this.soloTrackId = null;
+        for (const track of this.tracks) this.applyTrackGain(track);
         if (this.usesNativeAudio()) {
             this._playNative(null, options.countIn !== false);
             return;
@@ -1046,7 +1051,7 @@ class AudioEngine {
     }
 
     /**
-     * 指定トラック単体を再生する（他のトラックは無音）。
+     * 指定トラック単体を試聴する（ミュート・ソロ・練習の「聴く」は変えず、このトラックだけ鳴らす）。
      * @param trackId - 再生するトラック ID
      * @param fromSec - 再生開始位置（秒）。null の場合は現在の playOffset を使用
      */
@@ -1056,6 +1061,9 @@ class AudioEngine {
         const track = this.getTrack(trackId);
         if (!track) return;
         if (fromSec !== null) this.playOffset = fromSec;
+        this.isPlaying = true;
+        this.soloTrackId = track.id;
+        for (const item of this.tracks) this.applyTrackGain(item);
         if (this.usesNativeAudio()) {
             this._playNative(track.id, false);
             return;
@@ -1166,6 +1174,7 @@ class AudioEngine {
         }
         this.activeSources = [];
         this._stopMetronome();
+        for (const track of this.tracks) this.applyTrackGain(track);
         this.playOffset = 0;
     }
 
@@ -1296,6 +1305,7 @@ class AudioEngine {
         }
         this.activeSources = [];
         this._stopMetronome();
+        for (const track of this.tracks) this.applyTrackGain(track);
     }
 
     /**

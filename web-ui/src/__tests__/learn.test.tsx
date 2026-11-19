@@ -400,6 +400,19 @@ describe('ジョブの結果の形が違うとき', () => {
         expect(engine.getTrack(midiPractice.id)?.pianoNotes).toEqual([note]);
     });
 
+    it('分離済み音声の測定音量と左右差を、再生の音量とパンに二重適用しない', async () => {
+        const song = engine.addTrack('原曲'); song.role = 'song';
+        render(<DawProvider><Harness /></DawProvider>);
+        await act(async () => { await latest.actions!.applyParts({ bpm: 120, stems: {
+            bass: { gm_program: null, mix: { volume_db: -48.8, pan: 0.7, reverb_wet: 0.2 }, notes: [], drum_events: [] },
+        } }); });
+        const part = engine.tracks.find(track => track.part === 'bass')!;
+        expect(part.gain).toBe(0);
+        expect(part.pan).toBe(0);
+        // 通常再生では原曲と重ねない設定は維持する。
+        expect(part.mute).toBe(true);
+    });
+
     const drumStem = (events: { type: string; step: number; velocity: number }[], source: 'stems' | 'spectral') =>
         ({ gm_program: null, mix: { volume_db: 0, pan: 0, reverb_wet: 0 }, notes: [], drum_events: events, drum_source: source });
 

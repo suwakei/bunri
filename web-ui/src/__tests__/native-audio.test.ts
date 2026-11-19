@@ -789,6 +789,22 @@ describe('Rust で再生する (デスクトップ版)', () => {
         expect(new Set([first, second, engine.startTime]).size).toBe(3);
     });
 
+    it('ミュートと練習の聴く設定から外れたパートも、単体試聴では鳴らす。通常再生の設定は保つ', async () => {
+        const d = desktop();
+        const song = engine.addTrack('原曲'), part = engine.addTrack('パート');
+        engine.toggleMute(part.id); song.solo = true;
+        engine.setListenOverride([song.id]);
+        engine.playSingleTrack(part.id, 0);
+        await nativeAudio.idle();
+        const audible = () => d.last('audio_set_song')!.args.song.tracks.map((track: { audible: boolean }) => track.audible);
+        expect(audible()).toEqual([false, true]);
+        expect(part.mute).toBe(true); expect(song.solo).toBe(true);
+        expect([...engine.listenOverride!]).toEqual([song.id]);
+        engine.pause(); engine.play();
+        await nativeAudio.idle();
+        expect(audible()).toEqual([true, false]);
+    });
+
     it('トラック単体の再生は、そのトラックだけを鳴らす (区間ループ・カウントは入れない)', async () => {
         const d = desktop();
         const a = engine.addTrack('A'), b = engine.addTrack('B');

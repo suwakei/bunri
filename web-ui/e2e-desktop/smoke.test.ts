@@ -97,13 +97,17 @@ describe('起動', () => {
         expect(initial).toEqual({ guide: false, welcome: false, add: true, piano: true });
     });
 
-    it('music の曲をネイティブで一覧表示し、選択して原曲へ取り込む', async () => {
+    it('music の曲をネイティブで取り込み、分離したミュート中のパートも単体で鳴らせる', async () => {
         const name = `bunri-desktop-music-${process.pid}-${Date.now()}.wav`;
         const musicDir = join(import.meta.dirname, '..', '..', 'music');
         const fixture = join(musicDir, name);
         const wav = makeWav(4, [261.63, 329.63, 392, 523.25]);
+        const partName = `desktop-part-${process.pid}.wav`;
+        const partPath = join(inject('dataDir'), 'results', partName);
         mkdirSync(musicDir, { recursive: true });
+        mkdirSync(join(inject('dataDir'), 'results'), { recursive: true });
         writeFileSync(fixture, wav, { flag: 'wx' });
+        writeFileSync(partPath, wav, { flag: 'wx' });
         try {
             const result = await app.run(async (filename: string) => {
                 const invoke = (window as unknown as {
@@ -144,12 +148,102 @@ describe('起動', () => {
                     && Array.from(document.querySelectorAll('#tracks-container .clip-name')).some(clip => clip.textContent === filename);
             }, [name], 60_000);
             await waitStatus('カルテを作りました', 60_000);
+
+            // 分離の計算だけを合成応答に替え、音声の読込・単体再生・Rust の描画は本物を使う。
+            await app.run((audioName: string) => {
+                const target = window as unknown as {
+                    __TAURI__: { core: { invoke: (command: string, args?: unknown, options?: unknown) => Promise<unknown> } };
+                    __bunriPartProbe?: {
+                        fetch: typeof fetch;
+                        tauri: { core: { invoke: (command: string, args?: unknown, options?: unknown) => Promise<unknown> } };
+                        song: { tracks: { id: number; audible: boolean; gainDb: number; pan: number; clips: unknown[] }[] } | null;
+                        played: boolean;
+                    };
+                };
+                const originalFetch = window.fetch;
+                const originalTauri = target.__TAURI__;
+                const originalInvoke = originalTauri.core.invoke;
+                const probe = target.__bunriPartProbe = { fetch: originalFetch, tauri: originalTauri, song: null, played: false } as NonNullable<typeof target.__bunriPartProbe>;
+                const result = {
+                    bpm: 120, grid_offset_sec: 0,
+                    stems: {
+                        bass: { gm_program: null, mix: { volume_db: -26, pan: -0.8, reverb_wet: 0 },
+                            notes: [], drum_events: [], audio_url: `/api/download/${audioName}` },
+                    },
+                };
+                const job = { id: 'desktop-fake-decompose', kind: 'decompose', title: '合成音源のパート分離', filename: audioName,
+                    state: 'running', cancel_requested: false, stage: null, stage_key: null, stage_index: null,
+                    stage_count: 1, progress: null, elapsed_sec: 0, error: null, result: null };
+                window.fetch = async (input, init) => {
+                    const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+                    if (url.pathname === '/api/decompose') return Response.json(job, { status: 202 });
+                    if (url.pathname === '/api/jobs/desktop-fake-decompose') return Response.json({ ...job, state: 'done', result });
+                    return originalFetch(input, init);
+                };
+                target.__TAURI__ = { ...originalTauri, core: { ...originalTauri.core, invoke: async (command, args, options) => {
+                    const returned = await originalInvoke(command, args, options);
+                    if (command === 'audio_set_song') probe.song = (args as { song: NonNullable<typeof probe.song> }).song;
+                    if (command === 'audio_play') probe.played = true;
+                    return returned;
+                } } };
+            }, partName);
+            await app.click('//button[contains(normalize-space(),"パートに分けて採譜する")]');
+            await waitStatus('パートに分けました');
+            await app.waitFor('合成ベースのクリップ', () => Array.from(document.querySelectorAll('.track-header'))
+                .some(header => header.querySelector('.track-name')?.textContent?.trim() === 'ベース'), []);
+            const muted = await app.run(() => {
+                const header = Array.from(document.querySelectorAll('.track-header'))
+                    .find(element => element.querySelector('.track-name')?.textContent?.trim() === 'ベース')!;
+                return header.querySelector('.btn-mute')?.getAttribute('aria-pressed');
+            });
+            expect(muted).toBe('true');
+            await app.click('//button[@aria-label="「ベース」だけを再生"]');
+            await app.waitFor('Rust でパートの単体再生を開始', () => {
+                const probe = (window as unknown as { __bunriPartProbe?: { played: boolean } }).__bunriPartProbe;
+                return probe?.played === true && document.documentElement.dataset.bunriAudio === 'native'
+                    ? true : JSON.stringify({ played: probe?.played, backend: document.documentElement.dataset.bunriAudio,
+                        status: document.querySelector('#status-text')?.textContent,
+                        error: (window as unknown as { __bunriE2E: { errors: string[] } }).__bunriE2E.errors });
+            }, []);
+            const audible = await app.run(() => {
+                const probe = (window as unknown as { __bunriPartProbe: {
+                    song: { tracks: { id: number; audible: boolean; gainDb: number; pan: number; clips: unknown[] }[] };
+                } }).__bunriPartProbe;
+                return probe.song.tracks.filter(track => track.audible)
+                    .map(track => ({ gainDb: track.gainDb, pan: track.pan, clips: track.clips.length }));
+            });
+            expect(audible).toEqual([{ gainDb: 0, pan: 0, clips: 1 }]);
+            await app.click('//button[@aria-label="停止"]');
+            const rendered = await app.run(async () => {
+                const target = window as unknown as {
+                    __bunriPartProbe: { song: unknown };
+                    __TAURI__: { core: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> } };
+                };
+                const raw = await target.__TAURI__.core.invoke<ArrayBuffer | number[]>('audio_render_song', { song: target.__bunriPartProbe.song });
+                const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw);
+                let text = '';
+                for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+                return btoa(text);
+            });
+            expect(readWav(Buffer.from(rendered, 'base64')).peak).toBeGreaterThan(0.1);
             const errors = await app.run(() => (window as unknown as {
                 __bunriE2E: { csp: unknown[]; errors: string[] };
             }).__bunriE2E);
             expect(errors).toEqual({ csp: [], errors: [] });
         } finally {
             rmSync(fixture, { force: true });
+            rmSync(partPath, { force: true });
+            await app.run(() => {
+                const target = window as unknown as {
+                    __TAURI__: unknown;
+                    __bunriPartProbe?: { fetch: typeof fetch; tauri: unknown };
+                };
+                if (target.__bunriPartProbe) {
+                    window.fetch = target.__bunriPartProbe.fetch;
+                    target.__TAURI__ = target.__bunriPartProbe.tauri;
+                    delete target.__bunriPartProbe;
+                }
+            });
             // 後続の smoke ケースが、取り込む前と同じ空のプロジェクトから始められるよう戻す。
             await app.click('//button[@aria-label="プロジェクトのメニュー"]');
             await app.click('//button[@role="menuitem"][normalize-space()="新しいプロジェクト"]');

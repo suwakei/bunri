@@ -408,7 +408,7 @@ test.describe('トラックのボタン', () => {
         await startFree(page);
         const row = page.locator('#tracks-container .track-row').first();
         const expected: [string, string, string][] = [
-            ['.btn-track-play', '「Track 1」だけを再生', 'このトラックだけを、いまの位置から鳴らします'],
+            ['.btn-track-play', '「Track 1」だけを再生', 'ミュートやソロの設定を変えず、このトラックだけをいまの位置から鳴らします'],
             ['.btn-mute', '「Track 1」をミュート', 'このトラックの音を消します（ミュート）'],
             ['.btn-solo', '「Track 1」をソロ', '再生したとき、このトラックだけが聞こえるようにします（ソロ）'],
             ['.btn-track-menu', '「Track 1」のメニュー', '名前の変更、並べ替え、削除'],

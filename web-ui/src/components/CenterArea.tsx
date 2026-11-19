@@ -1792,7 +1792,7 @@ class TimelineEngine {
                 el.setAttribute('aria-label', label); el.dataset.tip = tipText;
             };
             describe('.btn-track-play', isTrackPlaying ? `「${track.name}」の再生を一時停止` : `「${track.name}」だけを再生`,
-                isTrackPlaying ? '一時停止します' : 'このトラックだけを、いまの位置から鳴らします');
+                isTrackPlaying ? '一時停止します' : 'ミュートやソロの設定を変えず、このトラックだけをいまの位置から鳴らします');
             describe('.btn-mute', `「${track.name}」をミュート`,
                 track.mute ? 'ミュート中です。押すと、また鳴るようになります' : 'このトラックの音を消します（ミュート）');
             describe('.btn-solo', `「${track.name}」をソロ`,
@@ -1984,10 +1984,9 @@ class TimelineEngine {
                 if (engine.isPlaying && engine.soloTrackId === id) { engine.pause(); if (this.onStatus) this.onStatus('一時停止'); }
                 else {
                     engine.playSingleTrack(id);
-                    // 鳴らすものが無い・ミュート中のときは、再生は進むが何も聞こえない。その理由を知らせる
+                    // 単体の試聴はミュートにかかわらず鳴らす。空のトラックには理由を知らせる
                     if (!this.onStatus) { /* 知らせる先が無い */ }
                     else if (engine.getTrackDuration(id) <= 0) this.onStatus(`「${track.name}」には、まだ鳴らすものがありません。ノートを置くか、音声ファイルを追加すると鳴ります`, 'hint');
-                    else if (track.mute) this.onStatus(`「${track.name}」はミュート中なので、再生しても聞こえません。M を押してミュートを解くと鳴ります`, 'hint');
                     else this.onStatus(`再生中: ${track.name}`);
                 }
                 this._renderKeepingFocus(pianoRoll, '.btn-track-play', id);

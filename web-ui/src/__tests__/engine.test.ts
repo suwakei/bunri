@@ -218,6 +218,27 @@ describe('AudioEngine', () => {
     });
 
     describe('play / stop / pause', () => {
+        it('ミュート中の単体試聴は聴く設定やソロを変えず鳴り、一時停止・通常再生で戻る', () => {
+            engine.init();
+            const song = engine.addTrack('原曲'), part = engine.addTrack('パート');
+            engine.toggleMute(part.id);
+            song.solo = true;
+            engine.setListenOverride([song.id]);
+            engine.updateTrackGain(part.id, -6);
+            engine.playSingleTrack(part.id, 0);
+            expect(part.gainNode.gain.value).toBeCloseTo(Math.pow(10, -6 / 20));
+            expect(song.gainNode.gain.value).toBe(0);
+            expect(part.mute).toBe(true); expect(song.solo).toBe(true);
+            expect([...engine.listenOverride!]).toEqual([song.id]);
+            engine.pause();
+            expect(part.gainNode.gain.value).toBe(0);
+            expect(song.gainNode.gain.value).toBe(1);
+            engine.play();
+            expect(part.gainNode.gain.value).toBe(0);
+            expect(engine.soloTrackId).toBeNull();
+            engine.stop(); engine.setListenOverride(null);
+        });
+
         it('play で isPlaying = true', () => {
             engine.init();
             engine.play();

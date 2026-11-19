@@ -400,10 +400,8 @@ export function useLearnActions() {
                 track.role = 'part';
                 track.part = stemName;
                 created++;
-                if (stem.mix) {
-                    engine.updateTrackGain(track.id, stem.mix.volume_db);
-                    engine.updateTrackPan(track.id, stem.mix.pan);
-                }
+                // mix は音声自体の RMS・左右差の測定値。音声には既に含まれているので、
+                // 再生の音量・パンには重ねて掛けない（小さなパートほど二重に小さくなるため）。
                 if (stem.audio_url) {
                     try {
                         await engine.addClipFromUrl(track.id, stem.audio_url, label, 0);
