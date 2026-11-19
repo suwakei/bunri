@@ -104,10 +104,26 @@ describe('起動', () => {
         const wav = makeWav(4, [261.63, 329.63, 392, 523.25]);
         const partName = `desktop-part-${process.pid}.wav`;
         const partPath = join(inject('dataDir'), 'results', partName);
+        // 分離後と同じ float32 ステレオ WAV を、WKWebView でデコードして Rust まで渡す。
+        const frames = (wav.length - 44) / 2;
+        const floatPart = Buffer.alloc(44 + frames * 8);
+        wav.copy(floatPart, 0, 0, 44);
+        floatPart.writeUInt32LE(floatPart.length - 8, 4);
+        floatPart.writeUInt16LE(3, 20);
+        floatPart.writeUInt16LE(2, 22);
+        floatPart.writeUInt32LE(wav.readUInt32LE(24) * 8, 28);
+        floatPart.writeUInt16LE(8, 32);
+        floatPart.writeUInt16LE(32, 34);
+        floatPart.writeUInt32LE(frames * 8, 40);
+        for (let frame = 0; frame < frames; frame++) {
+            const sample = wav.readInt16LE(44 + frame * 2) / 32768;
+            floatPart.writeFloatLE(sample, 44 + frame * 8);
+            floatPart.writeFloatLE(-sample * 0.5, 48 + frame * 8);
+        }
         mkdirSync(musicDir, { recursive: true });
         mkdirSync(join(inject('dataDir'), 'results'), { recursive: true });
         writeFileSync(fixture, wav, { flag: 'wx' });
-        writeFileSync(partPath, wav, { flag: 'wx' });
+        writeFileSync(partPath, floatPart, { flag: 'wx' });
         try {
             const result = await app.run(async (filename: string) => {
                 const invoke = (window as unknown as {
@@ -225,7 +241,7 @@ describe('起動', () => {
                 for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
                 return btoa(text);
             });
-            expect(readWav(Buffer.from(rendered, 'base64')).peak).toBeGreaterThan(0.1);
+            expect(readWav(Buffer.from(rendered, 'base64')).peak).toBeCloseTo(readWav(wav).peak, 2);
             const errors = await app.run(() => (window as unknown as {
                 __bunriE2E: { csp: unknown[]; errors: string[] };
             }).__bunriE2E);

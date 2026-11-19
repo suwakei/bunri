@@ -165,7 +165,10 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 - **並列制限**: jobs=1でCPU負荷を最小化
 - **WAV入出力**: エンコード/デコードの負荷を避けるためWAVをデフォルトに
 - **遅延インポート**: 起動高速化のため、重いモジュール（numpy等）はボタン押下時にインポート
-- **モデル**: htdemucs（標準）を推奨。htdemucs_ftは高精度だがCPUでは非常に遅い
+- **モデル**: 「学ぶ」のパート分離は分離を優先する `htdemucs_ft`（4パート）を既定とする。
+  `htdemucs`（速い4パート）と `htdemucs_6s`（ギター・ピアノを含む6パート）も明示選択できる。
+  `htdemucs_ft` はCPUでは標準の約4倍かかる。音量を保つ保存とモデル選択の決まりは
+  [docs/separation-quality.md](../docs/separation-quality.md)。
 
 ## コーディング規約
 - 日本語でdocstring・コメントを書く

@@ -1133,7 +1133,7 @@ def estimate_mix_params(file_path):
     }
 
 
-def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=False):
+def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=False, model="htdemucs_ft"):
     """``decompose`` をジョブとして動かすときのステージの並びを返す。
 
     Args:
@@ -1142,6 +1142,7 @@ def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=Fal
         split_drums (bool, optional): ドラムを種類ごとに分けてから採譜するか。真なら、ドラムを分けるステージを入れる。
         download_drum_model (bool, optional): ドラムを分けるモデルのダウンロードが要るか
             （``split_drums`` が真で、モデルが手元に無いとき）。真なら、そのステージを入れる。
+        model (str, optional): 分離モデル。既定は分離を優先する4パート版。
 
     Returns:
         list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
@@ -1149,7 +1150,9 @@ def decompose_stages(detect_bpm=True, split_drums=False, download_drum_model=Fal
     from separate import deep_separate_stages
 
     stages = [("tempo", "テンポを調べています")] if detect_bpm else []
-    separation = deep_separate_stages(recursive_depth=1, split_drums=split_drums, download_drum_model=download_drum_model)
+    separation = deep_separate_stages(
+        recursive_depth=0, split_drums=split_drums, download_drum_model=download_drum_model, model=model,
+    )
     return stages + separation + [("transcribe", "パートごとにノートを採譜しています")]
 
 
@@ -1176,12 +1179,12 @@ def _onset_times(entry):
 
 
 def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None, grid_offset_sec=0.0,
-              split_drums=False):
+              split_drums=False, model="htdemucs_ft"):
     """音源分解のメインパイプライン。WAV → 分離 → 解析 → トラックデータを返す。
 
     以下の3段階で処理する:
 
-    1. ``deep_separate`` （``separate.py``）で htdemucs_6s による6ステム分離。
+    1. ``deep_separate`` （``separate.py``）で選択したモデルによる4または6パート分離。
     2. 各ステムをポリフォニック書き起こし（ドラムはリズム解析）。
     3. 楽器番号推定とミックスパラメータ推定。
 
@@ -1210,6 +1213,8 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
             ダウンロードする。用意できなければ（オフラインなど）、または細分化そのものが失敗したら
             （メモリ不足など）、失敗にせず、これまでのスペクトル重心の振り分け（``transcribe_drums``）に落とす
             （理由は結果の ``drum_fallback``）。偽なら、ダウンロードもドラムの分離もしない。デフォルト False。
+        model (str, optional): ``htdemucs_ft``（既定・分離優先4パート）、``htdemucs``（速い4パート）、
+            ``htdemucs_6s``（ギター・ピアノを加えた6パート）。「その他」は再分離しない。
 
     Returns:
         dict: 以下の構造を持つ辞書。
@@ -1218,6 +1223,7 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
 
             {
                 "bpm": float,
+                "model": str,              # 実際に使った分離モデル
                 "grid_offset_sec": float,   # ステップ 0 の位置（秒）
                 "grid_feel": str,           # ノートとドラムのイベントを丸めたグリッド。"straight"（16 分音符）か
                                             # "triplet"（8 分の三連。step と length が 4/3 の倍数で、小数になりうる）。
@@ -1287,9 +1293,10 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
             output_dir=str(results_dir / "separated"),
             segment=segment,
             jobs=jobs,
-            recursive_depth=1,
+            recursive_depth=0,
             split_drums=with_drums,
             job=job,
+            model=model,
             **extra,
         )
 
@@ -1386,6 +1393,7 @@ def decompose(input_path, bpm=None, sensitivity=0.5, segment=7, jobs=1, job=None
     drum_source = stems["drums"]["drum_source"] if "drums" in stems else None
     return {
         "bpm": bpm,
+        "model": model,
         "grid_offset_sec": grid_offset_sec,
         "grid_feel": grid_feel,
         "drum_source": drum_source,

@@ -240,6 +240,25 @@ test('分離した音声は音量とパンを二重適用せず、ミュート�
     await expect(statusText(page)).toContainText('一時停止');
 });
 
+test('分け方は 4 パートの分離を優先し、速さや 6 パートも選んで処理を頼める', async ({ page }) => {
+    const sent = await fakeBackend(page);
+    await openDaw(page);
+    await importSong(page, mp3());
+    await expect(statusText(page)).toContainText('カルテを作りました');
+    await openTab(page, '曲とパート');
+    const choice = page.getByRole('combobox', { name: '分け方' });
+    await expect(choice).toHaveValue('htdemucs_ft');
+    await expect(page.locator('#learn-separation-model-note')).toContainText('約 4 倍');
+    for (const model of ['htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
+        await choice.selectOption(model);
+        sent.decompose = undefined;
+        await page.getByRole('button', { name: /パートに分け(?:て採譜する|直す)/ }).click();
+        await expect.poll(() => sent.decompose?.postData() ?? '').toContain(`name="model"\r\n\r\n${model}\r\n`);
+        await expect(statusText(page)).toContainText('パートに分けました');
+    }
+    await expect(page.locator('#learn-separation-model-note')).toContainText('混入や音の欠け');
+});
+
 test('カルテのコードを押すと、その小節へ移る。カルテの小節とタイムライン・ピアノロールの小節が同じ時刻を指す (1 拍目が 0 秒に無い曲)', async ({ page }) => {
     await fakeBackend(page);
     await openDaw(page);

@@ -1,5 +1,6 @@
-"""torchaudio.save が torchcodec/FFmpeg を要求する問題を回避するラッパー。
-soundfile で WAV 保存するよう torchaudio.save をパッチしてから demucs を起動する。
+"""Demucs の WAV 保存を、振幅を保つ soundfile の経路へ差し替える。
+
+4.0 の torchaudio 依存を回避し、4.1 の浮動小数点 WAV 保存時のクリップも防ぐ。
 """
 import soundfile as sf
 import torchaudio
@@ -21,18 +22,50 @@ def _soundfile_save(filepath, src, sample_rate, **kwargs):
         src: 保存する音声データ（torch.Tensor）。
             shape=(channels, samples) を想定。CPU / GPU どちらも対応。
         sample_rate: サンプルレート（Hz）。正の整数。
-        **kwargs: torchaudio.save との互換性のために受け取るが無視する。
-            （format, encoding, bits_per_sample 等）
+        **kwargs: ``encoding`` と ``bits_per_sample`` に従って保存する。
+            ``PCM_F`` は浮動小数点 WAV、``PCM_S`` は整数 PCM。
 
     Side Effects:
         filepath に WAV ファイルを書き出す。
         src が GPU テンソルの場合は .cpu() で転送してから変換する。
     """
-    data = src.cpu().numpy().T
-    sf.write(str(filepath), data, sample_rate)
+    data = src.detach().cpu().numpy().T
+    encoding = kwargs.get("encoding")
+    bits = kwargs.get("bits_per_sample")
+    if encoding == "PCM_F":
+        subtype = "DOUBLE" if bits == 64 else "FLOAT"
+    elif encoding == "PCM_S" or bits is not None:
+        subtype = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}.get(bits, "PCM_16")
+    else:
+        subtype = None
+    sf.write(str(filepath), data, sample_rate, subtype=subtype)
 
 
 torchaudio.save = _soundfile_save
+
+
+def _patch_wav_encoder():
+    """Demucs 4.1 の浮動小数点 WAV エンコーダーだけを差し替える。
+
+    4.1 は torchaudio を通らず、浮動小数点 WAV にも -1〜1 のクリップを行う。
+    4.0 にはこの関数が無いため、その場合は上の torchaudio の差し替えだけを使う。
+    整数 PCM の処理は Demucs の実装を保つ。
+    """
+    import demucs.audio
+
+    original = getattr(demucs.audio, "encode_wav", None)
+    if original is None:
+        return
+
+    def encode_wav(wav, path, samplerate, bits_per_sample=16, as_float=False):
+        if as_float:
+            return _soundfile_save(path, wav, samplerate, encoding="PCM_F", bits_per_sample=32)
+        return original(wav, path, samplerate, bits_per_sample=bits_per_sample, as_float=False)
+
+    demucs.audio.encode_wav = encode_wav
+
+
+_patch_wav_encoder()
 
 MODEL_FILE_FLAG = "--bunri-model-file"
 

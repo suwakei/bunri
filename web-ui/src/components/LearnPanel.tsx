@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react';
 import { useDaw, type LearnTab } from '../lib/store';
 import engine, { MIDI_PART } from '../lib/engine';
-import { partTracks, practiceTrackOf, SONG_ACCEPT, useLearnActions } from '../lib/learn';
+import { DEFAULT_SEPARATION_MODEL, partTracks, practiceTrackOf, SONG_ACCEPT, useLearnActions, type SeparationModel } from '../lib/learn';
 import { LEGACY_DRUM_REASON, isLegacyDrumPart } from '../lib/drums';
 import { DRUM_MODEL, modelCached } from '../lib/models';
 import SubTabs from './SubTabs';
@@ -75,6 +75,7 @@ function SongPanel() {
     // 重い処理は同時に 1 つ。どこかで動いている間は、始めるボタンを押せなくする
     const blocked = showProgress || songJob.heavyBusy;
     const [sensitivity, setSensitivity] = useState(0.5);
+    const [separationModel, setSeparationModel] = useState<SeparationModel>(DEFAULT_SEPARATION_MODEL);
     const [showMusicLibrary, setShowMusicLibrary] = useState(false);
     // ドラムを種類ごとに分ける追加のモデルが、手元に在るか (null は、まだ分からない・聞けなかった)。
     // パート分離が終わるたびに聞き直す (初回のダウンロードが済むと、案内の文が変わる)
@@ -140,6 +141,21 @@ function SongPanel() {
                     <strong style={{ color: 'var(--ghost)' }}>お手本</strong>を作ります。お手本はピアノロールに水色で重なり、
                     自分の打ち込みは空のまま始まります。
                 </p>
+                <label htmlFor="learn-separation-model">分け方</label>
+                <select id="learn-separation-model" value={separationModel} disabled={blocked}
+                    aria-describedby="learn-separation-model-note"
+                    onChange={e => setSeparationModel(e.target.value as SeparationModel)}>
+                    <option value="htdemucs_ft">音の分離を優先（4パート・時間がかかります）</option>
+                    <option value="htdemucs">速さを優先（4パート）</option>
+                    <option value="htdemucs_6s">ギター・ピアノも分ける（6パート）</option>
+                </select>
+                <p className="note-text" id="learn-separation-model-note">
+                    {separationModel === 'htdemucs_6s'
+                        ? 'ボーカル・ドラム・ベース・ギター・ピアノ・その他に分けます。曲によっては、別の楽器の混入や音の欠けが増えることがあります。'
+                        : `ボーカル・ドラム・ベース・その他に分けます。${separationModel === 'htdemucs_ft'
+                            ? '「速さを優先」の約 4 倍の時間が目安です。' : ''}`}
+                    分けた音声の音量と左右の広がりは、そのまま保ちます。
+                </p>
                 <label htmlFor="file-transcribe-sensitivity">採譜の感度（{sensitivity}）</label>
                 <input id="file-transcribe-sensitivity" type="range" min="0.1" max="1" step="0.05"
                     value={sensitivity} onChange={e => setSensitivity(+e.target.value)}
@@ -160,7 +176,7 @@ function SongPanel() {
                         : `分けずに採譜します。同時に鳴った種類は、1 つにまとまります（キックとハイハットが重なると、片方だけがお手本になります）。${drumModel === false
                             ? 'チェックを入れると、初回のみ、追加のモデル（約 160 MB）をダウンロードします。' : ''}`}
                 </p>
-                <button className="action-btn" onClick={() => void separateParts(sensitivity, undefined, { splitDrums })} disabled={blocked || !songFile}
+                <button className="action-btn" onClick={() => void separateParts(sensitivity, undefined, { splitDrums, model: separationModel })} disabled={blocked || !songFile}
                     {...blockedBy(blocked && !!songFile && BUSY_REASON)}
                     {...tip(!songFile
                         ? '先に曲を取り込んでください'

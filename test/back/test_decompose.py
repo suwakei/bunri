@@ -521,7 +521,7 @@ class TestDecomposeDrums:
         full, parts = stems
         calls = []
 
-        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None):
+        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None, model="htdemucs_ft"):
             calls.append((segment, jobs, split_drums))
             return {**full, **parts}
 
@@ -538,7 +538,7 @@ class TestDecomposeDrums:
         full, _ = stems
         calls = []
 
-        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None):
+        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None, model="htdemucs_ft"):
             calls.append(split_drums)
             return dict(full)
 
@@ -552,7 +552,7 @@ class TestDecomposeDrums:
         full, _ = stems
         calls = []
 
-        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None):
+        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None, model="htdemucs_ft"):
             calls.append(split_drums)
             if split_drums:
                 raise stem_models.ModelUnavailableError("分離用の追加モデルをダウンロードできませんでした。")
@@ -570,7 +570,7 @@ class TestDecomposeDrums:
         import decompose
         full, _ = stems
 
-        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None):
+        def deep(input_path, output_dir, segment, jobs, recursive_depth, split_drums, job, on_drum_split_error=None, model="htdemucs_ft"):
             # 無音のステムは、分離の側で結果から外れる
             return dict(full)
 
@@ -659,10 +659,10 @@ class TestDecomposeDrums:
     def test_ステージの並び(self):
         from decompose import decompose_stages
         keys = lambda **kwargs: [key for key, _ in decompose_stages(**kwargs)]  # noqa: E731
-        assert keys() == ["tempo", "model", "separate", "separate_other", "transcribe"]
-        assert keys(detect_bpm=False, split_drums=True) == ["model", "separate", "separate_drums", "separate_other", "transcribe"]
+        assert keys() == ["tempo", "model", "separate", "transcribe"]
+        assert keys(detect_bpm=False, split_drums=True) == ["model", "separate", "separate_drums", "transcribe"]
         assert keys(split_drums=True, download_drum_model=True) == [
-            "tempo", "drum_model", "model", "separate", "separate_drums", "separate_other", "transcribe"]
+            "tempo", "drum_model", "model", "separate", "separate_drums", "transcribe"]
         # ドラムを分けないなら、ダウンロードのステージも無い
         assert keys(download_drum_model=True) == keys()
 
@@ -670,6 +670,36 @@ class TestDecomposeDrums:
 def _mkdir(path):
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class TestSeparationModel:
+    @pytest.mark.parametrize("model", ["htdemucs_ft", "htdemucs", "htdemucs_6s"])
+    def test_選んだモデルで一度だけ分けて音量を変えずに渡す(self, tmp_path, monkeypatch, model):
+        import audio_utils
+        import decompose
+        import separate
+        import soundfile as sf
+
+        # 左右の定位、1を超えるピーク、小さい成分を含め、音声のコピーで変更しないことを確かめる。
+        samples = np.tile(np.array([[1.2, -0.3], [0.0002, -0.0001]], dtype=np.float32), (2205, 1))
+        source = tmp_path / "other.wav"
+        sf.write(source, samples, 44100, subtype="FLOAT")
+        calls = []
+
+        def deep(input_path, **kwargs):
+            calls.append(kwargs)
+            return {"other": source}
+
+        monkeypatch.setattr(separate, "deep_separate", deep)
+        monkeypatch.setattr(audio_utils, "results_dir", lambda *parts: _mkdir(tmp_path.joinpath("results", *parts)))
+        monkeypatch.setattr(decompose, "polyphonic_events", lambda *args, **kwargs: [])
+        monkeypatch.setattr(decompose, "estimate_instrument", lambda *args: None)
+        result = decompose.decompose(str(tmp_path / "song.wav"), bpm=120, model=model)
+        assert result["model"] == model
+        assert len(calls) == 1 and calls[0]["model"] == model and calls[0]["recursive_depth"] == 0
+        copied, rate = sf.read(result["stems"]["other"]["audio_path"], dtype="float32")
+        assert rate == 44100
+        np.testing.assert_array_equal(copied, samples)
 
 
 def _write_tone(path, starts, dur, midi=69, total=8.0, sr=22050):
@@ -787,7 +817,7 @@ class TestDecomposeGridFeel:
 
     def test_結果の形(self, tmp_path, monkeypatch):
         result = self._run(monkeypatch, tmp_path, self._song(tmp_path, [0, 2]))
-        assert set(result) == {"bpm", "grid_offset_sec", "grid_feel", "drum_source", "drum_fallback", "stems"}
+        assert set(result) == {"bpm", "model", "grid_offset_sec", "grid_feel", "drum_source", "drum_fallback", "stems"}
         assert set(result["stems"]["drums"]) == {"audio_path", "notes", "drum_events", "gm_program", "mix",
                                                  "drum_source", "grid_feel"}
         assert set(result["stems"]["bass"]) == {"audio_path", "notes", "drum_events", "gm_program", "mix", "grid_feel"}

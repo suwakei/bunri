@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 import shutil
 import tempfile
 import json
+from typing import Literal
 
 from audio_utils import projects_dir, results_dir, safe_join, uploads_dir
 
@@ -991,6 +992,7 @@ async def api_decompose(
     grid_offset: float = Form(0),
     sensitivity: float = Form(0.5),
     split_drums: str = Form("false"),
+    model: Literal["htdemucs_ft", "htdemucs", "htdemucs_6s"] = Form("htdemucs_ft"),
     run_async: bool = Query(False, alias="async"),
 ):
     """WAV ファイルを分離・ピッチ解析・楽器推定まで一括処理して返す。
@@ -1005,6 +1007,7 @@ async def api_decompose(
             （同時に鳴った種類が、両方ともイベントになる）。追加のモデルが手元に無ければ、最初にダウンロードする
             （約 160 MB）。用意できなければ失敗にせず、これまでの振り分けで採譜する（結果の ``drum_fallback`` に理由）。
             付けなければ、ダウンロードもドラムの分離もしない。
+        model: 分離を優先する4パート版（既定）、速い4パート版、ギター・ピアノを加えた6パート版。
         run_async: クエリ ``?async=1``。付けると、ジョブを始めてすぐ返す（``job_routes.dispatch``）。
 
     Returns:
@@ -1033,14 +1036,14 @@ async def api_decompose(
         from decompose import decompose
         result = decompose(
             str(src), bpm=detected_bpm, sensitivity=sensitivity,
-            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset), split_drums=with_drums,
+            segment=7, jobs=1, job=job, grid_offset_sec=max(0.0, grid_offset), split_drums=with_drums, model=model,
         )
 
         # 音声ファイルのパスをダウンロードURLに変換
         for stem_name, stem_data in result["stems"].items():
             audio_path = Path(stem_data["audio_path"])
             if audio_path.exists():
-                dst_name = f"decompose_{stem_name}_{filename}"
+                dst_name = f"decompose_{stem_name}_{Path(filename).stem}.wav"
                 dst = results_dir() / dst_name
                 job.remove_on_abort(dst)
                 shutil.copy2(str(audio_path), str(dst))
@@ -1055,6 +1058,7 @@ async def api_decompose(
         stages=decompose_stages(
             detect_bpm=detected_bpm is None, split_drums=with_drums,
             download_drum_model=with_drums and not stem_models.is_cached(DRUM_MODEL),
+            model=model,
         ),
         prepare=lambda: _save_upload(file), task=task, run_async=run_async,
     )

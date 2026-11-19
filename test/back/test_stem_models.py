@@ -251,15 +251,15 @@ class TestEnsureDrumModel:
 
 
 class TestDeepSeparateStages:
-    def test_既定は_今までと同じ3つ(self):
-        assert separate.deep_separate_stages() == separate.DEEP_SEPARATE_STAGES
+    def test_既定ではその他を再分離しない(self):
+        assert separate.deep_separate_stages() == separate.DEEP_SEPARATE_STAGES[:2]
 
     def test_ドラムを分けるなら_その他の再分離の前にステージが入る(self):
-        keys = [key for key, _ in separate.deep_separate_stages(split_drums=True)]
+        keys = [key for key, _ in separate.deep_separate_stages(recursive_depth=1, split_drums=True)]
         assert keys == ["model", "separate", "separate_drums", "separate_other"]
 
     def test_モデルのダウンロードが要るなら_最初にステージが入る(self):
-        keys = [key for key, _ in separate.deep_separate_stages(split_drums=True, download_drum_model=True)]
+        keys = [key for key, _ in separate.deep_separate_stages(recursive_depth=1, split_drums=True, download_drum_model=True)]
         assert keys == ["drum_model", "model", "separate", "separate_drums", "separate_other"]
 
     def test_再分離をしないなら_そのステージは入らない(self):
@@ -268,7 +268,7 @@ class TestDeepSeparateStages:
         assert keys == ["model", "separate", "separate_drums"]
 
     def test_ドラムを分けないなら_ダウンロードのステージは入らない(self):
-        assert separate.deep_separate_stages(download_drum_model=True) == separate.DEEP_SEPARATE_STAGES
+        assert separate.deep_separate_stages(download_drum_model=True) == separate.DEEP_SEPARATE_STAGES[:2]
 
 
 class TestDeepSeparateWithDrums:

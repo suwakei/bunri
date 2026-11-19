@@ -231,6 +231,43 @@ describe('曲とパート', () => {
         expect(engine.tracks).toHaveLength(1);
     });
 
+    it('分け方は音の分離を優先する 4 パートが既定で、選んだモデルの準備と分離を頼む', async () => {
+        const posted: FormData[] = [];
+        const checkedModels: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            const path = String(url);
+            if (path.includes('/api/models/')) {
+                checkedModels.push(path);
+                return new Response(JSON.stringify({ cached: true }));
+            }
+            if (path.includes('/api/decompose')) {
+                posted.push(init!.body as FormData);
+                return new Response(JSON.stringify({ detail: 'テストでは始めません' }), { status: 400 });
+            }
+            return new Response('{}', { status: 404 });
+        }));
+        function WithSong() {
+            const { setSongFile } = useDaw();
+            useEffect(() => { setSongFile(new File(['x'], 'song.wav')); }, [setSongFile]);
+            return <LearnPanel />;
+        }
+        try {
+            render(<DawProvider><WithSong /></DawProvider>);
+            const choice = screen.getByRole('combobox', { name: '分け方' });
+            expect(choice).toHaveValue('htdemucs_ft');
+            expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('約 4 倍');
+            for (const model of ['htdemucs_ft', 'htdemucs', 'htdemucs_6s']) {
+                fireEvent.change(choice, { target: { value: model } });
+                await act(async () => { fireEvent.click(screen.getByRole('button', { name: /パートに分けて採譜する/ })); });
+                await vi.waitFor(() => expect(posted.at(-1)?.get('model')).toBe(model));
+                expect(checkedModels).toContain(`/api/models/${model}/status`);
+            }
+            expect(document.getElementById('learn-separation-model-note')).toHaveTextContent('混入や音の欠け');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('「ドラムを種類ごとに分ける」は、追加のモデルが手元に在るときだけ最初から選ばれ、選択を分離に渡す', async () => {
         let cached = false;
         const posted: FormData[] = [];

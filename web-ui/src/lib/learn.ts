@@ -72,6 +72,10 @@ export { isDrumPart };
 /** ドラムの採譜の作り方。`stems`: 種類ごとに分けた音から / `spectral`: 1 本の音を、音の明るさで振り分けた。 */
 export type DrumSource = 'stems' | 'spectral';
 
+/** パート分離のモデル。既定では、4 パートの分離を優先する。 */
+export type SeparationModel = 'htdemucs_ft' | 'htdemucs' | 'htdemucs_6s';
+export const DEFAULT_SEPARATION_MODEL: SeparationModel = 'htdemucs_ft';
+
 /**
  * `/api/decompose` の結果の 1 パート。API の側では「ステム」と呼んでいる。
  */
@@ -94,6 +98,8 @@ export interface DecomposeStem {
 /** `/api/decompose` の結果。`grid_offset_sec` は、ノートのステップ 0 を置いた位置（秒）。 */
 export interface DecomposeResult {
     bpm: number;
+    /** 分離に使ったモデル（以前の版の結果には無い）。 */
+    model?: string;
     grid_offset_sec?: number;
     /** ドラムのパート（`drums`）の打音の作り方。ドラムのパートが無ければ null（以前の版の結果には無い） */
     drum_source?: DrumSource | null;
@@ -464,11 +470,12 @@ export function useLearnActions() {
      * @param options.splitDrums - ドラムを種類ごと（キック / スネア / タム / シンバル）に分けてから採譜するか。
      *   true なら、追加のモデルが手元に無ければダウンロードする（約 160 MB。利用者が選んだときだけ渡す）。
      *   省略すると、追加のモデルが手元に在るときだけ分ける（勝手にはダウンロードしない。アシスタントから始めたとき）
+     * @param options.model - 分離に使うモデル。省略時は、音の分離を優先する 4 パートのモデル。
      */
     const separateParts = useCallback(async (
         sensitivity: number,
         onStart?: (outcome: { started: true } | { started: false; reason: string }) => void,
-        options: { splitDrums?: boolean } = {},
+        options: { splitDrums?: boolean; model?: SeparationModel } = {},
     ) => {
         const file = songFile;
         if (!file) {
@@ -487,13 +494,15 @@ export function useLearnActions() {
         fd.append('bpm', chart ? String(engine.bpm) : '0');
         fd.append('grid_offset', chart ? String(engine.gridOffset) : '0');
         fd.append('sensitivity', String(sensitivity));
+        const model = options.model ?? DEFAULT_SEPARATION_MODEL;
+        fd.append('model', model);
         // ドラムを種類ごとに分けるか。選ばれていなければ、追加のモデルが手元に在るときだけ (ダウンロードは、選んだときだけ)
         const drumModelCached = await modelCached(DRUM_MODEL);
         const splitDrums = options.splitDrums ?? drumModelCached === true;
         fd.append('split_drums', splitDrums ? 'true' : 'false');
         const usedChart = chart ? chartId : null;
 
-        const notice = (await modelDownloadNotice('htdemucs_6s')) || (splitDrums && drumModelCached === false ? MODEL_DOWNLOAD_NOTICE : '');
+        const notice = (await modelDownloadNotice(model)) || (splitDrums && drumModelCached === false ? MODEL_DOWNLOAD_NOTICE : '');
         setStatus(`原曲をパートに分けています…（${file.name}）パート分離 → 採譜 → 楽器の推定。数分かかります。${notice}`);
         // 始める (受け付けられたら、呼び手に知らせる) → 終わるのを待つ
         let job: Job;

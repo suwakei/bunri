@@ -338,7 +338,7 @@ class TestSeparateThroughFakeChild:
                 return original(key, label)
 
             job.enter_stage = enter
-            return sorted(separate.deep_separate(str(song), output_dir=str(out), job=job))
+            return sorted(separate.deep_separate(str(song), output_dir=str(out), recursive_depth=1, job=job))
 
         job = manager.submit("deep_separate", work, stages=separate.DEEP_SEPARATE_STAGES)
         assert job.wait(30)
@@ -357,8 +357,8 @@ class TestSeparateThroughFakeChild:
         seen = []
         job = manager.submit(
             "deep_separate",
-            lambda job: list(separate.deep_separate(str(song), output_dir=str(out), split_drums=True, job=job)),
-            stages=separate.deep_separate_stages(split_drums=True),
+            lambda job: list(separate.deep_separate(str(song), output_dir=str(out), recursive_depth=1, split_drums=True, job=job)),
+            stages=separate.deep_separate_stages(recursive_depth=1, split_drums=True),
         )
         watch(job, seen)
         snap = job.snapshot()

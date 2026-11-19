@@ -471,7 +471,7 @@ class TestRealEndpoints:
 
         split_requests = []
 
-        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False):
+        def fake_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False, model="htdemucs_ft"):
             assert (segment, jobs) == (7, 1)
             split_requests.append(split_drums)
             job.enter_stage("transcribe")
@@ -490,7 +490,7 @@ class TestRealEndpoints:
             assert resp.status_code == 202, resp.text
             started = resp.json()
             assert (started["kind"], started["title"]) == ("decompose", "パート分離と採譜")
-            assert started["stage_count"] == len(decompose.decompose_stages(detect_bpm=True)) == 5
+            assert started["stage_count"] == len(decompose.decompose_stages(detect_bpm=True)) == 4
             done = await poll(client, started["id"])
             assert done["result"] == sync.json()
             assert done["result"]["bpm"] == 123
@@ -499,20 +499,57 @@ class TestRealEndpoints:
 
             # BPM を指定したら、テンポを調べるステージは並びに入らない
             fixed = (await client.post("/api/decompose?async=1", files=upload(wav_bytes), data={"bpm": "90"})).json()
-            assert fixed["stage_count"] == 4
+            assert fixed["stage_count"] == 3
             assert (await poll(client, fixed["id"]))["result"]["bpm"] == 90
             # 頼まれなければ、ドラムを種類ごとに分けない（追加のモデルも落とさない）
             assert split_requests == [False, False, False]
 
             # ドラムを種類ごとに分ける: 分けるステージが増える。追加のモデルが手元に無ければ、ダウンロードのステージも
             import stem_models
-            for cached, stage_count in ((True, 5), (False, 6)):
+            for cached, stage_count in ((True, 4), (False, 5)):
                 monkeypatch.setattr(stem_models, "is_cached", lambda name, cached=cached: cached)
                 split = (await client.post("/api/decompose?async=1", files=upload(wav_bytes),
                                            data={"bpm": "90", "split_drums": "true"})).json()
                 assert split["stage_count"] == stage_count
                 await poll(client, split["id"])
             assert split_requests[3:] == [True, True]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [None, "htdemucs_ft", "htdemucs", "htdemucs_6s"])
+    async def test_選んだ分離モデルを使い_mp3入力もwavで返す(self, real_app, wav_bytes, tmp_path, monkeypatch, model):
+        import decompose
+
+        selected = []
+
+        def fake_decompose(input_path, model, job, **kwargs):
+            selected.append(model)
+            job.enter_stage("transcribe")
+            path = write_stems(tmp_path / "work", ["other"])["other"]
+            return {"bpm": 120, "model": model, "stems": {"other": {"audio_path": str(path)}}}
+
+        monkeypatch.setattr(decompose, "decompose", fake_decompose)
+        async with client_for(real_app) as client:
+            data = {} if model is None else {"model": model}
+            response = await client.post("/api/decompose?async=1", files=upload(wav_bytes, name="song.mp3"), data=data)
+            assert response.status_code == 202, response.text
+            done = await poll(client, response.json()["id"])
+            assert done["state"] == "done", done
+            expected = model or "htdemucs_ft"
+            assert selected == [expected]
+            assert done["result"]["model"] == expected
+            url = done["result"]["stems"]["other"]["audio_url"]
+            assert url == "/api/download/decompose_other_song.wav"
+            downloaded = await client.get(url)
+            assert downloaded.status_code == 200
+            assert downloaded.headers["content-type"] == "audio/wav"
+            assert downloaded.content[:4] == b"RIFF"
+
+    @pytest.mark.asyncio
+    async def test_未対応の分離モデルはジョブを作らず拒否する(self, real_app, wav_bytes, manager):
+        async with client_for(real_app) as client:
+            response = await client.post("/api/decompose?async=1", files=upload(wav_bytes), data={"model": "unknown"})
+            assert response.status_code == 422
+        assert manager.jobs() == []
 
     @pytest.mark.asyncio
     async def test_採譜(self, real_app, wav_bytes, monkeypatch):
@@ -629,7 +666,7 @@ class TestRealEndpoints:
 
         gate = Gate()
 
-        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False):
+        def slow_decompose(input_path, bpm, sensitivity, segment, jobs, job, grid_offset_sec=0.0, split_drums=False, model="htdemucs_ft"):
             job.enter_stage("separate")
             gate.pause()
             return {"bpm": 120, "stems": {}}

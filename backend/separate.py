@@ -61,7 +61,7 @@ DRUM_MODEL_STAGE = ("drum_model", "ドラムを分けるモデルをダウンロ
 DRUM_SPLIT_STAGE = ("separate_drums", "ドラムをキック・スネア・タム・シンバルに分けています")
 
 
-def deep_separate_stages(recursive_depth=1, split_drums=False, download_drum_model=False):
+def deep_separate_stages(recursive_depth=0, split_drums=False, download_drum_model=False, model="htdemucs_6s"):
     """``deep_separate`` をジョブとして動かすときのステージの並びを返す。
 
     Args:
@@ -69,14 +69,19 @@ def deep_separate_stages(recursive_depth=1, split_drums=False, download_drum_mod
         split_drums (bool, optional): ドラムを部位ごとに分けるか。真なら、そのステージを入れる。
         download_drum_model (bool, optional): ドラムを分けるモデルのダウンロードが要るか
             （``split_drums`` が真で、モデルが手元に無いとき）。真なら、最初にそのステージを入れる。
+        model (str, optional): 分離に使うモデル。4 パートと 6 パートで表示名を変える。
 
     Returns:
         list[tuple[str, str]]: ``(キー, 表示名)`` を進む順に並べたリスト。
     """
+    if model not in MODELS:
+        raise ValueError(f"非対応の分離モデルです: {model}")
     stages = []
     if split_drums and download_drum_model:
         stages.append(DRUM_MODEL_STAGE)
     for stage in DEEP_SEPARATE_STAGES:
+        if stage[0] == "separate" and model != "htdemucs_6s":
+            stage = ("separate", "4 つのパートに分けています")
         if stage[0] == "separate_other":
             if split_drums:
                 stages.append(DRUM_SPLIT_STAGE)
@@ -172,6 +177,9 @@ def separate_audio(
 
     if mp3_output:
         cmd += ["--mp3"]
+    else:
+        # パートごとのピーク正規化は元の音量比を変える。浮動小数点で振幅をそのまま保存する。
+        cmd += ["--float32", "--clip-mode", "none"]
 
     cmd.append(str(input_path))
 
@@ -207,32 +215,30 @@ def separate_audio(
     return paths
 
 
-def _is_silent(file_path: Path, threshold_db: float = -50) -> bool:
-    """WAV ファイルの RMS がほぼ無音レベルかどうかを判定する。
+def _is_silent(file_path: Path, threshold_db: float = -80) -> bool:
+    """全チャンネルのピークがほぼ無音レベルかどうかを判定する。
 
-    ファイル全体の RMS を dBFS に変換し、``threshold_db`` を下回れば無音と判定する。
+    曲の一部分だけの弱い音や、左右が逆相の音を無音として捨てない。
 
     Args:
         file_path (Path): 判定する WAV ファイルのパス。
         threshold_db (float, optional): 無音と見なす閾値（dBFS）。
-            デフォルト ``-50``。
+            デフォルト ``-80``。
 
     Returns:
-        bool: RMS が ``threshold_db`` 未満であれば ``True``（無音）、
+        bool: 全チャンネルのピークが ``threshold_db`` 未満なら ``True``（無音）、
             それ以外は ``False``。
 
     Note:
-        ステレオファイルはチャンネル平均をとってからモノラル RMS を算出する。
-        ``numpy`` および ``soundfile`` を関数内で遅延インポートする。
+        長い曲を全てメモリへ読まず、ブロックごとに確かめる。
     """
     import numpy as np
     import soundfile as sf
-    data, sr = sf.read(str(file_path))
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    rms = np.sqrt(np.mean(data ** 2))
-    db = 20 * np.log10(rms + 1e-10)
-    return db < threshold_db
+    threshold = 10 ** (threshold_db / 20)
+    for data in sf.blocks(str(file_path), blocksize=65536, dtype="float32", always_2d=True):
+        if np.any(np.abs(data) >= threshold):
+            return False
+    return True
 
 
 DRUM_MODEL = "drumsep"
@@ -331,6 +337,8 @@ def separate_drums(
     ]
     if mp3_output:
         cmd += ["--mp3"]
+    else:
+        cmd += ["--float32", "--clip-mode", "none"]
     cmd.append(str(src))
 
     print(f"[*] モデル: {DRUM_MODEL}  ファイル: {src.name}")
@@ -365,21 +373,22 @@ def deep_separate(
     mp3_output: bool = False,
     segment: int = 7,
     jobs: int = 1,
-    recursive_depth: int = 1,
+    recursive_depth: int = 0,
     split_drums: bool = False,
     job=None,
     on_drum_split_error=None,
+    model: str = "htdemucs_6s",
 ) -> dict[str, Path]:
-    """htdemucs_6s による多段のレイヤー分離を行い、有音ステムのパスを返す。
+    """選んだ Demucs モデルで分離し、有音ステムのパスを返す。
 
-    以下の手順で最大限のレイヤー分離を試みる:
+    以下の手順でパートを分離する。再分離は明示したときだけ行う:
 
-    1. ``htdemucs_6s`` で入力を6ステムに分離。
+    1. 選んだモデルで入力を 4 または 6 ステムに分離。
     2. ``split_drums`` が真なら、「drums」ステムをキック / スネア / タム / シンバルに分け、
        ``"drums_<部位>"`` として追加する（元の ``"drums"`` も残す）。
     3. ``recursive_depth > 0`` の場合、「other」ステムをさらに
        ``htdemucs_6s`` で再分離し ``"other_<stem>"`` として追加。
-    4. 無音（RMS < -50 dBFS）のステムは結果から除外する。
+    4. ほぼ無音（全チャンネルのピーク < -80 dBFS）のステムは結果から除外する。
     5. 再分離後のサブステムが全て無音の場合は元の ``"other"`` を残す。
 
     Args:
@@ -390,7 +399,7 @@ def deep_separate(
         segment (int, optional): Demucs の処理セグメント長（秒）。デフォルト 7。
         jobs (int, optional): 並列ジョブ数。デフォルト 1。
         recursive_depth (int, optional): ``"other"`` ステムを再帰分離する深さ。
-            ``1`` で1回再分離、``0`` で再分離なし。デフォルト 1。
+            ``1`` で1回再分離、``0`` で再分離なし。デフォルト 0。
         split_drums (bool, optional): ドラムを部位ごとに分けるか。デフォルト ``False``。
             真のとき、追加のモデルが手元に無ければ最初にダウンロードする（約 160 MB）。
         job (background_jobs.Job | None, optional): この処理を動かしているジョブ。
@@ -399,6 +408,8 @@ def deep_separate(
             （``separate_drums``）が失敗したときに呼ぶ関数。渡すと、失敗にせず、ドラムの部位を
             結果に入れないで続ける（6 ステムの分離は捨てない。書きかけの細分化の出力は消してある）。
             キャンセルは受け止めず、そのまま伝える。None なら、失敗をそのまま送出する（デフォルト）。
+        model (str, optional): ``htdemucs`` / ``htdemucs_ft`` / ``htdemucs_6s``。
+            既定は ``htdemucs_6s``。``other`` の再分離は、明示した場合だけ 6 ステムのモデルを使う。
 
     Returns:
         dict[str, Path]: ステム名をキー、出力ファイルパスを値とする辞書。
@@ -411,6 +422,7 @@ def deep_separate(
         stem_models.ModelUnavailableError: ``split_drums`` が真で、モデルを用意できなかった場合。
             分離を始める前に送出する（数分かけて分離したあとで失敗しないように）。
         background_jobs.JobCancelled: ジョブがキャンセルされた場合。
+        ValueError: 非対応のモデル名の場合。
 
     Note:
         第2段の出力は ``<output_dir>/deep_other/`` と ``<output_dir>/deep_drums/`` に書き出される。
@@ -418,18 +430,20 @@ def deep_separate(
     """
     import background_jobs
 
+    if model not in MODELS:
+        raise ValueError(f"非対応の分離モデルです: {model}")
     if job is None:
         job = background_jobs.detached()
     if split_drums:
         # 重い処理の前に、モデルを用意しておく。用意できなければここで止まる
         _ensure_drum_model(job)
 
-    # 第1段: htdemucs_6s でフル分離
-    print("[深層分離] === 第1段: htdemucs_6s フル分離 ===")
+    # 第1段: 選んだモデルでフル分離
+    print(f"[深層分離] === 第1段: {model} フル分離 ===")
     first = separate_audio(
         input_path=input_path,
         output_dir=output_dir,
-        model="htdemucs_6s",
+        model=model,
         two_stems=False,
         mp3_output=mp3_output,
         segment=segment,
