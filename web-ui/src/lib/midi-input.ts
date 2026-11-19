@@ -222,6 +222,8 @@ class WebMidiSource implements MidiSource {
     async start(onMessage: MidiMessageHandler, onDevices: (names: string[]) => void): Promise<void> {
         const request = webMidiRequest();
         if (!request) throw new Error('このブラウザは MIDI 入力に対応していません');
+        // 開き直すときは、前の受け口を外してから（デスクトップ版の入力元と同じ）
+        await this.stop();
         const access = await request({ sysex: false });
         this.access = access;
         const attach = () => {

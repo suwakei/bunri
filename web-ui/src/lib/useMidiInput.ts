@@ -165,7 +165,9 @@ export function useMidiInput(): MidiInputController {
     }, [pianoRollRef, setStatus, bumpTracks]);
 
     const connect = useCallback(async () => {
-        const source = pickMidiSource();
+        // 開いているときの「再検出」は、同じ入力元を開き直す。新しく作ると、前の入力元の受け口が残り、
+        // 鍵盤 1 回が 2 回届く（デスクトップ版。ノートが 2 個ずつ入る）
+        const source = sourceRef.current ?? pickMidiSource();
         if (!source) return false;
         try {
             await source.start(handleMessage, (names) => {

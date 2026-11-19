@@ -160,17 +160,35 @@ fn midi_start(
         })
         .map_err(|e| format!("MIDI の記録のスレッドを作れません: {e}"))?;
 
+    #[cfg(target_os = "macos")]
+    prime_midi(&app);
+
     let repeats = Arc::new(Mutex::new(midi::RepeatFilter::default()));
+    let duplicates = Arc::new(Mutex::new(midi::DuplicateFilter::default()));
     let handle = app.clone();
     let names = inputs.start(move |port, message| {
+        let now = std::time::Instant::now();
+        // 同じ鍵盤が別のポートからも同じものを送ってきたら、画面には 1 回だけ渡す
+        let duplicate = duplicates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_duplicate(port, message, now);
         // 先に画面へ渡す (音を鳴らす・ノートを置くほうを、記録より優先する)
-        let _ = handle.emit(midi::EVENT, message.to_vec());
+        if !duplicate {
+            let _ = handle.emit(midi::EVENT, message.to_vec());
+        }
         let record = repeats
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .should_record(port, message, std::time::Instant::now());
+            .should_record(port, message, now);
         if record {
-            let _ = lines.send(format!("{port}: {}", midi::describe(message)));
+            // 記録には、どのポートから届いたかを全部残す (重なりは、そうと分かるように)
+            let note = if duplicate {
+                "（ほかのポートと同じ。1 回として扱う）"
+            } else {
+                ""
+            };
+            let _ = lines.send(format!("{port}: {}{note}", midi::describe(message)));
         }
     })?;
     let opened = if names.is_empty() {
@@ -180,6 +198,27 @@ fn midi_start(
     };
     note_activity(&app, "midi-in", &opened);
     Ok(names)
+}
+
+/// mac で、最初の MIDI クライアントをメインスレッドで作る (`midi::prime`。起動のあとにつないだ機器を
+/// 「再検出」で見つけられるようにする)。入力を開く前に、作り終わるまで待つ。
+///
+/// コマンドがメインスレッドで動いているときは、その場で作る (メインスレッドに頼んで待つと、自分を待つことになる)。
+#[cfg(target_os = "macos")]
+fn prime_midi(app: &tauri::AppHandle) {
+    // SAFETY: 引数も前提も無い、スレッドを問い合わせるだけの呼び出し
+    if unsafe { libc::pthread_main_np() } != 0 {
+        midi::prime();
+        return;
+    }
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let asked = app.run_on_main_thread(move || {
+        midi::prime();
+        let _ = done.send(());
+    });
+    if asked.is_ok() {
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+    }
 }
 
 /// MIDI 入力を閉じる。

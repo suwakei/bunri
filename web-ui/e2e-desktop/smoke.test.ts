@@ -9,9 +9,10 @@
  *
  * 画面の構造に深く依存しない (タブの並びなどは変わりうる)。要素は役割と、画面のことば (docs/ui-terms.md) で引く。
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { makeWav, readWav } from '../e2e/helpers.ts';
 import { announce, clickControl, pressKey, setControl, snapshot } from './controls.ts';
@@ -93,27 +94,27 @@ describe('起動', () => {
     });
 });
 
-describe('動きの記録と、名前での操作', () => {
-    /** 動きの記録のファイル (テストの一時ディレクトリの中。利用者の記録には混ざらない)。 */
-    const activityLog = () => join(inject('dataDir'), 'logs', 'activity.log');
+/** 動きの記録のファイル (テストの一時ディレクトリの中。利用者の記録には混ざらない)。 */
+const activityLog = () => join(inject('dataDir'), 'logs', 'activity.log');
 
-    /** 記録のファイルに、指定の文を含む行が、この順に出るまで待つ。出た行を返す。 */
-    async function waitLines(...wanted: string[]): Promise<string[]> {
-        const deadline = Date.now() + 10_000;
-        for (;;) {
-            const lines = existsSync(activityLog()) ? readFileSync(activityLog(), 'utf8').split('\n') : [];
-            let from = 0;
-            const found = wanted.map((text) => {
-                const index = lines.findIndex((line, i) => i >= from && line.includes(text));
-                if (index >= 0) from = index + 1;
-                return index;
-            });
-            if (found.every((index) => index >= 0)) return found.map((index) => lines[index]);
-            if (Date.now() > deadline) throw new Error(`記録に、この順では出ませんでした: ${wanted.join(' → ')}\n${lines.slice(-30).join('\n')}`);
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+/** 記録のファイルに、指定の文を含む行が、この順に出るまで待つ。出た行を返す。 */
+async function waitLines(...wanted: string[]): Promise<string[]> {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+        const lines = existsSync(activityLog()) ? readFileSync(activityLog(), 'utf8').split('\n') : [];
+        let from = 0;
+        const found = wanted.map((text) => {
+            const index = lines.findIndex((line, i) => i >= from && line.includes(text));
+            if (index >= 0) from = index + 1;
+            return index;
+        });
+        if (found.every((index) => index >= 0)) return found.map((index) => lines[index]);
+        if (Date.now() > deadline) throw new Error(`記録に、この順では出ませんでした: ${wanted.join(' → ')}\n${lines.slice(-30).join('\n')}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
     }
+}
 
+describe('動きの記録と、名前での操作', () => {
     it('押したボタンとその結果が、時刻つきでファイルに残る。エージェントが足した行も、同じ並びに入る', async () => {
         const [started] = await waitLines('[app] ==== ');
         expect(started).toMatch(/^\d\d:\d\d:\d\d\.\d{3} \[app\] ==== \d{4}-\d\d-\d\d bunri を起動しました \(版 [\d.]+\) ====$/);
@@ -161,6 +162,82 @@ describe('動きの記録と、名前での操作', () => {
         // キーは、画面の操作として記録に残る (アプリのショートカットと同じ経路)
         await pressKey(app, 'Shift+F9');
         await waitLines('[key] Shift+F9');
+    });
+});
+
+/**
+ * 仮想の MIDI ポート (鍵盤の代わり) を作る (virtual-midi.swift)。作れない環境 (swift が無い、OS の MIDI が
+ * 使えない) では null。
+ */
+async function startVirtualKeyboard(name: string): Promise<{ play(pitch: number): Promise<void>; close(): void } | null> {
+    const child = spawn('swift', [join(import.meta.dirname, 'virtual-midi.swift'), name], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const seen: string[] = [];
+    let ended = false;
+    createInterface({ input: child.stdout }).on('line', (text) => { seen.push(text); });
+    child.on('error', () => { ended = true; });
+    child.on('exit', () => { ended = true; });
+    /** その行が出るまで待つ (出る前に終わった・時間が過ぎたら false)。 */
+    const line = async (text: string, timeoutMs: number) => {
+        const deadline = Date.now() + timeoutMs;
+        while (!seen.includes(text)) {
+            if (ended || Date.now() > deadline) return false;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return true;
+    };
+    // swift は、初回はスクリプトのコンパイルに数秒かかる
+    if (!(await line('ready', 60_000))) {
+        child.kill();
+        return null;
+    }
+    return {
+        async play(pitch) {
+            child.stdin.write(`note ${pitch}\n`);
+            if (!(await line(`sent ${pitch}`, 10_000))) throw new Error('仮想の鍵盤が、音を送れませんでした');
+        },
+        // 標準入力を閉じると、ポートを消して終わる
+        close: () => { child.stdin.end(); },
+    };
+}
+
+describe('MIDI 入力', () => {
+    it('入力を開いたあとにつないだ鍵盤が「再検出」で見つかり、鍵盤 1 回は 1 回だけ届く', async (ctx) => {
+        const port = `bunri-e2e-${process.pid}`;
+        // 先に、鍵盤が無いうちに入力を開く (アプリが OS の MIDI を使い始める)
+        await clickControl(app, 'MIDI 入力');
+        await waitLines('[click] ボタン「MIDI 入力」', '[midi-in] 開いたポート: ');
+        const keyboard = await startVirtualKeyboard(port);
+        if (!keyboard) {
+            await clickControl(app, 'MIDI 入力を止める');
+            ctx.skip('仮想の MIDI ポートを作れない環境です');
+            return;
+        }
+        try {
+            // 「再検出」は、あとからつないだ鍵盤を見つける (mac では、最初の MIDI クライアントをメインスレッドで
+            // 作らないと、ポートの一覧が古いままになる。src-tauri/src/midi.rs の prime)
+            const deadline = Date.now() + 20_000;
+            for (;;) {
+                await clickControl(app, '再検出');
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                if (await app.run((name: string) => document.body.textContent?.includes(name) ?? false, port)) break;
+                if (Date.now() > deadline) throw new Error('「再検出」を押しても、あとからつないだ鍵盤が出ませんでした');
+            }
+            // ネイティブ側の記録にも、開いたポートとして残る
+            expect(readFileSync(activityLog(), 'utf8').split('\n').some((l) => l.includes('[midi-in] 開いたポート: ') && l.includes(port))).toBe(true);
+
+            // 開き直したあとも、鍵盤 1 回は 1 回だけ届く (前の受け口が残っていると、2 回届いてノートが 2 個ずつ入る)
+            await announce(app, 'テスト: 仮想の鍵盤で D4 を弾く');
+            await keyboard.play(62);
+            await waitLines('[agent] テスト: 仮想の鍵盤で D4 を弾く', `[midi-in] ${port}: note-on ch1 62(D4) vel 100`, '[midi] 離した D4');
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            const lines = readFileSync(activityLog(), 'utf8').split('\n');
+            const after = lines.slice(lines.findIndex((l) => l.includes('[agent] テスト: 仮想の鍵盤で D4 を弾く')));
+            expect(after.filter((l) => l.includes('[midi] 押した D4'))).toHaveLength(1);
+            expect(after.filter((l) => l.includes('[midi] 離した D4'))).toHaveLength(1);
+        } finally {
+            keyboard.close();
+            await clickControl(app, 'MIDI 入力を止める');
+        }
     });
 });
 

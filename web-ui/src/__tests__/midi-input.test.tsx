@@ -417,6 +417,30 @@ describe('MidiInputBar', () => {
         expect(screen.getByText('次の位置: 1 小節 3 拍')).toBeInTheDocument();
     });
 
+    it('デスクトップ版で「再検出」を押しても、鍵盤 1 回でノートは 1 個だけ入る', async () => {
+        // 受け口を、外されるまで全部覚えておく (外し忘れた受け口にも届くように)
+        const handlers = new Set<(e: { payload: number[] }) => void>();
+        const invoke = vi.fn(async (cmd: string) => (cmd === 'midi_start' ? ['USB Keyboard'] : undefined));
+        const listen = vi.fn(async (_name: string, h: (e: { payload: number[] }) => void) => { handlers.add(h); return () => { handlers.delete(h); }; });
+        (globalThis as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke }, event: { listen } };
+        const send = (bytes: number[]) => { for (const h of [...handlers]) h({ payload: bytes }); };
+        const notes: PianoNote[] = [];
+        renderBar(notes);
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力' }));
+        await waitFor(() => expect(screen.getByText('USB Keyboard')).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', { name: '再検出' }));
+        await waitFor(() => expect(invoke.mock.calls.filter(([cmd]) => cmd === 'midi_start')).toHaveLength(2));
+        await waitFor(() => expect(handlers.size).toBe(1));
+
+        act(() => { send([0x90, 60, 100]); send([0x80, 60, 0]); });
+        expect(notes).toEqual([{ note: 'C', octave: 4, step: 0, length: 4, velocity: 100 }]);
+        expect(screen.getByText('次の位置: 1 小節 2 拍')).toBeInTheDocument();
+
+        // 止めると、受け口は 1 つも残らない
+        fireEvent.click(screen.getByRole('button', { name: 'MIDI 入力を止める' }));
+        await waitFor(() => expect(handlers.size).toBe(0));
+    });
+
     it('つないだ機器、鍵盤の操作、置いたノート、案内を、動きの記録に残す', async () => {
         const { activityEntries, resetActivityForTest } = await import('../lib/activity');
         resetActivityForTest();

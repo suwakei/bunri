@@ -7,6 +7,10 @@
 //! - つながっている入力ポートを **すべて** 開く。どの鍵盤を弾いても入るようにするため
 //! - 接続は専用のスレッドが持つ。OS によっては接続をスレッド間で受け渡せないため
 //! - 機器の抜き差しは自動では追わない。画面の「再検出」で開き直す
+//! - mac では、最初のクライアントをメインスレッドで作っておく (`prime`)。そうしないと、起動のあとに
+//!   つないだ機器が「再検出」でも見つからない
+//! - 同じ鍵盤が 2 つ以上のポートから同じものを送ってくることが在る (USB の 2 つのポートと Bluetooth、など)。
+//!   画面には 1 回だけ渡す (`DuplicateFilter`)。渡さないと、鍵盤 1 回でノートがポートの数だけ入る
 //! - 受け取る側には、メッセージと一緒に **ポートの名前** も渡す。画面に渡すのはバイト列だけだが、
 //!   動きの記録 (`activity.rs`) にはポートの名前つきで残す。どのポートから来たか (同じ鍵盤が USB と
 //!   Bluetooth の両方で送ってきていないか、など) は、その記録でしか分からない
@@ -24,6 +28,26 @@ pub const EVENT: &str = "midi-message";
 
 /// OS に見せるクライアント名。
 const CLIENT_NAME: &str = "bunri";
+
+/// mac で、起動のあとにつないだ機器が見えるようにする。**メインスレッドから**呼ぶ。2 回目からは何もしない。
+///
+/// CoreMIDI は、機器の増減の知らせを、プロセスで最初にクライアントを作ったスレッドの run loop で受け取る。
+/// 入力を開くスレッド (`midi-input`) は run loop を回さないので、最初のクライアントをそこで作ると、
+/// 知らせがどこにも届かず、ポートの一覧が「最初にクライアントを作ったとき」のまま変わらなくなる
+/// (起動のあとにつないだ鍵盤が、「再検出」を押しても見つからない。減ったほうは分かる)。
+/// メインスレッドは窓のために run loop を回しているので、最初のクライアントをここで作って、持ったままにする。
+///
+/// 失敗しても何もしない (MIDI が使えないことは、入力を開くときに利用者へ伝わる)。
+#[cfg(target_os = "macos")]
+pub fn prime() {
+    static PRIMED: std::sync::Once = std::sync::Once::new();
+    PRIMED.call_once(|| {
+        if let Ok(client) = MidiInput::new(CLIENT_NAME) {
+            // アプリが終わるまで持ったままにする (クライアントはスレッドをまたげないので、手放さずに置く)
+            Box::leak(Box::new(client));
+        }
+    });
+}
 
 /// 開いている MIDI 入力。Tauri の state として管理する。
 #[derive(Default)]
@@ -213,6 +237,58 @@ impl RepeatFilter {
     }
 }
 
+/// 同じ鍵盤が、2 つ以上のポートから同じメッセージを送ってきたときに、2 つ目からを見分ける。
+///
+/// 1 台の鍵盤が、ポートを 2 つ以上持つことが在る (USB のポートが 2 つ、さらに Bluetooth でもつながっている、など。
+/// SINCO SMK25 は、鍵盤 1 回が USB の 2 ポートと Bluetooth の 3 か所から届く。2026-11-19 に実機で確認)。
+/// 入力ポートはすべて開くので、そのまま画面に渡すと、鍵盤 1 回で音が重なり、ノートがポートの数だけ入る。
+///
+/// 見分け方: 直前 (`WINDOW` 以内) に **別のポート** から同じバイト列を通していたら、重なりとする。
+/// 同じポートから続けて届いた同じメッセージは、重なりにしない (本当に 2 回送られたもの)。
+/// 通した 1 つのメッセージにつき、ほかのポートのぶんは 1 回ずつだけ重なりにする (同じ操作を 2 回したときに、
+/// 2 回目のぶんまで 1 回目の重なりとして落とさない)。
+/// 先に届いたほうを通すので、速い経路 (ふつうは USB) の時刻で鳴り、録られる。
+#[derive(Default)]
+pub struct DuplicateFilter {
+    /// 最近通したメッセージ。古いものは、次に呼ばれたときに捨てる。
+    recent: Vec<Passed>,
+}
+
+/// 通したメッセージ 1 つ。
+struct Passed {
+    message: Vec<u8>,
+    at: Instant,
+    /// このメッセージを届けてきたポート (通したポートと、重なりとして落としたポート)。
+    ports: Vec<String>,
+}
+
+impl DuplicateFilter {
+    /// 別のポートからの同じメッセージを、重なりとみなす長さ。
+    /// 実機 (SMK25) では、Bluetooth のぶんは USB の 2〜12 ミリ秒あとに届いた。Bluetooth は揺れるので、余裕を持たせる。
+    const WINDOW: Duration = Duration::from_millis(100);
+
+    /// このメッセージが、別のポートからもう通したものの重なりか。重なりでなければ、通したものとして覚える。
+    ///
+    /// @param port - 届いたポートの名前
+    pub fn is_duplicate(&mut self, port: &str, message: &[u8], now: Instant) -> bool {
+        self.recent
+            .retain(|passed| now.saturating_duration_since(passed.at) <= Self::WINDOW);
+        let twin = self.recent.iter_mut().find(|passed| {
+            passed.message == message && !passed.ports.iter().any(|seen| seen == port)
+        });
+        if let Some(passed) = twin {
+            passed.ports.push(port.to_string());
+            return true;
+        }
+        self.recent.push(Passed {
+            message: message.to_vec(),
+            at: now,
+            ports: vec![port.to_string()],
+        });
+        false
+    }
+}
+
 /// MIDI ノート番号を、音名とオクターブにする (60 → C4)。
 fn note_name(pitch: u8) -> String {
     const NAMES: [&str; 12] = [
@@ -301,6 +377,53 @@ mod tests {
         let inputs = MidiInputs::default();
         inputs.stop();
         inputs.stop();
+    }
+
+    #[test]
+    fn 別のポートから届いた同じメッセージは_重なりとして1回だけ通す() {
+        let mut filter = DuplicateFilter::default();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // 鍵盤 1 回が、USB の 2 ポートと Bluetooth から届く (実機の SMK25 と同じ並び)
+        assert!(!filter.is_duplicate("usb-private", &[0x90, 57, 72], at(0)));
+        assert!(filter.is_duplicate("usb-master", &[0x90, 57, 72], at(0)));
+        assert!(filter.is_duplicate("bluetooth", &[0x90, 57, 72], at(12)));
+        // 離したほうも同じ
+        assert!(!filter.is_duplicate("usb-private", &[0x80, 57, 0], at(80)));
+        assert!(filter.is_duplicate("usb-master", &[0x80, 57, 0], at(81)));
+        assert!(filter.is_duplicate("bluetooth", &[0x80, 57, 0], at(87)));
+        // 違うメッセージ (高さ・強さが違う) は、重なりではない
+        assert!(!filter.is_duplicate("usb-master", &[0x90, 59, 72], at(90)));
+        assert!(!filter.is_duplicate("bluetooth", &[0x90, 59, 71], at(91)));
+    }
+
+    #[test]
+    fn 同じポートから続けて届いた同じメッセージは_重なりにしない() {
+        let mut filter = DuplicateFilter::default();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        assert!(!filter.is_duplicate("usb", &[0xb0, 64, 127], at(0)));
+        assert!(!filter.is_duplicate("usb", &[0xb0, 64, 127], at(5)));
+        // 2 回の操作が、それぞれ別のポートからも届く。1 回目のぶんと 2 回目のぶんを、1 つずつ重なりにする
+        assert!(filter.is_duplicate("bluetooth", &[0xb0, 64, 127], at(10)));
+        assert!(filter.is_duplicate("bluetooth", &[0xb0, 64, 127], at(15)));
+        // 3 回目は、通したものが無いので重なりではない
+        assert!(!filter.is_duplicate("bluetooth", &[0xb0, 64, 127], at(20)));
+    }
+
+    #[test]
+    fn 時間が空いたら_別のポートからの同じメッセージも通す() {
+        let mut filter = DuplicateFilter::default();
+        let start = Instant::now();
+        assert!(!filter.is_duplicate("usb", &[0x90, 60, 100], start));
+        // 2 台の鍵盤で、同じ鍵盤を同じ強さで、あとから弾いた
+        assert!(!filter.is_duplicate(
+            "another",
+            &[0x90, 60, 100],
+            start + Duration::from_millis(101)
+        ));
+        // 古いものは覚えていない
+        assert_eq!(filter.recent.len(), 1);
     }
 
     /// OS の MIDI を実際に通して確かめる。仮想の出力ポートを作り、そこへ送ったメッセージが
