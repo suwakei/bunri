@@ -29,6 +29,7 @@ nul
 uploads/
 results/
 projects/
+/music/
 # 保存していない変更の、復旧用の写し (BUNRI_DATA_DIR を付けずに起動したとき、リポジトリ直下にできる)
 /recovery/
 
