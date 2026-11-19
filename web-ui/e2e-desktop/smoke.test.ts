@@ -92,6 +92,74 @@ describe('起動', () => {
         await app.waitFor('案内が閉じる', () => document.querySelector('[role="dialog"]') === null, []);
         await waitStatus('準備完了');
     });
+
+    it('music の曲をネイティブで一覧表示し、選択して原曲へ取り込む', async () => {
+        const name = `bunri-desktop-music-${process.pid}-${Date.now()}.wav`;
+        const musicDir = join(import.meta.dirname, '..', '..', 'music');
+        const fixture = join(musicDir, name);
+        const wav = makeWav(4, [261.63, 329.63, 392, 523.25]);
+        mkdirSync(musicDir, { recursive: true });
+        writeFileSync(fixture, wav, { flag: 'wx' });
+        try {
+            const result = await app.run(async (filename: string) => {
+                const invoke = (window as unknown as {
+                    __TAURI__: { core: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> } };
+                }).__TAURI__.core.invoke;
+                const entries = await invoke<{ name: string }[]>('music_list');
+                const bytes = await invoke<ArrayBuffer | number[]>('music_read', { name: filename });
+                let rejected = false;
+                try {
+                    await invoke('music_read', { name: '../outside.wav' });
+                } catch {
+                    rejected = true;
+                }
+                return { listed: entries.some(entry => entry.name === filename), length: bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length, rejected };
+            }, name);
+            expect(result).toEqual({ listed: true, length: wav.length, rejected: true });
+
+            await app.waitFor('music の一覧', () => document.querySelector('.music-library') !== null, []);
+            await app.run(() => {
+                Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
+                    .find(button => button.textContent?.trim() === '一覧を更新')?.click();
+            });
+            await app.waitFor('合成音源の曲ボタン', (filename: string) =>
+                Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
+                    .some(button => button.textContent?.trim() === filename && !button.disabled), [name]);
+            expect(await app.run(() => Array.from(document.querySelectorAll('button'))
+                .some(button => button.textContent?.trim() === '曲を取り込んで始める'))).toBe(true);
+            await app.run((filename: string) => {
+                const button = Array.from(document.querySelectorAll<HTMLButtonElement>('.music-library button'))
+                    .find(button => button.textContent?.trim() === filename);
+                if (!button) throw new Error('曲ボタンがありません');
+                button.click();
+            }, name);
+            await app.waitFor('原曲に合成音源が入る', (filename: string) => {
+                const current = document.querySelector('#song-current');
+                return current?.textContent?.includes(filename) === true && document.querySelector('#empty-state') === null
+                    && Array.from(document.querySelectorAll('#tracks-container .clip-name')).some(clip => clip.textContent === filename);
+            }, [name], 60_000);
+            await waitStatus('カルテを作りました', 60_000);
+            const errors = await app.run(() => (window as unknown as {
+                __bunriE2E: { csp: unknown[]; errors: string[] };
+            }).__bunriE2E);
+            expect(errors).toEqual({ csp: [], errors: [] });
+        } finally {
+            rmSync(fixture, { force: true });
+            // 後続の smoke ケースが、取り込む前と同じ空のプロジェクトから始められるよう戻す。
+            await app.click('//button[@aria-label="プロジェクトのメニュー"]');
+            await app.click('//button[@role="menuitem"][normalize-space()="新しいプロジェクト"]');
+            await app.waitFor('新規作成または保存の確認', () => document.querySelector('#status-text')?.textContent?.includes('新しいプロジェクトにしました')
+                || Array.from(document.querySelectorAll('[role="alertdialog"] button'))
+                    .some(button => button.textContent?.trim() === '保存しない'), []);
+            if (await app.run(() => document.querySelector('[role="alertdialog"]') !== null)) {
+                await app.click('//*[@role="alertdialog"]//button[normalize-space()="保存しない"]');
+            }
+            await waitStatus('新しいプロジェクトにしました');
+            await app.waitFor('空のプロジェクト', () => document.querySelector('#empty-state') !== null
+                && document.querySelectorAll('#tracks-container .clip').length === 0, []);
+        }
+    });
+
 });
 
 /** 動きの記録のファイル (テストの一時ディレクトリの中。利用者の記録には混ざらない)。 */

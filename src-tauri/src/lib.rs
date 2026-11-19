@@ -32,6 +32,7 @@ mod audio;
 mod e2e;
 mod instruments;
 mod midi;
+mod music;
 mod project;
 mod secrets;
 mod sidecar;
@@ -254,6 +255,8 @@ pub fn run() {
             midi_ports,
             activity_record,
             activity_info,
+            music::music_list,
+            music::music_read,
             audio::audio_init,
             audio::audio_prepare_piano,
             audio::audio_prepare_instrument,

@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
+import { musicPlugin } from './music-plugin.ts'
 import { CSP_REPORT_PATH, CSP_REPORTS_PATH, devCsp } from '../scripts/desktop-csp.mjs'
 
 /**
@@ -59,7 +61,7 @@ function desktopCspPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), ...(process.env.BUNRI_DEV_CSP === '1' ? [desktopCspPlugin()] : [])],
+  plugins: [react(), musicPlugin(fileURLToPath(new URL('../music', import.meta.url))), ...(process.env.BUNRI_DEV_CSP === '1' ? [desktopCspPlugin()] : [])],
   test: {
     globals: true,
     environment: 'jsdom',

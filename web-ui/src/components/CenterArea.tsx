@@ -26,6 +26,7 @@ import { isAudioFileName, useLearnActions } from '../lib/learn';
 import { GAIN_MAX_DB, GAIN_MIN_DB, GAIN_STEP_DB, PAN_STEPS, clampGainDb, clampPan, formatGainDb, formatPan } from '../lib/mix';
 import PopupMenu from './PopupMenu';
 import RecentProjects from './RecentProjects';
+import MusicLibrary from './MusicLibrary';
 import { cursorLabel } from '../lib/midi-input';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
@@ -2459,6 +2460,7 @@ function EmptyState() {
                     {...tip('曲を使わずに、空のトラックを 1 本作って始めます')}>自由に作る</button>
             </div>
             <p className="empty-note">MP3・WAV・FLAC・M4A などの曲のファイルを選びます。「自由に作る」は、空のトラックを 1 本作ります。</p>
+            <MusicLibrary />
             <RecentProjects />
         </div>
     );
@@ -2691,7 +2693,7 @@ export default function CenterArea() {
 
     return (
         <PracticeProvider midi={midi}>
-        <div id="center" ref={centerRef} className={practiceOpen ? 'practice-mode' : undefined}>
+        <div id="center" ref={centerRef} className={practiceOpen ? 'practice-mode' : engine.tracks.length === 0 ? 'empty-mode' : undefined}>
             {/* 練習画面の見出し。練習画面のあいだは、タイムラインと境目を隠す (外さない。CSS の .practice-mode) */}
             {practiceOpen && <PracticeHeader />}
             {/* タイムライン */}

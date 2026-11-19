@@ -3973,3 +3973,16 @@ body:has(#health-banner) #notice-region {
 }
 
 .band-progress-mark { font-family: var(--font-ui); color: var(--text-mid); }
+
+/* 最初の画面で、手元の music/ の曲を選ぶ一覧。 */
+.music-library { margin-top: 20px; text-align: left; min-width: 0; }
+.music-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.music-library h3 { font-size: 13px; color: var(--text-mid); }
+.music-library-heading .action-btn { width: auto; font-size: 11px; }
+.music-library ul { list-style: none; margin-top: 8px; padding: 0; max-height: 190px; overflow-y: auto; }
+.music-library li + li { margin-top: 6px; }
+.music-library li .action-btn { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+
+/* 曲を選ぶ前は案内と一覧に高さを使い、取り込むと編集画面を出す。 */
+#center.empty-mode #piano-roll-area,
+#center.empty-mode #resize-piano { display: none; }
