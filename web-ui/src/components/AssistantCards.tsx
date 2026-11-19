@@ -117,8 +117,12 @@ export function ExplanationCardView({ card }: { card: ExplanationCard }) {
      * 指摘を指していれば、そのノートの高さまでスクロールし、差分の段の一覧の該当する行を示す。
      */
     const jump = (ref: Pick<CardExplanationRef, 'issueId' | 'bar' | 'beat' | 'pitch'>) => {
-        if (!engine.getTrack(card.attemptId)) {
-            setStatus(`説明した打ち込みのトラック（${card.trackName}）が見つかりません。削除したか、別のプロジェクトを開いています`, 'hint');
+        // トラックの番号は、プロジェクトを開き直すと振り直される。名前も同じときだけ、同じトラックとみなす
+        // (番号だけで探すと、開き直した後に、別のトラックを黙って開いてしまう)
+        const track = engine.getTrack(card.attemptId);
+        if (!track || track.name !== card.trackName) {
+            setStatus(`説明した打ち込みのトラック（${card.trackName}）が見つかりません。削除したか、名前を変えたか、`
+                + 'プロジェクトを開き直してトラックの番号が変わっています。もう一度「差分を説明して」と頼んでください', 'hint');
             return;
         }
         const pr = pianoRollRef.current;

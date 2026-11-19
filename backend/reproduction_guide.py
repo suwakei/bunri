@@ -825,7 +825,10 @@ def cache_keys_for(chart):
 
 
 def _find_saved(chart, focus):
-    """保存済みのガイドを、モデルを問わず探す（強いモデルのものが先: opus → sonnet → haiku）。
+    """保存済みのガイドを、モデルを問わず探す（いくつか在れば、いちばん新しく作ったもの）。
+
+    作り直したガイドは、頼んだモデルの鍵に入る。古い強いモデルのガイドが残っていても、作り直した方を出すため、
+    作った時刻で選ぶ（同じ時刻なら、強いモデルのもの: opus → sonnet → haiku）。
 
     Returns:
         tuple[str, dict] | None: ``(鍵, 保存した 1 件)``。無ければ None。
@@ -835,19 +838,20 @@ def _find_saved(chart, focus):
     """
     import guide_cache
 
+    best = None
     for model in llm_settings.lookup_models():
         request = build_request(chart, focus, model=model)
         key = guide_key(chart, focus, model, request["output_config"]["effort"])
         entry = guide_cache.load(key)
-        if entry:
-            return key, entry
-    return None
+        if entry and (best is None or (entry.get("created_ts") or 0) > (best[1].get("created_ts") or 0)):
+            best = (key, entry)
+    return best
 
 
 def saved_guide(chart, focus=None):
     """保存済みのガイドを返す（無ければ None）。API は呼ばない。
 
-    どのモデルで作ったガイドでも返す（いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。
+    どのモデルで作ったガイドでも返す（いくつか在れば、いちばん新しく作ったもの）。
 
     Args:
         chart: 楽曲カルテ。
@@ -869,7 +873,7 @@ def guide_for(chart, focus=None, regenerate=False, client=None, model=None):
     順番:
 
     1. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）。どのモデルで作った
-       ガイドでもよい（いくつか在れば、強いモデルのもの）
+       ガイドでもよい（いくつか在れば、いちばん新しく作ったもの）
     2. 同じカルテへの呼び出しを 1 つずつ通す。待っている間に、同じ条件のガイドが出来ていたら
        それを返す（連打・二重送信で 2 回呼ばない。作り直しの連打も同じ）
     3. 材料が足りないカルテ、1 日の上限に達しているとき、入力が長すぎるときは、API を呼ばずに断る

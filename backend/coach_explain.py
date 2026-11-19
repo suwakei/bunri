@@ -944,27 +944,30 @@ def _blocked_message(today):
 
 
 def _find_saved(facts):
-    """保存済みの説明を、モデルを問わず探す（強いモデルのものが先: opus → sonnet → haiku）。
+    """保存済みの説明を、モデルを問わず探す（いくつか在れば、いちばん新しく作ったもの）。
+
+    作り直した説明を、古い強いモデルの説明より先に出すため、作った時刻で選ぶ（同じ時刻なら、強いモデルのもの）。
 
     Returns:
         tuple[str, dict] | None: ``(鍵, 保存した 1 件)``。無ければ None。
     """
     import guide_cache
 
+    best = None
     for model in llm_settings.lookup_models():
         request = build_request(facts, model=model)
         key = explanation_key(facts, model, request["output_config"]["effort"])
         entry = guide_cache.load(key, kind="coach")
-        if entry:
-            return key, entry
-    return None
+        if entry and (best is None or (entry.get("created_ts") or 0) > (best[1].get("created_ts") or 0)):
+            best = (key, entry)
+    return best
 
 
 def saved_explanation(facts):
     """API を呼ばずに返せる説明を返す（無ければ None）。
 
     LLM に頼むまでもない場合の決まった文か、保存済みの説明。保存済みは、どのモデルで作ったものでも返す
-    （いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。
+    （いくつか在れば、いちばん新しく作ったもの）。
 
     Args:
         facts: ``build_facts`` の結果。
@@ -986,7 +989,7 @@ def explain_for(facts, regenerate=False, client=None, model=None):
 
     1. LLM に頼むまでもない場合（違いが無い・少ない、打ち込みが無い、お手本が少ない）は、決まった文を返す
     2. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）。どのモデルで作った
-       説明でもよい（いくつか在れば、強いモデルのもの）
+       説明でもよい（いくつか在れば、いちばん新しく作ったもの）
     3. 説明の呼び出しを 1 つずつ通す。待っている間に同じ条件の説明が出来ていたら、それを返す
        （錠は 1 つ。事実ごとに分けると、ノートを直すたびに錠が増えていくため）
     4. 1 日の上限に達しているとき、入力が長すぎるときは、API を呼ばずに断る

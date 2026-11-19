@@ -165,8 +165,9 @@ export function itemsFromSection(value: unknown): SavedItem[] {
             out.push({ kind: 'tool', name: item.name, state: item.state, text: body });
         } else if (item.kind === 'notice' && body) out.push({ kind: 'notice', tone: item.tone === 'error' ? 'error' : 'info', text: body });
         else if (item.kind === 'card') {
+            // 保存するときと同じ上限で確かめる (手で作った・壊れたファイルの巨大なカードを、そのまま並べない)
             const card = cardFromSaved(item);
-            if (card) out.push({ kind: 'card', ...card });
+            if (card && cardFits(card)) out.push({ kind: 'card', ...card });
         } else if (item.kind === 'turn') {
             out.push({
                 kind: 'turn', calls: typeof item.calls === 'number' && item.calls >= 0 ? Math.floor(item.calls) : 0,

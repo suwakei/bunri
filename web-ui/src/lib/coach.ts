@@ -21,7 +21,7 @@ import { noteLabel, type DiffMode } from './drums';
 import type { PianoNote } from './engine';
 import { stepUnits } from './grid';
 import { spanLabel } from './snap';
-import { GuideRequestError, toError, type GuideToday, type GuideUsage } from './guide';
+import { toError, type GuideToday, type GuideUsage } from './guide';
 
 /** 差分の種類。 */
 export type IssueKind = 'missing' | 'pitch' | 'octave' | 'extra' | 'timing' | 'length';
@@ -496,11 +496,6 @@ export interface ExplanationResponse {
     today?: GuideToday;
 }
 
-/** `POST /api/coach/explain/saved` のレスポンス。返せる説明が無ければ `saved` が false。 */
-export type SavedExplanationResponse =
-    | ({ saved: true } & ExplanationResponse)
-    | { saved: false; today?: GuideToday };
-
 /** 説明の材料（差分チェックと同じノートと、同じ曲のカルテ）。 */
 export interface ExplainRequest {
     reference: PianoNote[];
@@ -567,24 +562,6 @@ export async function requestExplanation(request: ExplainRequest, regenerate = f
     if (!resp.ok) throw await toError(resp, EXPLAIN_FAILED);
     return (await resp.json()) as ExplanationResponse;
 }
-
-/**
- * Claude を呼ばずに返せる説明（保存済み、または決まった文）を取得する。費用はかからない。
- *
- * @param request - 差分チェックと同じノートと、カルテ
- * @throws {GuideRequestError} 取得できなかった場合
- */
-export async function fetchSavedExplanation(request: ExplainRequest): Promise<SavedExplanationResponse> {
-    const resp = await apiFetch('/api/coach/explain/saved', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-    });
-    if (!resp.ok) throw await toError(resp, EXPLAIN_FAILED);
-    return (await resp.json()) as SavedExplanationResponse;
-}
-
-export { GuideRequestError as ExplainRequestError };
 
 /**
  * 指摘の ID（`i1` `i2` …）から指摘を引く表を作る。ID は `bars[].issues[]` を上から数えた番号

@@ -762,7 +762,7 @@ class TestSavedExplanation:
         assert ce.explain_for(facts, client=client)["cached"] is False
         assert len(client.calls) == 2
 
-    def test_保存分はモデルを問わず探し_強いモデルのものを返す(self, facts, monkeypatch):
+    def test_保存分はモデルを問わず探し_いちばん新しく作ったものを返す(self, facts, monkeypatch):
         client = FakeClient()
         haiku = ce.explain_for(facts, client=client)
         assert client.calls[0]["model"] == "claude-haiku-5-5"
@@ -775,9 +775,12 @@ class TestSavedExplanation:
         assert ce.explain_for(facts, client=client, model="claude-haiku-5-5")["key"] == sonnet["key"]
         opus = ce.explain_for(facts, client=client, model="claude-opus-5-5", regenerate=True)
         assert ce.saved_explanation(facts)["key"] == opus["key"] and len(client.calls) == 3
+        # 古い強いモデルの説明が在っても、Haiku で作り直したものを出す
+        again = ce.explain_for(facts, client=client, model="claude-haiku-5-5", regenerate=True)
+        assert again["key"] == haiku["key"] and ce.saved_explanation(facts)["key"] == haiku["key"]
         # 固定のモデルを変えても、保存分はそのまま使う
-        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-haiku-5-5")
-        assert ce.saved_explanation(facts)["key"] == opus["key"]
+        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-sonnet-5-5")
+        assert ce.saved_explanation(facts)["key"] == haiku["key"]
 
     def test_知らないモデルは_呼ばずに断る(self, facts):
         client = FakeClient()

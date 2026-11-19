@@ -292,13 +292,13 @@ describe('GuidePanel: アシスタントに頼む入口', () => {
         render(<DawProvider><AskHarness expose={() => {}} /><Loader /></DawProvider>);
         fireEvent.change(screen.getByLabelText('対象'), { target: { value: 'S2' } });
         fireEvent.click(screen.getByRole('button', { name: 'アシスタントにガイドを頼む' }));
-        await waitFor(() => expect(askedTexts()).toEqual(['「サビ」（5〜8 小節）の再現ガイドを作って']));
+        await waitFor(() => expect(askedTexts()).toEqual(['「サビ」（5〜8 小節、区間 ID: S2）の再現ガイドを作って']));
         await waitFor(() => expect(assistantSession.getState().running).toBe(false));
     });
 
     it('guideRequestText: 名前の無い区間は ID で呼ぶ。知らない区間は曲全体', () => {
         const unnamed = { ...chart, sections: [{ ...chart.sections[0], suggested_label: null }] } as SongChart;
-        expect(guideRequestText(unnamed, 'S1')).toBe('「区間 S1」（1〜4 小節）の再現ガイドを作って');
+        expect(guideRequestText(unnamed, 'S1')).toBe('「区間 S1」（1〜4 小節、区間 ID: S1）の再現ガイドを作って');
         expect(guideRequestText(chart, 'zz')).toBe('再現ガイドを作って');
         expect(guideRequestText(chart, '')).toBe('再現ガイドを作って');
     });

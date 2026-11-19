@@ -477,17 +477,20 @@ class TestSavedGuide:
         assert rg.saved_guide(chart)["key"] == made["key"]
         assert rg.guide_for(chart, client=client)["cached"] is True and len(client.calls) == 1
 
-    def test_いくつか在れば_強いモデルのものを返す(self, chart):
+    def test_いくつか在れば_いちばん新しく作ったものを返す(self, chart):
         client = FakeClient()
         haiku = rg.guide_for(chart, client=client, model="claude-haiku-5-5")
         opus = rg.guide_for(chart, client=client, model="claude-opus-5-5", regenerate=True)
         sonnet = rg.guide_for(chart, client=client, model="claude-sonnet-5-5", regenerate=True)
         assert len({haiku["key"], opus["key"], sonnet["key"]}) == 3 and len(client.calls) == 3
         assert [call["model"] for call in client.calls] == ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]
-        # opus → sonnet → haiku の順に優先する（作った順ではない）
-        assert rg.saved_guide(chart)["key"] == opus["key"]
-        assert rg.guide_for(chart, client=client, model="claude-haiku-5-5")["key"] == opus["key"]
+        # 作り直した方を出す（古い強いモデルのガイドに隠れない）
+        assert rg.saved_guide(chart)["key"] == sonnet["key"]
+        assert rg.guide_for(chart, client=client, model="claude-haiku-5-5")["key"] == sonnet["key"]
         assert len(client.calls) == 3
+        # Haiku で作り直せば、Haiku のものが出る
+        again = rg.guide_for(chart, client=client, model="claude-haiku-5-5", regenerate=True)
+        assert again["key"] == haiku["key"] and rg.saved_guide(chart)["key"] == haiku["key"]
 
     def test_頼んだモデルで作り_作り直しはそのモデルの保存分を置き換える(self, chart):
         client = FakeClient()

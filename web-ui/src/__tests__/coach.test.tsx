@@ -491,6 +491,13 @@ describe('差分の説明（アシスタントに頼む入口と、チャット�
         await waitFor(() => expect(daw().statusKind).toBe('hint'));
         expect(daw().status).toMatch(/消したトラック）が見つかりません/);
     });
+
+    it('カード: 同じ番号のトラックでも名前が違えば（開き直して番号が振り直された）、別のトラックを開かずに理由を出す', async () => {
+        const { daw } = await setup((stemId) => explanationCardOf(explanation, result, { referenceId: stemId, attemptId: stemId, trackName: '前のベース' }));
+        fireEvent.click(within(screen.getByRole('region', { name: '差分の説明（前のベース）' })).getByRole('button', { name: '2 小節へ' }));
+        await waitFor(() => expect(daw().statusKind).toBe('hint'));
+        expect(daw().status).toMatch(/前のベース）が見つかりません.*番号が変わっています/);
+    });
 });
 
 describe('説明の材料（lib/coach.ts）', () => {

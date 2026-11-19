@@ -566,6 +566,11 @@ export class AssistantSession {
         let route: RouteInfo | null = null;
         /** 最後の呼び出しで、実際に答えたモデル */
         let answered: string | null = null;
+        /**
+         * route が届かなかった (古い形の応答など) ときに、残りの呼び出しで使うモデル。step 0 で実際に答えたモデル。
+         * 付けずに送ると、処理を担当する部分は既定のモデルで答え、依頼の途中でモデルが変わってしまうため
+         */
+        let pinned: string | null = null;
         /** 費用の合計に足す (単価の分からないものが在れば、合計は出さない) */
         const spend = (usd: number | null | undefined) => { cost = cost !== null && typeof usd === 'number' ? cost + usd : null; };
         const onRoute = (next: RouteInfo) => {
@@ -578,7 +583,7 @@ export class AssistantSession {
         /** ツールが読み書きする、この依頼のこと (選んだモデル・費用・カード) */
         let cards: ChatCard[] = [];
         const turn: ToolTurn = {
-            get model() { return route?.model ?? null; },
+            get model() { return route?.model ?? pinned; },
             spend: (usd) => spend(usd),
             today: (today) => this.update({ today }),
             showCard: (card) => { cards.push(card); },
@@ -595,7 +600,7 @@ export class AssistantSession {
                     ending = { tone: 'info', text: `Claude を ${MAX_STEPS} 回呼んだので、ここで止めました（1 回の依頼で呼べる上限です）。続きは、もう一度頼んでください` };
                     break;
                 }
-                const model: string | null = (route as RouteInfo | null)?.model ?? null;
+                const model: string | null = (route as RouteInfo | null)?.model ?? pinned;
                 this.update({ waiting: thinkingLine(model) });
                 const resp = await apiFetch('/api/assistant/step', {
                     method: 'POST',
@@ -610,7 +615,10 @@ export class AssistantSession {
                 // 古い形 (JSON 1 つ) の応答と、route の行が無かった応答は、done の route で決める
                 if (data.route && typeof data.route.model === 'string' && data.route.model) onRoute(data.route);
                 calls += 1;
-                if (typeof data.model === 'string' && data.model) answered = data.model;
+                if (typeof data.model === 'string' && data.model) {
+                    answered = data.model;
+                    if (step === 0 && !route) pinned = data.model;
+                }
                 spend(data.cost_usd);
                 const content = Array.isArray(data.content) ? data.content : [];
                 // 応答の content は、変えずに足す (空の応答は足さない。空のメッセージは、次の呼び出しで断られる)

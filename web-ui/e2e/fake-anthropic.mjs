@@ -132,7 +132,7 @@ function blocksOf(message) {
  * いまの依頼は、最後の「文を持つ user のメッセージ」。その後ろに在る tool_result の数で、筋書きのどこまで進んだかが分かる。
  * 依頼の文に含まれることばで、筋書きを選ぶ (上から順に見る):
  *
- * - 「ガイド」: 依頼に区間の小節の範囲 (「（5〜8 小節）」) が在れば、get_chart → その範囲の区間で make_guide (focus_section)。
+ * - 「ガイド」: 依頼に区間 ID (「区間 ID: S2」) が在れば、その区間で make_guide (focus_section)。
  *   無ければ make_guide (曲全体)。「作り直」が在れば regenerate: true → 短い文で終わる (中身はカードに出ているので繰り返さない)
  * - 「説明」: explain_diff (差分の段の組。「作り直」が在れば regenerate: true) → 短い文で終わる
  * - 「クリップ」: get_project → クリップの在る最初のトラックの、最初のクリップを trim_clip で 1.5 秒までに縮める
@@ -184,14 +184,10 @@ function assistantReply(body) {
     const workTrack = (project) => project.practice?.track_id ?? project.open_track_id ?? project.tracks?.[0]?.id;
     const regenerate = request.includes('作り直') ? { regenerate: true } : {};
     if (request.includes('ガイド')) {
-        const range = request.match(/（(\d+)〜(\d+) 小節）/);
-        if (range) {
-            if (stepNo === 0) return call('', ['get_chart', {}]);
-            if (stepNo === 1) {
-                const sections = parsed(results[0]).sections ?? [];
-                const section = sections.find((s) => s.start_bar === Number(range[1]) && s.end_bar === Number(range[2]));
-                return call('', ['make_guide', { ...(section ? { focus_section: section.id } : {}), ...regenerate }]);
-            }
+        // 区間を選んで頼んだ依頼には、区間 ID が入っている (「（5〜8 小節、区間 ID: S2）」)。get_chart を呼ばずに、その区間で作る
+        const sectionId = request.match(/区間 ID: ([^）\s]+)）/)?.[1];
+        if (sectionId) {
+            if (stepNo === 0) return call('', ['make_guide', { focus_section: sectionId, ...regenerate }]);
         } else if (stepNo === 0) {
             return call('', ['make_guide', regenerate]);
         }

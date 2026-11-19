@@ -31,6 +31,7 @@ const {
     COMPACT_CHARS, COMPACT_MESSAGES, DIGEST_CHARS, MAX_ARCHIVED, MAX_SAVED_ITEMS, archiveFromSection, archiveTitle, conversationDigest, itemsFromSection, itemsToSaved, needsCompaction,
 } = await import('../lib/assistant-history');
 const { SUGGESTION_COUNT, suggestionsFor } = await import('../lib/assistant-suggestions');
+const { MAX_CARD_CHARS } = await import('../lib/assistant-cards');
 const { activityEntries, recordActivity, resetActivityForTest } = await import('../lib/activity');
 const { AssistantPanel, AssistantToggle } = await import('../components/AssistantPanel');
 const { useAssistantDeps } = await import('../lib/assistant-env');
@@ -629,8 +630,8 @@ describe('少しずつ届く応答（ストリーミング）', () => {
         expect(sent[1]).toMatchObject({ stream: true, step: 1 });
         expect(sent[1].messages[1]).toEqual({ role: 'assistant', content });
         expect(sent[1].messages[2].content.map((b) => [b.type, b.tool_use_id])).toEqual([['tool_result', 'tu_1']]);
-        // 次の呼び出しを待つあいだは、「考えています…」に戻る
-        expect(session.getState().waiting).toBe('考えています…');
+        // 次の呼び出しを待つあいだは、「考えています…」に戻る (route の無い応答なので、step 0 で答えたモデルの名前を出す)
+        expect(session.getState().waiting).toBe('Opus で考えています…');
 
         second.push(delta('「Bass」を'));
         await waitFor(() => expect(last(rows(session))).toBe('assistant: 「Bass」を'));
@@ -1557,11 +1558,11 @@ describe('モデルの選び方（ルーター）', () => {
         expect(turns.map((t) => t.kind === 'turn' && t.reason)).toEqual(['8 小節のベースを考えるので', '短い質問なので']);
     });
 
-    it('ルーターの費用が来なければ足さない。route が無い古い応答は、モデルなしのまま続ける', async () => {
+    it('ルーターの費用が来なければ足さない。route が無い古い応答は、step 0 で答えたモデルで続ける（依頼の途中で変えない）', async () => {
         stubSteps([step([use('a', 'get_project')], 'tool_use', 0.01), step([text('はい。')], 'end_turn', 0.01)]);
         const session = new AssistantSession();
         await session.send('見て', fakeDeps().deps);
-        expect(sent.map((body) => (body as { model?: string }).model)).toEqual([undefined, undefined]);
+        expect(sent.map((body) => (body as { model?: string }).model)).toEqual([undefined, 'claude-opus-5-5']);
         expect(last(session.getState().items)).toMatchObject({ kind: 'turn', model: 'claude-opus-5-5', reason: null });
     });
 
@@ -1621,6 +1622,9 @@ describe('カード（再現ガイド・差分の説明）', () => {
         // おかしなカードは読み飛ばす
         expect(itemsFromSection({ items: [{ kind: 'card', card: 'guide' }, { kind: 'card', card: 'poem', text: 'x' }, { kind: 'user', text: 'はい' }] }))
             .toEqual([{ kind: 'user', text: 'はい' }]);
+        // 保存するときの上限を超える大きなカードも読み飛ばす (手で作った・壊れたファイル)
+        const huge = { ...card, overview: 'あ'.repeat(MAX_CARD_CHARS) };
+        expect(itemsFromSection({ items: [huge, { kind: 'user', text: 'はい' }] })).toEqual([{ kind: 'user', text: 'はい' }]);
         // 版 2 の節 (カードもモデルも無い) は、そのまま読める
         expect(itemsFromSection({ version: 2, items: [{ kind: 'turn', calls: 1, costUsd: 0.01 }] })).toEqual([{ kind: 'turn', calls: 1, costUsd: 0.01 }]);
 

@@ -278,5 +278,6 @@ export function sectionName(section: SongChart['sections'][number]): string {
 export function guideRequestText(chart: SongChart, focus: string): string {
     const section = focus ? chart.sections.find((s) => s.id === focus) : undefined;
     if (!section) return '再現ガイドを作って';
-    return `「${sectionName(section)}」（${section.start_bar}〜${section.end_bar} 小節）の再現ガイドを作って`;
+    // 区間の ID も入れる (make_guide の focus_section に要る。get_chart を余分に呼ばせない・同じ名前の区間を取り違えさせない)
+    return `「${sectionName(section)}」（${section.start_bar}〜${section.end_bar} 小節、区間 ID: ${section.id}）の再現ガイドを作って`;
 }
