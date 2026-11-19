@@ -2,8 +2,11 @@
 
 import argparse
 import importlib.util
+import io
 import os
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -60,6 +63,9 @@ def test_download_options_and_failure_code(monkeypatch, tmp_path, capsys, audio_
     assert {"--no-playlist", "--no-overwrites", "--ignore-config", "--extract-audio"} <= set(command)
     assert command[-2:] == ["--", url]
     assert "--progress-template" in command
+    assert "-u" in command
+    assert "--no-quiet" in command
+    assert command[command.index("--downloader") + 1] == "native"
     assert run.call_args.kwargs["stdout"] == subprocess.PIPE
     captured = capsys.readouterr()
     assert "変換中" in captured.out
@@ -127,6 +133,40 @@ def test_progress_bar():
     assert "総量不明" in youtube_audio.progress_bar("__BUNRI_PROGRESS__downloading|1048576|NA|NA")
     assert "50.0%" in youtube_audio.progress_bar("__BUNRI_PROGRESS__downloading|1|NA|2")
     assert "変換中" in youtube_audio.progress_bar("__BUNRI_PROGRESS__finished|2|2|NA")
+
+
+def test_waiting_indicator_and_progress_update_before_child_exit(monkeypatch):
+    # 子を入力待ちで止め、表示されたことを合図に次へ進める。完了後の一括出力では通らない。
+    with subprocess.Popen(
+        [sys.executable, "-u", "-c",
+         "input(); print('__BUNRI_PROGRESS__downloading|1|2|NA', flush=True); input()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as process:
+        seen = set()
+
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+
+            def write(self, text):
+                for key in ("経過", "50.0%"):
+                    if key in text and key not in seen:
+                        assert process.poll() is None
+                        seen.add(key)
+                        process.stdin.write("\n")
+                        process.stdin.flush()
+                return super().write(text)
+
+        terminal = Terminal()
+        monkeypatch.setattr(youtube_audio.sys, "stdout", terminal)
+        timer = threading.Timer(5, process.kill)
+        timer.start()
+        try:
+            assert youtube_audio.show_progress(process) == 0
+            assert seen == {"経過", "50.0%"}
+            assert "動画情報を取得中" in terminal.getvalue()
+        finally:
+            timer.cancel()
 
 
 def test_interrupt_terminates_child(monkeypatch, tmp_path):

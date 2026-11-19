@@ -6,15 +6,79 @@
 """YouTube の動画1本を MP3 / WAV にして、リポジトリ直下の music/ に保存する。"""
 
 import argparse
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 MUSIC_DIR = Path(__file__).resolve().parent.parent / "music"
 PROGRESS_PREFIX = "__BUNRI_PROGRESS__"
+
+
+def show_progress(process) -> int:
+    """子の出力を随時受け取り、進捗のない情報取得・変換の間も動作中と示す。"""
+    messages = queue.Queue()
+
+    def read_output():
+        try:
+            for line in process.stdout:
+                messages.put(line)
+        except BaseException as exc:
+            messages.put(exc)
+        finally:
+            messages.put(None)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    terminal = sys.stdout.isatty()
+    stage = "動画情報を取得中…"
+    started = time.monotonic()
+    tick = 0
+    visible = False
+
+    def display(text):
+        nonlocal visible
+        if terminal:
+            print(f"\r\033[K{text}", end="", flush=True)
+            visible = True
+        else:
+            print(text, flush=True)
+
+    display(stage)
+    try:
+        while True:
+            try:
+                line = messages.get(timeout=0.15)
+            except queue.Empty:
+                if terminal:
+                    spinner = "|/-\\"[tick % 4]
+                    display(f"{spinner} {stage}  経過 {time.monotonic() - started:.0f}秒")
+                    tick += 1
+                continue
+            if line is None:
+                break
+            if isinstance(line, BaseException):
+                raise line
+            if line.startswith(PROGRESS_PREFIX):
+                stage = progress_bar(line)
+                display(stage)
+            else:
+                if visible:
+                    print()
+                    visible = False
+                print(line, end="", flush=True)
+        if visible:
+            print()
+        return process.wait()
+    finally:
+        # 例外時の子プロセス終了は呼び出し元が行い、読取りスレッドも EOF で終了する。
+        if process.poll() is not None:
+            reader.join(timeout=1)
 
 
 def progress_bar(line: str) -> str:
@@ -86,7 +150,7 @@ def download(url: str, audio_format: str) -> int:
         return 1
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
     command = [
-        sys.executable, "-m", "yt_dlp",
+        sys.executable, "-u", "-m", "yt_dlp",
         "--ignore-config", "--no-playlist", "--no-overwrites",
         "--format", "bestaudio/best", "--extract-audio",
         "--audio-format", audio_format, "--audio-quality", "0",
@@ -94,7 +158,8 @@ def download(url: str, audio_format: str) -> int:
         "--paths", str(MUSIC_DIR),
         "--output", "%(title).150B [%(id)s].%(ext)s",
         "--print", "after_move:保存しました: %(filepath)s",
-        "--no-simulate", "--progress", "--newline", "--no-color",
+        "--no-simulate", "--no-quiet", "--progress", "--newline", "--no-color",
+        "--downloader", "native",
         "--socket-timeout", "30", "--retries", "3", "--fragment-retries", "3",
         "--progress-template",
         f"download:{PROGRESS_PREFIX}%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s",
@@ -106,20 +171,7 @@ def download(url: str, audio_format: str) -> int:
     print(f"保存先: {MUSIC_DIR}\n形式: {audio_format.upper()}", flush=True)
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
         try:
-            showing_bar = False
-            for line in process.stdout:
-                if line.startswith(PROGRESS_PREFIX):
-                    text = progress_bar(line)
-                    print(f"\r{text:<100}", end="" if sys.stdout.isatty() else "\n", flush=True)
-                    showing_bar = sys.stdout.isatty()
-                else:
-                    if showing_bar:
-                        print()
-                        showing_bar = False
-                    print(line, end="", flush=True)
-            if showing_bar:
-                print()
-            result = process.wait()
+            result = show_progress(process)
         except BaseException:
             # 中止・出力先の切断時も取得プロセスを残さない。
             process.terminate()
