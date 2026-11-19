@@ -55,6 +55,11 @@ BS-RoFormer / Mel-Band RoFormer 系と SubRoformer が候補。今回それら�
 導入判断には同一区間の混入・欠落、CPU時間、ピークメモリの比較が要る。
 パート数や単一ベンチマークの値だけで既定エンジンを替えない。
 
+その後、5モデル・7実行条件・5区間の実比較を実施した。
+[比較結果と次の導入候補](benchmarks/separation-2026-11-19.md)、
+[比較ツールと再現方法](benchmarks/separation-method.md) を参照。
+この比較自体では、アプリの既定モデルは替えていない。
+
 ## 検証
 
 `test_separation_fidelity.py` は浮動小数点保存の振幅、左右差、フルスケール超過、
