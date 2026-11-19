@@ -463,7 +463,9 @@ class TestBuildRequest:
 
     def test_モデルと各種の指定は_再現ガイドと同じ(self, facts, chart, monkeypatch):
         monkeypatch.delenv("BUNRI_GUIDE_MODEL", raising=False)
-        request, guide = ce.build_request(facts), rg.build_request(chart)
+        # 既定のモデルは Haiku 5.5（Haiku にはサーバ側のやり直しが無いので、比べるのは Opus で）
+        assert ce.build_request(facts)["model"] == rg.build_request(chart)["model"] == "claude-haiku-5-5"
+        request, guide = ce.build_request(facts, model="claude-opus-5-5"), rg.build_request(chart, model="claude-opus-5-5")
         assert request["model"] == guide["model"] == "claude-opus-5-5"
         assert request["output_config"]["effort"] == ce.EFFORT == "low"
         assert request["max_tokens"] == ce.MAX_TOKENS
@@ -742,7 +744,7 @@ class TestSavedExplanation:
         assert len(client.calls) == 2
         assert "chord" in _sent_facts(client.calls[1])["issues"]["columns"]
 
-    @pytest.mark.parametrize("change", ["version", "prompt", "schema", "effort", "model"])
+    @pytest.mark.parametrize("change", ["version", "prompt", "schema", "effort"])
     def test_条件が変われば保存分を使わない(self, facts, monkeypatch, change):
         client = FakeClient()
         ce.explain_for(facts, client=client)
@@ -754,13 +756,36 @@ class TestSavedExplanation:
             schema = json.loads(json.dumps(ce.COACH_SCHEMA))
             schema["properties"]["summary"]["description"] = "全体の傾向を 1 文で。"
             monkeypatch.setattr(ce, "COACH_SCHEMA", schema)
-        elif change == "effort":
-            monkeypatch.setattr(ce, "EFFORT", "medium")
         else:
-            monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-sonnet-5-5")
+            monkeypatch.setattr(ce, "EFFORT", "medium")
         assert ce.saved_explanation(facts) is None
         assert ce.explain_for(facts, client=client)["cached"] is False
         assert len(client.calls) == 2
+
+    def test_保存分はモデルを問わず探し_強いモデルのものを返す(self, facts, monkeypatch):
+        client = FakeClient()
+        haiku = ce.explain_for(facts, client=client)
+        assert client.calls[0]["model"] == "claude-haiku-5-5"
+        # Sonnet を頼まれても、Haiku の保存分を返す（作り直しのときだけ作る）
+        assert ce.explain_for(facts, client=client, model="claude-sonnet-5-5")["key"] == haiku["key"]
+        assert len(client.calls) == 1
+        sonnet = ce.explain_for(facts, client=client, model="claude-sonnet-5-5", regenerate=True)
+        assert sonnet["key"] != haiku["key"] and client.calls[1]["model"] == "claude-sonnet-5-5"
+        assert ce.saved_explanation(facts)["key"] == sonnet["key"]
+        assert ce.explain_for(facts, client=client, model="claude-haiku-5-5")["key"] == sonnet["key"]
+        opus = ce.explain_for(facts, client=client, model="claude-opus-5-5", regenerate=True)
+        assert ce.saved_explanation(facts)["key"] == opus["key"] and len(client.calls) == 3
+        # 固定のモデルを変えても、保存分はそのまま使う
+        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-haiku-5-5")
+        assert ce.saved_explanation(facts)["key"] == opus["key"]
+
+    def test_知らないモデルは_呼ばずに断る(self, facts):
+        client = FakeClient()
+        for bad in ("claude-opus-4-8", ["claude-haiku-5-5"]):
+            with pytest.raises(rg.GuideError) as e:
+                ce.explain_for(facts, client=client, model=bad)
+            assert e.value.code == "invalid"
+        assert client.calls == [] and guide_usage.read_records() == []
 
     def test_作り直すと_明示したときだけAPIを呼び_保存分を置き換える(self, facts):
         client = FakeClient()
@@ -1182,6 +1207,21 @@ class TestApi:
             assert (await client.post(path, json={**self.BODY, "bpm": "速め"})).status_code == 400
             assert (await client.post(path, json={**self.BODY, "chart_id": "nope"})).status_code == 404
         assert fake.calls == []
+
+    @pytest.mark.asyncio
+    async def test_モデルを指定でき_不正なモデルは400(self, client, fake):
+        resp = await client.post("/api/coach/explain", json={**self.BODY, "model": "claude-sonnet-5-5"})
+        assert resp.status_code == 200 and fake.calls[0]["model"] == "claude-sonnet-5-5"
+        # 保存済みは、モデルを問わず返す（Opus を頼んでも、作らない）
+        again = await client.post("/api/coach/explain", json={**self.BODY, "model": "claude-opus-5-5"})
+        assert again.json()["cached"] is True and len(fake.calls) == 1
+        saved = (await client.post("/api/coach/explain/saved", json=self.BODY)).json()
+        assert saved["saved"] is True and saved["key"] == resp.json()["key"]
+        for bad in ("claude-opus-4-8", 5, {"id": "claude-haiku-5-5"}):
+            resp = await client.post("/api/coach/explain", json={**self.BODY, "model": bad})
+            assert resp.status_code == 400 and resp.json()["detail"]["code"] == "invalid"
+            assert resp.json()["detail"]["message"]
+        assert len(fake.calls) == 1
 
     @pytest.mark.asyncio
     async def test_MIDIのお手本と伝えたときだけ_強さの事実を足す(self, client, fake, monkeypatch):

@@ -3,7 +3,7 @@
  *
  * ## 保存
  *
- * 画面に並ぶもの（利用者の文・アシスタントの文・操作ログの行・知らせ）を、プロジェクト（`.bunri`）の状態の節
+ * 画面に並ぶもの（利用者の文・アシスタントの文・操作ログの行・知らせ・カード）を、プロジェクト（`.bunri`）の状態の節
  * `assistant` に入れる（登録は lib/assistant-project.ts）。**Claude に送る会話（Messages API の形）は保存しない**。
  * 思考のブロックは、作った会話の中でしか通らず、トラックの ID も開き直すたびに変わるため。
  *
@@ -23,12 +23,14 @@
  * - プロジェクトを開き直した（保存してあった会話が画面に戻るが、送る会話は空）
  */
 import type { ApiMessage, ChatItem } from './assistant';
+import { cardDigestLine, cardFits, cardFromSaved, type ChatCard } from './assistant-cards';
 
 /**
  * 状態の節 `assistant` の版。形を変えたら上げ、`itemsFromSection` / `archiveFromSection` で古い版を読めるようにする。
- * 2: 前の会話（履歴。`archive`）を足した。1 は `items` だけ（そのまま読める）。
+ * 3: カード（再現ガイド・差分の説明。`kind: 'card'`）と、依頼の終わりの行の答えたモデル・選んだ理由を足した。
+ * 2: 前の会話（履歴。`archive`）を足した。1 は `items` だけ。1・2 は、そのまま読める（カードもモデルも無い）。
  */
-export const ASSISTANT_SECTION_VERSION = 2;
+export const ASSISTANT_SECTION_VERSION = 3;
 
 /** 履歴に残す会話の数の上限（新しいほうから）。超えたら、いちばん古い会話から消える。 */
 export const MAX_ARCHIVED = 30;
@@ -58,7 +60,8 @@ export type SavedItem =
     | { kind: 'assistant'; text: string }
     | { kind: 'tool'; name: string; state: 'ok' | 'error' | 'cancelled'; text: string }
     | { kind: 'notice'; tone: 'info' | 'error'; text: string }
-    | { kind: 'turn'; calls: number; costUsd: number | null };
+    | ({ kind: 'card' } & ChatCard)
+    | { kind: 'turn'; calls: number; costUsd: number | null; model?: string | null; reason?: string | null };
 
 /**
  * 前の会話 1 つ（履歴）。「新しい会話」を押すと、それまでの会話がここに移る。
@@ -127,7 +130,16 @@ export function itemsToSaved(items: readonly ChatItem[]): SavedItem[] {
         else if (item.kind === 'assistant') { if (!item.streaming) out.push({ kind: 'assistant', text: clip(item.text, MAX_SAVED_TEXT) }); }
         else if (item.kind === 'tool') { if (item.state !== 'running') out.push({ kind: 'tool', name: item.name, state: item.state, text: clip(item.text, MAX_SAVED_TEXT) }); }
         else if (item.kind === 'notice') out.push({ kind: 'notice', tone: item.tone, text: clip(item.text, MAX_SAVED_TEXT) });
-        else out.push({ kind: 'turn', calls: item.calls, costUsd: item.costUsd });
+        else if (item.kind === 'card') {
+            // 番号は保存しない。大きすぎるカードは入れない (プロジェクトのファイルを膨らませない)
+            const { kind: _kind, id: _id, ...card } = item;
+            if (cardFits(card)) out.push({ kind: 'card', ...card });
+        } else {
+            out.push({
+                kind: 'turn', calls: item.calls, costUsd: item.costUsd,
+                ...(item.model ? { model: item.model } : {}), ...(item.reason ? { reason: clip(item.reason, DIGEST_TOOL) } : {}),
+            });
+        }
     }
     return out.slice(-MAX_SAVED_ITEMS);
 }
@@ -152,10 +164,15 @@ export function itemsFromSection(value: unknown): SavedItem[] {
         else if (item.kind === 'tool' && body && typeof item.name === 'string' && (item.state === 'ok' || item.state === 'error' || item.state === 'cancelled')) {
             out.push({ kind: 'tool', name: item.name, state: item.state, text: body });
         } else if (item.kind === 'notice' && body) out.push({ kind: 'notice', tone: item.tone === 'error' ? 'error' : 'info', text: body });
-        else if (item.kind === 'turn') {
+        else if (item.kind === 'card') {
+            const card = cardFromSaved(item);
+            if (card) out.push({ kind: 'card', ...card });
+        } else if (item.kind === 'turn') {
             out.push({
                 kind: 'turn', calls: typeof item.calls === 'number' && item.calls >= 0 ? Math.floor(item.calls) : 0,
                 costUsd: typeof item.costUsd === 'number' && Number.isFinite(item.costUsd) ? item.costUsd : null,
+                ...(typeof item.model === 'string' && item.model ? { model: item.model } : {}),
+                ...(typeof item.reason === 'string' && item.reason.trim() ? { reason: clip(item.reason, DIGEST_TOOL) } : {}),
             });
         }
     }
@@ -175,7 +192,11 @@ export function savedToItems(saved: readonly SavedItem[], nextId: () => number):
             case 'assistant': return { kind: 'assistant', id: nextId(), text: item.text };
             case 'tool': return { kind: 'tool', id: nextId(), name: item.name, state: item.state, text: item.text, activity: [] };
             case 'notice': return { kind: 'notice', id: nextId(), tone: item.tone, text: item.text };
-            case 'turn': return { kind: 'turn', id: nextId(), calls: item.calls, costUsd: item.costUsd, changed: false, undoEntryId: null };
+            case 'card': { const { kind: _kind, ...card } = item; return { kind: 'card', id: nextId(), ...card }; }
+            case 'turn': return {
+                kind: 'turn', id: nextId(), calls: item.calls, costUsd: item.costUsd, changed: false, undoEntryId: null,
+                model: item.model ?? null, reason: item.reason ?? null,
+            };
         }
     });
 }
@@ -194,8 +215,9 @@ export function needsCompaction(messages: readonly ApiMessage[]): boolean {
  * 画面に並んでいるものから、「これまでの記録」を作る。Claude に送る会話の、最初のメッセージになる。
  * 新しいものを優先して、`maxChars` に収まるぶんだけ入れる（古いほうから省く）。
  *
- * 入れるのは、利用者の文・アシスタントの文・操作ログの行（成功と失敗）。ツールの結果の中身（ノートの並びなど）は
- * 入れない（古くなっているかもしれないので、読み直させる。指示文の「Earlier conversation」）。
+ * 入れるのは、利用者の文・アシスタントの文・操作ログの行（成功と失敗）と、カード 1 つにつき 1 行（「Guide shown: 手順 3 個」）。
+ * ツールの結果とカードの中身（ノートの並び・ガイドの手順など）は入れない（古くなっているかもしれないので、読み直させる。
+ * 指示文の「Earlier conversation」）。
  *
  * @returns 記録の文。入れるものが 1 つも無ければ null
  */
@@ -206,6 +228,7 @@ export function conversationDigest(items: readonly ChatItem[], maxChars = DIGEST
         else if (item.kind === 'assistant' && !item.streaming) lines.push(`Assistant: ${clip(item.text.replace(/\s+/g, ' ').trim(), DIGEST_TEXT)}`);
         else if (item.kind === 'tool' && item.state === 'ok') lines.push(`Tool ok: ${clip(item.text, DIGEST_TOOL)}`);
         else if (item.kind === 'tool' && item.state === 'error') lines.push(`Tool failed: ${clip(item.text, DIGEST_TOOL)}`);
+        else if (item.kind === 'card') lines.push(cardDigestLine(item));
     }
     if (lines.length === 0) return null;
     const kept: string[] = [];

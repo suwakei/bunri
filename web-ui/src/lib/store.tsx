@@ -15,6 +15,7 @@ import { clampLoop, defaultPracticeState, samePracticeSettings, type PracticeSta
 import { recordActivity } from './activity';
 import { notify, type NoticeAction } from './notice';
 import type { MidiInputController } from './useMidiInput';
+import { assistantSession } from './assistant';
 
 /**
  * いま開いているプロジェクト（lib/project-actions.ts）。
@@ -202,6 +203,12 @@ export interface DawContextType {
     assistantOpen: boolean;
     /** @param v - true でドックを開く */
     setAssistantOpen: (v: boolean) => void;
+    /**
+     * パネルのボタンから、アシスタントに依頼を送る（ドックを開き、動いていなければ送る）。再現ガイド・差分の説明の
+     * ボタンが使う。前の依頼を処理しているあいだは送らず、理由を知らせる。送ったら true
+     * @param text - 依頼の文（チャットに、利用者の文として出る）
+     */
+    askAssistant: (text: string) => boolean;
     /** 左パネルで開いているタブ */
     leftTab: LeftTab;
     /** @param tab - 開くタブ。解析が終わったときにカルテを開く、といった画面の側からの切り替えにも使う */
@@ -520,6 +527,17 @@ export function DawProvider({ children }: { children: ReactNode }) {
         if (result.peaks) setChartPeaks(result.peaks);
         if (result.glossary) setGlossary(result.glossary);
     }, []);
+
+    const askAssistant = useCallback((text: string) => {
+        setAssistantOpen(true);
+        const result = assistantSession.ask(text);
+        if (result === 'busy') {
+            setStatus('アシスタントが前の依頼を処理しています。終わってから、もう一度押してください（右のドックの「中止」で止めることもできます）', 'hint');
+        } else if (result === 'unavailable') {
+            setStatus('アシスタントの準備ができていません。少し待ってから、もう一度押してください', 'hint');
+        }
+        return result === 'sent';
+    }, [setStatus]);
 
     const clearChart = useCallback(() => {
         setChart(null);
@@ -921,7 +939,7 @@ export function DawProvider({ children }: { children: ReactNode }) {
         play, pause, togglePlay, stop,
         trackVersion, bumpTracks,
         pianoRollRef, timelineRef, midiRef, practiceCompareRef,
-        assistantOpen, setAssistantOpen,
+        assistantOpen, setAssistantOpen, askAssistant,
         leftTab, setLeftTab, learnTab, setLearnTab, openLearn, soundTab, setSoundTab,
         leftWidth, setLeftWidth,
         practice, practiceOpen, openPractice, updatePractice, restorePractice, closePractice,

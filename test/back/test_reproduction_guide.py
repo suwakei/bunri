@@ -244,7 +244,9 @@ class TestBuildRequest:
 
     def test_モデルと各種の指定(self, chart, monkeypatch):
         monkeypatch.delenv("BUNRI_GUIDE_MODEL", raising=False)
-        request = rg.build_request(chart)
+        # 既定のモデルは Haiku 5.5（2026-11-19 の利用者の決定）
+        assert rg.build_request(chart)["model"] == "claude-haiku-5-5" == llm_settings.DEFAULT_MODEL
+        request = rg.build_request(chart, model="claude-opus-5-5")
         assert request["model"] == "claude-opus-5-5"
         assert request["output_config"]["effort"] == rg.EFFORT == "low"
         assert request["max_tokens"] == rg.MAX_TOKENS
@@ -285,7 +287,8 @@ class TestBuildRequest:
 
     def test_キャッシュに関わる指定は_対象を変えても変わらない(self, chart):
         """モデル・思考の深さ・出力の形・thinking を呼び出しごとに変えると、キャッシュが効かなくなる"""
-        whole, focused = rg.build_request(chart), rg.build_request(chart, focus="S1")
+        whole = rg.build_request(chart, model="claude-opus-5-5")
+        focused = rg.build_request(chart, focus="S1", model="claude-opus-5-5")
         for key in ("model", "max_tokens", "system", "output_config", "betas", "fallbacks"):
             assert whole[key] == focused[key]
         assert set(whole) == set(focused) == {"model", "max_tokens", "system", "messages", "output_config", "betas", "fallbacks"}
@@ -461,13 +464,61 @@ class TestSavedGuide:
         rg.guide_for(chart, client=client)
         assert len(client.calls) == 2
 
-    def test_モデルが変われば保存分を使わない(self, chart, monkeypatch):
+    def test_保存分はモデルを問わず探す(self, chart, monkeypatch):
+        """Haiku で作ったガイドが在れば、Sonnet を頼まれても作らずに返す（作り直しのときだけ作る）"""
         client = FakeClient()
-        rg.guide_for(chart, client=client)
+        made = rg.guide_for(chart, client=client)
+        assert made["model"] == "claude-opus-5-5" and client.calls[0]["model"] == "claude-haiku-5-5"
+        again = rg.guide_for(chart, client=client, model="claude-sonnet-5-5")
+        assert again["cached"] is True and again["key"] == made["key"] and len(client.calls) == 1
+        assert rg.saved_guide(chart)["key"] == made["key"]
+        # 固定のモデルを変えても、保存分はそのまま使う
         monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-sonnet-5-5")
-        assert rg.saved_guide(chart) is None
-        rg.guide_for(chart, client=client)
-        assert len(client.calls) == 2
+        assert rg.saved_guide(chart)["key"] == made["key"]
+        assert rg.guide_for(chart, client=client)["cached"] is True and len(client.calls) == 1
+
+    def test_いくつか在れば_強いモデルのものを返す(self, chart):
+        client = FakeClient()
+        haiku = rg.guide_for(chart, client=client, model="claude-haiku-5-5")
+        opus = rg.guide_for(chart, client=client, model="claude-opus-5-5", regenerate=True)
+        sonnet = rg.guide_for(chart, client=client, model="claude-sonnet-5-5", regenerate=True)
+        assert len({haiku["key"], opus["key"], sonnet["key"]}) == 3 and len(client.calls) == 3
+        assert [call["model"] for call in client.calls] == ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]
+        # opus → sonnet → haiku の順に優先する（作った順ではない）
+        assert rg.saved_guide(chart)["key"] == opus["key"]
+        assert rg.guide_for(chart, client=client, model="claude-haiku-5-5")["key"] == opus["key"]
+        assert len(client.calls) == 3
+
+    def test_頼んだモデルで作り_作り直しはそのモデルの保存分を置き換える(self, chart):
+        client = FakeClient()
+        first = rg.guide_for(chart, client=client, model="claude-sonnet-5-5")
+        assert client.calls[0]["model"] == "claude-sonnet-5-5"
+        assert client.calls[0]["fallbacks"] == "default"
+        again = rg.guide_for(chart, client=client, model="claude-sonnet-5-5", regenerate=True)
+        assert again["key"] == first["key"] and again["cached"] is False and len(client.calls) == 2
+        (record, second) = guide_usage.read_records()
+        assert record["requested_model"] == second["requested_model"] == "claude-sonnet-5-5"
+
+    def test_知らないモデルは_呼ばずに断る(self, chart):
+        client = FakeClient()
+        for bad in ("claude-opus-4-8", "gpt-5", 3):
+            with pytest.raises(rg.GuideError) as e:
+                rg.guide_for(chart, client=client, model=bad)
+            assert e.value.code == "invalid" and "claude-haiku-5-5" in str(e.value)
+        assert client.calls == [] and guide_usage.read_records() == []
+
+    def test_固定のモデルは_指定より優先する(self, chart, monkeypatch):
+        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-opus-5-5")
+        client = FakeClient()
+        rg.guide_for(chart, client=client, model="claude-haiku-5-5")
+        assert client.calls[0]["model"] == "claude-opus-5-5"
+
+    def test_プロジェクトに写す鍵は_モデルを問わず作る(self, chart):
+        keys = rg.cache_keys_for(chart)
+        sections = len(chart["sections"])
+        assert len(keys) == (1 + sections) * 3 and len(set(keys)) == len(keys)
+        made = rg.guide_for(chart, client=FakeClient(), model="claude-sonnet-5-5")
+        assert made["key"] in keys and keys.index(made["key"]) < 3
 
     def test_版を上げると保存分を使わない(self, chart, monkeypatch):
         client = FakeClient()
@@ -670,7 +721,8 @@ class TestUsageLog:
         assert (record["input_tokens"], record["cache_creation_input_tokens"],
                 record["cache_read_input_tokens"], record["output_tokens"]) == (12, 0, 1500, 300)
         assert record["thinking_tokens"] == 120
-        assert record["model"] == "claude-opus-5-5" and record["requested_model"] == "claude-opus-5-5"
+        # 応答したモデル（偽のクライアントは Opus と答える）と、頼んだモデル（既定の Haiku）
+        assert record["model"] == "claude-opus-5-5" and record["requested_model"] == "claude-haiku-5-5"
         assert record["effort"] == rg.EFFORT and record["cache_ttl"] == "5m"
         assert record["focus"] == "S2"
         assert record["chart"] == guide_cache.chart_hash(chart)[:16]
@@ -1053,6 +1105,29 @@ class TestApi:
         # 明示的に作り直したときだけ呼ぶ
         redo = (await client.post(f"/api/chart/{saved_chart}/guide", data={"regenerate": "true"})).json()
         assert redo["cached"] is False and len(fake.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_モデルを指定でき_保存済みはモデルを問わず返す_不正なモデルは400(self, client, saved_chart, monkeypatch):
+        fake = FakeClient()
+        monkeypatch.setattr(llm_settings, "make_client", lambda: fake)
+        made = (await client.post(f"/api/chart/{saved_chart}/guide", data={"model": "claude-sonnet-5-5"})).json()
+        assert made["cached"] is False and fake.calls[0]["model"] == "claude-sonnet-5-5"
+        # 空のモデルは指定なし。Opus を頼んでも、Sonnet の保存分を返す
+        for model in ("", "claude-opus-5-5", "claude-haiku-5-5"):
+            again = (await client.post(f"/api/chart/{saved_chart}/guide", data={"model": model})).json()
+            assert again["cached"] is True and again["key"] == made["key"]
+        saved = (await client.get(f"/api/chart/{saved_chart}/guide")).json()
+        assert saved["saved"] is True and saved["key"] == made["key"]
+        # 作り直しは、頼んだモデルで作る
+        redo = (await client.post(f"/api/chart/{saved_chart}/guide",
+                                  data={"model": "claude-opus-5-5", "regenerate": "true"})).json()
+        assert redo["cached"] is False and fake.calls[1]["model"] == "claude-opus-5-5"
+        assert (await client.get(f"/api/chart/{saved_chart}/guide")).json()["key"] == redo["key"]
+        for bad in ("claude-opus-4-8", "opus", "claude-haiku-5-5 "):
+            resp = await client.post(f"/api/chart/{saved_chart}/guide", data={"model": bad, "regenerate": "true"})
+            assert resp.status_code == 400
+            assert resp.json()["detail"]["code"] == "invalid" and resp.json()["detail"]["message"]
+        assert len(fake.calls) == 2
 
     @pytest.mark.asyncio
     async def test_上限を超えたら_APIを呼ばずに429で理由を返す(self, client, saved_chart, monkeypatch):

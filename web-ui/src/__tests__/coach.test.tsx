@@ -3,6 +3,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useEffect } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
@@ -22,17 +23,38 @@ class MockAudioContext {
 // @ts-expect-error AudioContext モック
 globalThis.AudioContext = MockAudioContext;
 
-const { hasVelocityDiff, issueText, noteName, requestDiff, velocityFindingText, velocityNotesOf, velocitySummaryText } = await import('../lib/coach');
+const {
+    coachHighlight, explainChartContext, explainRequestOf, hasVelocityDiff, issueText, noteName, requestDiff, resolveCoachPair,
+    velocityFindingText, velocityNotesOf, velocitySummaryText,
+} = await import('../lib/coach');
+type ExplanationResponse = import('../lib/coach').ExplanationResponse;
+type ChatCard = import('../lib/assistant-cards').ChatCard;
+type DawContextType = import('../lib/store').DawContextType;
+type AssistantDeps = import('../lib/assistant').AssistantDeps;
+const { explanationCardOf } = await import('../lib/assistant-cards');
+const { CardView } = await import('../components/AssistantCards');
+const { assistantSession } = await import('../lib/assistant');
 type DiffIssue = import('../lib/coach').DiffIssue;
 type DiffResult = import('../lib/coach').DiffResult;
 type VelocityDiff = import('../lib/coach').VelocityDiff;
 type VelocityFinding = import('../lib/coach').VelocityFinding;
-const { DawProvider } = await import('../lib/store');
+const { DawProvider, useDaw } = await import('../lib/store');
 const { default: engine, MIDI_PART } = await import('../lib/engine');
 const { referenceSourceOf } = await import('../lib/learn');
 const CoachPanel = (await import('../components/CoachPanel')).default;
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
+
+/** アシスタントの入口（偽物）。このファイルの依頼は、ツールを呼ばない応答で終わる。 */
+const fakeDeps: AssistantDeps = {
+    env: {} as AssistantDeps['env'],
+    beginEdit: () => () => false,
+    topUndoId: () => null,
+    suggestionFacts: () => ({
+        trackCount: 0, imported: false, hasChart: false, separated: false, practiced: false,
+        practiceOpen: false, selectedNotes: 0, openTrackHasNotes: false, jobRunning: false,
+    }),
+};
 
 function issue(overrides: Partial<DiffIssue>): DiffIssue {
     return { kind: 'missing', bar: 2, beat: 3, expected: note('E', 4, 24), actual: null, offset_steps: null, length_diff: null, ...overrides };
@@ -307,7 +329,7 @@ describe('強さの違いの欄', () => {
         return { stem, sent };
     }
 
-    it('MIDI のお手本では、出どころを送り、強さの違いをまとまりで出す。説明も同じ出どころで頼む', async () => {
+    it('MIDI のお手本では、出どころを送り、強さの違いをまとまりで出す', async () => {
         const { sent } = await compare(true, { ...result, velocity: velocityDiff([flat], { attempt_unset: 3 }) });
         expect(sent('/api/coach/diff')[0].reference_source).toBe('midi');
         // 強さは、ノートと一緒に送る (お手本は持ち、マウスで置いた打ち込みは持たない)
@@ -322,9 +344,8 @@ describe('強さの違いの欄', () => {
         // 位置・高さ・長さの指摘の一覧と件数には、強さを混ぜない
         expect(screen.getByText('抜け 1 / 位置のずれ 1')).toBeInTheDocument();
         expect(within(screen.getByRole('list', { name: '指摘の一覧' })).getAllByRole('listitem')).toHaveLength(2);
-
-        await waitFor(() => expect(sent('/api/coach/explain/saved')).toHaveLength(1));
-        expect(sent('/api/coach/explain/saved')[0].reference_source).toBe('midi');
+        // パネルは、説明の API を呼ばない (説明はアシスタントが作る)
+        expect(sent('/api/coach/explain/saved')).toHaveLength(0);
     });
 
     it('採譜のお手本では、出どころを送らず、強さの欄そのものを出さない', async () => {
@@ -332,8 +353,6 @@ describe('強さの違いの欄', () => {
         expect(sent('/api/coach/diff')[0].reference_source).toBeUndefined();
         expect(screen.queryByRole('region', { name: '強さの違い' })).not.toBeInTheDocument();
         expect(document.getElementById('coach-panel')).not.toHaveTextContent('強さ');
-        await waitFor(() => expect(sent('/api/coach/explain/saved')).toHaveLength(1));
-        expect(sent('/api/coach/explain/saved')[0].reference_source).toBeUndefined();
     });
 
     it('以前の版が保存した結果 (強さの項目が無い) でも、強さの欄を出さない', async () => {
@@ -368,9 +387,8 @@ describe('強さの違いの欄', () => {
     });
 });
 
-describe('差分の説明', () => {
-    const today = { date: '2026-11-12', calls: 3, cost_usd: 0.3, limit_calls: 20, limit_usd: null, blocked: null };
-    const explanation = {
+describe('差分の説明（アシスタントに頼む入口と、チャットのカード）', () => {
+    const explanation: ExplanationResponse = {
         explanation: {
             summary: '抜けと位置のずれが 1〜2 小節に出ています。',
             points: [
@@ -383,104 +401,123 @@ describe('差分の説明', () => {
         source: 'claude', reason: null, model: 'claude-opus-5-5',
         usage: { input_tokens: 20, cache_creation_input_tokens: 3000, cache_read_input_tokens: 0, output_tokens: 400 },
         cost_usd: 0.12, cached: false, created_at: '2026-11-12T01:00:00+00:00',
-        input: { issues: 2, issues_sent: 2, chart_context: 'none' }, today,
+        input: { issues: 2, issues_sent: 2, chart_context: 'none' },
     };
 
-    /** お手本のトラックと、URL ごとの応答を用意して、パネルを出して比べる。 */
-    async function setup(routes: Record<string, (body: Record<string, unknown>) => Response>) {
+    /** ストアを外から読み、アシスタントの入口を置く（ドックのかわり）。 */
+    function Harness({ expose, card }: { expose: (daw: DawContextType) => void; card?: ChatCard }) {
+        const daw = useDaw();
+        expose(daw);
+        useEffect(() => assistantSession.attach(fakeDeps), []);
+        return <><CoachPanel />{card && <CardView card={card} />}</>;
+    }
+
+    /** お手本のトラックを用意して、パネル（と、渡したカード）を出して比べる。 */
+    async function setup(card?: (stemId: number) => ChatCard) {
+        assistantSession.reset();
         const stem = engine.addTrack('ピアノ');
         stem.referenceNotes = [note('C', 4, 0), note('E', 4, 4), note('G', 4, 8), note('C', 5, 16)];
         stem.pianoNotes = [note('C', 4, 0), note('E', 4, 5), note('G', 4, 8)];
-        stubFetch(async (url, init) => {
-            const handler = routes[url];
-            if (!handler) throw new Error(`想定外: ${url}`);
-            return handler(JSON.parse(String(init?.body ?? '{}')));
+        stubFetch(async (url) => {
+            if (url === '/api/coach/diff') return Response.json(result);
+            if (url === '/api/assistant/step') return Response.json({ content: [{ type: 'text', text: 'どうぞ。' }], stop_reason: 'end_turn', model: 'claude-haiku-5-5' });
+            throw new Error(`想定外: ${url}`);
         });
-        render(<DawProvider><CoachPanel /></DawProvider>);
+        const ref: { daw: DawContextType | null } = { daw: null };
+        render(<DawProvider><Harness expose={(daw) => { ref.daw = daw; }} card={card?.(stem.id)} /></DawProvider>);
         fireEvent.click(screen.getByRole('button', { name: 'お手本と比べる' }));
         await waitFor(() => expect(screen.getByText('75%')).toBeInTheDocument());
-        return stem;
+        return { stem, daw: () => ref.daw! };
     }
 
     const calls = (url: string) => fetchMock.mock.calls.filter(([u]) => u === url);
 
-    it('比べた直後に保存済みを探し (費用はかからない)、無ければ頼むボタンを出す。頼むと点と場所の札が出る', async () => {
-        await setup({
-            '/api/coach/diff': () => Response.json(result),
-            '/api/coach/explain/saved': () => Response.json({ saved: false, today }),
-            '/api/coach/explain': () => Response.json(explanation),
-        });
-        await waitFor(() => expect(calls('/api/coach/explain/saved')).toHaveLength(1));
-        // 説明は、比べたときと同じノートで頼む
-        const savedBody = JSON.parse((calls('/api/coach/explain/saved')[0] as [string, RequestInit])[1].body as string);
-        expect(savedBody.reference).toHaveLength(4);
-        expect(savedBody.attempt).toHaveLength(3);
-        expect(savedBody.steps_per_bar).toBe(16);
-        expect(savedBody.chart_id).toBeUndefined();
-        expect(await screen.findByText(/今日 Claude を呼んだ回数: 3 回/)).toBeInTheDocument();
-        expect(calls('/api/coach/explain')).toHaveLength(0);
-
+    it('比べたあとに「Claude に説明してもらう」を出す。押すとドックが開き、打ち込みの名前を入れた依頼が送られる。パネルは説明の API を呼ばない', async () => {
+        const { daw } = await setup();
+        expect(screen.getByText(/差分チェックの結果）を\s*Anthropic の Claude に送ります/)).toBeInTheDocument();
+        // 設定の欄はドックにだけ在る
+        expect(screen.queryByRole('button', { name: 'API キーと上限の設定' })).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Claude に説明してもらう' }));
-        expect(await screen.findByText('2 小節目の抜け')).toBeInTheDocument();
-        expect(screen.getByText('抜けと位置のずれが 1〜2 小節に出ています。')).toBeInTheDocument();
-        expect(screen.getByRole('note')).toHaveTextContent('差分の結果に無い音名・コード名・小節番号が説明に含まれています: Dm7');
-        expect(screen.getByText(/結び付けられなかった点を 1 個省きました/)).toBeInTheDocument();
-        expect(screen.getByText(/この説明を作ったときの使用量: 入力 3,020 トークン、出力 400 トークン、概算 \$0.12/)).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: '説明を作り直す（費用がかかります）' })).toBeInTheDocument();
+        expect(daw().assistantOpen).toBe(true);
+        await waitFor(() => expect(calls('/api/assistant/step')).toHaveLength(1));
+        const body = JSON.parse((calls('/api/assistant/step')[0] as [string, RequestInit])[1].body as string);
+        expect(body.messages[body.messages.length - 1].content[0].text).toBe('差分を説明して（ピアノ）');
+        expect(calls('/api/coach/explain')).toHaveLength(0);
+        expect(calls('/api/coach/explain/saved')).toHaveLength(0);
+        await waitFor(() => expect(assistantSession.getState().running).toBe(false));
+    });
+
+    it('カード: 点・場所の札・事実に無い語の注意・使用量を出す。指摘の札を押すと、差分の段の一覧のその行を示す', async () => {
+        await setup((stemId) => explanationCardOf(explanation, result, { referenceId: stemId, attemptId: stemId, trackName: 'ピアノ' }));
+        const card = screen.getByRole('region', { name: '差分の説明（ピアノ）' });
+        expect(within(card).getByText('2 小節目の抜け')).toBeInTheDocument();
+        expect(card).toHaveTextContent('抜けと位置のずれが 1〜2 小節に出ています。');
+        expect(within(card).getByRole('note')).toHaveTextContent('差分の結果に無い音名・コード名・小節番号が説明に含まれています: Dm7');
+        expect(card).toHaveTextContent('結び付けられなかった点を 1 個省きました');
+        expect(card).toHaveTextContent('この説明を作ったときの使用量: 入力 3,020 トークン、出力 400 トークン、概算 $0.12');
+        expect(card).toHaveTextContent('作成: Opus');
 
         // 指摘を指す札を押すと、一覧のその行を示す (i2 = 2 つ目の小節の 1 つ目の指摘)
-        fireEvent.click(screen.getByRole('button', { name: '2 小節 1 拍目（抜け）' }));
+        fireEvent.click(within(card).getByRole('button', { name: '2 小節 1 拍目（抜け）' }));
         const row = screen.getByText('2 小節 1 拍目: C5 が抜けています').closest('li')!;
-        expect(row).toHaveAttribute('aria-current', 'true');
+        await waitFor(() => expect(row).toHaveAttribute('aria-current', 'true'));
         expect(row).toHaveAttribute('data-issue-id', 'i2');
         // 小節だけの札は、一覧の行を示さない
-        fireEvent.click(screen.getByRole('button', { name: '1 小節' }));
-        expect(row).not.toHaveAttribute('aria-current');
-
-        // 作り直すときだけ regenerate を付ける
-        fireEvent.click(screen.getByRole('button', { name: '説明を作り直す（費用がかかります）' }));
-        await waitFor(() => expect(calls('/api/coach/explain')).toHaveLength(2));
-        const bodies = calls('/api/coach/explain').map(([, init]) => JSON.parse((init as RequestInit).body as string));
-        expect(bodies[0].regenerate).toBeUndefined();
-        expect(bodies[1].regenerate).toBe(true);
+        fireEvent.click(within(card).getByRole('button', { name: '1 小節' }));
+        await waitFor(() => expect(row).not.toHaveAttribute('aria-current'));
+        // 「最初にやること」の札もある
+        expect(within(card).getByRole('button', { name: '2 小節へ' })).toBeInTheDocument();
+        coachHighlight.set(null);
     });
 
-    it('保存済みの説明が在れば、押さなくても最初から出す', async () => {
-        await setup({
-            '/api/coach/diff': () => Response.json(result),
-            '/api/coach/explain/saved': () => Response.json({ saved: true, ...explanation, cached: true }),
-        });
-        expect(await screen.findByText('2 小節目の抜け')).toBeInTheDocument();
-        expect(screen.getByText(/この説明は保存済みです/)).toHaveTextContent('前回は概算 $0.12');
-        expect(calls('/api/coach/explain')).toHaveLength(0);
+    it('カード: Claude に頼むまでもないとき (決まった文) は、次にやることと理由だけを出し、費用は出さない', async () => {
+        const rule: ExplanationResponse = {
+            ...explanation, source: 'rule', reason: 'few_issues', model: null, usage: {}, cost_usd: 0,
+            explanation: { ...explanation.explanation, summary: 'お手本 4 ノートのうち、75% が合っています。', points: [],
+                next_step: '違いは 2 か所だけです。', next_step_bar: 2, unverified_terms: [], dropped_points: 0 },
+        };
+        await setup((stemId) => explanationCardOf(rule, result, { referenceId: stemId, attemptId: stemId, trackName: 'ピアノ' }));
+        const card = screen.getByRole('region', { name: '差分の説明（ピアノ）' });
+        expect(card).toHaveTextContent('違いは 2 か所だけです。');
+        expect(card).not.toHaveTextContent('お手本 4 ノートのうち、75% が合っています。');
+        expect(card).toHaveTextContent('違いが少なく一覧を読めば足りるので、Claude は呼んでいません');
+        expect(card).not.toHaveTextContent('使用量');
+        expect(within(card).getByRole('button', { name: '2 小節へ' })).toBeInTheDocument();
     });
 
-    it('Claude に頼むまでもないとき (決まった文) は、案内だけを出し、ボタンも費用も出さない', async () => {
-        await setup({
-            '/api/coach/diff': () => Response.json(result),
-            '/api/coach/explain/saved': () => Response.json({
-                saved: true, today, source: 'rule', reason: 'few_issues', model: null, usage: {}, cost_usd: 0, cached: false,
-                explanation: { ...explanation.explanation, summary: 'お手本 4 ノートのうち、75% が合っています。', points: [],
-                    next_step: '違いは 2 か所だけです。', next_step_bar: 2, unverified_terms: [], dropped_points: 0 },
-            }),
+    it('カード: 説明した打ち込みのトラックが無くなっていたら、移動できない理由を出す', async () => {
+        const { daw } = await setup(() => explanationCardOf(explanation, result, { referenceId: 98, attemptId: 99, trackName: '消したトラック' }));
+        fireEvent.click(within(screen.getByRole('region', { name: '差分の説明（消したトラック）' })).getByRole('button', { name: '2 小節へ' }));
+        await waitFor(() => expect(daw().statusKind).toBe('hint'));
+        expect(daw().status).toMatch(/消したトラック）が見つかりません/);
+    });
+});
+
+describe('説明の材料（lib/coach.ts）', () => {
+    it('explainRequestOf: 比べたときのノートで組み立てる。MIDI のお手本のときだけ出どころを付け、カルテは在れば添える', () => {
+        const compared = { reference: [note('C', 4, 0)], attempt: [note('D', 4, 0)], stepsPerBar: 12 };
+        expect(explainRequestOf(compared, null)).toEqual({ reference: [note('C', 4, 0)], attempt: [note('D', 4, 0)], steps_per_bar: 12 });
+        expect(explainRequestOf({ ...compared, referenceSource: 'midi' }, { chart_id: 'c1', bpm: 98, grid_offset_sec: 0.1 })).toEqual({
+            reference: [note('C', 4, 0)], attempt: [note('D', 4, 0)], steps_per_bar: 12, reference_source: 'midi', chart_id: 'c1', bpm: 98, grid_offset_sec: 0.1,
         });
-        expect(await screen.findByText('違いは 2 か所だけです。', { exact: false })).toBeInTheDocument();
-        // 要約は上の正確さの言い直しなので出さない
-        expect(screen.queryByText('お手本 4 ノートのうち、75% が合っています。')).not.toBeInTheDocument();
-        expect(screen.getByText(/違いが少なく一覧を読めば足りるので、Claude は呼んでいません/)).toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: 'Claude に説明してもらう' })).not.toBeInTheDocument();
-        expect(screen.queryByText(/使用量/)).not.toBeInTheDocument();
-        expect(screen.getByRole('button', { name: '2 小節へ' })).toBeInTheDocument();
     });
 
-    it('API キーが無ければ理由を出し、キーの設定を開く', async () => {
-        await setup({
-            '/api/coach/diff': () => Response.json(result),
-            '/api/coach/explain/saved': () => Response.json({ saved: false, today }),
-            '/api/coach/explain': () => Response.json({ detail: { message: 'Claude の API キーが設定されていません', code: 'no_key' } }, { status: 401 }),
-        });
-        fireEvent.click(await screen.findByRole('button', { name: 'Claude に説明してもらう' }));
-        expect(await screen.findByRole('alert')).toHaveTextContent('Claude の API キーが設定されていません');
-        expect(screen.getByLabelText('Claude の API キー')).toBeInTheDocument();
+    it('explainChartContext: いまのカルテのグリッドで採譜したパートのときだけ、カルテを添える', () => {
+        const now = { chartId: 'c1', partsChartId: 'c1', bpm: 98, gridOffset: 0.1 };
+        expect(explainChartContext({ role: 'part' }, now)).toEqual({ chart_id: 'c1', bpm: 98, grid_offset_sec: 0.1 });
+        expect(explainChartContext({ role: 'part' }, { ...now, partsChartId: 'old' })).toBeNull();
+        expect(explainChartContext({ role: 'practice' }, now)).toBeNull();
+        expect(explainChartContext({ role: 'part' }, { ...now, chartId: null })).toBeNull();
+    });
+
+    it('resolveCoachPair: 選んでいる組。無ければ、お手本を持つ最初のトラックと、その練習のトラック（無ければ自分）', () => {
+        const tracks = [
+            { id: 1, name: '自由' }, { id: 2, role: 'part', referenceNotes: [note('C', 4, 0)] },
+            { id: 3, role: 'practice', practiceOf: 2 }, { id: 4, role: 'part', referenceNotes: [note('C', 4, 0)] },
+        ];
+        expect(resolveCoachPair(tracks, { referenceId: null, attemptId: null })).toMatchObject({ reference: { id: 2 }, attempt: { id: 3 } });
+        expect(resolveCoachPair(tracks, { referenceId: 4, attemptId: null })).toMatchObject({ reference: { id: 4 }, attempt: { id: 4 } });
+        expect(resolveCoachPair(tracks, { referenceId: 4, attemptId: 1 })).toMatchObject({ reference: { id: 4 }, attempt: { id: 1 } });
+        expect(resolveCoachPair([{ id: 1 }], { referenceId: null, attemptId: null })).toMatchObject({ reference: undefined, attempt: undefined });
     });
 });

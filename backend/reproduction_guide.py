@@ -787,31 +787,67 @@ def _public(entry, cached, key=None):
     }
 
 
+def resolve_model(model):
+    """画面から受け取ったモデルの指定を、使うモデル ID にする（``llm_settings.resolve_model``）。
+
+    Raises:
+        GuideError: 知らないモデルを指定された場合（``code="invalid"``）。
+    """
+    try:
+        return llm_settings.resolve_model(model)
+    except ValueError as e:
+        raise GuideError(str(e), code="invalid")
+
+
 def cache_keys_for(chart):
-    """このカルテのガイドの保存の鍵を、曲全体と各セクションのぶん返す（いまのモデルと設定で）。
+    """このカルテのガイドの保存の鍵を、曲全体と各セクションのぶん、選べるモデルごとに返す。
 
     プロジェクトを保存するとき、保存済みのガイドの写しを `.bunri` に入れるのに使う
-    （開き直したときに Claude を呼ばずに出すため。``project_store``）。
+    （開き直したときに Claude を呼ばずに出すため。``project_store``）。どのモデルで作ったガイドも
+    開き直したときに出せるよう、モデルを問わず鍵を作る（保存済みのものだけが写される）。
 
     Args:
         chart: 楽曲カルテ。
 
     Returns:
-        list[str]: 鍵のリスト（曲全体が先頭）。
+        list[str]: 鍵のリスト（曲全体が先頭。対象ごとに、強いモデルが先）。
     """
     keys = []
     focuses = [None] + [s.get("id") for s in chart.get("sections") or [] if isinstance(s, dict) and s.get("id")]
     for focus in focuses:
-        try:
-            request = build_request(chart, focus)
-        except GuideError:
-            continue
-        keys.append(guide_key(chart, focus, request["model"], request["output_config"]["effort"]))
+        for model in llm_settings.lookup_models():
+            try:
+                request = build_request(chart, focus, model=model)
+            except GuideError:
+                break
+            keys.append(guide_key(chart, focus, model, request["output_config"]["effort"]))
     return keys
+
+
+def _find_saved(chart, focus):
+    """保存済みのガイドを、モデルを問わず探す（強いモデルのものが先: opus → sonnet → haiku）。
+
+    Returns:
+        tuple[str, dict] | None: ``(鍵, 保存した 1 件)``。無ければ None。
+
+    Raises:
+        GuideError: ``focus`` がカルテに無いセクションを指している場合。
+    """
+    import guide_cache
+
+    for model in llm_settings.lookup_models():
+        request = build_request(chart, focus, model=model)
+        key = guide_key(chart, focus, model, request["output_config"]["effort"])
+        entry = guide_cache.load(key)
+        if entry:
+            return key, entry
+    return None
 
 
 def saved_guide(chart, focus=None):
     """保存済みのガイドを返す（無ければ None）。API は呼ばない。
+
+    どのモデルで作ったガイドでも返す（いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。
 
     Args:
         chart: 楽曲カルテ。
@@ -823,55 +859,60 @@ def saved_guide(chart, focus=None):
     Raises:
         GuideError: ``focus`` がカルテに無いセクションを指している場合。
     """
-    import guide_cache
-
-    request = build_request(chart, focus)
-    key = guide_key(chart, focus, request["model"], request["output_config"]["effort"])
-    entry = guide_cache.load(key)
-    return _public(entry, cached=True, key=key) if entry else None
+    found = _find_saved(chart, focus)
+    return _public(found[1], cached=True, key=found[0]) if found else None
 
 
-def guide_for(chart, focus=None, regenerate=False, client=None):
+def guide_for(chart, focus=None, regenerate=False, client=None, model=None):
     """再現ガイドを返す。保存済みが在ればそれを返し、無いときだけ Claude を呼ぶ。
 
     順番:
 
-    1. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）
+    1. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）。どのモデルで作った
+       ガイドでもよい（いくつか在れば、強いモデルのもの）
     2. 同じカルテへの呼び出しを 1 つずつ通す。待っている間に、同じ条件のガイドが出来ていたら
        それを返す（連打・二重送信で 2 回呼ばない。作り直しの連打も同じ）
     3. 材料が足りないカルテ、1 日の上限に達しているとき、入力が長すぎるときは、API を呼ばずに断る
-    4. Claude を呼び、使用量を記録し、ガイドを保存する
+    4. ``model`` のモデルで Claude を呼び、使用量を記録し、ガイドを保存する
 
     Args:
         chart: 楽曲カルテ。
         focus: 対象のセクション ID。曲全体なら None。
         regenerate: True なら、保存済みが在っても作り直す（費用がかかる）。
         client: Anthropic のクライアント（テストでは差し替える）。
+        model: 作るときのモデル ID（``llm_settings.MODELS`` のどれか）。None なら既定のモデル。
+            ``BUNRI_GUIDE_MODEL`` で固定されていれば、いつもそのモデル。
 
     Returns:
-        dict: ``{"guide", "model", "usage", "cost_usd", "duration_sec", "created_at", "cached"}``。
+        dict: ``{"key", "guide", "model", "usage", "cost_usd", "duration_sec", "created_at", "cached"}``。
         ``cached`` は、保存済みを返したとき True。
 
     Raises:
-        GuideError: 作れなかった場合。メッセージは利用者にそのまま見せられる。
+        GuideError: 作れなかった場合（知らないモデルの指定は ``invalid``）。メッセージは利用者にそのまま見せられる。
     """
     import guide_cache
     import guide_usage
 
-    request = build_request(chart, focus)
-    model, effort = request["model"], request["output_config"]["effort"]
+    model = resolve_model(model)
+    request = build_request(chart, focus, model=model)
+    effort = request["output_config"]["effort"]
     key = guide_key(chart, focus, model, effort)
     if not regenerate:
-        entry = guide_cache.load(key)
-        if entry:
-            return _public(entry, cached=True, key=key)
+        found = _find_saved(chart, focus)
+        if found:
+            return _public(found[1], cached=True, key=found[0])
 
     chart_id = guide_cache.chart_hash(chart)
     asked_at = time.time()
     with guide_cache.lock_for(chart_id):
-        entry = guide_cache.load(key)
-        if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
-            return _public(entry, cached=True, key=key)
+        if not regenerate:
+            found = _find_saved(chart, focus)
+            if found:
+                return _public(found[1], cached=True, key=found[0])
+        else:
+            entry = guide_cache.load(key)
+            if entry and (entry.get("created_ts") or 0) >= asked_at:
+                return _public(entry, cached=True, key=key)
 
         shortage = material_shortage(chart)
         if shortage:
@@ -882,7 +923,7 @@ def guide_for(chart, focus=None, regenerate=False, client=None):
 
         if client is None:
             client = llm_settings.make_client()
-        request = fit_request(chart, focus, client, guide_usage.settings()["max_input_tokens"])
+        request = fit_request(chart, focus, client, guide_usage.settings()["max_input_tokens"], model=model)
 
         log = {"requested_model": model, "effort": effort, "focus": focus, "chart": chart_id[:16],
                "cache_ttl": CACHE_TTL or "none", "version": request_fingerprint()}

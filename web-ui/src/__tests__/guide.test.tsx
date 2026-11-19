@@ -3,6 +3,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useEffect } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
@@ -28,8 +29,25 @@ const {
 type GuideResponse = import('../lib/guide').GuideResponse;
 type GuideToday = import('../lib/guide').GuideToday;
 type SongChart = import('../lib/chart').SongChart;
+const { guideRequestText } = await import('../lib/guide');
 const { DawProvider, useDaw } = await import('../lib/store');
 const GuidePanel = (await import('../components/GuidePanel')).default;
+const { GuideCardView } = await import('../components/AssistantCards');
+const { guideCardOf } = await import('../lib/assistant-cards');
+const { assistantSession } = await import('../lib/assistant');
+type DawContextType = import('../lib/store').DawContextType;
+type AssistantDeps = import('../lib/assistant').AssistantDeps;
+
+/** アシスタントの入口（偽物）。このファイルの依頼は、ツールを呼ばない応答で終わる。 */
+const fakeDeps: AssistantDeps = {
+    env: {} as AssistantDeps['env'],
+    beginEdit: () => () => false,
+    topUndoId: () => null,
+    suggestionFacts: () => ({
+        trackCount: 0, imported: false, hasChart: false, separated: false, practiced: false,
+        practiceOpen: false, selectedNotes: 0, openTrackHasNotes: false, jobRunning: false,
+    }),
+};
 
 const chart: SongChart = {
     version: 1,
@@ -110,6 +128,15 @@ describe('requestGuide', () => {
         const bodies = fetchMock.mock.calls.map((call) => (call as [string, RequestInit])[1].body as FormData);
         expect(bodies[0].has('regenerate')).toBe(false);
         expect(bodies[1].get('regenerate')).toBe('true');
+    });
+
+    it('モデルは、指定したときだけ送る（アシスタントの依頼で選んだモデル）', async () => {
+        stubFetch(async () => Response.json(response));
+        await requestGuide('demo', null);
+        await requestGuide('demo', null, false, 'claude-sonnet-5-5');
+        const bodies = fetchMock.mock.calls.map((call) => (call as [string, RequestInit])[1].body as FormData);
+        expect(bodies[0].has('model')).toBe(false);
+        expect(bodies[1].get('model')).toBe('claude-sonnet-5-5');
     });
 
     it('保存済みの確認は GET で、対象をクエリに載せる', async () => {
@@ -201,10 +228,23 @@ function Loader() {
     return <GuidePanel />;
 }
 
-/** Claude を呼ぶことになるリクエスト（ガイドの POST）だけを取り出す。保存済みの確認（GET）は含めない */
-function posts(): [string, RequestInit][] {
+/** ドックのかわりに、アシスタントの入口を置き、ストアを外から読めるようにする。 */
+function AskHarness({ expose }: { expose: (daw: DawContextType) => void }) {
+    const daw = useDaw();
+    expose(daw);
+    useEffect(() => assistantSession.attach(fakeDeps), []);
+    return null;
+}
+
+/** 送られた依頼の文（`/api/assistant/step` の最後の user の文）。 */
+function askedTexts(): string[] {
     return (fetchMock.mock.calls as [string, RequestInit | undefined][])
-        .filter(([url, init]) => /\/guide$/.test(url) && init?.method === 'POST') as [string, RequestInit][];
+        .filter(([url]) => url === '/api/assistant/step')
+        .map(([, init]) => {
+            const messages = JSON.parse(String(init?.body)).messages as { role: string; content: { type: string; text?: string }[] }[];
+            const users = messages.filter((m) => m.role === 'user');
+            return users[users.length - 1].content.find((b: { type: string; text?: string }) => b.type === 'text')!.text!;
+        });
 }
 
 const today: GuideToday = { date: '2026-11-11', calls: 3, cost_usd: 0.3312, limit_calls: 20, limit_usd: null, blocked: null };
@@ -219,195 +259,101 @@ const made: GuideResponse = {
     today,
 };
 
-/**
- * ガイドの API を差し替える。保存済みの確認（GET）と、作る（POST）で応答を分ける。
- *
- * @param saved - 対象（'' は曲全体）ごとの、保存済みのガイド。無い対象は「保存済みなし」
- * @param post - POST への応答
- */
-function stubGuideApi(saved: Record<string, GuideResponse>, post: (body: FormData) => Response) {
-    stubFetch(async (url, init) => {
-        if (init?.method === 'POST') return post(init.body as FormData);
-        const focus = new URL(url, 'http://test').searchParams.get('focus') ?? '';
-        const hit = saved[focus];
-        return Response.json(hit ? { ...hit, saved: true, cached: true, today } : { saved: false, chart_id: 'demo', focus: focus || null, today });
-    });
-}
-
-describe('GuidePanel: 保存済みのガイドと費用', () => {
-    beforeEach(() => cleanup());
-
-    it('保存済みが在れば最初から表示し、Claude は呼ばない', async () => {
-        stubGuideApi({ '': made }, () => { throw new Error('保存済みが在るのに POST した'); });
-        render(<DawProvider><Loader /></DawProvider>);
-        expect(await screen.findByText('テンポを合わせる')).toBeInTheDocument();
-        expect(posts()).toHaveLength(0);
-        // ボタンは「作り直す」になり、費用がかかる旨が添えられる
-        expect(screen.getByRole('button', { name: 'ガイドを作り直す（費用がかかります）' })).toBeInTheDocument();
-        expect(screen.getByText(/このガイドは保存済みです/)).toHaveTextContent('前回は概算 $0.09');
-    });
-
-    it('保存済みが無ければ、押すまで何も作らない', async () => {
-        stubGuideApi({}, () => Response.json(made));
-        render(<DawProvider><Loader /></DawProvider>);
-        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-        expect(screen.getByRole('button', { name: 'ガイドを作る' })).toBeInTheDocument();
-        expect(screen.queryByText('テンポを合わせる')).not.toBeInTheDocument();
-        expect(posts()).toHaveLength(0);
-    });
-
-    it('対象を変えると、その対象の保存済みを探す（無ければ表示を消す）', async () => {
-        stubGuideApi({ '': made }, () => Response.json(made));
-        render(<DawProvider><Loader /></DawProvider>);
-        await screen.findByText('テンポを合わせる');
-        fireEvent.change(screen.getByLabelText('対象'), { target: { value: 'S2' } });
-        await waitFor(() => expect(screen.queryByText('テンポを合わせる')).not.toBeInTheDocument());
-        expect(screen.getByRole('button', { name: 'ガイドを作る' })).toBeInTheDocument();
-        fireEvent.change(screen.getByLabelText('対象'), { target: { value: '' } });
-        expect(await screen.findByText('テンポを合わせる')).toBeInTheDocument();
-        expect(posts()).toHaveLength(0);
-    });
-
-    it('最初に作るときは regenerate を付けず、作り直すときだけ付ける', async () => {
-        stubGuideApi({}, () => Response.json(made));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        fireEvent.click(await screen.findByRole('button', { name: /ガイドを作り直す/ }));
-        await waitFor(() => expect(posts()).toHaveLength(2));
-        expect((posts()[0][1].body as FormData).has('regenerate')).toBe(false);
-        expect((posts()[1][1].body as FormData).get('regenerate')).toBe('true');
-    });
-
-    it('1 回ごとのトークン数と概算の費用、今日の累計と上限を見せる', async () => {
-        stubGuideApi({}, () => Response.json(made));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        await screen.findByText('テンポを合わせる');
-        const usage = document.getElementById('guide-usage');
-        expect(usage).toHaveTextContent('入力 5,312 トークン（うち 5,300 はキャッシュから）');
-        expect(usage).toHaveTextContent('出力 4,200 トークン');
-        expect(usage).toHaveTextContent('概算 $0.09');
-        const total = document.getElementById('guide-today');
-        expect(total).toHaveTextContent('3 回');
-        expect(total).toHaveTextContent('概算 $0.33');
-        expect(total).toHaveTextContent('上限 20 回');
-    });
-
-    it('単価が分からないモデルでは、費用を出さずトークン数だけ見せる', async () => {
-        stubGuideApi({ '': { ...made, cost_usd: null } }, () => Response.json(made));
-        render(<DawProvider><Loader /></DawProvider>);
-        await screen.findByText('テンポを合わせる');
-        expect(document.getElementById('guide-usage')).not.toHaveTextContent('概算');
-        expect(screen.getByText(/このガイドは保存済みです/)).not.toHaveTextContent('前回');
-    });
-
-    it('1 日の上限を超えたと言われたら、理由を出す（API キーの入力欄は出さない）', async () => {
-        const message = '今日は再現ガイドを 20 回作りました。1 日の上限（20 回）に達したので、Claude を呼びません。';
-        stubGuideApi({}, () => Response.json({ detail: { message, code: 'daily_limit' } }, { status: 429 }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        expect(await screen.findByRole('alert')).toHaveTextContent('1 日の上限（20 回）に達したので、Claude を呼びません');
-        expect(screen.queryByLabelText('Claude の API キー')).not.toBeInTheDocument();
-    });
-
-    it('作り直しに失敗しても、表示中のガイドは残す', async () => {
-        stubGuideApi({ '': made }, () => Response.json({ detail: { message: '上限に達しました', code: 'daily_limit' } }, { status: 429 }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(await screen.findByRole('button', { name: /ガイドを作り直す/ }));
-        expect(await screen.findByRole('alert')).toHaveTextContent('上限に達しました');
-        expect(screen.getByText('テンポを合わせる')).toBeInTheDocument();
-    });
-
-    it('1 日の上限を設定で変えられる', async () => {
-        stubFetch(async (url, init) => {
-            if (url === '/api/settings/guide') {
-                const limit = JSON.parse(init?.body as string).daily_limit_calls;
-                return Response.json({ settings: { daily_limit_calls: limit }, today: { ...today, limit_calls: limit } });
-            }
+describe('GuidePanel: アシスタントに頼む入口', () => {
+    beforeEach(() => {
+        cleanup();
+        assistantSession.reset();
+        stubFetch(async (url) => {
+            if (url === '/api/assistant/step') return Response.json({ content: [{ type: 'text', text: 'どうぞ。' }], stop_reason: 'end_turn', model: 'claude-haiku-5-5', cost_usd: 0.001 });
             return Response.json({ saved: false, chart_id: 'demo', focus: null, today });
         });
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'API キーと上限の設定' }));
-        fireEvent.change(screen.getByLabelText('1 日に Claude を呼ぶ回数の上限'), { target: { value: '5' } });
-        fireEvent.click(screen.getByRole('button', { name: '上限を変える' }));
-        expect(await screen.findByText('1 日の上限を 5 回にしました')).toBeInTheDocument();
-        expect(document.getElementById('guide-today')).toHaveTextContent('上限 5 回');
-        // 空にして押すと上限なし
-        fireEvent.click(screen.getByRole('button', { name: '上限を変える' }));
-        expect(await screen.findByText('1 日の上限を無しにしました')).toBeInTheDocument();
-        expect(document.getElementById('guide-today')).toHaveTextContent('上限なし');
+    });
+
+    it('カルテが無ければ、先に曲を取り込むよう案内する (頼むボタンは出さない)', () => {
+        render(<DawProvider><GuidePanel /></DawProvider>);
+        expect(screen.getByText(/先に曲を取り込んでください/)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /ガイドを頼む/ })).not.toBeInTheDocument();
+    });
+
+    it('押すとドックが開き、曲全体の依頼が送られる。パネル自身は Claude を呼ばず、設定の欄も持たない', async () => {
+        const ref: { daw: DawContextType | null } = { daw: null };
+        render(<DawProvider><AskHarness expose={(daw) => { ref.daw = daw; }} /><Loader /></DawProvider>);
+        expect(screen.queryByRole('button', { name: 'API キーと上限の設定' })).not.toBeInTheDocument();
+        expect(screen.getByText(/Anthropic の Claude に送ります。音声は送りません。ファイル名も送りません/)).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'アシスタントにガイドを頼む' }));
+        expect(ref.daw!.assistantOpen).toBe(true);
+        await waitFor(() => expect(askedTexts()).toEqual(['再現ガイドを作って']));
+        // ガイドの API は、パネルからは呼ばない (作るのはアシスタントのツール)
+        expect((fetchMock.mock.calls as [string][]).some(([url]) => /\/guide/.test(url))).toBe(false);
+        await waitFor(() => expect(assistantSession.getState().running).toBe(false));
+    });
+
+    it('区間を選んでいれば、その名前と小節の範囲を入れて頼む', async () => {
+        render(<DawProvider><AskHarness expose={() => {}} /><Loader /></DawProvider>);
+        fireEvent.change(screen.getByLabelText('対象'), { target: { value: 'S2' } });
+        fireEvent.click(screen.getByRole('button', { name: 'アシスタントにガイドを頼む' }));
+        await waitFor(() => expect(askedTexts()).toEqual(['「サビ」（5〜8 小節）の再現ガイドを作って']));
+        await waitFor(() => expect(assistantSession.getState().running).toBe(false));
+    });
+
+    it('guideRequestText: 名前の無い区間は ID で呼ぶ。知らない区間は曲全体', () => {
+        const unnamed = { ...chart, sections: [{ ...chart.sections[0], suggested_label: null }] } as SongChart;
+        expect(guideRequestText(unnamed, 'S1')).toBe('「区間 S1」（1〜4 小節）の再現ガイドを作って');
+        expect(guideRequestText(chart, 'zz')).toBe('再現ガイドを作って');
+        expect(guideRequestText(chart, '')).toBe('再現ガイドを作って');
     });
 });
 
-describe('GuidePanel', () => {
+describe('再現ガイドのカード（アシスタントのチャット）', () => {
     beforeEach(() => cleanup());
 
-    it('カルテが無ければ、先に曲を取り込むよう案内する (Claude は呼ばない)', () => {
-        render(<DawProvider><GuidePanel /></DawProvider>);
-        expect(screen.getByText(/先に曲を取り込んでください/)).toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: /ガイドを作る/ })).not.toBeInTheDocument();
-    });
+    /** カルテを流し込んでから、カードを描画する */
+    function CardLoader({ resp, target = '曲全体' }: { resp: GuideResponse; target?: string }) {
+        const { chart: current, setChartResult } = useDaw();
+        if (!current) setChartResult({ chart_id: 'demo', chart, glossary: {} });
+        return <GuideCardView card={guideCardOf(resp, chart, target)} />;
+    }
 
-    it('外部に送る内容を、作る前に明示する', () => {
-        render(<DawProvider><Loader /></DawProvider>);
-        expect(screen.getByText(/Anthropic の Claude に送ります。音声は送りません/)).toBeInTheDocument();
-    });
-
-    it('ガイドを作って、手順・場所・注意を表示する', async () => {
-        stubFetch(async () => Response.json(response));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        await waitFor(() => expect(screen.getByText('テンポを合わせる')).toBeInTheDocument());
+    it('手順・場所・注意を表示する。場所の名前は、作ったときのカルテで決める', () => {
+        render(<DawProvider><CardLoader resp={response} /></DawProvider>);
+        expect(screen.getByText('テンポを合わせる')).toBeInTheDocument();
         expect(screen.getByText(/キーは C メジャー/)).toBeInTheDocument();
         expect(screen.getByText('I → V → vi → IV の進行です。')).toBeInTheDocument();
-        expect(screen.getByText('1 小節 1 拍目')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '1 小節 1 拍目' })).toBeInTheDocument();
         expect(document.querySelectorAll('.guide-ref')[1]).toHaveTextContent('サビ（5〜8 小節）');
         expect(screen.getByText('4 小節目のコードは確信度が低めです。')).toBeInTheDocument();
         expect(screen.queryByRole('note')).not.toBeInTheDocument();
     });
 
-    it('選んだセクションを対象として送る', async () => {
-        stubFetch(async () => Response.json(response));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.change(screen.getByLabelText('対象'), { target: { value: 'S2' } });
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        await waitFor(() => expect(posts()).toHaveLength(1));
-        expect((posts()[0][1].body as FormData).get('focus')).toBe('S2');
+    it('場所を押すと、そこへ移動したと知らせる', async () => {
+        const ref: { daw: DawContextType | null } = { daw: null };
+        render(<DawProvider><AskHarness expose={(daw) => { ref.daw = daw; }} /><CardLoader resp={response} /></DawProvider>);
+        fireEvent.click(screen.getByRole('button', { name: 'サビ（5〜8 小節）' }));
+        await waitFor(() => expect(ref.daw!.status).toBe('サビ（5〜8 小節） へ移動しました'));
     });
 
-    it('カルテに無い語が説明に含まれていたら、推測かもしれないと伝える', async () => {
-        stubFetch(async () => Response.json({ ...response, guide: { ...response.guide, unverified_terms: ['Dm7', 'E4'] } }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        const note = await screen.findByRole('note');
+    it('カルテに無い語が説明に含まれていたら、推測かもしれないと伝える', () => {
+        render(<DawProvider><CardLoader resp={{ ...response, guide: { ...response.guide, unverified_terms: ['Dm7', 'E4'] } }} /></DawProvider>);
+        const note = screen.getByRole('note');
         expect(note).toHaveTextContent('Dm7、E4');
         expect(note).toHaveTextContent('モデルの推測かもしれません');
     });
 
-    it('API キーが無いと言われたら、理由と入力欄を出す', async () => {
-        stubFetch(async () => Response.json({ detail: { message: 'Claude の API キーが設定されていません', code: 'no_key' } }, { status: 401 }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        expect(await screen.findByRole('alert')).toHaveTextContent('API キーが設定されていません');
-        expect(screen.getByLabelText('Claude の API キー')).toHaveAttribute('type', 'password');
+    it('作ったときのモデル・トークン数・概算の費用を見せる。保存済みを出しただけなら、Claude を呼んでいないと添える', () => {
+        render(<DawProvider><CardLoader resp={made} /></DawProvider>);
+        const usage = screen.getByText(/このガイドを作ったときの使用量/);
+        expect(usage).toHaveTextContent('入力 5,312 トークン（うち 5,300 はキャッシュから）');
+        expect(usage).toHaveTextContent('出力 4,200 トークン');
+        expect(usage).toHaveTextContent('概算 $0.09');
+        expect(screen.getByText(/作成: Opus/)).toBeInTheDocument();
+        cleanup();
+        render(<DawProvider><CardLoader resp={{ ...made, cached: true }} /></DawProvider>);
+        expect(screen.getByText(/保存済みのガイドを出しました（Claude は呼んでいません。作ったときは概算 \$0.09）/)).toBeInTheDocument();
+        expect(screen.queryByText(/このガイドを作ったときの使用量/)).not.toBeInTheDocument();
     });
 
-    it('API キーを設定すると入力欄が閉じ、キーは画面に残らない', async () => {
-        stubFetch(async () => Response.json({ has_key: true, key_source: 'settings', model: 'm' }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'API キーと上限の設定' }));
-        fireEvent.change(screen.getByLabelText('Claude の API キー'), { target: { value: 'sk-secret' } });
-        fireEvent.click(screen.getByRole('button', { name: '設定する' }));
-        await waitFor(() => expect(screen.getByText('API キーを設定しました')).toBeInTheDocument());
-        expect(screen.queryByLabelText('Claude の API キー')).not.toBeInTheDocument();
-        expect(document.body.innerHTML).not.toContain('sk-secret');
-    });
-
-    it('それ以外の失敗では入力欄を出さない', async () => {
-        stubFetch(async () => Response.json({ detail: { message: 'Claude に接続できませんでした', code: 'network' } }, { status: 502 }));
-        render(<DawProvider><Loader /></DawProvider>);
-        fireEvent.click(screen.getByRole('button', { name: 'ガイドを作る' }));
-        expect(await screen.findByRole('alert')).toHaveTextContent('接続できませんでした');
-        expect(screen.queryByLabelText('Claude の API キー')).not.toBeInTheDocument();
+    it('単価が分からないモデルでは、費用を出さずトークン数だけ見せる', () => {
+        render(<DawProvider><CardLoader resp={{ ...made, cost_usd: null }} /></DawProvider>);
+        expect(screen.getByText(/このガイドを作ったときの使用量/)).not.toHaveTextContent('概算');
     });
 });

@@ -9,6 +9,7 @@
  * - ノートの差し替え: ピアノロール（`pianoRollRef` の `setTrackNotes`。開いていないトラックにも使える）
  * - MIDI 入力: 中央エリアが 1 つだけ持つ仕組み（`midiRef`）
  * - 練習画面の設定と「比べる」: ストア（`updatePractice`）と、練習画面が置く入口（`practiceCompareRef`）
+ * - 再現ガイド・差分の説明: 差分の段と同じ組の決め方・材料の組み立て（lib/coach.ts）と、同じ API（lib/guide.ts・lib/coach.ts）
  * - 場所を示す: そのタブを開いて（`setLeftTab` / `openLearn` / `setSoundTab`）、部品を光らせる（lib/assistant-landmarks.ts）
  *
  * 変える入口は、どれも元に戻す履歴に載る（`record`）。アシスタントが動いているあいだは、依頼ごとの記録
@@ -18,10 +19,10 @@
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { useDaw } from './store';
-import { progressFacts, referenceSourceOf, useLearnActions } from './learn';
+import { chartIdOfParts, progressFacts, referenceSourceOf, useLearnActions } from './learn';
 import engine, { type PianoNote } from './engine';
-import { requestDiff } from './coach';
-import { fetchSavedGuide } from './guide';
+import { attemptEntryOf, comparedOf, explainChartContext, requestDiff, requestExplanation, resolveCoachPair } from './coach';
+import { fetchSavedGuide, requestGuide } from './guide';
 import type { AssistantDeps } from './assistant';
 import { LANDMARKS, flashElement } from './assistant-landmarks';
 import { jobTracker, stageText } from './jobs';
@@ -142,6 +143,26 @@ export function useAssistantDeps(): AssistantDeps {
             requestDiff: (reference, attempt, perBar, source, mode) => requestDiff(reference, attempt, perBar, source, mode),
             practiceCompare: async () => (await now().daw.practiceCompareRef.current?.()) ?? null,
             savedGuide: (chartId, sectionId) => fetchSavedGuide(chartId, sectionId),
+            requestGuide: (chartId, sectionId, regenerate, model) => requestGuide(chartId, sectionId, regenerate, model),
+            coachPair: () => {
+                // 差分の段と同じ決め方 (選んでいる組。無ければ、お手本を持つ最初のトラックと、その練習のトラック)
+                const { reference, attempt } = resolveCoachPair(env.tracks(), now().daw.coachPair);
+                return reference && attempt ? { referenceId: reference.id, attemptId: attempt.id } : null;
+            },
+            coachDiff: (referenceId, attemptId) => {
+                const shown = now().daw.coachResult;
+                if (!shown || shown.referenceId !== referenceId || shown.attemptId !== attemptId) return null;
+                return comparedOf(shown.result) ? shown.result : null;
+            },
+            explainChart: (referenceId) => {
+                const { chart, chartId, bpm, gridOffset } = now().daw;
+                return chart ? explainChartContext(engine.getTrack(referenceId), { chartId, partsChartId: chartIdOfParts(), bpm, gridOffset }) : null;
+            },
+            requestExplanation: (request, regenerate, model) => requestExplanation(request, regenerate, model),
+            linkExplanation: (diff, key) => {
+                const entry = attemptEntryOf(diff);
+                if (entry !== undefined) now().daw.setAttemptExplanation(entry, key);
+            },
             pointAt: async (key) => {
                 const landmark = LANDMARKS[key];
                 if (!landmark) return { shown: false };

@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useEffect } from 'react';
 import { render, cleanup, act } from '@testing-library/react';
 import type * as PF from '../lib/project-file';
+import type { SavedItem } from '../lib/assistant-history';
 
 class MockGainNode {
     gain = { value: 1 };
@@ -499,12 +500,20 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
         useAssistantProjectSection();
         return null;
     }
-    const SAVED = [
+    const SAVED: SavedItem[] = [
         { kind: 'user', text: 'ベースを置いて' } as const,
         { kind: 'tool', name: 'add_notes', state: 'ok', text: 'ノートを 8 個置きました（Track 1、1〜2 小節）' } as const,
         { kind: 'assistant', text: '置きました。' } as const,
-        { kind: 'turn', calls: 2, costUsd: 0.03 } as const,
+        // 再現ガイドのカード (版 3 で足した)
+        {
+            kind: 'card', card: 'guide', chartId: 'chart-1', focus: null, target: '曲全体', overview: '全体の流れ',
+            steps: [{ title: 'テンポ', topic: 'grid', body: '120 に合わせます', refs: [{ section_id: null, bar: 1, beat: 1, label: '1 小節 1 拍目' }] }],
+            cautions: [], unverifiedTerms: [], model: 'claude-sonnet-5-5', createdAt: null, cached: false, costUsd: 0.02, usage: { input_tokens: 20, output_tokens: 400 },
+        },
+        { kind: 'turn', calls: 2, costUsd: 0.03, model: 'claude-sonnet-5-5', reason: 'ベースを考えるので' },
     ];
+    /** 版 2 までの並び (カードとモデルが無い) */
+    const SAVED_V2: SavedItem[] = [SAVED[0], SAVED[1], SAVED[2], { kind: 'turn', calls: 2, costUsd: 0.03 }];
     afterEach(() => { pf.resetSections(); assistantSession.restore([]); });
 
     it('保存すると、画面に並ぶ文と操作ログの行が入る。開くと戻り、新しいプロジェクトにすると空になる', async () => {
@@ -514,7 +523,7 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
 
         act(() => { assistantSession.restore(SAVED); });
         const { doc } = await pf.buildDocument(baseInput());
-        expect(doc.state.assistant).toEqual({ version: 2, items: SAVED });
+        expect(doc.state.assistant).toEqual({ version: 3, items: SAVED });
         // Claude に送る会話 (思考のブロックやツールの結果) は、入れない
         expect(JSON.stringify(doc.state.assistant)).not.toMatch(/tool_use|tool_result|signature|thinking/);
 
@@ -526,8 +535,8 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
         vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
         await act(async () => { await pf.applyDocument(JSON.parse(JSON.stringify(doc)), applyTarget()); });
         const state = assistantSession.getState();
-        expect(state.restored).toBe(4);
-        expect(state.items.map((item) => item.kind)).toEqual(['user', 'tool', 'assistant', 'turn']);
+        expect(state.restored).toBe(5);
+        expect(state.items.map((item) => item.kind)).toEqual(['user', 'tool', 'assistant', 'card', 'turn']);
         expect(assistantSession.saved()).toEqual(SAVED);
         expect(assistantSession.conversation()).toEqual([]);
 
@@ -538,13 +547,13 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
         expect(assistantSession.getState().items).toEqual([]);
     });
 
-    it('「新しい会話」の前の会話は、履歴として一緒に入り、開くと戻る。版 1 の節（履歴が無い）も読める', async () => {
+    it('「新しい会話」の前の会話は（カードも）、履歴として一緒に入り、開くと戻る。版 1・版 2 の節も読める', async () => {
         render(<Probe />);
         act(() => { assistantSession.restore(SAVED); assistantSession.reset(); });
         // いまの会話が空でも、履歴が在れば節を入れる
         const { doc } = await pf.buildDocument(baseInput());
         const section = doc.state.assistant as { version: number; items: unknown[]; archive: { title: string; archivedAt: string; items: unknown[] }[] };
-        expect(section.version).toBe(2);
+        expect(section.version).toBe(3);
         expect(section.items).toEqual([]);
         expect(section.archive).toHaveLength(1);
         expect(section.archive[0]).toMatchObject({ title: 'ベースを置いて', items: SAVED });
@@ -561,10 +570,16 @@ describe('アシスタントの会話 (状態の節 assistant)', () => {
 
         // 版 1 の節: いまの会話だけが戻り、履歴は空
         const v1 = JSON.parse(JSON.stringify(doc));
-        v1.state.assistant = { version: 1, items: SAVED };
+        v1.state.assistant = { version: 1, items: SAVED_V2 };
         await act(async () => { await pf.applyDocument(v1, applyTarget()); });
-        expect(assistantSession.saved()).toEqual(SAVED);
+        expect(assistantSession.saved()).toEqual(SAVED_V2);
         expect(assistantSession.getState().archive).toEqual([]);
+        // 版 2 の節: 履歴も戻る (カードとモデルは無いまま)
+        const v2 = JSON.parse(JSON.stringify(doc));
+        v2.state.assistant = { version: 2, items: SAVED_V2, archive: [{ title: '前の会話', archivedAt: null, items: SAVED_V2 }] };
+        await act(async () => { await pf.applyDocument(v2, applyTarget()); });
+        expect(assistantSession.saved()).toEqual(SAVED_V2);
+        expect(assistantSession.archived().map((entry) => entry.items)).toEqual([SAVED_V2]);
     });
 
     it('壊れた節は、読めるものだけを戻す', async () => {

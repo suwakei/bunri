@@ -1,7 +1,7 @@
 /**
  * ブラウザのテストで使う共通の部品。
  */
-import { expect, type Page, type Request } from '@playwright/test';
+import { expect, type APIRequestContext, type Page, type Request, type test as playwrightTest } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
 /** テスト用の小さな MP3 (C4 E4 G4 C5 を 2 秒ずつ、8 秒)。WAV 以外の曲の取り込みを確かめるのに使う。 */
@@ -303,4 +303,78 @@ export async function openNewestLegacy(page: Page): Promise<void> {
     const dialog = page.getByRole('dialog', { name: 'プロジェクトを開く' });
     await dialog.locator('.project-entry-open').filter({ has: page.locator('.project-badge', { hasText: '以前の形式' }) }).first().click();
     await expect(statusText(page)).toContainText('を読み込みました');
+}
+
+// ---- アシスタント (画面の右側のチャット) ----
+
+/** アシスタントのドックと、その中の会話。 */
+export const assistantDock = (page: Page) => page.getByRole('complementary', { name: 'アシスタント' });
+export const assistantChat = (page: Page) => assistantDock(page).getByRole('log', { name: '会話と操作ログ' });
+
+/** 偽の Claude サーバの数え (fake-anthropic.mjs の `/__calls`)。 */
+export interface FakeLlmCalls {
+    messages: number;
+    explain: number;
+    assistant: number;
+    router: number;
+    count_tokens: number;
+    models: { assistant: (string | null)[]; guide: (string | null)[]; explain: (string | null)[] };
+}
+
+/** 偽の Claude サーバが数えている回数と、送られてきたモデル。 */
+export async function fakeLlmCalls(page: Page): Promise<FakeLlmCalls> {
+    return (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json();
+}
+
+/**
+ * アシスタントが答え終わるまで待つ (依頼の終わりの行が `turns` 個になり、「中止」が消えるまで)。
+ * パネルのボタンから送った依頼にも使う。断られた依頼 (1 日の上限など) は、その知らせの文を付けて失敗させる。
+ */
+export async function waitAssistantTurns(page: Page, turns: number, what = '依頼', timeoutMs = 30_000): Promise<void> {
+    const turnRows = assistantChat(page).locator('.assistant-turn');
+    const errors = assistantChat(page).locator('.assistant-notice.error');
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        if (await turnRows.count() >= turns) break;
+        const idle = (await assistantDock(page).getByRole('button', { name: '中止' }).count()) === 0;
+        if (idle && (await errors.count()) > 0) throw new Error(`${what}は、断られました: ${await errors.last().innerText()}`);
+        if (Date.now() > deadline) throw new Error(`${what}が、${Math.round(timeoutMs / 1000)} 秒たっても終わりません。ドックの中身（末尾）: ${(await assistantDock(page).innerText()).slice(-500)}`);
+        await page.waitForTimeout(100);
+    }
+    await expect(turnRows).toHaveCount(turns);
+    await expect(assistantDock(page).getByRole('button', { name: '中止' })).toHaveCount(0);
+}
+
+/** ドックの入力欄に打って送り、答え終わるまで待つ。 */
+export async function askAssistantInDock(page: Page, request: string, turns: number): Promise<void> {
+    const input = assistantDock(page).getByRole('textbox', { name: 'アシスタントに頼むこと' });
+    await input.fill(request);
+    await input.press('Enter');
+    await waitAssistantTurns(page, turns, `依頼「${request}」`);
+}
+
+/**
+ * Claude を使う機能の「1 日の上限」(再現ガイド・差分の説明・アシスタントで 1 つの枠) を、このファイルのあいだだけ上げる。
+ * API サーバとデータ置き場は、ほかのテスト・もう 1 つのブラウザと共用なので、終わったら上げたぶんを戻し、
+ * このファイルで使った回数のぶんだけ上げたままにする (ほかのテストに残る回数を、このファイルが在っても無くても同じにする)。
+ * 上限は差で動かす (ほかのファイルが同じ時に上限を動かしていても、打ち消さない)。
+ */
+export function raiseDailyLimitDuringFile(test: typeof playwrightTest, headroom = 500): void {
+    let callsBefore = 0;
+    let raised = false;
+    const settings = async (request: APIRequestContext) => (await request.get('/api/settings/guide')).json();
+    test.beforeAll(async ({ request }) => {
+        const now = await settings(request);
+        callsBefore = now.today.calls;
+        const limit = now.settings.daily_limit_calls;
+        raised = limit !== null;
+        if (raised) await request.post('/api/settings/guide', { data: { daily_limit_calls: limit + headroom } });
+    });
+    test.afterAll(async ({ request }) => {
+        if (!raised) return;
+        const now = await settings(request);
+        const used = now.today.calls - callsBefore;
+        const limit = now.settings.daily_limit_calls;
+        if (limit !== null) await request.post('/api/settings/guide', { data: { daily_limit_calls: limit - headroom + used } });
+    });
 }

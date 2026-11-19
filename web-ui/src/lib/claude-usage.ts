@@ -6,6 +6,17 @@
  */
 import { formatUsd, type GuideToday, type GuideUsage } from './guide';
 
+/** モデルの ID の頭と、画面に出す名前。 */
+const MODEL_NAMES: [prefix: string, name: string][] = [['claude-haiku', 'Haiku'], ['claude-sonnet', 'Sonnet'], ['claude-opus', 'Opus']];
+
+/**
+ * モデルの ID を、画面に出す短い名前にする（`claude-sonnet-5-5` → `Sonnet`）。知らないモデルは ID のまま。
+ */
+export function modelLabel(model: string | null | undefined): string {
+    if (!model) return 'Claude';
+    return MODEL_NAMES.find(([prefix]) => model.startsWith(prefix))?.[1] ?? model;
+}
+
 /** トークン数を、桁区切りつきの文字にする。 */
 const count = (value: number | null | undefined) => (value ?? 0).toLocaleString('ja-JP');
 

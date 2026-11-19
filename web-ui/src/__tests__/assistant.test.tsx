@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useEffect } from 'react';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
 expect.extend(matchers);
@@ -24,7 +25,7 @@ globalThis.AudioContext = MockAudioContext;
 
 const { default: engine } = await import('../lib/engine');
 const { DawProvider, useDaw } = await import('../lib/store');
-const { AssistantSession, MAX_STEPS, readJsonLines, requestHead } = await import('../lib/assistant');
+const { AssistantSession, MAX_STEPS, assistantSession, readJsonLines, requestHead } = await import('../lib/assistant');
 const { toolLabel } = await import('../lib/assistant-tools');
 const {
     COMPACT_CHARS, COMPACT_MESSAGES, DIGEST_CHARS, MAX_ARCHIVED, MAX_SAVED_ITEMS, archiveFromSection, archiveTitle, conversationDigest, itemsFromSection, itemsToSaved, needsCompaction,
@@ -162,6 +163,12 @@ function engineEnv(record: <T>(label: string, fn: () => T) => T = (_label, fn) =
         requestDiff: async () => { throw new Error('このテストでは、差分を取りません'); },
         practiceCompare: async () => null,
         savedGuide: async () => { throw new Error('このテストでは、再現ガイドを読みません'); },
+        requestGuide: async () => { throw new Error('このテストでは、再現ガイドを作りません'); },
+        coachPair: () => null,
+        coachDiff: () => null,
+        explainChart: () => null,
+        requestExplanation: async () => { throw new Error('このテストでは、差分の説明を作りません'); },
+        linkExplanation: () => {},
         pointAt: async () => ({ shown: false }),
         // 時間のかかる処理・書き出し・保存・クリップ・エフェクトも、ここでは使わない
         job: () => null,
@@ -235,6 +242,7 @@ const rows = (session: Session) => session.getState().items.map((item) => {
     if (item.kind === 'tool') return `tool/${item.state}: ${item.text}`;
     if (item.kind === 'turn') return `turn: ${item.calls} 回${item.changed ? '・変えた' : ''}`;
     if (item.kind === 'notice') return `notice/${item.tone}: ${item.text}`;
+    if (item.kind === 'card') return `card/${item.card}`;
     return `${item.kind}: ${item.text}`;
 });
 
@@ -1132,7 +1140,7 @@ describe('会話の保存と、長くなったときのまとめ（lib/assistant
         { kind: 'assistant', id: 5, text: '1〜2 小節に\nベースを置きました。' },
         { kind: 'assistant', id: 6, text: '流れている途中', streaming: true },
         { kind: 'notice', id: 7, tone: 'info', text: '中止しました' },
-        { kind: 'turn', id: 8, calls: 2, costUsd: 0.03, changed: true, undoEntryId: 4 },
+        { kind: 'turn', id: 8, calls: 2, costUsd: 0.03, changed: true, undoEntryId: 4, model: 'claude-sonnet-5-5', reason: 'ベースを考えるので' },
     ];
 
     it('itemsToSaved: 文だけを残す（番号・操作のあいだの動きの記録・流れている文・実行中の行は入れない）', () => {
@@ -1142,7 +1150,7 @@ describe('会話の保存と、長くなったときのまとめ（lib/assistant
             { kind: 'tool', name: 'add_notes', state: 'error', text: 'ノートを置く: そのトラックが見つかりませんでした' },
             { kind: 'assistant', text: '1〜2 小節に\nベースを置きました。' },
             { kind: 'notice', tone: 'info', text: '中止しました' },
-            { kind: 'turn', calls: 2, costUsd: 0.03 },
+            { kind: 'turn', calls: 2, costUsd: 0.03, model: 'claude-sonnet-5-5', reason: 'ベースを考えるので' },
         ]);
         // 新しいほうから、上限まで。長い文は切る
         const many: ChatItem[] = Array.from({ length: MAX_SAVED_ITEMS + 5 }, (_v, i) => ({ kind: 'user', id: i + 1, text: `依頼 ${i}` }));
@@ -1484,5 +1492,218 @@ describe('ドック: 1 日の上限に達したとき', () => {
         expect(last(session.getState().items)).toMatchObject({ kind: 'notice', tone: 'error', code: 'daily_limit' });
         // 今日の使用量を読み直している (Claude は呼ばない)
         await waitFor(() => expect(fetchMock.mock.calls.filter((call) => call[0] === '/api/settings/guide').length).toBeGreaterThanOrEqual(1));
+    });
+});
+
+// ---- モデルの選び方（ルーター）・カード・パネルからの依頼 ----
+
+const ROUTE = { model: 'claude-sonnet-5-5', tier: 'sonnet', reason: '8 小節のベースを考えるので', cost_usd: 0.001 };
+const routeLine = (extra: Partial<typeof ROUTE> = {}) => ({ type: 'route', ...ROUTE, ...extra });
+
+/** 再現ガイドの応答（偽物）。 */
+const GUIDE_MADE = {
+    chart_id: 'chart-1', focus: null, model: 'claude-sonnet-5-5', usage: { input_tokens: 20, output_tokens: 400 }, cost_usd: 0.02,
+    created_at: '2026-11-19T10:00:00Z', cached: false,
+    guide: {
+        overview: '全体の流れ', cautions: ['キーの確信度が低め'], dropped_refs: 0, unverified_terms: ['Bm7'],
+        steps: [
+            { title: 'テンポを合わせる', topic: 'grid' as const, body: '120 に合わせます', refs: [{ section_id: null, bar: 3, beat: 2 }] },
+            { title: '構成を並べる', topic: 'sections' as const, body: 'サビから', refs: [] },
+        ],
+    },
+};
+const CHART = {
+    key: { tonic: 'C', mode: 'major', confidence: 0.9 }, grid: { bpm: 120, time_signature: [4, 4], downbeat_offset_sec: 0, beat_times_sec: [] },
+    sections: [{ id: 's1', label: 'chorus', suggested_label: null, start_bar: 5, end_bar: 8, start_sec: 8, end_sec: 16, repeat_group: 'A' }], chords: [],
+} as unknown as import('../lib/chart').SongChart;
+
+/** 再現ガイドを作れる入口（作ったときのモデルを控える）。 */
+function guideEnv(models: (string | null)[]): ToolEnv {
+    return {
+        ...engineEnv(),
+        chart: () => CHART,
+        chartId: () => 'chart-1',
+        requestGuide: async (_chartId, _focus, _regenerate, model) => { models.push(model); return GUIDE_MADE; },
+    };
+}
+
+describe('モデルの選び方（ルーター）', () => {
+    it('step 0 はモデルを付けずに送り、route の行で選んだモデルを、その依頼の残りの呼び出しに付ける。終わりの行に、答えたモデルと理由', async () => {
+        stubSteps([
+            flow(routeLine(), doneLine([use('a', 'get_project')], 'tool_use', 0.01)),
+            flow(doneLine([text('置きました。')], 'end_turn', 0.02)),
+        ]);
+        const session = new AssistantSession();
+        const waits: (string | null)[] = [];
+        session.subscribe(() => waits.push(session.getState().waiting));
+        await session.send('8 小節のベースを置いて', fakeDeps().deps);
+        expect(sent.map((body) => (body as { model?: string }).model)).toEqual([undefined, 'claude-sonnet-5-5']);
+        // route が来たら、待っているあいだの 1 行に、モデルの名前を入れる
+        expect(waits).toContain('Sonnet で考えています…');
+        const turn = last(session.getState().items);
+        expect(turn).toMatchObject({ kind: 'turn', calls: 2, model: 'claude-opus-5-5', reason: '8 小節のベースを考えるので' });
+        // 費用の合計には、ルーターの費用も足す
+        expect((turn as { costUsd: number }).costUsd).toBeCloseTo(0.031);
+    });
+
+    it('次の依頼では、また step 0 をモデルなしで送る（依頼ごとに選ぶ）。JSON 1 つの応答の route も読む', async () => {
+        const withRoute = (reply: ReturnType<typeof step>, route: typeof ROUTE) => () => Response.json({ ...reply, route });
+        stubSteps([withRoute(step([text('はい。')]), ROUTE), withRoute(step([text('いいえ。')]), { ...ROUTE, model: 'claude-haiku-5-5', tier: 'haiku', reason: '短い質問なので', cost_usd: 0 })]);
+        const session = new AssistantSession();
+        await session.send('一つ目', fakeDeps().deps);
+        await session.send('二つ目', fakeDeps().deps);
+        expect(sent.map((body) => (body as { model?: string }).model)).toEqual([undefined, undefined]);
+        const turns = session.getState().items.filter((item) => item.kind === 'turn');
+        expect(turns.map((t) => t.kind === 'turn' && t.reason)).toEqual(['8 小節のベースを考えるので', '短い質問なので']);
+    });
+
+    it('ルーターの費用が来なければ足さない。route が無い古い応答は、モデルなしのまま続ける', async () => {
+        stubSteps([step([use('a', 'get_project')], 'tool_use', 0.01), step([text('はい。')], 'end_turn', 0.01)]);
+        const session = new AssistantSession();
+        await session.send('見て', fakeDeps().deps);
+        expect(sent.map((body) => (body as { model?: string }).model)).toEqual([undefined, undefined]);
+        expect(last(session.getState().items)).toMatchObject({ kind: 'turn', model: 'claude-opus-5-5', reason: null });
+    });
+
+    it('ドック: 待っているあいだの 1 行がモデルの名前になり、終わりの行にモデルの名前を出す。選んだ理由は説明の吹き出し', async () => {
+        const stream = flowing();
+        stubSteps([stream.reply]);
+        const session = new AssistantSession();
+        renderPanel(session);
+        fireEvent.change(input(), { target: { value: 'ベースを考えて' } });
+        fireEvent.keyDown(input(), { key: 'Enter' });
+        await waitFor(() => expect(sent).toHaveLength(1));
+        await act(async () => { stream.push(routeLine()); });
+        await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Sonnet で考えています…'));
+        await act(async () => { stream.push({ ...doneLine([text('考えました。')]), model: 'claude-sonnet-5-5' }); stream.close(); });
+        await waitFor(() => expect(session.getState().running).toBe(false));
+        const model = log().querySelector('.assistant-turn-model') as HTMLElement;
+        expect(model).toHaveTextContent('Sonnet');
+        expect(model.dataset.tip).toBe('Sonnet で答えました。選んだ理由: 8 小節のベースを考えるので');
+        expect(model).toHaveAttribute('tabindex', '0');
+        expect(log().querySelector('.assistant-turn')).toHaveTextContent('SonnetClaude を 1 回呼びました（概算 $0.01）');
+    });
+});
+
+describe('カード（再現ガイド・差分の説明）', () => {
+    it('ツールが出したカードは、その行の後ろに並ぶ。ツールには選んだモデルを渡し、作った費用を依頼の合計に足す', async () => {
+        stubSteps([
+            flow(routeLine(), doneLine([use('g', 'make_guide')], 'tool_use', 0.01)),
+            flow(doneLine([text('ガイドを出しました。')], 'end_turn', 0.01)),
+        ]);
+        const models: (string | null)[] = [];
+        const session = new AssistantSession();
+        await session.send('再現ガイドを作って', fakeDeps(guideEnv(models)).deps);
+        expect(models).toEqual(['claude-sonnet-5-5']);
+        expect(rows(session)).toEqual([
+            'user: 再現ガイドを作って',
+            'tool/ok: 再現ガイドを作りました（曲全体、手順 2 個）',
+            'card/guide',
+            'assistant: ガイドを出しました。',
+            'turn: 2 回',
+        ]);
+        expect((last(session.getState().items) as { costUsd: number }).costUsd).toBeCloseTo(0.041);
+        // Claude には中身を JSON で返す (カードを出したことも)
+        const result = session.conversation()[2].content[0];
+        expect(JSON.parse(String(result.content))).toMatchObject({ card_shown: true, overview: '全体の流れ' });
+    });
+
+    it('保存すると、カードも並びに入る（版 3）。読み戻せ、記録には 1 行だけ入る。版 1・2 の節も読める', async () => {
+        stubSteps([step([use('g', 'make_guide')], 'tool_use'), step([text('どうぞ。')])]);
+        const session = new AssistantSession();
+        await session.send('ガイドを作って', fakeDeps(guideEnv([])).deps);
+        const saved = session.saved();
+        const card = saved.find((item) => item.kind === 'card');
+        expect(card).toMatchObject({ kind: 'card', card: 'guide', chartId: 'chart-1', target: '曲全体', overview: '全体の流れ', unverifiedTerms: ['Bm7'] });
+        expect(card).not.toHaveProperty('id');
+        // JSON を通しても同じに読める
+        expect(itemsFromSection(JSON.parse(JSON.stringify({ version: 3, items: saved })))).toEqual(saved);
+        // おかしなカードは読み飛ばす
+        expect(itemsFromSection({ items: [{ kind: 'card', card: 'guide' }, { kind: 'card', card: 'poem', text: 'x' }, { kind: 'user', text: 'はい' }] }))
+            .toEqual([{ kind: 'user', text: 'はい' }]);
+        // 版 2 の節 (カードもモデルも無い) は、そのまま読める
+        expect(itemsFromSection({ version: 2, items: [{ kind: 'turn', calls: 1, costUsd: 0.01 }] })).toEqual([{ kind: 'turn', calls: 1, costUsd: 0.01 }]);
+
+        // 開き直した後の記録には、カード 1 つを 1 行だけ入れる (中身は入れない)
+        const restored = new AssistantSession();
+        restored.restore(saved);
+        stubSteps([step([text('はい。')])]);
+        await restored.send('続き', fakeDeps().deps);
+        const digest = String(restored.conversation()[0].content[0].text);
+        expect(digest).toContain('Guide shown: 手順 2 個（曲全体）');
+        expect(digest).not.toContain('120 に合わせます');
+    });
+
+    it('「新しい会話」で履歴に移した会話にも、カードが残る', async () => {
+        stubSteps([step([use('g', 'make_guide')], 'tool_use'), step([text('どうぞ。')])]);
+        const session = new AssistantSession();
+        await session.send('ガイドを作って', fakeDeps(guideEnv([])).deps);
+        session.reset();
+        const entry = session.archived()[0];
+        expect(entry.items.some((item) => item.kind === 'card' && item.card === 'guide')).toBe(true);
+        session.openArchived(entry.id);
+        expect(session.getState().items.some((item) => item.kind === 'card')).toBe(true);
+    });
+
+    it('ドック: ガイドのカードに、手順・注意・カルテに無い語の注意・作ったモデルを出す。場所を押すと、その小節へ移る', async () => {
+        stubSteps([step([use('g', 'make_guide')], 'tool_use'), step([text('どうぞ。')])]);
+        const session = new AssistantSession();
+        const { daw } = renderPanel(session);
+        act(() => daw().setChartResult({ chart: CHART, chart_id: 'chart-1' } as unknown as import('../lib/chart').ChartResponse));
+        // ドックの入口のかわりに、カルテを持つ入口で送る
+        await act(async () => { await session.send('ガイドを作って', fakeDeps(guideEnv([])).deps); });
+        const card = screen.getByRole('region', { name: '再現ガイド（曲全体）' });
+        expect(within(card).getAllByRole('listitem').map((li) => li.querySelector('.assistant-card-title')?.textContent)).toEqual([
+            'テンポを合わせるテンポ・拍', '構成を並べる構成', undefined,
+        ]);
+        expect(card).toHaveTextContent('キーの確信度が低め');
+        expect(within(card).getByRole('note')).toHaveTextContent('解析結果に無い音名・コード名が説明に含まれています: Bm7');
+        expect(card).toHaveTextContent('作成: Sonnet');
+        expect(card).toHaveTextContent('このガイドを作ったときの使用量: 入力 20 トークン、出力 400 トークン、概算 $0.02');
+        fireEvent.click(within(card).getByRole('button', { name: '3 小節 2 拍目' }));
+        await waitFor(() => expect(daw().status).toBe('3 小節 2 拍目 へ移動しました'));
+        // カルテが別の曲に替わったら、移動できない理由を出す
+        act(() => daw().setChartResult({ chart: CHART, chart_id: 'chart-2' } as unknown as import('../lib/chart').ChartResponse));
+        fireEvent.click(within(card).getByRole('button', { name: '3 小節 2 拍目' }));
+        await waitFor(() => expect(daw().statusKind).toBe('hint'));
+        expect(daw().status).toMatch(/別の曲のものなので、移動できません/);
+    });
+});
+
+describe('パネルからの依頼（ストアの askAssistant）', () => {
+    function AskHarness({ expose, deps }: { expose: (daw: DawContextType) => void; deps: AssistantDeps }) {
+        const daw = useDaw();
+        expose(daw);
+        // ドックと同じく、入口を置く
+        useEffect(() => assistantSession.attach(deps), [deps]);
+        return null;
+    }
+
+    it('ドックを開いて送る。前の依頼を処理しているあいだは送らず、理由を知らせる', async () => {
+        stubSteps(['hang']);
+        const ref: { daw: DawContextType | null } = { daw: null };
+        const { deps } = fakeDeps();
+        render(<DawProvider><AskHarness deps={deps} expose={(daw) => { ref.daw = daw; }} /></DawProvider>);
+        let sentNow = false;
+        act(() => { sentNow = ref.daw!.askAssistant('再現ガイドを作って'); });
+        expect(sentNow).toBe(true);
+        expect(ref.daw!.assistantOpen).toBe(true);
+        await waitFor(() => expect(sent).toHaveLength(1));
+        expect(assistantSession.getState().items[0]).toMatchObject({ kind: 'user', text: '再現ガイドを作って' });
+
+        act(() => { sentNow = ref.daw!.askAssistant('差分を説明して（Track 1）'); });
+        expect(sentNow).toBe(false);
+        expect(ref.daw!.statusKind).toBe('hint');
+        expect(ref.daw!.status).toMatch(/前の依頼を処理しています/);
+        expect(sent).toHaveLength(1);
+        assistantSession.cancel();
+        await waitFor(() => expect(assistantSession.getState().running).toBe(false));
+        assistantSession.reset();
+    });
+
+    it('入口がまだ無ければ（ドックが無い）、送らずに理由を知らせる', () => {
+        const session = new AssistantSession();
+        expect(session.ask('再現ガイドを作って')).toBe('unavailable');
+        expect(session.ask('  ')).toBe('empty');
     });
 });

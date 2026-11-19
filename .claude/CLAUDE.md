@@ -90,7 +90,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `project_store.py` | プロジェクトの保存と開く（作業用の写し `work/`・音声の預かり・開発用の置き場 `projects/`・以前の形式 JSON・データの整理）。sidecar はデータ置き場の外を読み書きしない |
 | `audio_utils.py` | 共通ユーティリティ（load_audio / save_tmp等）とデータ置き場の解決（data_dir / results_dir / uploads_dir / work_dir 等） |
 | `_demucs_runner.py` | Demucs を子プロセスとして動かすスクリプト（torchaudio 保存パッチ。API から起動されたときは `demucs_progress` で進み具合を報告する） |
-| `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない） |
+| `llm_settings.py` | Claude の API キーとモデルの解決（キーは呼び出しのたびに読む。配布物に同梱しない）。既定のモデルは Haiku 5.5、選べるモデルは Haiku / Sonnet / Opus |
+| `model_router.py` | 依頼ごとのモデルの選択（ルーター）。依頼の最初の呼び出しの前に、Haiku が依頼の文から Haiku / Sonnet / Opus を選ぶ（Structured Outputs）。`BUNRI_GUIDE_MODEL` が在れば選ばずに固定。失敗したら Haiku |
 | `reproduction_guide.py` | 再現ガイド（第2層）。カルテを Claude に渡して手順の説明にする。出力は Structured Outputs で形を固定し、カルテと突き合わせて検証する |
 | `guide_cache.py` | 作った再現ガイドの保存（同じ条件なら Claude を呼ばない）と、同じカルテへの呼び出しを 1 つずつ通す錠 |
 | `guide_usage.py` | 再現ガイドの使用量の記録（`results/guide/usage.jsonl`。中身とキーは残さない）、概算の費用、1 日の上限 |
@@ -169,8 +170,8 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 
 3層構成（3 層とも画面まで実装済み。第3層は、差分を出す部分と、それを言葉にする部分。第2層・第3層の決定は暫定）:
 1. **楽曲カルテ** — 解析結果の構造化データ。LLM不使用（`song_chart.py` ほか）
-2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用
-3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点。ドラムも対象（叩く位置だけを比べる。ドラムでは言語化を呼ばない。ドラムに広げるときは `coach_explain` の指示文と版を変え、本物の Claude で確かめる。[docs/coach-diff-design.md](../docs/coach-diff-design.md)「ドラムの差分」）
+2. **再現ガイド** — 「こう作れば再現できる」の説明。LLM使用。頼むのも結果が出るのも、アシスタントのドックのチャット（ツール `make_guide`。結果はカード）
+3. **差分コーチ** — ユーザーの打ち込みと原曲の差分指摘。本命の差別化点。差分の一覧は「学ぶ」の差分の段、言語化はドックのチャット（ツール `explain_diff`。結果はカード）。ドラムも対象（叩く位置だけを比べる。ドラムでは言語化を呼ばない。ドラムに広げるときは `coach_explain` の指示文と版を変え、本物の Claude で確かめる。[docs/coach-diff-design.md](../docs/coach-diff-design.md)「ドラムの差分」）
 
 グリッド推定（テンポと 1 拍目の位置）を直すときは、[docs/grid-estimation.md](../docs/grid-estimation.md) を読み、
 `uv run python test/back/bench_grid.py` で直す前と後の誤差を比べる（正解の分かっている合成音源 157 件）。
@@ -194,7 +195,9 @@ Claude の呼び出しは費用がかかる。再現ガイドには、無駄に�
 - 通常のテスト（`make test`、`make e2e`）は Claude を呼ばない。e2e は偽の Claude サーバ（`web-ui/e2e/fake-anthropic.mjs`）を相手にする。本物を呼ぶのは `BUNRI_E2E_LLM=1` を付けたときと、`scripts/guide_probe.py`・`scripts/assistant_probe.py` に `--yes` を付けたときだけ。**どれも、実行の前に利用者の了承を取る**
 - 指示文（`SYSTEM_PROMPT`）・出力の形（`GUIDE_SCHEMA`）・カルテの渡し方（`prompt_chart`）・検証を変えたら、`GUIDE_VERSION` を上げる（保存済みのガイドを使わせないため）
 - リクエストの組み立てを変えたら、プロンプトキャッシュが効いているかを、コードを読んで判断せず `scripts/guide_probe.py cache --yes` で確かめる
-- キャッシュの区切りより前（指示文とカルテ）に、時刻・乱数・呼び出しごとに変わる値を入れない。モデル・思考の深さ・出力の形を、呼び出しごとに変えない
+- キャッシュの区切りより前（指示文とカルテ）に、時刻・乱数・呼び出しごとに変わる値を入れない。思考の深さ・出力の形を、呼び出しごとに変えない。
+  モデルは、ルーター（`model_router.py`）が **依頼の境目でだけ** 選ぶ（2026-11-19 の利用者の決定）。依頼の途中（続きの呼び出し・その依頼の中で作るガイドと説明）では変えない。
+  ルーターの指示文・出力の形を変えたら `ROUTER_VERSION` を上げ、本物の Claude で選び方を確かめる（利用者の了承を取ってから）
 - `max_tokens` は切れたときの歯止めで、節約の手段ではない。出力を短くしたいときは指示文で行う
 - アシスタントの指示文（`assistant.SYSTEM_PROMPT`）・ツールの台帳（`assistant_tools.json`）を変えたら、`ASSISTANT_VERSION` を上げる。
   台帳のツールを足す・外す・名前を変えるときは、画面側の実行する関数（`assistant-tools.ts`）も一緒に変える

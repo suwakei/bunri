@@ -9,6 +9,8 @@
 - 使用量の記録と 1 日の上限。再現ガイド・差分コーチと同じ記録、同じ 1 つの枠（``guide_usage``）。
   回数は依頼の数で数える（``step`` が 0 の呼び出しだけ）。上限で断るのも、依頼の最初の呼び出しだけ
   （途中で断ると、変えかけのまま止まるため）
+- 答えるモデルの選択。依頼の最初の呼び出しで、モデルの指定が無ければ、ルーター（``model_router``）に選ばせる。
+  続きの呼び出しは、画面が選ばれたモデルを送り返す（依頼の途中でモデルを変えない）
 
 原曲を教材にする 3 層（カルテ・再現ガイド・差分コーチ）の「LLM は音符を 1 つも出力しない」という原則は、
 そのまま残る。アシスタントは別の役目で、利用者に頼まれた操作を代わりに行う（ノートを置く操作も持つ。
@@ -19,7 +21,8 @@
 - 並びは「ツールの台帳 → 指示文 → 会話」。台帳と指示文は変わらないので、指示文の末尾に区切りを置く。
   会話は足すだけなので、リクエスト全体の自動の区切り（top-level の ``cache_control``）で、前の往復までが効く
 - 指示文と台帳に、時刻・乱数・プロジェクトの中身を入れない（プロジェクトの様子は ``get_project`` で読ませる）
-- モデル・思考の深さを、呼び出しごとに変えない
+- 思考の深さを、呼び出しごとに変えない。モデルは依頼ごとに選ぶが、依頼の途中では変えない
+  （モデルが変わると、その呼び出しはキャッシュが効かない）
 - 受け取った会話（``messages``）を書き換えない。応答には思考のブロックが入っていて、変えると次の
   呼び出しが通らない（モデルの側の検査）。キャッシュも、頭からの一致で効く
 
@@ -38,7 +41,9 @@ from reproduction_guide import GuideError, _api_errors, _usage
 # 3: 返事に Markdown を使わない（ドックは文字のまま出す）
 # 4: ステップと長さに小数を許す（32 分音符・三連・スウィング）。ノートのツールの引数を数にし、そろえる間隔に 16 分・32 分・三連を足した
 # 5: 4 のうえに、3 の指示文の直し（Markdown を使わない）を合わせた
-ASSISTANT_VERSION = 5
+# 6: ガイドを作る（make_guide）・差分を説明する（explain_diff）を足し、カードとして見えている中身を繰り返さないよう指示文に書いた。
+#    モデルを依頼ごとに選ぶ（model_router）
+ASSISTANT_VERSION = 6
 
 # 1 回の依頼で Claude を呼べる回数（ツールを使うたびに 1 往復）。``step`` はこれより小さい数
 MAX_STEPS = 12
@@ -89,6 +94,8 @@ Notes and time
 Learning comes first
 bunri exists so the user can learn by recreating a song themselves. Some tracks carry reference notes (お手本), the transcription of the original song for that part, which the user is trying to reproduce in their own practice track. Do not copy reference notes into the user's notes unless the user explicitly asks you to fill them in. When the user is stuck on a part, prefer explaining what to listen for or what is different over doing the part for them, but if they ask you to place or change notes, do it.
 - To find out what differs from the reference, call check_diff. Its result is computed by bunri and is the source of truth: report what it says (which bars, what kind of difference) in plain words and suggest what to look at first. Do not compare note lists yourself, and do not state differences the result does not contain.
+- When the user asks for a reproduction guide (for example 「ガイドを作って」 or 「サビの再現ガイドを作って」), call make_guide. When the user asks for an explanation of how their notes differ from the reference or what to fix (for example 「差分を説明して」 or 「どこを直せばいい？」), call explain_diff. get_guide only reads a guide that was already made and costs nothing, so use it when the user just wants to look at the guide again; check_diff gives the raw facts without an explanation.
+- The guide and the explanation from make_guide and explain_diff are shown to the user as a card in the chat, with buttons that jump to the places they mention. Do not repeat their contents in your reply; add one or two short sentences at most, such as which step or point to try first. If the tool returns an error (no chart yet, nothing to compare), say what the user can do instead.
 - For practising a passage, use the practice view: open_practice, then set_practice for the loop range, a slower speed and what is heard, then play. Do not change the project tempo to slow practice down.
 - The steps are: import a song, read the chart, split it into parts, enter notes in the practice view, compare with the reference and fix. The learn field of get_project says how far the user is, which helps when they ask what to do next.
 
@@ -184,7 +191,7 @@ def validate_messages(messages):
             code="too_long")
 
 
-def build_request(messages):
+def build_request(messages, model=None):
     """Claude に送るリクエストの引数を組み立てる。
 
     並びは「変わらないもの → 変わるもの」（ツールの台帳 → 指示文 → 会話）。キャッシュの区切りは 2 つ。
@@ -198,11 +205,12 @@ def build_request(messages):
 
     Args:
         messages: 会話。そのまま渡す（書き換えない・写しも作らない）。
+        model: 答えるモデルの ID（確かめ済みのもの）。None なら ``llm_settings.model()``。
 
     Returns:
         dict: ``client.beta.messages.create`` に渡すキーワード引数。
     """
-    model = llm_settings.model()
+    model = model or llm_settings.model()
     body = {
         "model": model,
         "max_tokens": MAX_TOKENS,
@@ -327,20 +335,27 @@ def _call(request, client):
     return _result(response, request)
 
 
-def _prepare(messages, turn_id, step):
-    """呼び出しの前の確かめと、リクエスト・記録の項目の組み立て。``step`` と ``stream_step`` の共通部分。
+def _prepare(messages, turn_id, step, model, client):
+    """呼び出しの前の確かめ、モデルの選択、リクエスト・記録の項目の組み立て。``step`` と ``stream_step`` の共通部分。
 
-    順番は、引数と会話の形 → 1 日の上限（依頼の最初の呼び出しだけ）→ リクエストの組み立て。
-    ここまでは Claude を呼ばないので、ここで断ったものは使用量の記録に残さない。
+    順番は、引数と会話の形 → 1 日の上限（依頼の最初の呼び出しだけ）→ モデルの選択 → リクエストの組み立て。
+    上限までで断ったものは、Claude を呼んでいないので使用量の記録に残さない。
+
+    モデルの選択: 依頼の最初の呼び出しで ``model`` が無ければ、ルーター（``model_router.choose``）が選ぶ
+    （Claude を呼ぶのはここだけ。失敗しても Haiku にして続ける）。``model`` が在れば、確かめてそれを使う。
+    続きの呼び出しで ``model`` が無ければ、既定のモデル（後方互換）。``BUNRI_GUIDE_MODEL`` で固定されていれば、
+    いつもそのモデル。
 
     Returns:
-        tuple[dict, dict]: リクエスト（``build_request`` の形）と、使用量の記録に毎回入れる項目。
+        tuple[dict, dict, dict | None]: リクエスト（``build_request`` の形）、使用量の記録に毎回入れる項目、
+        選んだ結果（``{"model", "tier", "reason", "cost_usd"}``。依頼の最初の呼び出しだけ。続きでは None）。
 
     Raises:
-        GuideError: 引数・会話の形が正しくない（``invalid``）、会話が大きすぎる（``too_long``）、
+        GuideError: 引数・会話の形・モデルの指定が正しくない（``invalid``）、会話が大きすぎる（``too_long``）、
             1 日の上限（``daily_limit``）。
     """
     import guide_usage
+    import model_router
 
     if not isinstance(turn_id, str) or not _TURN_ID_RE.fullmatch(turn_id):
         raise GuideError("turn_id は、英数字とハイフンで 1〜64 文字にしてください", code="invalid")
@@ -350,17 +365,27 @@ def _prepare(messages, turn_id, step):
         raise GuideError(
             f"1 回の依頼で Claude を呼べるのは {MAX_STEPS} 回までです。ここまでの結果を確かめて、続きを頼み直してください",
             code="invalid")
+    try:
+        resolved = llm_settings.resolve_model(model)
+    except ValueError as e:
+        raise GuideError(str(e), code="invalid")
     validate_messages(messages)
 
+    route = None
     if step == 0:
         blocked = _blocked_message(guide_usage.today())
         if blocked:
             raise GuideError(blocked, code="daily_limit")
+        if model in (None, ""):
+            route = model_router.choose(messages, turn_id=turn_id, client=client)
+            resolved = route["model"]
+        else:
+            route = model_router.given_route(resolved)
 
-    request = build_request(messages)
+    request = build_request(messages, resolved)
     log = {"feature": "assistant", "requested_model": request["model"], "effort": EFFORT, "focus": None,
            "chart": None, "cache_ttl": CACHE_TTL, "version": ASSISTANT_VERSION, "turn": turn_id, "step": step}
-    return request, log
+    return request, log, route
 
 
 def _record_failure(log, started, code, model, usage):
@@ -380,7 +405,7 @@ def _record_success(log, started, result):
     return {**result, "cost_usd": record["cost_usd"]}
 
 
-def step(messages, turn_id, step, client=None):
+def step(messages, turn_id, step, client=None, model=None):
     """会話を Claude に 1 回だけ送り、応答を返す。会話の状態は持たない。
 
     画面が、応答の ``stop_reason`` を見て続きを決める。``tool_use`` なら、画面がツールを実行し、結果を
@@ -391,7 +416,8 @@ def step(messages, turn_id, step, client=None):
     1. 引数と会話の形を確かめる
     2. 依頼の最初の呼び出し（``step`` が 0）のときだけ、1 日の上限に達していたら断る。
        続きの呼び出しでは断らない（ツールで変えかけたまま止まらないように）
-    3. Claude を呼び、使用量を記録する（応答が返ってきた失敗・返らなかった失敗も記録する）
+    3. 依頼の最初の呼び出しで ``model`` が無ければ、ルーターで答えるモデルを選ぶ（``model_router``）
+    4. Claude を呼び、使用量を記録する（応答が返ってきた失敗・返らなかった失敗も記録する）
 
     ジョブ（``?async=1``）にはしない。1 回の呼び出しは短く、繰り返しを回すのは画面なので。
 
@@ -400,11 +426,16 @@ def step(messages, turn_id, step, client=None):
         turn_id: この依頼の識別子（英数字とハイフン、1〜64 文字）。使用量の記録で、同じ依頼の呼び出しを束ねる。
         step: この依頼の何回目の呼び出しか（0 から。``MAX_STEPS`` 未満）。
         client: Anthropic のクライアント。None なら ``llm_settings.make_client()`` で作る（テストでは差し替える）。
+            ルーターの呼び出しにも使う。
+        model: 答えるモデルの ID（``llm_settings.MODELS`` のどれか）。依頼の続きの呼び出しでは、画面が
+            最初の呼び出しの ``route["model"]`` を送る。依頼の最初の呼び出しで None なら、ルーターが選ぶ。
 
     Returns:
-        dict: ``{"content", "stop_reason", "model", "usage", "cost_usd"}``。``content`` は、そのまま
-        assistant のメッセージとして会話に足せるブロックのリスト。``stop_reason`` は ``"end_turn"``
-        ``"tool_use"`` ``"max_tokens"``。``cost_usd`` は概算（単価の表に無いモデルなら None）。
+        dict: ``{"content", "stop_reason", "model", "usage", "cost_usd"}``、依頼の最初の呼び出しでは ``route`` も。
+        ``content`` は、そのまま assistant のメッセージとして会話に足せるブロックのリスト。``stop_reason`` は
+        ``"end_turn"`` ``"tool_use"`` ``"max_tokens"``。``model`` は実際に答えたモデル。``cost_usd`` は概算
+        （単価の表に無いモデルなら None。ルーターのぶんは含まない）。``route`` は
+        ``{"model": 選んだモデル, "tier", "reason": 選んだ理由, "cost_usd": 選ぶのにかかった概算の費用}``。
 
     Raises:
         GuideError: 引数・会話の形が正しくない（``invalid``）、会話が大きすぎる（``too_long``）、1 日の上限
@@ -412,14 +443,15 @@ def step(messages, turn_id, step, client=None):
             通信できない（``network``）、モデルが応答を断った（``refused``）、そのほかの失敗（``api``）。
             メッセージは利用者にそのまま見せられる。
     """
-    request, log = _prepare(messages, turn_id, step)
+    request, log, route = _prepare(messages, turn_id, step, model, client)
     started = time.monotonic()
     try:
         result = _call(request, client)
     except GuideError as e:
         _record_failure(log, started, e.code, e.model or request["model"], e.usage)
         raise
-    return _record_success(log, started, result)
+    result = _record_success(log, started, result)
+    return {**result, "route": route} if route is not None else result
 
 
 def _snapshot(stream):
@@ -446,7 +478,7 @@ def _so_far(stream, request):
     return _usage(snapshot), getattr(snapshot, "model", None) or request["model"]
 
 
-def _stream(messages, turn_id, step, client):
+def _stream(messages, turn_id, step, client, model):
     """``stream_step`` の中身（ジェネレータ）。最初に None を 1 つ出してから、イベントを出す。
 
     最初の None は「Claude への接続を開いた」の合図で、``stream_step`` が受け取って捨てる。ここまでの失敗
@@ -461,7 +493,7 @@ def _stream(messages, turn_id, step, client):
     except ImportError:
         import httpx as transport
 
-    request, log = _prepare(messages, turn_id, step)
+    request, log, route = _prepare(messages, turn_id, step, model, client)
     started = time.monotonic()
     try:
         with _api_errors():
@@ -477,6 +509,9 @@ def _stream(messages, turn_id, step, client):
     recorded = False
     try:
         yield None
+        if route is not None:
+            # 選んだモデルと理由を、文より前に知らせる（画面が「Sonnet で考えています…」に変える）
+            yield {"type": "route", **route}
         try:
             with _api_errors():
                 try:
@@ -508,7 +543,8 @@ def _stream(messages, turn_id, step, client):
             yield {"type": "error", "detail": {"message": str(e), "code": e.code}}
             return
         recorded = True
-        yield {"type": "done", **_record_success(log, started, result)}
+        done = {"type": "done", **_record_success(log, started, result)}
+        yield {**done, "route": route} if route is not None else done
     except GeneratorExit:
         # 画面が途中で切った（中止）。ここまでのぶんも費用はかかっているので、分かる範囲で残す
         if not recorded:
@@ -525,7 +561,7 @@ def _stream(messages, turn_id, step, client):
         manager.__exit__(None, None, None)
 
 
-def stream_step(messages, turn_id, step, client=None):
+def stream_step(messages, turn_id, step, client=None, model=None):
     """会話を Claude に 1 回だけ送り、応答を少しずつ返す（``step`` のストリーミング版）。
 
     確かめ・上限・使用量の記録の順番と中身は ``step`` と同じ。違いは、返し方だけ。
@@ -545,13 +581,16 @@ def stream_step(messages, turn_id, step, client=None):
         turn_id: この依頼の識別子（``step`` と同じ）。
         step: この依頼の何回目の呼び出しか（``step`` と同じ）。
         client: Anthropic のクライアント。None なら ``llm_settings.make_client()`` で作る。
+        model: 答えるモデルの ID（``step`` と同じ）。
 
     Returns:
         Iterator[dict]: イベントを、届いた順に出すジェネレータ。読み終えるか ``close()`` すると、ストリームを閉じる。
 
+        - ``{"type": "route", "model", "tier", "reason", "cost_usd"}`` — 選んだモデル（依頼の最初の呼び出しだけ。最初の行）
         - ``{"type": "text", "text": 差分}`` — 見える文（text ブロック）の差分
         - ``{"type": "tool", "name": ツール名}`` — ``tool_use`` のブロックが始まった（1 ブロックにつき 1 回）
         - ``{"type": "done", "content", "stop_reason", "model", "usage", "cost_usd"}`` — 最後。``step`` の戻り値と同じ項目
+          （依頼の最初の呼び出しでは ``route`` も）
         - ``{"type": "error", "detail": {"message", "code"}}`` — 開いた後の失敗（最後）。``code`` は ``refused``
           ``network`` ``api`` など（``GuideError.code``）
 
@@ -559,6 +598,6 @@ def stream_step(messages, turn_id, step, client=None):
         GuideError: 開く前・開いた時点の失敗（``invalid`` ``too_long`` ``daily_limit`` ``no_key`` ``auth``
             ``rate_limit`` ``network`` ``api``）。
     """
-    events = _stream(messages, turn_id, step, client)
+    events = _stream(messages, turn_id, step, client, model)
     next(events)
     return events

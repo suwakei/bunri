@@ -8,9 +8,15 @@
  * カルテとガイドは本物の API (Claude は偽のサーバ)。パート分離だけ応答を差し替える (数分かかり、モデルも要る)。
  */
 import { expect, test, type Page } from '@playwright/test';
-import { FAKE_LLM_URL, fakeJob, importSong, makeWav, openDaw, openNewestLegacy, openProject, openTab, runJob, saveProject, statusText, trackSummary } from './helpers';
+import {
+    FAKE_LLM_URL, assistantChat, assistantDock, fakeJob, importSong, makeWav, openDaw, openNewestLegacy, openProject, openTab, raiseDailyLimitDuringFile,
+    runJob, saveProject, statusText, trackSummary, waitAssistantTurns,
+} from './helpers';
 
 test.skip(Boolean(process.env.BUNRI_E2E_LLM), '偽の Claude サーバを相手にするテスト。本物を呼ぶ BUNRI_E2E_LLM=1 のときは走らせない');
+
+// ガイドはアシスタントに頼む (依頼も 1 日の上限に数える) ので、このファイルのあいだだけ上限を上げる
+raiseDailyLimitDuringFile(test);
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 const BASS = [note('C', 3, 0), note('E', 3, 4), note('G', 3, 8)];
@@ -62,11 +68,14 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
     await expect(page.locator('#project-title .unsaved-mark')).toHaveCount(1);
     expect(await page.title()).toBe('無題のプロジェクト ● — bunri');
 
-    // ガイドを作る (Claude を 1 回呼ぶ)
+    // ガイドを作る (アシスタントに頼む。ガイドの Claude を 1 回呼ぶ)。ガイドは、チャットのカードに出る
     const before = await llmCalls(page);
     await openTab(page, 'ガイド');
-    await page.locator('#guide-panel').getByRole('button', { name: 'ガイドを作る' }).click();
-    await expect(page.locator('#guide-panel ol > li')).toHaveCount(3);
+    await page.locator('#guide-panel').getByRole('button', { name: 'アシスタントにガイドを頼む' }).click();
+    await waitAssistantTurns(page, 1, 'ガイドの依頼');
+    await expect(assistantChat(page).getByRole('region', { name: '再現ガイド（曲全体）' }).getByRole('list', { name: '再現の手順' }).locator(':scope > li')).toHaveCount(3);
+    // この後の操作 (ピアノロール) の場所が変わらないよう、ドックを閉じる (会話は残る)
+    await assistantDock(page).getByRole('button', { name: 'アシスタントを閉じる' }).click();
 
     // パートに分けて、ベースを練習する
     await openTab(page, '曲とパート');
@@ -121,12 +130,13 @@ test('学ぶ流れの途中を保存し、画面を開き直して開くと、�
     for (const key of ['import', 'chart', 'separate', 'practice', 'diff']) {
         await expect(page.locator(`#learn-progress [data-step="${key}"]`)).toHaveAttribute('data-state', 'done');
     }
-    // カルテとガイド (保存済みとして出る。解析も Claude も呼ばない)
+    // カルテと、ガイドのカード (アシスタントの会話ごとプロジェクトに入っていて、戻る。解析も Claude も呼ばない)
     await openTab(page, 'カルテ');
     await expect(page.locator('#chart-panel')).toBeVisible();
-    await openTab(page, 'ガイド');
-    await expect(page.locator('#guide-panel ol > li')).toHaveCount(3);
-    await expect(page.getByText(/このガイドは保存済みです/)).toBeVisible();
+    await page.getByRole('button', { name: 'アシスタント', exact: true }).click();
+    await expect(assistantChat(page).getByRole('region', { name: '再現ガイド（曲全体）' }).getByRole('list', { name: '再現の手順' }).locator(':scope > li')).toHaveCount(3);
+    await expect(assistantChat(page).locator('.assistant-restored')).toContainText('プロジェクトに保存してあった会話です');
+    await assistantDock(page).getByRole('button', { name: 'アシスタントを閉じる' }).click();
     expect(await llmCalls(page)).toEqual(calls);
     // 開いた直後は、保存していない変更は無い。元に戻す履歴も、前のプロジェクトのものは無い
     await expect(page.locator('#project-title .unsaved-mark')).toHaveCount(0);

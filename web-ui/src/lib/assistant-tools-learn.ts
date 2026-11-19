@@ -3,13 +3,22 @@
  *
  * - `check_diff`: お手本と打ち込みの差分を取る。差分は信号処理の側が出す事実で、Claude は呼ばない（backend/coach_diff.py）。
  *   アシスタントは、返ってきた事実を言葉にするだけ（「DSP が事実を出し、LLM は言語化だけ」）。言語化の API
- *   （`/api/coach/explain`）は呼ばない（Claude をもう 1 回呼ぶことになるため）
- * - `get_guide`: 保存済みの再現ガイドを読む。新しくは作らない（作るのは、利用者が「学ぶ」→「ガイド」で）
+ *   （`/api/coach/explain`）は呼ばない（呼ぶのは `explain_diff` だけ）
+ * - `get_guide`: 保存済みの再現ガイドを読む（費用なし。新しくは作らない）
+ * - `make_guide`: 再現ガイドを作る（Claude をもう 1 回呼ぶ。保存済みが在れば、呼ばずにそれが返る）。この依頼で選んだ
+ *   モデルで作る。結果はチャットにカードとして出し（lib/assistant-cards.ts）、Claude には中身を返す
+ * - `explain_diff`: 差分の説明を作る（差分の段の「Claude に説明してもらう」と同じ組み立て。ドラムでは呼ばない）。
+ *   結果はカードとして出す。`check_diff` は事実だけで、説明（言語化）が要るときだけ、こちらを使う
  * - `set_practice` / `set_metronome`: 練習の道具。プロジェクトのノートやトラックは変えない
  * - `show_in_app`: 画面の場所を示す（押すのは利用者）
  */
-import { issueText, velocityFindingText, velocitySummaryText, type DiffIssue, type DiffResult } from './coach';
-import { DRUM_ROWS, diffModeOf, drumRowOfNote, isLegacyDrumPart, type DiffMode } from './drums';
+import {
+    comparedOf, explainRequestOf, issueText, velocityFindingText, velocitySummaryText, type ComparedNotes, type DiffIssue, type DiffResult,
+} from './coach';
+import { DRUM_EXPLAIN_NOTE, DRUM_ROWS, diffModeOf, drumRowOfNote, isLegacyDrumPart, type DiffMode } from './drums';
+import { GuideRequestError, refLabel } from './guide';
+import type { SongChart } from './chart';
+import { explanationCardOf, guideCardOf } from './assistant-cards';
 import { inStepRange, stepsPerBar } from './grid';
 import type { PianoNote } from './engine';
 import { MAX_LOOP_BARS, SPEEDS, speedLabel, type ListenMode } from './practice';
@@ -18,6 +27,10 @@ import {
     ArgError, ToolError, barsLabel, choice, flag, formatPitch, integer, settle, stepOut, trackOf,
     type ToolEnv, type ToolPracticeSettings, type ToolSpec, type ToolTrack,
 } from './assistant-tool-kit';
+
+/** カードを出したことを、Claude に伝える文（中身を繰り返させない）。 */
+const CARD_NOTE = 'This is shown to the user as a card in the chat, with buttons that jump to each place. '
+    + 'Do not repeat or summarize its content; add one short sentence at most (for example, what to look at first).';
 
 /** `check_diff` が 1 回で返す指摘の数の上限。 */
 export const MAX_ISSUES = 80;
@@ -105,6 +118,45 @@ function diffData(result: DiffResult, mode?: DiffMode): Record<string, unknown> 
     };
 }
 
+/** `section_id` / `focus_section` を読む（カルテのセクションの ID。省くと曲全体で null）。 */
+function sectionArg(args: Record<string, unknown>, key: string, chart: SongChart): string | null {
+    const value = args[key];
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string' || !chart.sections.some((s) => s.id === value)) {
+        throw new ArgError(`${key} は、get_chart の sections の id のどれかにしてください: ${chart.sections.map((s) => s.id).join(', ')}。曲全体なら、省いてください`);
+    }
+    return value;
+}
+
+/** カルテが無いときの失敗（再現ガイドは、カルテから作る）。 */
+function noChart(): ToolError {
+    return new ToolError('まだカルテがありません。再現ガイドは、利用者が曲を取り込んでカルテを作ってから作れます（曲の取り込みは「学ぶ」→「曲とパート」）',
+        'まだカルテがありません（曲を取り込んでカルテを作ってから、もう一度頼んでください）');
+}
+
+/** ガイド・説明の API の失敗を、ツールの失敗にする（Claude にも利用者にも、理由の文をそのまま渡す）。 */
+function requestFailed(e: unknown, what: string): never {
+    if (e instanceof GuideRequestError) {
+        throw new ToolError(`${what}を作れませんでした（code: ${e.code}）。${e.message}`, e.message);
+    }
+    throw e;
+}
+
+/** 説明の材料にする差分。差分の段にその組の差分が出ていれば、それ（一覧と同じ指摘の ID になる）。無ければ、いま比べる。 */
+async function diffForExplain(reference: ToolTrack, attempt: ToolTrack, env: ToolEnv): Promise<{ diff: DiffResult; compared: ComparedNotes; onPanel: boolean }> {
+    const shown = env.coachDiff(reference.id, attempt.id);
+    const comparedShown = shown ? comparedOf(shown) : undefined;
+    if (shown && comparedShown) return { diff: shown, compared: comparedShown, onPanel: true };
+    const perBar = stepsPerBar(env.grid());
+    const source = env.referenceSource(reference.id);
+    const compared: ComparedNotes = {
+        reference: (reference.referenceNotes ?? []).map((n) => ({ ...n })), attempt: attempt.pianoNotes.map((n) => ({ ...n })),
+        stepsPerBar: perBar, referenceSource: source,
+    };
+    const diff = await env.requestDiff(compared.reference, compared.attempt, perBar, source);
+    return { diff, compared, onPanel: false };
+}
+
 /** 学ぶ流れのツール。名前は台帳（`backend/assistant_tools.json`）と同じ。 */
 export const LEARN_TOOLS: Record<string, ToolSpec> = {
     check_diff: {
@@ -166,21 +218,15 @@ export const LEARN_TOOLS: Record<string, ToolSpec> = {
         label: '再現ガイドを読む', running: '再現ガイドを読んでいます…', access: 'read', keys: ['section_id'],
         run: async (args, env) => {
             const chart = env.chart(), chartId = env.chartId();
-            if (!chart || !chartId) throw new ToolError('まだカルテがありません。再現ガイドは、曲を取り込んでカルテができてから作れます');
-            let sectionId: string | null = null;
-            if (args.section_id !== undefined && args.section_id !== null) {
-                if (typeof args.section_id !== 'string' || !chart.sections.some((s) => s.id === args.section_id)) {
-                    throw new ArgError(`section_id は、get_chart の sections の id のどれかにしてください: ${chart.sections.map((s) => s.id).join(', ')}。曲全体のガイドなら、省いてください`);
-                }
-                sectionId = args.section_id;
-            }
+            if (!chart || !chartId) throw noChart();
+            const sectionId = sectionArg(args, 'section_id', chart);
             const saved = await env.savedGuide(chartId, sectionId);
             const target = sectionId ? `構成の区間 ${sectionId}` : '曲全体';
             if (!saved.saved) {
                 return {
                     ok: true, saved: false,
                     summary: `保存済みの再現ガイドは、まだありません（${target}）`,
-                    how_to_create: '再現ガイドは、利用者が左のパネルの「学ぶ」→「ガイド」で作ります（Claude を 1 回呼ぶので、費用がかかります）。アシスタントからは作れません',
+                    how_to_create: '再現ガイドは make_guide で作れます（Claude をもう 1 回呼ぶので、費用がかかります）。利用者が作ってほしいと頼んだときだけ作ってください',
                 };
             }
             const guide = saved.guide;
@@ -191,6 +237,96 @@ export const LEARN_TOOLS: Record<string, ToolSpec> = {
                 steps: guide.steps.map((s) => ({ title: s.title, topic: s.topic, body: s.body, refs: s.refs })),
                 cautions: guide.cautions,
                 ...(saved.created_at ? { created_at: saved.created_at } : {}),
+            };
+        },
+    },
+
+    make_guide: {
+        label: '再現ガイドを作る', running: '再現ガイドを作っています…', access: 'read', keys: ['focus_section', 'regenerate'],
+        run: async (args, env, turn) => {
+            const chart = env.chart(), chartId = env.chartId();
+            if (!chart || !chartId) throw noChart();
+            const focus = sectionArg(args, 'focus_section', chart);
+            const regenerate = flag(args, 'regenerate') === true;
+            const target = focus ? refLabel({ section_id: focus, bar: null, beat: null }, chart) : '曲全体';
+            const made = await env.requestGuide(chartId, focus, regenerate, turn.model).catch((e: unknown) => requestFailed(e, '再現ガイド'));
+            const cached = made.cached === true;
+            // 保存済みを出しただけなら、この依頼の費用は 0 (cost_usd は、作ったときの費用)
+            turn.spend(cached ? 0 : (typeof made.cost_usd === 'number' ? made.cost_usd : null));
+            if (made.today) turn.today(made.today);
+            turn.showCard(guideCardOf(made, chart, target));
+            const guide = made.guide;
+            return {
+                ok: true,
+                summary: cached
+                    ? `保存済みの再現ガイドを出しました（${target}、手順 ${guide.steps.length} 個）`
+                    : `再現ガイドを作りました（${target}、手順 ${guide.steps.length} 個）`,
+                card_shown: true, note: CARD_NOTE,
+                target, ...(focus ? { focus_section: focus } : {}), cached, model: made.model,
+                overview: guide.overview,
+                steps: guide.steps.map((s) => ({ title: s.title, topic: s.topic, body: s.body, refs: s.refs })),
+                cautions: guide.cautions,
+                ...(guide.unverified_terms?.length ? { unverified_terms: guide.unverified_terms } : {}),
+            };
+        },
+    },
+
+    explain_diff: {
+        label: '差分を説明する', running: '差分の説明を作っています…', access: 'read', keys: ['track_id', 'regenerate'],
+        run: async (args, env, turn) => {
+            const regenerate = flag(args, 'regenerate') === true;
+            let reference: ToolTrack, attempt: ToolTrack;
+            if (args.track_id !== undefined) {
+                attempt = trackOf(args, env);
+                reference = referenceFor({}, attempt, env);
+            } else {
+                const pair = env.coachPair();
+                const tracks = env.tracks();
+                const found = pair ? { reference: tracks.find((t) => t.id === pair.referenceId), attempt: tracks.find((t) => t.id === pair.attemptId) } : null;
+                if (!found?.reference || !found.attempt) {
+                    throw new ToolError('比べるお手本がありません。お手本は、利用者が曲をパートに分けるか、MIDI ファイルをお手本として読み込むとできます',
+                        '比べるお手本がありません（曲をパートに分けるか、MIDI ファイルをお手本として読み込むとできます）');
+                }
+                ({ reference, attempt } = found as { reference: ToolTrack; attempt: ToolTrack });
+            }
+            // ドラムの差分は、説明を頼まない (言語化の指示文は、高さの違いを前提にしているため。差分の段と同じ)
+            if (diffModeOf(reference) === 'drums') {
+                return {
+                    ok: true, summary: `「${attempt.name}」はドラムなので、説明は作りません（Claude は呼んでいません）`,
+                    card_shown: false, drums: true, track_id: attempt.id, reference_track_id: reference.id,
+                    explanation: DRUM_EXPLAIN_NOTE,
+                    hint: 'Use check_diff for the facts (which kind of drum is missing or extra, and where) and describe them yourself.',
+                };
+            }
+            const { diff, compared, onPanel } = await diffForExplain(reference, attempt, env);
+            const request = explainRequestOf(compared, env.explainChart(reference.id));
+            const made = await env.requestExplanation(request, regenerate, turn.model).catch((e: unknown) => requestFailed(e, '差分の説明'));
+            const fromClaude = made.source === 'claude';
+            turn.spend(!fromClaude || made.cached ? 0 : (typeof made.cost_usd === 'number' ? made.cost_usd : null));
+            if (made.today) turn.today(made.today);
+            // 差分の段で比べた差分なら、その学習の記録に説明を結び付ける (記録の一覧に「説明あり」が出る)
+            if (fromClaude && made.key && onPanel) env.linkExplanation(diff, made.key);
+            turn.showCard(explanationCardOf(made, diff, { referenceId: reference.id, attemptId: attempt.id, trackName: attempt.name }));
+            const body = made.explanation;
+            return {
+                ok: true,
+                summary: !fromClaude
+                    ? `差分の説明を出しました（${attempt.name}。Claude に頼むまでもないので、決まった文です）`
+                    : made.cached
+                        ? `保存済みの差分の説明を出しました（${attempt.name}、点 ${body.points.length} 個）`
+                        : `差分の説明を作りました（${attempt.name}、点 ${body.points.length} 個）`,
+                card_shown: true, note: CARD_NOTE,
+                track_id: attempt.id, reference_track_id: reference.id,
+                source: made.source, ...(made.reason ? { reason: made.reason } : {}), cached: made.cached === true,
+                ...(made.model ? { model: made.model } : {}),
+                explanation: {
+                    summary: body.summary,
+                    points: (fromClaude ? body.points : []).map((p) => ({
+                        title: p.title, observation: p.observation, cause: p.cause, fix: p.fix,
+                        refs: p.refs.map((r) => ({ issue_id: r.issue_id, bar: r.bar, beat: r.beat, kind: r.kind })),
+                    })),
+                    next_step: body.next_step, next_step_bar: body.next_step_bar,
+                },
             };
         },
     },

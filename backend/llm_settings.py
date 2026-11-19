@@ -16,8 +16,19 @@ import os
 import threading
 from pathlib import Path
 
-# 既定のモデル。環境変数 BUNRI_GUIDE_MODEL で差し替えられる
-DEFAULT_MODEL = "claude-opus-5-5"
+# 既定のモデル。環境変数 BUNRI_GUIDE_MODEL が在れば、すべての呼び出しがそのモデルに固定される
+DEFAULT_MODEL = "claude-haiku-5-5"
+
+# 選べるモデル（段階 → モデル ID）。依頼ごとに、ルーター（``model_router``）がこの中から選ぶ。
+# 画面から受け取るモデル ID も、ここに在るもの（と固定のモデル）だけを通す
+MODELS = {
+    "haiku": "claude-haiku-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+}
+
+# 強い順。保存済みのガイドと説明をモデルを問わず探すとき、この順で優先する
+STRENGTH_ORDER = ("opus", "sonnet", "haiku")
 
 _lock = threading.Lock()
 _override_key = None
@@ -131,20 +142,99 @@ def key_source():
     return "none"
 
 
+def fixed_model():
+    """環境変数 ``BUNRI_GUIDE_MODEL`` で固定されたモデルの ID を返す（固定されていなければ None）。
+
+    呼び出しのたびに読む（import 時に固めない）。固定されているときは、ルーターを呼ばず、
+    画面がモデルを指定しても、このモデルを使う。
+
+    Returns:
+        str | None: 固定のモデル ID。
+    """
+    value = (os.environ.get("BUNRI_GUIDE_MODEL") or "").strip()
+    return value or None
+
+
 def model():
-    """再現ガイドに使うモデルの ID を返す。
+    """モデルを指定しない呼び出しに使うモデルの ID を返す。
 
     Returns:
         str: 環境変数 ``BUNRI_GUIDE_MODEL``、無ければ ``DEFAULT_MODEL``。
     """
-    return os.environ.get("BUNRI_GUIDE_MODEL") or DEFAULT_MODEL
+    return fixed_model() or DEFAULT_MODEL
+
+
+def tier_of(model_id):
+    """モデル ID の段階（``"haiku"`` ``"sonnet"`` ``"opus"``）を返す（表に無ければ None）。"""
+    for tier, known in MODELS.items():
+        if model_id == known:
+            return tier
+    return None
+
+
+def validate_model(model_id):
+    """画面から受け取ったモデル ID を確かめる。
+
+    通すのは ``MODELS`` のモデル ID と、``BUNRI_GUIDE_MODEL`` で固定されたモデルだけ。
+    指定が無い（None か空の文字列）なら None を返す。
+
+    Args:
+        model_id: 受け取った値。
+
+    Returns:
+        str | None: 確かめたモデル ID。指定が無ければ None。
+
+    Raises:
+        ValueError: 知らないモデル、または文字列でない場合。
+    """
+    if model_id is None or model_id == "":
+        return None
+    if not isinstance(model_id, str) or (model_id not in MODELS.values() and model_id != fixed_model()):
+        names = "、".join(MODELS.values())
+        raise ValueError(f"model は {names} のどれかで指定してください")
+    return model_id
+
+
+def resolve_model(model_id=None):
+    """呼び出しに使うモデルを決める。
+
+    ``BUNRI_GUIDE_MODEL`` で固定されていれば、それ。そうでなければ、指定されたモデル（確かめてから）、
+    指定が無ければ ``DEFAULT_MODEL``。
+
+    Args:
+        model_id: 画面から受け取ったモデル ID（None なら指定なし）。
+
+    Returns:
+        str: 使うモデル ID。
+
+    Raises:
+        ValueError: 知らないモデルを指定された場合（固定されていても、確かめは行う）。
+    """
+    requested = validate_model(model_id)
+    return fixed_model() or requested or DEFAULT_MODEL
+
+
+def lookup_models():
+    """保存済みのガイドと説明を探すときのモデルの並び（強いものが先）を返す。
+
+    ``MODELS`` を強い順に並べ、固定のモデルが表に無ければ最後に足す。
+
+    Returns:
+        list[str]: モデル ID のリスト。
+    """
+    order = [MODELS[tier] for tier in STRENGTH_ORDER]
+    fixed = fixed_model()
+    if fixed and fixed not in order:
+        order.append(fixed)
+    return order
 
 
 def status():
     """設定の状態を返す（API の応答用。キーそのものは含めない）。
 
     Returns:
-        dict: ``{"has_key": bool, "key_source": str, "model": str}``。
+        dict: ``{"has_key": bool, "key_source": str, "model": str}``。``model`` は、モデルを指定しない
+        呼び出しのモデル（固定されていれば固定のモデル）。依頼ごとのモデルは、ルーターが選ぶ。
     """
     source = key_source()
     return {"has_key": source != "none", "key_source": source, "model": model()}

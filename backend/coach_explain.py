@@ -943,10 +943,28 @@ def _blocked_message(today):
     return today["blocked"]
 
 
+def _find_saved(facts):
+    """保存済みの説明を、モデルを問わず探す（強いモデルのものが先: opus → sonnet → haiku）。
+
+    Returns:
+        tuple[str, dict] | None: ``(鍵, 保存した 1 件)``。無ければ None。
+    """
+    import guide_cache
+
+    for model in llm_settings.lookup_models():
+        request = build_request(facts, model=model)
+        key = explanation_key(facts, model, request["output_config"]["effort"])
+        entry = guide_cache.load(key, kind="coach")
+        if entry:
+            return key, entry
+    return None
+
+
 def saved_explanation(facts):
     """API を呼ばずに返せる説明を返す（無ければ None）。
 
-    LLM に頼むまでもない場合の決まった文か、保存済みの説明。
+    LLM に頼むまでもない場合の決まった文か、保存済みの説明。保存済みは、どのモデルで作ったものでも返す
+    （いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。
 
     Args:
         facts: ``build_facts`` の結果。
@@ -954,62 +972,71 @@ def saved_explanation(facts):
     Returns:
         dict | None: ``explain_for`` と同じ形。
     """
-    import guide_cache
-
     rule = rule_response(facts)
     if rule:
         return _public_rule(*rule, facts)
-    request = build_request(facts)
-    key = explanation_key(facts, request["model"], request["output_config"]["effort"])
-    entry = guide_cache.load(key, kind="coach")
-    return _public(entry, cached=True, facts=facts, key=key) if entry else None
+    found = _find_saved(facts)
+    return _public(found[1], cached=True, facts=facts, key=found[0]) if found else None
 
 
-def explain_for(facts, regenerate=False, client=None):
+def explain_for(facts, regenerate=False, client=None, model=None):
     """差分の説明を返す。API を呼ばずに済むならそうし、要るときだけ Claude を呼ぶ。
 
     順番（第2層の ``guide_for`` と同じ）:
 
     1. LLM に頼むまでもない場合（違いが無い・少ない、打ち込みが無い、お手本が少ない）は、決まった文を返す
-    2. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）
+    2. 保存済みが在れば、API を呼ばずに返す（``regenerate`` が True なら飛ばす）。どのモデルで作った
+       説明でもよい（いくつか在れば、強いモデルのもの）
     3. 説明の呼び出しを 1 つずつ通す。待っている間に同じ条件の説明が出来ていたら、それを返す
        （錠は 1 つ。事実ごとに分けると、ノートを直すたびに錠が増えていくため）
     4. 1 日の上限に達しているとき、入力が長すぎるときは、API を呼ばずに断る
-    5. Claude を呼び、使用量を記録し、説明を保存する
+    5. ``model`` のモデルで Claude を呼び、使用量を記録し、説明を保存する
 
     Args:
         facts: ``build_facts`` の結果。
         regenerate: True なら、保存済みが在っても作り直す（費用がかかる）。
         client: Anthropic のクライアント（テストでは差し替える）。
+        model: 作るときのモデル ID（``llm_settings.MODELS`` のどれか）。None なら既定のモデル。
+            ``BUNRI_GUIDE_MODEL`` で固定されていれば、いつもそのモデル。
 
     Returns:
         dict: ``{"explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
         "created_at", "cached", "input"}``。``source`` は ``"claude"`` か ``"rule"``（LLM を使わない決まった文）。
 
     Raises:
-        GuideError: 作れなかった場合。メッセージは利用者にそのまま見せられる。
+        GuideError: 作れなかった場合（知らないモデルの指定は ``invalid``）。メッセージは利用者にそのまま見せられる。
     """
     import guide_cache
     import guide_usage
+
+    try:
+        model = llm_settings.resolve_model(model)
+    except ValueError as e:
+        raise GuideError(str(e), code="invalid")
 
     rule = rule_response(facts)
     if rule:
         return _public_rule(*rule, facts)
 
-    request = build_request(facts)
-    model, effort = request["model"], request["output_config"]["effort"]
+    request = build_request(facts, model=model)
+    effort = request["output_config"]["effort"]
     key = explanation_key(facts, model, effort)
     if not regenerate:
-        entry = guide_cache.load(key, kind="coach")
-        if entry:
-            return _public(entry, cached=True, facts=facts, key=key)
+        found = _find_saved(facts)
+        if found:
+            return _public(found[1], cached=True, facts=facts, key=found[0])
 
     facts_id = facts_hash(facts)
     asked_at = time.time()
     with guide_cache.lock_for("coach"):
-        entry = guide_cache.load(key, kind="coach")
-        if entry and (not regenerate or (entry.get("created_ts") or 0) >= asked_at):
-            return _public(entry, cached=True, facts=facts, key=key)
+        if not regenerate:
+            found = _find_saved(facts)
+            if found:
+                return _public(found[1], cached=True, facts=facts, key=found[0])
+        else:
+            entry = guide_cache.load(key, kind="coach")
+            if entry and (entry.get("created_ts") or 0) >= asked_at:
+                return _public(entry, cached=True, facts=facts, key=key)
 
         blocked = _blocked_message(guide_usage.today())
         if blocked:

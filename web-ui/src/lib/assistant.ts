@@ -23,6 +23,11 @@
  * - 利用者がチャットに打った文と、Claude の文（流れている途中の文も）は、動きの記録（lib/activity.ts）に渡さない
  *   （入力欄に打った文字は記録しない決まり）。残すのは、ツールの結果の 1 行だけ
  *
+ * - モデルは、依頼 1 つにつき 1 回だけ選ぶ。最初の呼び出し（`step` 0）は `model` を付けずに送り、処理を担当する部分の
+ *   ルーター（Claude Haiku）が選んだモデル（`route`）を受けたら、その依頼の残りの呼び出しと、ツールの中で作る
+ *   再現ガイド・差分の説明に、そのモデルを付ける（依頼の途中でモデルを変えない）。依頼の終わりの行に、答えたモデルと
+ *   選んだ理由を出し、費用の合計には、ルーターとツールの中で作ったガイド・説明の費用も足す
+ * - 再現ガイドと差分の説明は、チャットにカード（`kind: 'card'`。lib/assistant-cards.ts）として出る
  * - 縮めるのは、依頼の境目だけ。会話が長くなったら、次の依頼の前に、送る会話を丸ごと「これまでの記録」1 つに
  *   置き換える（lib/assistant-history.ts。途中のメッセージだけを抜くことはしない。画面に並んでいるものは、そのまま残る）
  *
@@ -33,7 +38,9 @@
 import { apiFetch, describeError } from './api';
 import { activityEntries, recordActivity, type ActivityEntry } from './activity';
 import { GuideRequestError, fetchGuideSettings, toError, type GuideToday, type GuideUsage } from './guide';
-import { TOOLS, isWriteTool, runTool, toolLabel, type ToolEnv } from './assistant-tools';
+import { TOOLS, isWriteTool, runTool, toolLabel, type ToolEnv, type ToolTurn } from './assistant-tools';
+import type { ChatCard } from './assistant-cards';
+import { modelLabel } from './claude-usage';
 import { MAX_ARCHIVED, archiveTitle, conversationDigest, itemsToSaved, needsCompaction, savedToItems, type ArchivedConversation, type SavedItem } from './assistant-history';
 import type { SuggestionFacts } from './assistant-suggestions';
 
@@ -52,6 +59,20 @@ export interface ApiMessage {
     content: ContentBlock[];
 }
 
+/**
+ * ルーター（依頼ごとにモデルを選ぶ Claude Haiku の呼び出し）の結果。依頼の最初の呼び出し（`step` 0）の応答にだけ付く。
+ */
+export interface RouteInfo {
+    /** 選んだモデルの ID。その依頼の残りの呼び出しに付けて送る */
+    model: string;
+    /** haiku / sonnet / opus */
+    tier: string;
+    /** 選んだ理由（日本語の短い文） */
+    reason: string;
+    /** ルーターの呼び出しの概算の費用（USD）。呼ばなかった（設定で固定・失敗した）・分からなければ null か 0 */
+    cost_usd?: number | null;
+}
+
 /** `POST /api/assistant/step` の応答。 */
 export interface StepResponse {
     /** Claude の応答の `content`。変えずに assistant のメッセージとして足す */
@@ -62,17 +83,21 @@ export interface StepResponse {
     /** この 1 回の概算の費用（単価の表に無いモデルなら null） */
     cost_usd?: number | null;
     today?: GuideToday;
+    /** ルーターの結果（`step` 0 のときだけ） */
+    route?: RouteInfo;
 }
 
 /**
  * 少しずつ届く応答（`application/x-ndjson`）の 1 行。
  *
+ * - `route`: ルーターが選んだモデル（`step` 0 のとき、最初の行）
  * - `text`: 見える文の差分
  * - `tool`: Claude がツールの呼び出しを書き始めた
  * - `done`: 最後の行。`StepResponse` と同じ項目を持つ
  * - `error`: 途中の失敗（最後の行）
  */
 export type StepLine =
+    | ({ type: 'route' } & RouteInfo)
     | { type: 'text'; text: string }
     | { type: 'tool'; name: string }
     | ({ type: 'done' } & StepResponse)
@@ -107,7 +132,14 @@ export interface TurnRow {
     changed: boolean;
     /** この依頼の記録の番号（元に戻す履歴）。変わっていなければ null */
     undoEntryId: number | null;
+    /** 答えたモデルの ID。分からなければ null（以前の版が保存した会話など） */
+    model: string | null;
+    /** そのモデルを選んだ理由（ルーターの文）。分からなければ null */
+    reason: string | null;
 }
+
+/** チャットに並ぶカード（再現ガイド・差分の説明）。 */
+export type CardItem = { kind: 'card'; id: number } & ChatCard;
 
 /** チャットに並ぶ 1 つぶん。 */
 export type ChatItem =
@@ -117,6 +149,7 @@ export type ChatItem =
     | ToolRow
     /** 中止・失敗・途中で止めたことの知らせ。`code` は、失敗の種類（`daily_limit` など。画面が、同じ知らせを 2 つ出さないために見る） */
     | { kind: 'notice'; id: number; tone: 'info' | 'error'; text: string; code?: string }
+    | CardItem
     | TurnRow;
 
 /** 画面に出す状態（変わるたびに、新しいオブジェクトになる）。 */
@@ -154,6 +187,11 @@ export interface AssistantDeps {
     topUndoId: () => number | null;
     /** 頼み方の例を選ぶ材料（いまの状況）。ドックが描くたびに呼ぶので、読むだけにする（画面の状態を変えない） */
     suggestionFacts: () => SuggestionFacts;
+}
+
+/** 待っているあいだの 1 行（モデルが決まっていれば、その名前を入れる）。 */
+export function thinkingLine(model: string | null): string {
+    return model ? `${modelLabel(model)} で考えています…` : '考えています…';
 }
 
 /** 依頼の識別子（英数字とハイフン、64 文字まで）。使用量の記録で、同じ依頼の呼び出しを束ねる。 */
@@ -269,6 +307,8 @@ export class AssistantSession {
     private listeners = new Set<() => void>();
     private nextId = 1;
     private controller: AbortController | null = null;
+    /** パネルのボタンから依頼を送るときに使う、画面の入口（ドックが置く。`ask`） */
+    private attached: AssistantDeps | null = null;
     /** 動いているあいだに届いた、戻す会話と履歴（プロジェクトが入れ替わった）。依頼が終わったところで戻す */
     private pendingRestore: { saved: readonly SavedItem[]; archive: readonly ArchivedConversation[] } | null = null;
 
@@ -313,7 +353,7 @@ export class AssistantSession {
      * @throws {GuideRequestError} 途中の失敗の行（`error`）が来た場合、最後の行が来ないまま本文が終わった場合
      * @throws {DOMException} 中止された場合（`AbortError`）
      */
-    private async readStep(resp: Response, signal: AbortSignal): Promise<StepResponse> {
+    private async readStep(resp: Response, signal: AbortSignal, onRoute: (route: RouteInfo) => void): Promise<StepResponse> {
         if (!(resp.headers.get('Content-Type') ?? '').includes(NDJSON)) return (await resp.json()) as StepResponse;
         /** ここまでに流れてきた文（差分をつないだもの） */
         let flowed = '';
@@ -321,7 +361,9 @@ export class AssistantSession {
         if (resp.body) {
             for await (const raw of readJsonLines(resp.body, signal)) {
                 const line = raw as StepLine;
-                if (line.type === 'text') {
+                if (line.type === 'route') {
+                    if (typeof line.model === 'string' && line.model) onRoute(line);
+                } else if (line.type === 'text') {
                     if (typeof line.text !== 'string') continue;
                     flowed += line.text;
                     // 頭の空白や改行だけのあいだは、まだ吹き出しを出さない (確定した文も、前後の空白を落とす)
@@ -459,6 +501,27 @@ export class AssistantSession {
     nextItemId = (): number => this.id();
 
     /**
+     * パネルのボタンから依頼を送るときの入口を置く（ドックが、描いたときに置く）。返す関数で外す。
+     */
+    attach(deps: AssistantDeps): () => void {
+        this.attached = deps;
+        return () => { if (this.attached === deps) this.attached = null; };
+    }
+
+    /**
+     * パネルのボタンから依頼を送る（ストアの `askAssistant`）。
+     *
+     * @returns sent: 送った / busy: 前の依頼を処理している / unavailable: 入口がまだ無い / empty: 空の文
+     */
+    ask(text: string): 'sent' | 'busy' | 'unavailable' | 'empty' {
+        if (!text.trim()) return 'empty';
+        if (this.state.running) return 'busy';
+        if (!this.attached) return 'unavailable';
+        void this.send(text, this.attached);
+        return 'sent';
+    }
+
+    /**
      * 中止する。待っている呼び出しを止め、次のツール・次の呼び出しを始めない。すでに行った操作は残る。
      */
     cancel(): void {
@@ -493,12 +556,33 @@ export class AssistantSession {
             if (digest) this.messages.push({ role: 'user', content: [{ type: 'text', text: digest }] });
         }
         this.messages.push({ role: 'user', content: [{ type: 'text', text: request }] });
-        this.update({ items: [...before, { kind: 'user', id: this.id(), text: request }], running: true, waiting: '考えています…' });
+        this.update({ items: [...before, { kind: 'user', id: this.id(), text: request }], running: true, waiting: thinkingLine(null) });
 
         /** 依頼ごとの記録。最初の「変える」ツールの前に開く */
         let commit: CommitEdit | null = null;
         let calls = 0;
         let cost: number | null = 0;
+        /** この依頼で選んだモデル（ルーターの結果）と、選んだ理由。step 0 の応答で決まる */
+        let route: RouteInfo | null = null;
+        /** 最後の呼び出しで、実際に答えたモデル */
+        let answered: string | null = null;
+        /** 費用の合計に足す (単価の分からないものが在れば、合計は出さない) */
+        const spend = (usd: number | null | undefined) => { cost = cost !== null && typeof usd === 'number' ? cost + usd : null; };
+        const onRoute = (next: RouteInfo) => {
+            if (route) return;
+            route = next;
+            // ルーターの費用は、呼んだときだけ数が来る (設定で固定・失敗したときは来ないか 0)。来なければ足さない
+            if (typeof next.cost_usd === 'number') spend(next.cost_usd);
+            this.update({ waiting: thinkingLine(next.model) });
+        };
+        /** ツールが読み書きする、この依頼のこと (選んだモデル・費用・カード) */
+        let cards: ChatCard[] = [];
+        const turn: ToolTurn = {
+            get model() { return route?.model ?? null; },
+            spend: (usd) => spend(usd),
+            today: (today) => this.update({ today }),
+            showCard: (card) => { cards.push(card); },
+        };
         /** 終わりに出す知らせ（中止・失敗・途中で止めた） */
         let ending: { tone: 'info' | 'error'; text: string; code?: string } | null = null;
         /** 実行したツールの結果（形を閉じるときに使う） */
@@ -511,18 +595,23 @@ export class AssistantSession {
                     ending = { tone: 'info', text: `Claude を ${MAX_STEPS} 回呼んだので、ここで止めました（1 回の依頼で呼べる上限です）。続きは、もう一度頼んでください` };
                     break;
                 }
-                this.update({ waiting: '考えています…' });
+                const model: string | null = (route as RouteInfo | null)?.model ?? null;
+                this.update({ waiting: thinkingLine(model) });
                 const resp = await apiFetch('/api/assistant/step', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: this.messages, turn_id: turnId, step, stream: true }),
+                    // step 0 はモデルを付けない (ルーターが選ぶ)。2 回目からは、選んだモデルを付ける (依頼の途中で変えない)
+                    body: JSON.stringify({ messages: this.messages, turn_id: turnId, step, stream: true, ...(model ? { model } : {}) }),
                     signal: controller.signal,
                 });
                 if (!resp.ok) throw await toError(resp, 'アシスタントを呼べませんでした。');
                 // 少しずつ届く応答は、流れてきた文を吹き出しに足しながら、最後の行まで読む
-                const data = await this.readStep(resp, controller.signal);
+                const data = await this.readStep(resp, controller.signal, onRoute);
+                // 古い形 (JSON 1 つ) の応答と、route の行が無かった応答は、done の route で決める
+                if (data.route && typeof data.route.model === 'string' && data.route.model) onRoute(data.route);
                 calls += 1;
-                cost = cost !== null && typeof data.cost_usd === 'number' ? cost + data.cost_usd : null;
+                if (typeof data.model === 'string' && data.model) answered = data.model;
+                spend(data.cost_usd);
                 const content = Array.isArray(data.content) ? data.content : [];
                 // 応答の content は、変えずに足す (空の応答は足さない。空のメッセージは、次の呼び出しで断られる)
                 if (content.length > 0) this.messages.push({ role: 'assistant', content });
@@ -559,7 +648,8 @@ export class AssistantSession {
                     if (!commit && isWriteTool(use.name)) commit = deps.beginEdit(`アシスタント: ${requestHead(request)}`);
                     const entries = activityEntries();
                     const mark = entries.length > 0 ? entries[entries.length - 1].id : 0;
-                    const outcome = await runTool(use.name, use.input, deps.env);
+                    cards = [];
+                    const outcome = await runTool(use.name, use.input, deps.env, turn);
                     // この操作のあいだに、動きの記録に増えた行 (ステータスバーの文、API の呼び出し、MIDI の行)
                     const during = activityEntries().filter((entry) => entry.id > mark);
                     if (outcome.ok) {
@@ -572,6 +662,8 @@ export class AssistantSession {
                         this.replace(rowId, { kind: 'tool', id: rowId, name: use.name, state: 'error', text: `${label}: ${outcome.shown}`, activity: during });
                         recordActivity('agent', `できませんでした（${label}）: ${outcome.shown}`);
                     }
+                    // ツールが出したカード (再現ガイド・差分の説明) は、その行の後ろに並べる
+                    for (const card of cards) this.push({ kind: 'card', id: this.id(), ...card });
                 }
                 // 全部の結果を、1 つの user のメッセージにまとめる
                 this.messages.push({ role: 'user', content: uses.map((use) => done.get(use.id) ?? unrunResult(use.id, '中止しました')) });
@@ -607,7 +699,13 @@ export class AssistantSession {
                 const kept = ending.text === '中止しました' && changed ? '中止しました。ここまでに行った操作は残っています（「元に戻す」で戻せます）' : ending.text;
                 items.push({ kind: 'notice', id: this.id(), tone: ending.tone, text: kept, ...(ending.code ? { code: ending.code } : {}) });
             }
-            if (calls > 0 || changed) items.push({ kind: 'turn', id: this.id(), calls, costUsd: cost, changed, undoEntryId });
+            const chosen = route as RouteInfo | null;
+            if (calls > 0 || changed) {
+                items.push({
+                    kind: 'turn', id: this.id(), calls, costUsd: cost, changed, undoEntryId,
+                    model: answered ?? chosen?.model ?? null, reason: chosen?.reason ?? null,
+                });
+            }
             this.controller = null;
             this.update({ items, running: false, waiting: null });
             // 入れ替わったプロジェクトの会話に置き換える (この依頼の並びは、前のプロジェクトのものなので残さない)

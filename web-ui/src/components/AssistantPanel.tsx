@@ -10,6 +10,10 @@
  * - 「新しい会話」を押すと、それまでの会話は「履歴」に残る。履歴の一覧から開き直す・消すことができる
  * - アシスタントの文は、少しずつ届く。流れている途中の吹き出しは、末尾に印を出し、読み上げは確定まで待つ
  * - 画面の入口（ツールが呼ぶもの）は lib/assistant-env.ts。ドックを閉じているあいだも、繰り返しは続く
+ * - 再現ガイドと差分の説明は、会話の中にカードとして出る（components/AssistantCards.tsx）。パネルのボタンからの依頼も、
+ *   ここに届く（ストアの `askAssistant`）
+ * - 依頼ごとに、答えるモデル（Haiku / Sonnet / Opus）を Claude が選ぶ。待っているあいだの 1 行と、依頼の終わりの行に
+ *   モデルの名前を出し、選んだ理由は、終わりの行の名前の説明の吹き出しに出す
  */
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useDaw } from '../lib/store';
@@ -18,10 +22,11 @@ import { useAssistantDeps } from '../lib/assistant-env';
 import { suggestionsFor } from '../lib/assistant-suggestions';
 import { formatActivityTime, tagLabel } from '../lib/activity';
 import { fetchGuideSettings, formatUsd } from '../lib/guide';
-import { assistantBlockedLine, todayLine } from '../lib/claude-usage';
+import { assistantBlockedLine, modelLabel, todayLine } from '../lib/claude-usage';
 import { tip } from '../lib/tooltip';
 import { blockedBy } from '../lib/notice';
 import { ClaudeSendNote, ClaudeSettings } from './ClaudeParts';
+import { CardView } from './AssistantCards';
 
 
 /** 操作ログの行の頭の印と、読み上げの名前。 */
@@ -134,7 +139,7 @@ function ToolLine({ row }: { row: ToolRow }) {
     );
 }
 
-/** 依頼の終わりの行。変えたことが在れば「元に戻す」、Claude を呼んだ回数と概算の費用。 */
+/** 依頼の終わりの行。変えたことが在れば「元に戻す」、答えたモデル（選んだ理由は説明の吹き出し）、Claude を呼んだ回数と概算の費用。 */
 function TurnLine({ row, running }: { row: TurnRow; running: boolean }) {
     const { undo, undoEntryId } = useDaw();
     // この依頼の記録が、元に戻す履歴のいちばん上に在るあいだだけ押せる (その後に別の操作をしたら、それが先に戻ってしまう)
@@ -152,6 +157,13 @@ function TurnLine({ row, running }: { row: TurnRow; running: boolean }) {
             )}
             {row.calls > 0 && (
                 <span className="assistant-turn-usage">
+                    {row.model && (
+                        // 選んだ理由は、名前の説明の吹き出しに出す (キーボードでも出せるよう、フォーカスできるようにする)
+                        <span className="assistant-turn-model" tabIndex={0} aria-label={row.reason ? `${modelLabel(row.model)}（選んだ理由: ${row.reason}）` : undefined}
+                            {...tip(row.reason ? `${modelLabel(row.model)} で答えました。選んだ理由: ${row.reason}` : `${modelLabel(row.model)} で答えました`)}>
+                            {modelLabel(row.model)}
+                        </span>
+                    )}
                     Claude を {row.calls} 回呼びました{row.costUsd !== null ? `（概算 ${formatUsd(row.costUsd)}）` : ''}
                 </span>
             )}
@@ -176,6 +188,8 @@ function Item({ item, running }: { item: ChatItem; running: boolean }) {
             return <ToolLine row={item} />;
         case 'notice':
             return <p className={`assistant-notice ${item.tone}`} role={item.tone === 'error' ? 'alert' : undefined}>{item.text}</p>;
+        case 'card':
+            return <CardView card={item} />;
         case 'turn':
             return <TurnLine row={item} running={running} />;
     }
@@ -347,7 +361,7 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
                     <ClaudeSendNote open={settingsOpen} onToggle={() => {
                         if (settingsOpen) { setShowSettings(false); session.setNeedsKey(false); } else setShowSettings(true);
                     }}>
-                        Claude に送るのは、ここに打った文と、アシスタントが読んだプロジェクトの中身（トラックの名前・ノート・カルテ・再現ガイド・差分の結果）です。音声は送りません。ここに並んだ会話と履歴は、プロジェクトを保存すると、プロジェクトのファイルにも入ります。
+                        Claude に送るのは、ここに打った文と、アシスタントが読んだプロジェクトの中身（トラックの名前・ノート・カルテ・再現ガイド・差分の結果）です。再現ガイドや差分の説明を頼むと、カルテや差分の結果も送ります。音声は送りません。ファイル名も送りません。依頼ごとに、答えるモデル（Haiku・Sonnet・Opus）を Claude Haiku が選びます。ここに並んだ会話と履歴は、プロジェクトを保存すると、プロジェクトのファイルにも入ります。
                     </ClaudeSendNote>
                     <ClaudeSettings idPrefix="assistant" open={settingsOpen} today={state.today}
                         onToday={(today) => session.setToday(today)}
@@ -368,6 +382,8 @@ export function AssistantPanel({ deps, session = assistantSession }: AssistantPa
 export default function AssistantDock() {
     const { assistantOpen } = useDaw();
     const deps = useAssistantDeps();
+    // パネルのボタンからの依頼 (ストアの askAssistant) も、この入口で動かす
+    useEffect(() => assistantSession.attach(deps), [deps]);
     if (!assistantOpen) return null;
     return <AssistantPanel deps={deps} />;
 }

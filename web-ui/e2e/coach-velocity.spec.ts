@@ -10,7 +10,12 @@
  */
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { notesToMidi } from '../src/lib/midi';
-import { FAKE_LLM_URL, openDaw, openNewestLegacy, openTab, startFree, statusText } from './helpers';
+import {
+    FAKE_LLM_URL, assistantChat, assistantDock, openDaw, openNewestLegacy, openTab, raiseDailyLimitDuringFile, startFree, statusText, waitAssistantTurns,
+} from './helpers';
+
+// 説明はアシスタントに頼む (依頼も 1 日の上限に数える) ので、このファイルのあいだだけ上限を上げる
+raiseDailyLimitDuringFile(test);
 
 const note = (name: string, octave: number, step: number, velocity?: number, length = 4) =>
     ({ note: name, octave, step, length, ...(velocity === undefined ? {} : { velocity }) });
@@ -37,16 +42,15 @@ async function importMidi(page: Page, file: ReturnType<typeof midiFile>, modes: 
     await expect(statusText(page)).toContainText('song.mid から');
 }
 
-/** 差分の段を開き、打ち込みのトラックを選んで比べる。説明を探し終わるまで待つ。 */
+/** 差分の段を開き、打ち込みのトラックを選んで比べる。比べ終わるまで待つ。 */
 async function compareWith(page: Page, attempt: string) {
     await openTab(page, '差分');
     await coach(page).getByLabel('比べる打ち込み').selectOption({ label: attempt });
-    const saved = page.waitForResponse((r) => r.url().endsWith('/api/coach/explain/saved'));
-    const diff = page.waitForRequest((r) => r.url().endsWith('/api/coach/diff'));
+    const diffed = page.waitForResponse((r) => r.url().endsWith('/api/coach/diff'));
     await coach(page).getByRole('button', { name: 'お手本と比べる' }).click();
-    const sent = JSON.parse((await diff).postData() ?? '{}');
-    expect((await saved).ok()).toBe(true);
-    return sent;
+    const response = await diffed;
+    expect(response.ok()).toBe(true);
+    return JSON.parse(response.request().postData() ?? '{}');
 }
 
 /** ブラウザごとに違う数 (説明の保存がブラウザをまたいで使われないように)。 */
@@ -68,10 +72,16 @@ test('MIDI のお手本では、強さの違いがまとまりで出る。押す
     await expect(strength(page)).toContainText('合った 8 ノートの強さを比べました（お手本より弱い 8）');
     const finding = strength(page).getByRole('button', { name: /^全体に弱い: 合った 8 ノートのうち 8 ノートが、お手本より弱くなっています（強さの差は 50 ほど）$/ });
     await expect(finding).toBeVisible();
-    // 違うのは強さだけなので、Claude は呼ばずに、強さの欄へ案内する
-    await expect(coach(page).getByText(/次は「強さの違い」の欄を見て/)).toBeVisible();
-    await expect(coach(page).getByText(/違うのは強さだけで、上の「強さの違い」を読めば足りるので、Claude は呼んでいません/)).toBeVisible();
     await test.info().attach('coach-velocity', { body: await coach(page).screenshot(), contentType: 'image/png' });
+    // 説明を頼んでも、違うのは強さだけなので、説明の Claude は呼ばずに、強さの欄へ案内する (チャットのカード)
+    const explainBefore = (await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()).explain;
+    await coach(page).getByRole('button', { name: 'Claude に説明してもらう' }).click();
+    await waitAssistantTurns(page, 1, '説明の依頼');
+    const card = assistantChat(page).getByRole('region', { name: '差分の説明（Mine）' });
+    await expect(card).toContainText(/次は「強さの違い」の欄を見て/);
+    await expect(card).toContainText('違うのは強さだけで、差分の段の「強さの違い」を読めば足りるので、Claude は呼んでいません');
+    expect((await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()).explain).toBe(explainBefore);
+    await assistantDock(page).getByRole('button', { name: 'アシスタントを閉じる' }).click();
 
     // まとまりを押すと、比べたトラックがピアノロールに開き、当たるノートが選ばれる
     await finding.click();
@@ -121,8 +131,11 @@ test('強さの違いは、Claude の説明の材料にもなる (MIDI のお手
     await expect(coach(page).getByText('抜け 3 / 余分なノート 1')).toBeVisible();
     await expect(strength(page).getByRole('button', { name: /^強弱が付いていません: 打ち込みの強さは 96 で一定ですが、お手本は 60〜120 の幅があります$/ })).toBeVisible();
 
+    // 説明はアシスタントが作り、チャットのカードに出る
     await coach(page).getByRole('button', { name: 'Claude に説明してもらう' }).click();
-    const points = coach(page).getByRole('list', { name: '見直すとよい点' }).locator(':scope > li');
+    await expect(assistantDock(page)).toBeVisible();
+    await waitAssistantTurns(page, 1, '説明の依頼');
+    const points = assistantChat(page).getByRole('region', { name: '差分の説明（Mine）' }).getByRole('list', { name: '見直すとよい点' }).locator(':scope > li');
     // 偽の Claude は、強さの事実が届いたときだけ、3 つ目の点 (強さ) を返す
     await expect(points).toHaveCount(3);
     await expect(points.nth(2)).toContainText('強さを見直す');

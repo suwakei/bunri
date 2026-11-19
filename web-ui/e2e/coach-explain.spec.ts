@@ -1,5 +1,6 @@
 /**
- * 差分の説明 (第3層の言語化) を、画面から通す。
+ * 差分の説明 (第3層の言語化) を、画面から通す。「差分」の段の「Claude に説明してもらう」は、アシスタント (右のドック) に
+ * 依頼を送るだけで、アシスタントがツール `explain_diff` で説明を作り、チャットにカードとして出す。
  *
  * 本物の Claude は呼ばない。API サーバは偽の Claude サーバ (fake-anthropic.mjs) を呼び、偽のサーバは、
  * 送られてきた事実の指摘の ID と小節を指す説明を返す。偽のサーバは呼ばれた回数を数えているので、
@@ -9,9 +10,14 @@
  * 片方のテストで保存した説明が、もう片方で使われないようにしてある。
  */
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
-import { FAKE_LLM_URL, openDaw, openTab, openNewestLegacy } from './helpers';
+import {
+    askAssistantInDock, assistantChat, assistantDock, fakeLlmCalls, openDaw, openNewestLegacy, openTab, raiseDailyLimitDuringFile, waitAssistantTurns,
+} from './helpers';
 
 test.skip(Boolean(process.env.BUNRI_E2E_LLM), '偽の Claude サーバを相手にするテスト。本物を呼ぶ BUNRI_E2E_LLM=1 のときは走らせない');
+
+// アシスタントの依頼も 1 日の上限に数えるので、このファイルのあいだだけ上げる
+raiseDailyLimitDuringFile(test);
 
 const note = (name: string, octave: number, step: number, length = 4) => ({ note: name, octave, step, length });
 
@@ -41,17 +47,25 @@ async function loadProject(page: Page, request: APIRequestContext, attempt: Retu
 
 /** 差分の説明を Claude (偽) に作らせた回数。 */
 async function explainCalls(page: Page): Promise<number> {
-    return (await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()).explain;
+    return (await fakeLlmCalls(page)).explain;
 }
 
-/** 差分の段を開いて比べ、説明を探し終わるまで待つ。差分のパネルを返す。 */
+/** 差分の段を開いて比べる。差分のパネルを返す。パネルは、説明の API を呼ばない。 */
 async function compare(page: Page) {
     await openTab(page, '差分');
     const coach = page.locator('#coach-panel');
-    const saved = page.waitForResponse((r) => r.url().endsWith('/api/coach/explain/saved'));
+    const diffed = page.waitForResponse((r) => r.url().endsWith('/api/coach/diff'));
     await coach.getByRole('button', { name: 'お手本と比べる' }).click();
-    expect((await saved).ok()).toBe(true);
+    expect((await diffed).ok()).toBe(true);
     return coach;
+}
+
+/** 差分の段の「Claude に説明してもらう」で頼み、答え終わるまで待つ。説明のカードを返す。 */
+async function askExplain(page: Page, coach: ReturnType<Page['locator']>, turns: number) {
+    await coach.getByRole('button', { name: 'Claude に説明してもらう' }).click();
+    await expect(assistantDock(page)).toBeVisible();
+    await waitAssistantTurns(page, turns, '説明の依頼');
+    return assistantChat(page).getByRole('region', { name: '差分の説明（Track 1）' }).last();
 }
 
 /** ブラウザごとに違う数 (説明の保存がブラウザをまたいで使われないように)。 */
@@ -63,30 +77,35 @@ function timeAt(bar: number, beat: number) {
     return `${Math.floor(sec / 60)}:${(sec % 60).toFixed(1).padStart(4, '0')}`;
 }
 
-test('Claude に説明してもらうと、点と場所の札が出て、札を押すとその小節へ移り、指摘の一覧で示す', async ({ page, request }, testInfo) => {
+test('「Claude に説明してもらう」でドックが開き、選んだモデルの説明がカードに出る。札を押すとその小節へ移り、差分の段の一覧で示す', async ({ page, request }, testInfo) => {
     await loadProject(page, request, attemptWithManyIssues(variantOf(testInfo, 0)));
-    const before = await explainCalls(page);
+    const before = await fakeLlmCalls(page);
+    const savedLookups: string[] = [];
+    page.on('request', (r) => { if (r.url().includes('/api/coach/explain')) savedLookups.push(r.url()); });
     const coach = await compare(page);
     await expect(coach.getByText('抜け 1 / 高さの違い 2 / 余分なノート 1')).toBeVisible();
-    // まだ保存済みの説明は無い。比べただけでは Claude を呼ばない
-    const ask = coach.getByRole('button', { name: 'Claude に説明してもらう' });
-    await expect(ask).toBeVisible();
-    await expect(coach.getByText(/差分チェックの結果）を Anthropic の Claude に送ります/)).toBeVisible();
-    expect(await explainCalls(page)).toBe(before);
+    // 比べただけでは、説明の API を呼ばない (保存済みも探さない)。設定の欄はドックにだけ在る
+    await expect(coach.getByRole('button', { name: 'Claude に説明してもらう' })).toBeVisible();
+    await expect(coach.getByText(/差分チェックの結果）を\s*Anthropic の Claude に送ります/)).toBeVisible();
+    await expect(coach.getByRole('button', { name: 'API キーと上限の設定' })).toHaveCount(0);
+    expect(savedLookups).toEqual([]);
 
-    await ask.click();
-    const points = coach.getByRole('list', { name: '見直すとよい点' }).locator(':scope > li');
+    const card = await askExplain(page, coach, 1);
+    await expect(assistantChat(page).locator('.assistant-msg.user')).toHaveText('あなた: 差分を説明して（Track 1）');
+    const points = card.getByRole('list', { name: '見直すとよい点' }).locator(':scope > li');
     await expect(points).toHaveCount(2);
-    expect(await explainCalls(page)).toBe(before + 1);
-    await expect(coach).toContainText('これはテスト用の偽の説明です。お手本との違いが');
+    const after = await fakeLlmCalls(page);
+    expect(after.explain).toBe(before.explain + 1);
+    // 依頼ごとにルーターが 1 回だけ選び (偽のルーターは「説明」で Sonnet)、説明もそのモデルで作る
+    expect(after.router).toBe(before.router + 1);
+    expect(after.models.explain.at(-1)).toBe('claude-sonnet-5-5');
+    await expect(card).toContainText('これはテスト用の偽の説明です。お手本との違いが');
     await expect(points.first()).toContainText('考えられる理由');
-    // 使った量と今日の累計 (再現ガイドと同じ出し方)
-    await expect(coach.locator('#coach-usage')).toContainText('入力 3,020 トークン');
-    await expect(coach.locator('#coach-today')).toContainText(/今日 Claude を呼んだ回数: \d+ 回/);
-    await expect(coach.getByRole('button', { name: '説明を作り直す（費用がかかります）' })).toBeVisible();
-    await test.info().attach('coach-explanation', { body: await coach.screenshot(), contentType: 'image/png' });
+    await expect(card).toContainText('この説明を作ったときの使用量: 入力 3,020 トークン');
+    await expect(assistantChat(page).locator('.assistant-turn-model')).toHaveText('Sonnet');
+    await test.info().attach('coach-explanation-card', { body: await assistantDock(page).screenshot(), contentType: 'image/png' });
 
-    // 1 つ目の点の札 (指摘を指す) を押すと、その拍へ移り、指摘の一覧の行が示される
+    // 1 つ目の点の札 (指摘を指す) を押すと、その拍へ移り、差分の段の指摘の一覧の行が示される
     const chip = points.first().locator('.coach-refs button').first();
     const [, bar, beat] = (await chip.textContent())!.match(/(\d+) 小節 (\d+) 拍目/)!.map(Number);
     await chip.click();
@@ -103,44 +122,46 @@ test('Claude に説明してもらうと、点と場所の札が出て、札を�
     await expect(page.locator('#time-display')).toHaveText(timeAt(barOnly, 1));
     await expect(highlighted).toHaveCount(0);
 
-    // 「最初にやること」の札でも移れる
-    await coach.getByRole('button', { name: `${bar} 小節へ` }).click();
+    // 「最初にやること」の札でも移れる。キーボードでも押せる
+    const nextChip = card.getByRole('button', { name: `${bar} 小節へ` });
+    await nextChip.focus();
+    await page.keyboard.press('Enter');
     await expect(page.locator('#time-display')).toHaveText(timeAt(bar, 1));
 });
 
-test('同じ打ち込みで比べ直すと、保存済みの説明が Claude を呼ばずに出る。作り直したときだけ呼ぶ', async ({ page, request }, testInfo) => {
+test('同じ打ち込みで比べ直して頼むと、保存済みの説明が出て、説明は作り直さない。作り直してと頼んだときだけ作る', async ({ page, request }, testInfo) => {
     const attempt = attemptWithManyIssues(variantOf(testInfo, 1));
     await loadProject(page, request, attempt);
     let coach = await compare(page);
-    await coach.getByRole('button', { name: 'Claude に説明してもらう' }).click();
-    await expect(coach.getByRole('list', { name: '見直すとよい点' })).toBeVisible();
+    await askExplain(page, coach, 1);
     const afterFirst = await explainCalls(page);
 
-    // 開き直して、同じ打ち込みで比べ直す。押さなくても説明が出て、Claude は呼ばれない
+    // 開き直して、同じ打ち込みで比べ直し、もう一度頼む。保存済みが出て、説明の Claude は呼ばれない
     await loadProject(page, request, attempt);
     coach = await compare(page);
-    await expect(coach.getByRole('list', { name: '見直すとよい点' }).locator(':scope > li')).toHaveCount(2);
-    await expect(coach.getByText(/この説明は保存済みです/)).toBeVisible();
+    const card = await askExplain(page, coach, 1);
+    await expect(card.getByRole('list', { name: '見直すとよい点' }).locator(':scope > li')).toHaveCount(2);
+    await expect(card).toContainText('保存済みの説明を出しました（Claude は呼んでいません');
     expect(await explainCalls(page)).toBe(afterFirst);
 
-    // 作り直すと明示的に押したときだけ、もう一度呼ぶ
-    await coach.getByRole('button', { name: '説明を作り直す（費用がかかります）' }).click();
+    // 作り直してと頼んだときだけ、もう一度呼ぶ
+    await askAssistantInDock(page, '説明を作り直して', 2);
     await expect.poll(() => explainCalls(page)).toBe(afterFirst + 1);
-    await expect(coach.getByRole('list', { name: '見直すとよい点' }).locator(':scope > li')).toHaveCount(2);
+    await expect(assistantChat(page).locator('.assistant-card')).toHaveCount(2);
 });
 
-test('違いがごく少ないときは、Claude を呼ばずに決まった文の案内が出る', async ({ page, request }) => {
+test('違いがごく少ないときは、説明の Claude を呼ばずに、決まった文の案内がカードに出る', async ({ page, request }) => {
     // 違いは 1 か所だけ (E4 の抜け)
     await loadProject(page, request, REFERENCE.filter((_, i) => i !== 1));
     const before = await explainCalls(page);
     const coach = await compare(page);
-    await expect(coach.getByText('違いは 1 か所だけです。', { exact: false })).toBeVisible();
-    await expect(coach.getByText(/違いが少なく一覧を読めば足りるので、Claude は呼んでいません/)).toBeVisible();
-    // 費用はかからないので、頼むボタンも費用の表示も出さない
-    await expect(coach.getByRole('button', { name: 'Claude に説明してもらう' })).toHaveCount(0);
-    await expect(coach.locator('#coach-usage')).toHaveCount(0);
+    const card = await askExplain(page, coach, 1);
+    await expect(card).toContainText('違いは 1 か所だけです。');
+    await expect(card).toContainText('違いが少なく一覧を読めば足りるので、Claude は呼んでいません');
+    // 費用はかからないので、使用量は出さない
+    await expect(card).not.toContainText('使用量');
     expect(await explainCalls(page)).toBe(before);
     // 案内の小節へも移れる
-    await coach.getByRole('button', { name: '1 小節へ' }).click();
+    await card.getByRole('button', { name: '1 小節へ' }).click();
     await expect(page.locator('#time-display')).toHaveText('0:00.0');
 });

@@ -24,7 +24,14 @@ from httpx import ASGITransport, AsyncClient
 import assistant
 import guide_usage
 import llm_settings
+import model_router
 import reproduction_guide as rg
+
+# ルーター（依頼ごとのモデル選び）の本物。ほとんどのテストは、決まった結果を返す偽物に差し替える（``routed``）
+_REAL_CHOOSE = model_router.choose
+
+# 偽物のルーターが返す結果。既存のテストの偽の応答（Opus）と合わせる
+ROUTE = {"model": "claude-opus-5-5", "tier": "opus", "reason": "テスト用の選択", "cost_usd": 0.0}
 
 USAGE = {"input_tokens": 900, "output_tokens": 300, "cache_read_input_tokens": 2500,
          "cache_creation_input_tokens": 0, "thinking_tokens": 120}
@@ -207,6 +214,27 @@ def data_dir(monkeypatch, tmp_path):
     return tmp_path
 
 
+def _open(messages, turn_id, step, **kwargs):
+    """``stream_step`` を開く。依頼の最初の呼び出しなら、最初の行（選んだモデル）を読んで確かめ、残りの行を出すものを返す"""
+    events = assistant.stream_step(messages, turn_id, step, **kwargs)
+    if step == 0:
+        assert next(events) == {"type": "route", **ROUTE}
+    return events
+
+
+@pytest.fixture(autouse=True)
+def routed(monkeypatch):
+    """ルーターを、Claude を呼ばずに決まった結果（``ROUTE``）を返す偽物にする。呼ばれた引数が入る"""
+    calls = []
+
+    def choose(messages, turn_id=None, client=None):
+        calls.append({"messages": messages, "turn_id": turn_id, "client": client})
+        return dict(ROUTE)
+
+    monkeypatch.setattr(model_router, "choose", choose)
+    return calls
+
+
 class TestLedger:
     """ツールの台帳（assistant_tools.json）の健全性"""
 
@@ -269,6 +297,30 @@ class TestLedger:
             assert word in quantize["description"], word
         assert "no 16th grid" not in quantize["description"]
 
+    def test_ガイドを作る_差分を説明する_ツールが在る(self):
+        """どちらもプロジェクトを変えない（読むだけ）。結果はカードとして利用者に見えている"""
+        tools = {tool["name"]: tool for tool in assistant.load_ledger()}
+        guide, explain = tools["make_guide"], tools["explain_diff"]
+        assert (guide["access"], guide["label"]) == ("read", "再現ガイドを作る")
+        assert (explain["access"], explain["label"]) == ("read", "差分を説明する")
+        assert set(guide["input_schema"]["properties"]) == {"focus_section", "regenerate"}
+        assert set(explain["input_schema"]["properties"]) == {"track_id", "regenerate"}
+        assert guide["input_schema"]["properties"]["focus_section"]["type"] == "string"
+        assert explain["input_schema"]["properties"]["track_id"]["type"] == "integer"
+        for tool in (guide, explain):
+            assert "required" not in tool["input_schema"], tool["name"]
+            assert tool["input_schema"]["properties"]["regenerate"]["type"] == "boolean"
+            assert "card" in tool["description"] and "Do not repeat" in tool["description"], tool["name"]
+        # 読むだけの get_guide は残し、作るのは make_guide だと書く
+        assert "make_guide" in tools["get_guide"]["description"] and "you cannot" not in tools["get_guide"]["description"]
+        assert "check_diff" in tools
+
+    def test_指示文に_ガイドと説明の使い方が在る(self):
+        prompt = assistant.SYSTEM_PROMPT
+        for word in ("make_guide", "explain_diff", "get_guide", "card", "Do not repeat their contents",
+                     "ガイドを作って", "差分を説明して", "どこを直せばいい？"):
+            assert word in prompt, word
+
     def test_指示文に_小数のステップの説明が在る(self):
         prompt = assistant.SYSTEM_PROMPT
         assert "one step is a 16th note" in prompt
@@ -296,7 +348,9 @@ class TestBuildRequest:
 
     def test_モデルと思考の深さと_応答の上限(self):
         request = assistant.build_request(_conversation())
-        assert request["model"] == "claude-opus-5-5" == llm_settings.model()
+        # モデルを渡さなければ既定のモデル（Haiku 5.5）。渡せば、そのモデル
+        assert request["model"] == "claude-haiku-5-5" == llm_settings.model() == llm_settings.DEFAULT_MODEL
+        assert assistant.build_request(_conversation(), "claude-sonnet-5-5")["model"] == "claude-sonnet-5-5"
         assert request["max_tokens"] == assistant.MAX_TOKENS == 16000
         assert request["output_config"] == {"effort": "medium"}
 
@@ -307,11 +361,13 @@ class TestBuildRequest:
         assert "format" not in request["output_config"]
 
     def test_断られたら別のモデルに回す指定を付ける_Haikuには付けない(self, monkeypatch):
-        request = assistant.build_request(_conversation())
-        assert request["betas"] == ["server-side-fallback-2026-07-01"] and request["fallbacks"] == "default"
-        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-haiku-5-5")
+        for model in ("claude-opus-5-5", "claude-sonnet-5-5"):
+            request = assistant.build_request(_conversation(), model)
+            assert request["betas"] == ["server-side-fallback-2026-07-01"] and request["fallbacks"] == "default"
         haiku = assistant.build_request(_conversation())
         assert haiku["model"] == "claude-haiku-5-5" and "betas" not in haiku and "fallbacks" not in haiku
+        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-opus-5-5")
+        assert assistant.build_request(_conversation())["fallbacks"] == "default"
 
     def test_会話は_受け取ったまま渡す(self):
         messages = _conversation()
@@ -368,7 +424,7 @@ class TestBuildRequest:
         client = anthropic.Anthropic(api_key="test-key-not-real", max_retries=0,
                                      http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
         messages = _conversation()
-        result = assistant.step(messages, "turn-1", 1, client=client)
+        result = assistant.step(messages, "turn-1", 1, client=client, model="claude-opus-5-5")
 
         body = seen["body"]
         assert seen["beta"] == "server-side-fallback-2026-07-01"
@@ -382,6 +438,130 @@ class TestBuildRequest:
             "type": "tool_use", "id": "toolu_09", "name": "get_project", "input": {}}
         assert result["usage"] == {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
                                    "cache_creation_input_tokens": 3000, "thinking_tokens": 2}
+
+
+class _RoutingClient(FakeClient):
+    """ルーターの呼び出し（出力の形を固定したもの）には選んだ結果を、アシスタントの呼び出しにはふつうの応答を返す"""
+
+    def __init__(self, route_payload=None, route_error=None, **kwargs):
+        super().__init__(**kwargs)
+        self.router_calls = []
+        self._route_payload = route_payload or {"tier": "sonnet", "reason": "8 小節のベースを考えるので"}
+        self._route_error = route_error
+        assistant_create = self.beta.messages.create
+
+        def create(**request):
+            if "format" in request.get("output_config", {}):
+                self.router_calls.append(request)
+                if self._route_error is not None:
+                    raise self._route_error
+                return SimpleNamespace(
+                    stop_reason="end_turn", model="claude-haiku-5-5",
+                    content=[SimpleNamespace(type="text", text=json.dumps(self._route_payload, ensure_ascii=False))],
+                    usage=SimpleNamespace(input_tokens=100, output_tokens=30, cache_read_input_tokens=0,
+                                          cache_creation_input_tokens=0, output_tokens_details=None))
+            return assistant_create(**request)
+
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=create, stream=self.beta.messages.stream))
+
+
+class TestRoute:
+    """答えるモデルを、依頼ごとに 1 回だけ選ぶ（依頼の最初の呼び出しで、指定が無いとき）"""
+
+    def test_依頼の最初の呼び出しは_ルーターが選んだモデルで呼ぶ(self, routed, monkeypatch):
+        monkeypatch.setitem(ROUTE, "model", "claude-sonnet-5-5")
+        monkeypatch.setitem(ROUTE, "tier", "sonnet")
+        client = FakeClient()
+        messages = [_user("ベースを置いて")]
+        result = assistant.step(messages, "turn-1", 0, client=client)
+        assert routed == [{"messages": messages, "turn_id": "turn-1", "client": client}]
+        assert result["route"] == ROUTE and client.calls[0]["model"] == "claude-sonnet-5-5"
+        assert client.calls[0]["fallbacks"] == "default"
+        (record,) = guide_usage.read_records()
+        assert record["requested_model"] == "claude-sonnet-5-5"
+
+    def test_続きの呼び出しは_送られたモデルを使い_選び直さない(self, routed):
+        client = FakeClient()
+        result = assistant.step(_conversation(), "turn-1", 1, client=client, model="claude-sonnet-5-5")
+        assert routed == [] and "route" not in result
+        assert client.calls[0]["model"] == "claude-sonnet-5-5"
+        *_, done = assistant.stream_step(_conversation(), "turn-1", 2, client=client, model="claude-opus-5-5")
+        assert routed == [] and "route" not in done and client.calls[1]["model"] == "claude-opus-5-5"
+
+    def test_続きの呼び出しでモデルが無ければ_既定のモデル(self, routed):
+        client = FakeClient()
+        result = assistant.step(_conversation(), "turn-1", 1, client=client)
+        assert routed == [] and "route" not in result and client.calls[0]["model"] == "claude-haiku-5-5"
+
+    def test_最初の呼び出しでもモデルが在れば_選ばずに使う(self, routed):
+        client = FakeClient()
+        result = assistant.step([_user("ベースを置いて")], "turn-1", 0, client=client, model="claude-opus-5-5")
+        assert routed == [] and client.calls[0]["model"] == "claude-opus-5-5"
+        assert result["route"] == {"model": "claude-opus-5-5", "tier": "opus", "reason": "指定されたモデル",
+                                   "cost_usd": 0.0}
+
+    def test_上限に達していたら_ルーターも呼ばない(self, routed):
+        guide_usage.update_settings({"daily_limit_calls": 0})
+        client = FakeClient()
+        with pytest.raises(rg.GuideError) as e:
+            assistant.step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        assert e.value.code == "daily_limit" and routed == [] and client.calls == []
+        with pytest.raises(rg.GuideError):
+            assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        assert routed == [] and client.calls == []
+
+    @pytest.mark.parametrize("model", ["claude-opus-4-8", "opus", 5, ["claude-haiku-5-5"]])
+    def test_知らないモデルは_呼ばずに断る(self, routed, model):
+        client = FakeClient()
+        for step in (0, 1):
+            with pytest.raises(rg.GuideError) as e:
+                assistant.step(_conversation() if step else [_user("x")], "turn-1", step, client=client, model=model)
+            assert e.value.code == "invalid"
+            with pytest.raises(rg.GuideError):
+                assistant.stream_step([_user("x")], "turn-1", step, client=client, model=model)
+        assert routed == [] and client.calls == [] and guide_usage.read_records() == []
+
+    def test_本物のルーターで_選んで_記録は2行_回数は1つ(self, monkeypatch):
+        monkeypatch.setattr(model_router, "choose", _REAL_CHOOSE)
+        client = _RoutingClient()
+        events = list(assistant.stream_step([_user("サビのベースを 8 小節考えて")], "turn-1", 0, client=client))
+        route = events[0]
+        assert route["type"] == "route" and (route["model"], route["tier"]) == ("claude-sonnet-5-5", "sonnet")
+        assert route["reason"] == "8 小節のベースを考えるので" and route["cost_usd"] > 0
+        assert events[-1]["type"] == "done" and events[-1]["route"] == {k: v for k, v in route.items() if k != "type"}
+        assert len(client.router_calls) == 1 and client.calls[0]["model"] == "claude-sonnet-5-5"
+        # ルーターには、依頼の文だけを渡している（ツールの台帳や指示文は渡さない）
+        assert "tools" not in client.router_calls[0]
+        assert "サビのベースを 8 小節考えて" in client.router_calls[0]["messages"][0]["content"]
+        router, call = guide_usage.read_records()
+        assert (router["feature"], router["turn"], router["ok"]) == ("router", "turn-1", True)
+        assert (call["feature"], call["turn"], call["step"], call["requested_model"]) == (
+            "assistant", "turn-1", 0, "claude-sonnet-5-5")
+        today = guide_usage.today()
+        assert today["calls"] == 1
+        assert today["cost_usd"] == pytest.approx(router["cost_usd"] + call["cost_usd"], abs=1e-4)
+
+    def test_ルーターが失敗しても_Haikuで続ける(self, monkeypatch):
+        monkeypatch.setattr(model_router, "choose", _REAL_CHOOSE)
+        client = _RoutingClient(route_error=_api_error(anthropic.RateLimitError, 429))
+        result = assistant.step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        assert result["route"] == {"model": "claude-haiku-5-5", "tier": "haiku",
+                                   "reason": "判断できなかったので Haiku", "cost_usd": 0.0}
+        assert client.calls[0]["model"] == "claude-haiku-5-5" and "fallbacks" not in client.calls[0]
+        router, call = guide_usage.read_records()
+        assert (router["feature"], router["ok"], router["error"]) == ("router", False, "rate_limit")
+        assert call["ok"] is True
+
+    def test_設定で固定されていれば_ルーターを呼ばない(self, monkeypatch):
+        monkeypatch.setattr(model_router, "choose", _REAL_CHOOSE)
+        monkeypatch.setenv("BUNRI_GUIDE_MODEL", "claude-opus-5-5")
+        client = _RoutingClient()
+        result = assistant.step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        assert result["route"] == {"model": "claude-opus-5-5", "tier": "opus", "reason": "設定で固定", "cost_usd": 0.0}
+        assert client.router_calls == [] and client.calls[0]["model"] == "claude-opus-5-5"
+        # 続きの呼び出しで別のモデルが送られても、固定のモデルを使う
+        assistant.step(_conversation(), "turn-1", 1, client=client, model="claude-haiku-5-5")
+        assert client.calls[1]["model"] == "claude-opus-5-5"
 
 
 class TestResponseContent:
@@ -460,7 +640,8 @@ class TestResponseContent:
     def test_ふつうの終わり方は_そのまま返す(self, stop_reason):
         client = FakeClient(content=_tool_use_content(), stop_reason=stop_reason)
         result = assistant.step([_user("ベースを置いて")], "turn-1", 0, client=client)
-        assert set(result) == {"content", "stop_reason", "model", "usage", "cost_usd"}
+        assert set(result) == {"content", "stop_reason", "model", "usage", "cost_usd", "route"}
+        assert result["route"] == ROUTE
         assert result["stop_reason"] == stop_reason and result["model"] == "claude-opus-5-5"
         assert result["usage"] == USAGE
         assert result["cost_usd"] == pytest.approx(guide_usage.estimate_cost("claude-opus-5-5", USAGE))
@@ -659,7 +840,7 @@ class TestUsageRecord:
         first, second = guide_usage.read_records()
         assert (first["feature"], first["turn"], first["step"]) == ("assistant", "turn-abc", 0)
         assert (second["feature"], second["turn"], second["step"]) == ("assistant", "turn-abc", 1)
-        assert first["version"] == assistant.ASSISTANT_VERSION == 5
+        assert first["version"] == assistant.ASSISTANT_VERSION == 6
         assert first["ok"] is True and first["error"] is None
         assert first["focus"] is None and first["chart"] is None
         assert first["effort"] == "medium" and first["cache_ttl"] == "5m"
@@ -793,11 +974,14 @@ class TestStream:
 
     def test_文の差分_ツールの始まり_最後の行の順に出す(self):
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        route, *events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        # 依頼の最初の呼び出しでは、選んだモデルを文より前に知らせる
+        assert route == {"type": "route", **ROUTE}
         assert [event["type"] for event in events] == ["text", "text", "tool", "done"]
         assert events[0] == {"type": "text", "text": "ベースを"} and events[1] == {"type": "text", "text": "置きます。"}
         assert events[2] == {"type": "tool", "name": "add_notes"}
-        assert set(events[3]) == {"type", "content", "stop_reason", "model", "usage", "cost_usd"}
+        assert set(events[3]) == {"type", "content", "stop_reason", "model", "usage", "cost_usd", "route"}
+        assert events[3]["route"] == ROUTE
         # 思考の差分は流さない（最後の行の content には、署名ごと残る）
         assert "ひみつの考え" not in json.dumps(events[:3], ensure_ascii=False)
         assert events[3]["content"][0] == {"type": "thinking", "thinking": "", "signature": "c2lnLXRvb2w="}
@@ -823,7 +1007,7 @@ class TestStream:
         """ツール定義に eager_input_streaming を付けない。thinking も指定しない"""
         client = FakeClient()
         messages = _conversation()
-        list(assistant.stream_step(messages, "turn-1", 1, client=client))
+        list(_open(messages, "turn-1", 1, client=client))
         assert client.calls == [assistant.build_request(messages)]
         sent = client.calls[0]
         assert sent["messages"] is messages
@@ -839,7 +1023,7 @@ class TestStream:
 
     def test_文だけの応答は_ツールの行を出さずに終わる(self):
         client = FakeClient()
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=client))
         assert [event["type"] for event in events] == ["text", "text", "done"]
         assert "".join(event["text"] for event in events[:2]) == "置きました。"
         assert events[2]["stop_reason"] == "end_turn" and events[2]["content"] == [{"type": "text", "text": "置きました。"}]
@@ -853,19 +1037,19 @@ class TestStream:
         """ジェネレータを回し始めるのを待たずに、stream_step そのものが失敗する（HTTP エラーにできる）"""
         client = FakeClient()
         with pytest.raises(rg.GuideError) as e:
-            assistant.stream_step(messages, turn_id, step, client=client)
+            _open(messages, turn_id, step, client=client)
         assert e.value.code == "invalid" and client.calls == [] and guide_usage.read_records() == []
 
     def test_上限で断るのは_依頼の最初の呼び出しだけ(self):
         guide_usage.update_settings({"daily_limit_calls": 1})
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        list(_open([_user("ベースを置いて")], "turn-1", 0, client=client))
         with pytest.raises(rg.GuideError) as e:
-            assistant.stream_step([_user("ドラムも置いて")], "turn-2", 0, client=client)
+            _open([_user("ドラムも置いて")], "turn-2", 0, client=client)
         assert e.value.code == "daily_limit" and "アシスタント" in str(e.value)
         assert len(client.calls) == 1 and len(guide_usage.read_records()) == 1
         # 続きの呼び出しは通す（ツールで変えかけたまま止まらないように）
-        events = list(assistant.stream_step(_conversation(), "turn-1", 1, client=client))
+        events = list(_open(_conversation(), "turn-1", 1, client=client))
         assert events[-1]["type"] == "done" and len(client.calls) == 2
         assert guide_usage.today()["calls"] == 1
 
@@ -879,7 +1063,7 @@ class TestStream:
     def test_接続を開いた時点の失敗は_返す前に例外で出す(self, error, code):
         client = FakeClient(error=error)
         with pytest.raises(rg.GuideError) as e:
-            assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+            _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         assert e.value.code == code and str(e.value) and "sk-" not in str(e.value)
         # 呼び出しは 1 回。応答が返らなかった失敗として記録する（回数には数えない）
         assert len(client.calls) == 1 and client.streams == []
@@ -891,7 +1075,7 @@ class TestStream:
 
     def test_開く時点の関係のない例外は_そのまま上げる(self):
         with pytest.raises(TypeError):
-            assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=FakeClient(error=TypeError("別の誤り")))
+            _open([_user("ベースを置いて")], "turn-1", 0, client=FakeClient(error=TypeError("別の誤り")))
 
     @pytest.mark.parametrize("error, code, phrase", [
         (_api_error(anthropic.APIStatusError, 529), "api", "529"),
@@ -903,7 +1087,7 @@ class TestStream:
     def test_途中の失敗は_例外にせず_最後のerrorの行にする(self, error, code, phrase):
         # 文の差分を 1 つ出した後（8 番目のイベントの前）で失敗する
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use", broken=(8, error))
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=client))
         assert [event["type"] for event in events] == ["text", "error"]
         assert set(events[1]) == {"type", "detail"} and set(events[1]["detail"]) == {"message", "code"}
         assert events[1]["detail"]["code"] == code and phrase in events[1]["detail"]["message"]
@@ -917,7 +1101,7 @@ class TestStream:
 
     def test_1つも届かないうちの失敗は_応答が返らなかった失敗として記録する(self):
         client = FakeClient(broken=(0, httpx2.ReadError("connection reset")))
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=client))
         assert [event["type"] for event in events] == ["error"] and events[0]["detail"]["code"] == "network"
         (record,) = guide_usage.read_records()
         assert (record["ok"], record["error"]) == (False, "network")
@@ -930,7 +1114,7 @@ class TestStream:
     def test_断られた応答と_想定していない終わり方は_errorの行にする(self, stop_reason, code):
         """終わり方の扱いは、まとめて返す経路と同じ"""
         client = FakeClient(stop_reason=stop_reason)
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=client))
         assert [event["type"] for event in events] == ["text", "text", "error"]
         with pytest.raises(rg.GuideError) as plain:
             assistant.step([_user("ベースを置いて")], "turn-2", 0, client=FakeClient(stop_reason=stop_reason))
@@ -942,7 +1126,7 @@ class TestStream:
 
     def test_途中で閉じられたら_ストリームを閉じて_cancelledで記録する(self):
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         assert next(events) == {"type": "text", "text": "ベースを"}
         assert client.streams[0].closed == 0 and guide_usage.read_records() == []
         events.close()
@@ -961,7 +1145,7 @@ class TestStream:
     def test_1行も読まれずに閉じられても_ストリームを閉じて記録する(self):
         """画面が、応答の本文を読み始める前に切った場合"""
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         events.close()
         assert client.streams[0].closed == 1
         (record,) = guide_usage.read_records()
@@ -972,7 +1156,7 @@ class TestStream:
     def test_閉じずに捨てられても_ストリームを閉じて記録する(self):
         """StreamingResponse は、途中で切られたジェネレータを close() せずに手放す"""
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         next(events)
         del events
         gc.collect()
@@ -981,7 +1165,7 @@ class TestStream:
 
     def test_最後の行の後で閉じても_記録は成功の1行だけ(self):
         client = FakeClient()
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         assert [event["type"] for event in (next(events), next(events), next(events))] == ["text", "text", "done"]
         events.close()
         (record,) = guide_usage.read_records()
@@ -989,7 +1173,7 @@ class TestStream:
 
     def test_想定していない例外は_そのまま上げるが_ストリームは閉じて記録する(self):
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use", broken=(8, RuntimeError("別の誤り")))
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=client)
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=client)
         assert next(events)["type"] == "text"
         with pytest.raises(RuntimeError):
             next(events)
@@ -1001,8 +1185,8 @@ class TestStream:
         secret = "sk-ant-secret-key-value"
         monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
         client = FakeClient(content=_tool_use_content(), stop_reason="tool_use")
-        list(assistant.stream_step(_conversation(), "turn-1", 1, client=client))
-        events = assistant.stream_step(_conversation(), "turn-1", 2, client=client)
+        list(_open(_conversation(), "turn-1", 1, client=client))
+        events = _open(_conversation(), "turn-1", 2, client=client)
         next(events)
         events.close()
         text = guide_usage.log_path().read_text(encoding="utf-8")
@@ -1013,7 +1197,7 @@ class TestStream:
     def test_クライアントを渡さなければ_設定から作る(self, monkeypatch):
         fake = FakeClient()
         monkeypatch.setattr(llm_settings, "make_client", lambda: fake)
-        assert [event["type"] for event in assistant.stream_step([_user("ベースを置いて")], "turn-1", 0)][-1] == "done"
+        assert [event["type"] for event in _open([_user("ベースを置いて")], "turn-1", 0)][-1] == "done"
         assert len(fake.calls) == 1
 
 
@@ -1029,7 +1213,7 @@ class TestStreamSdk:
             return _sse_response(_sse_tool_use())
 
         messages = _conversation()
-        events = list(assistant.stream_step(messages, "turn-1", 1, client=_sdk_client(handler)))
+        events = list(_open(messages, "turn-1", 1, client=_sdk_client(handler), model="claude-opus-5-5"))
 
         body = seen["body"]
         # 送る中身は、まとめて返す経路と同じ。SDK が stream: true を足すだけ
@@ -1068,7 +1252,7 @@ class TestStreamSdk:
             return httpx2.Response(status, json={"type": "error", "error": {"type": "x", "message": "だめ"}})
 
         with pytest.raises(rg.GuideError) as e:
-            assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
+            _open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
         assert e.value.code == code
         assert [record["error"] for record in guide_usage.read_records()] == [code]
 
@@ -1077,13 +1261,13 @@ class TestStreamSdk:
             raise httpx2.ConnectError("connection refused", request=request)
 
         with pytest.raises(rg.GuideError) as e:
-            assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
+            _open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
         assert e.value.code == "network"
 
     def test_途中でerrorのイベントが来たら_errorの行にする(self):
         broken = _sse_tool_use()[:8] + [
             {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}]
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0,
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0,
                                             client=_sdk_client(lambda request: _sse_response(broken))))
         assert [event["type"] for event in events] == ["text", "error"]
         # HTTP の番号は、開いたときの 200 のまま。文には出さない
@@ -1099,7 +1283,7 @@ class TestStreamSdk:
         broken = _sse_tool_use()
         broken[12] = {"type": "content_block_delta", "index": 2,
                       "delta": {"type": "input_json_delta", "partial_json": '{"track_id": }'}}
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0,
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0,
                                             client=_sdk_client(lambda request: _sse_response(broken))))
         assert [event["type"] for event in events] == ["text", "text", "text", "tool", "error"]
         assert events[4]["detail"] == {"message": "応答を読み取れませんでした。もう一度試してください", "code": "api"}
@@ -1108,14 +1292,14 @@ class TestStreamSdk:
     def test_イベントの本文が読めないJSONなら_errorの行にする(self):
         body = _sse(_sse_tool_use()[:8]) + b"event: content_block_delta\ndata: {not json\n\n"
         handler = lambda request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=body)  # noqa: E731
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
         assert [event["type"] for event in events] == ["text", "error"]
         assert events[1]["detail"] == {"message": "応答を読み取れませんでした。もう一度試してください", "code": "api"}
 
     def test_終わりのイベントが来ないまま切れたら_errorの行にする(self):
         """接続が静かに閉じられた場合。終わり方（stop_reason）が無いので、想定していない終わり方として扱う"""
         cut = _sse_tool_use()[:9]
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0,
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0,
                                             client=_sdk_client(lambda request: _sse_response(cut))))
         assert [event["type"] for event in events] == ["text", "text", "error"]
         assert events[2]["detail"]["code"] == "api"
@@ -1124,7 +1308,7 @@ class TestStreamSdk:
 
     def test_何も届かないまま終わったら_errorの行にする(self):
         handler = lambda request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=b"")  # noqa: E731
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
         assert [event["type"] for event in events] == ["error"]
         assert events[0]["detail"] == {"message": "応答を読み取れませんでした。もう一度試してください", "code": "api"}
         (record,) = guide_usage.read_records()
@@ -1140,7 +1324,7 @@ class TestStreamSdk:
                 raise httpx2.ReadError("connection reset")
 
         handler = lambda request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=Cut())  # noqa: E731
-        events = list(assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
+        events = list(_open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler)))
         assert [event["type"] for event in events] == ["text", "error"]
         assert events[1]["detail"]["code"] == "network" and "途中で途切れました" in events[1]["detail"]["message"]
         (record,) = guide_usage.read_records()
@@ -1157,7 +1341,7 @@ class TestStreamSdk:
                 closed.append(True)
 
         handler = lambda request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=Body())  # noqa: E731
-        events = assistant.stream_step([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
+        events = _open([_user("ベースを置いて")], "turn-1", 0, client=_sdk_client(handler))
         assert next(events) == {"type": "text", "text": "ベース"}
         events.close()
         assert closed
@@ -1207,8 +1391,10 @@ class TestApi:
         resp = await client.post("/api/assistant/step", json=self.body())
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body) == {"content", "stop_reason", "model", "usage", "cost_usd", "today"}
+        assert set(body) == {"content", "stop_reason", "model", "usage", "cost_usd", "route", "today"}
         assert body["stop_reason"] == "tool_use" and body["model"] == "claude-opus-5-5"
+        # 依頼の最初の呼び出しでは、選んだモデルと理由を返し、そのモデルで呼ぶ
+        assert body["route"] == ROUTE and fake.calls[0]["model"] == ROUTE["model"]
         assert body["content"][0] == {"type": "thinking", "thinking": "", "signature": "c2lnLXRvb2w="}
         assert body["content"][2] == {
             "type": "tool_use", "id": "toolu_02", "name": "add_notes",
@@ -1287,6 +1473,22 @@ class TestApi:
         assert resp.status_code == 413 and resp.json()["detail"]["code"] == "too_long"
         assert fake.calls == [] and guide_usage.read_records() == []
 
+    @pytest.mark.asyncio
+    async def test_続きの呼び出しは_送られたモデルで呼ぶ_不正なモデルは400(self, client, fake, routed):
+        resp = await client.post("/api/assistant/step",
+                                 json=self.body(messages=_conversation(), step=1, model="claude-sonnet-5-5"))
+        assert resp.status_code == 200 and "route" not in resp.json()
+        assert fake.calls[0]["model"] == "claude-sonnet-5-5" and routed == []
+        for bad in ("claude-opus-4-8", "sonnet", 1, {"model": "claude-opus-5-5"}):
+            for stream in (False, True):
+                resp = await client.post("/api/assistant/step", json=self.body(model=bad, stream=stream))
+                assert resp.status_code == 400, bad
+                assert resp.json()["detail"]["code"] == "invalid" and resp.json()["detail"]["message"]
+        assert len(fake.calls) == 1 and routed == []
+        # 空のモデルは、指定なし（依頼の最初の呼び出しなら、ルーターが選ぶ）
+        resp = await client.post("/api/assistant/step", json=self.body(model=""))
+        assert resp.status_code == 200 and resp.json()["route"] == ROUTE and len(routed) == 1
+
     @staticmethod
     def lines(resp):
         """少しずつ返す応答の本文（1 行に JSON 1 つ）を読む。どの行も改行で終わっている"""
@@ -1299,18 +1501,22 @@ class TestApi:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/x-ndjson"
         assert resp.headers["cache-control"] == "no-store" and resp.headers["x-accel-buffering"] == "no"
-        lines = self.lines(resp)
+        route, *lines = self.lines(resp)
+        assert route == {"type": "route", **ROUTE}
         assert lines[:3] == [{"type": "text", "text": "ベースを"}, {"type": "text", "text": "置きます。"},
                              {"type": "tool", "name": "add_notes"}]
         assert len(lines) == 4 and "ひみつの考え" not in resp.text
         done = lines[3]
-        assert set(done) == {"type", "content", "stop_reason", "model", "usage", "cost_usd", "today"}
+        assert set(done) == {"type", "content", "stop_reason", "model", "usage", "cost_usd", "route", "today"}
+        assert done["route"] == ROUTE
         assert done["today"]["calls"] == 1 and done["today"]["blocked"] is None
         assert fake.streams[0].closed == 1 and len(fake.calls) == 1
 
         # stream が無い呼び出しの応答と、同じ項目・同じ中身（今日の費用だけ、2 回ぶんに増える）
-        plain = (await client.post("/api/assistant/step", json=self.body(messages=_conversation(), step=1))).json()
-        assert {**done, "today": None} == {"type": "done", **plain, "today": None}
+        plain = (await client.post("/api/assistant/step",
+                                   json=self.body(messages=_conversation(), step=1, model=ROUTE["model"]))).json()
+        assert "route" not in plain
+        assert {**done, "today": None, "route": None} == {"type": "done", **plain, "today": None, "route": None}
         assert plain["today"]["calls"] == 1 and plain["today"]["cost_usd"] == pytest.approx(done["today"]["cost_usd"] * 2)
 
     @pytest.mark.asyncio
@@ -1319,7 +1525,7 @@ class TestApi:
         payload = self.body() if stream is None else self.body(stream=stream)
         resp = await client.post("/api/assistant/step", json=payload)
         assert resp.status_code == 200 and resp.headers["content-type"] == "application/json"
-        assert set(resp.json()) == {"content", "stop_reason", "model", "usage", "cost_usd", "today"}
+        assert set(resp.json()) == {"content", "stop_reason", "model", "usage", "cost_usd", "route", "today"}
         assert fake.streams == [] and len(fake.calls) == 1
 
     @pytest.mark.asyncio
@@ -1365,7 +1571,8 @@ class TestApi:
         resp = await client.post("/api/assistant/step", json=self.body(stream=True))
         assert resp.status_code == 200 and resp.headers["content-type"] == "application/x-ndjson"
         lines = self.lines(resp)
-        assert [line["type"] for line in lines] == ["text", "text", "error"]
+        assert [line["type"] for line in lines] == ["route", "text", "text", "error"]
+        lines = lines[1:]
         assert set(lines[2]) == {"type", "detail", "today"}
         # detail は、HTTP エラーの detail と同じ形・同じ文
         plain = await client.post("/api/assistant/step", json=self.body(turn_id="turn-2"))
@@ -1378,8 +1585,8 @@ class TestApi:
         monkeypatch.setattr(llm_settings, "make_client", lambda: broken)
         resp = await client.post("/api/assistant/step", json=self.body(stream=True, turn_id="turn-3"))
         lines = self.lines(resp)
-        assert resp.status_code == 200 and [line["type"] for line in lines] == ["text", "error"]
-        assert lines[1]["detail"]["code"] == "network" and broken.streams[0].closed == 1
+        assert resp.status_code == 200 and [line["type"] for line in lines] == ["route", "text", "error"]
+        assert lines[2]["detail"]["code"] == "network" and broken.streams[0].closed == 1
 
     @pytest.mark.asyncio
     async def test_画面が途中で切ったら_ストリームを閉じて_cancelledで記録する(self, fake):
@@ -1412,7 +1619,8 @@ class TestApi:
 
         async def send(message):
             sent.append(message)
-            if message["type"] == "http.response.body" and message.get("body"):
+            # 最初の文の行（選んだモデルの行の次）を受け取ったところで切る
+            if message["type"] == "http.response.body" and b'"type":"text"' in message.get("body", b""):
                 gone.set()
 
         await asyncio.wait_for(app(scope, receive, send), timeout=10)
@@ -1421,7 +1629,8 @@ class TestApi:
         assert sent[0]["type"] == "http.response.start" and sent[0]["status"] == 200
         assert dict(sent[0]["headers"])[b"content-type"] == b"application/x-ndjson"
         bodies = [message["body"] for message in sent[1:] if message.get("body")]
-        assert bodies == [b'{"type":"text","text":"\xe3\x83\x99\xe3\x83\xbc\xe3\x82\xb9\xe3\x82\x92"}\n']
+        assert json.loads(bodies[0]) == {"type": "route", **ROUTE}
+        assert bodies[1:] == [b'{"type":"text","text":"\xe3\x83\x99\xe3\x83\xbc\xe3\x82\xb9\xe3\x82\x92"}\n']
         assert fake.streams[0].closed == 1
         (record,) = guide_usage.read_records()
         assert (record["feature"], record["ok"], record["error"], record["turn"], record["step"]) == (

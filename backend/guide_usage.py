@@ -11,7 +11,8 @@ Claude の API は呼ぶたびに費用がかかる。ここでは次の 3 つ�
   ではないので、画面でも「概算」と示す
 - **1 日の上限**: その日（この Mac の時刻で数える）の呼び出しの回数か概算の費用が上限に達していたら、
   API を呼ぶ前に止める。アシスタントは、1 回の依頼で Claude を何回か呼ぶ（ツールを使うたびに 1 往復）ので、
-  回数は依頼の数で数える（``step`` が 0 の行だけ。費用は全部の行を足す）
+  回数は依頼の数で数える（``step`` が 0 の行だけ。費用は全部の行を足す）。依頼ごとにモデルを選ぶ呼び出し
+  （``model_router``。``feature`` が ``"router"``）も、費用には足し、回数には数えない
 
 設定は ``results/guide/settings.json`` に持つ（無ければ既定値）。
 """
@@ -42,8 +43,9 @@ _RECORD_FIELDS = (
 )
 _TOKEN_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 # 記録を残す機能。"guide" は再現ガイド（第2層）、"coach" は差分コーチの説明（第3層）、
-# "assistant" はアプリの中のアシスタント（チャット）。``feature`` の無い古い行は、再現ガイドのもの
-FEATURES = ("guide", "coach", "assistant")
+# "assistant" はアプリの中のアシスタント（チャット）、"router" はアシスタントの依頼ごとにモデルを選ぶ呼び出し
+# （``model_router``）。``feature`` の無い古い行は、再現ガイドのもの
+FEATURES = ("guide", "coach", "assistant", "router")
 # アシスタントの依頼の識別子（``turn``）の形。これに合わないものは記録に書かない（文が紛れ込まないように）
 _TURN_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
@@ -243,8 +245,9 @@ def record_call(*, ok, model, requested_model, effort, focus, chart, duration_se
         cache_ttl: キャッシュの保持時間の指定。
         version: 指示文と出力の形の指紋（``reproduction_guide.request_fingerprint``）。
         feature: どの機能の呼び出しか。``"guide"``（再現ガイド）、``"coach"``（差分コーチの説明）、
-            ``"assistant"``（アプリの中のアシスタント）。
-        turn: アシスタントの依頼の識別子（同じ依頼の呼び出しを束ねる）。ほかの機能では None。
+            ``"assistant"``（アプリの中のアシスタント）、``"router"``（アシスタントの依頼のモデル選び）。
+        turn: アシスタントの依頼の識別子（同じ依頼の呼び出しを束ねる。モデル選びの行も、その依頼の識別子を持つ）。
+            ほかの機能では None。
         step: アシスタントの依頼の中で何回目の呼び出しか（0 から）。ほかの機能では None。
 
     Returns:
@@ -298,6 +301,7 @@ def today():
 
     アシスタントは、依頼の数で数える。1 回の依頼で Claude を何回か呼ぶ（ツールを使うたびに 1 往復）ので、
     依頼の最初の呼び出し（``step`` が 0 の行）だけを回数に入れ、続きの呼び出しは費用にだけ足す。
+    依頼ごとにモデルを選ぶ呼び出し（``feature`` が ``"router"``）も、費用にだけ足す（依頼の数は変わらない）。
 
     Returns:
         dict: ``{"date", "calls", "cost_usd", "limit_calls", "limit_usd", "blocked"}``。
@@ -314,6 +318,9 @@ def today():
         step = record.get("step")
         if record.get("feature") == "assistant" and isinstance(step, int) and step > 0:
             # アシスタントの依頼の続きの呼び出し。回数には入れない（費用には入れた）
+            continue
+        if record.get("feature") == "router":
+            # 依頼のモデル選び。依頼そのものの呼び出しを数えるので、回数には入れない（費用には入れた）
             continue
         calls += 1
     current = settings()

@@ -180,6 +180,80 @@ export function comparedOf(result: DiffResult): ComparedNotes | undefined {
     return comparedWith.get(result);
 }
 
+/**
+ * 比べた結果ごとの、学習の記録の番号（説明の鍵を、その記録に結び付けるため）。差分の段で比べたときに付け、
+ * 説明ができたら（差分の段のボタンからでも、アシスタントからでも）、その記録に鍵を結び付ける。
+ */
+const attemptEntries = new WeakMap<DiffResult, number>();
+
+/** 比べた結果に、学習の記録の番号を結び付ける。 */
+export function rememberAttemptEntry(result: DiffResult, entry: number): void {
+    attemptEntries.set(result, entry);
+}
+
+/** 比べた結果の、学習の記録の番号（記録していなければ undefined）。 */
+export function attemptEntryOf(result: DiffResult): number | undefined {
+    return attemptEntries.get(result);
+}
+
+/** 説明の場所のボタンで示している、指摘の一覧の行（差分の段が、その行を光らせる）。 */
+export interface CoachHighlight {
+    referenceId: number;
+    attemptId: number;
+    /** 指摘の ID（`i1` …） */
+    issueId: string;
+    /** 指摘の小節と拍（差分の段が、いま出している差分の同じ ID の指摘と同じ場所かを確かめる） */
+    bar: number;
+    beat: number | null;
+}
+
+let highlighted: CoachHighlight | null = null;
+const highlightListeners = new Set<() => void>();
+
+/**
+ * 示している指摘の行。チャットのカード（差分の説明）の場所のボタンが置き、差分の段（components/CoachPanel.tsx）が読む。
+ * 画面の部品どうしで受け渡すだけの値なので、プロジェクトには入らない。
+ */
+export const coachHighlight = {
+    get: (): CoachHighlight | null => highlighted,
+    set(next: CoachHighlight | null): void {
+        if (highlighted === next) return;
+        highlighted = next;
+        for (const listener of highlightListeners) listener();
+    },
+    subscribe(listener: () => void): () => void {
+        highlightListeners.add(listener);
+        return () => { highlightListeners.delete(listener); };
+    },
+};
+
+/** 比べる組を決めるのに読む、トラックの項目。 */
+interface PairTrack {
+    id: number;
+    role?: string;
+    practiceOf?: number;
+    referenceNotes?: readonly unknown[];
+}
+
+/**
+ * 差分の段で比べる組（お手本と打ち込み）を決める。お手本は、選んでいるもの（無ければ、お手本を持つ最初のトラック）。
+ * 打ち込みは、選んでいるもの（無ければ、そのパートの練習のトラック。それも無ければ、お手本のトラック自身）。
+ * 差分の段（components/CoachPanel.tsx）と、アシスタントの `explain_diff` が同じ決め方をする。
+ *
+ * @param tracks - いまのトラック（並び順）
+ * @param pair - 選んでいる組（`coachPair`）
+ * @returns お手本を持つトラックが無ければ、どちらも undefined
+ */
+export function resolveCoachPair<T extends PairTrack>(
+    tracks: readonly T[], pair: { referenceId: number | null; attemptId: number | null },
+): { reference: T | undefined; attempt: T | undefined; withReference: T[] } {
+    const withReference = tracks.filter((t) => (t.referenceNotes?.length ?? 0) > 0);
+    const reference = withReference.find((t) => t.id === pair.referenceId) ?? withReference[0];
+    const attempt = tracks.find((t) => t.id === pair.attemptId)
+        ?? (reference ? tracks.find((t) => t.role === 'practice' && t.practiceOf === reference.id) ?? reference : undefined);
+    return { reference, attempt, withReference };
+}
+
 /** 種類ごとの短い呼び名。 */
 export const KIND_LABEL: Record<IssueKind, string> = {
     missing: '抜け',
@@ -442,6 +516,36 @@ export interface ExplainRequest {
     reference_source?: ReferenceSource;
 }
 
+/** 説明の材料に添える、お手本と同じ曲のカルテ。 */
+export type ExplainChartContext = Required<Pick<ExplainRequest, 'chart_id' | 'bpm' | 'grid_offset_sec'>>;
+
+/**
+ * 説明の材料に、カルテを添えるか決める。添えるのは、お手本が、いまのカルテのグリッドで採譜したパートのときだけ
+ * （別の曲を取り込んだあとの古いパートには、新しい曲のカルテを添えない）。
+ *
+ * @param reference - お手本のトラック
+ * @param now - いまのカルテの ID、パートを採譜したときのカルテの ID、テンポ、ステップ 0 の位置（秒）
+ */
+export function explainChartContext(
+    reference: { role?: string } | undefined,
+    now: { chartId: string | null; partsChartId: string | null; bpm: number; gridOffset: number },
+): ExplainChartContext | null {
+    if (!now.chartId || reference?.role !== 'part' || now.partsChartId !== now.chartId) return null;
+    return { chart_id: now.chartId, bpm: now.bpm, grid_offset_sec: now.gridOffset };
+}
+
+/**
+ * 説明の材料を組み立てる。比べたときのノート（画面に出ている差分と同じノート）に、カルテを添える。
+ * 差分の段と、アシスタントの `explain_diff` が同じ組み立てをする（保存済みの説明が、どちらからでも同じ鍵で引ける）。
+ */
+export function explainRequestOf(compared: ComparedNotes, chart: ExplainChartContext | null): ExplainRequest {
+    const body: ExplainRequest = { reference: compared.reference, attempt: compared.attempt, steps_per_bar: compared.stepsPerBar };
+    // 差分チェックと同じ出どころで頼む (MIDI のお手本のときだけ、強さの違いも説明の材料になる)
+    if (compared.referenceSource === 'midi') body.reference_source = 'midi';
+    if (chart) Object.assign(body, chart);
+    return body;
+}
+
 /** 失敗のときの文の頭（理由が取れなかったとき）。 */
 const EXPLAIN_FAILED = '説明を作れませんでした。';
 
@@ -451,13 +555,14 @@ const EXPLAIN_FAILED = '説明を作れませんでした。';
  *
  * @param request - 差分チェックと同じノートと、カルテ
  * @param regenerate - true なら、保存済みが在っても作り直す（Claude を呼ぶので費用がかかる）
+ * @param model - 作るモデルの ID（アシスタントの依頼で選んだモデル）。省くと既定のモデル。保存済みは、モデルを問わず返る
  * @throws {GuideRequestError} 作れなかった場合（`code` で理由を出し分ける。再現ガイドと同じ種類）
  */
-export async function requestExplanation(request: ExplainRequest, regenerate = false): Promise<ExplanationResponse> {
+export async function requestExplanation(request: ExplainRequest, regenerate = false, model: string | null = null): Promise<ExplanationResponse> {
     const resp = await apiFetch('/api/coach/explain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(regenerate ? { ...request, regenerate: true } : request),
+        body: JSON.stringify({ ...request, ...(regenerate ? { regenerate: true } : {}), ...(model ? { model } : {}) }),
     });
     if (!resp.ok) throw await toError(resp, EXPLAIN_FAILED);
     return (await resp.json()) as ExplanationResponse;

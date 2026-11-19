@@ -16,8 +16,10 @@ import { MAX_ISSUES } from '../lib/assistant-tools-learn';
 import { EFFECT_NAMES, readEffectParams } from '../lib/assistant-tools-app';
 import { setClipFades, setClipRange, splitClip } from '../lib/clip';
 import { LANDMARKS } from '../lib/assistant-landmarks';
-import type { DiffIssue, DiffResult } from '../lib/coach';
-import type { SavedGuideResponse } from '../lib/guide';
+import { rememberCompared, type DiffIssue, type DiffResult, type ExplainRequest, type ExplanationResponse } from '../lib/coach';
+import { GuideRequestError, type GuideResponse, type SavedGuideResponse } from '../lib/guide';
+import type { ChatCard } from '../lib/assistant-cards';
+import type { ToolTurn } from '../lib/assistant-tool-kit';
 
 const note = (name: string, octave: number, step: number, length = 4, velocity?: number): PianoNote =>
     (velocity === undefined ? { note: name, octave, step, length } : { note: name, octave, step, length, velocity });
@@ -47,6 +49,14 @@ function makeEnv(init: {
     tracks?: ToolTrack[]; bpm?: number; beatsPerBar?: number; chart?: SongChart | null; midi?: Partial<ToolMidi> | null;
     selection?: ToolSelection | null; chartId?: string | null; guide?: SavedGuideResponse; diff?: DiffResult; job?: ToolJob | null;
     songFile?: boolean; shown?: boolean;
+    /** 再現ガイドを作ったときの応答（Error なら、その失敗） */
+    made?: GuideResponse | Error;
+    /** 差分の説明を作ったときの応答（Error なら、その失敗） */
+    explanation?: ExplanationResponse | Error;
+    /** 差分の段で選んでいる組 */
+    coachPair?: { referenceId: number; attemptId: number } | null;
+    /** 差分の段に出ている差分 */
+    coachDiff?: DiffResult | null;
 } = {}) {
     const state = {
         bpm: init.bpm ?? 120, beatsPerBar: init.beatsPerBar ?? 4, tracks: init.tracks ?? [track(1, 'Track 1'), track(2, 'Track 2')],
@@ -64,6 +74,10 @@ function makeEnv(init: {
         /** エフェクトの失敗（在れば、その理由で失敗する） */
         effectError: null as string | null,
         diffCalls: [] as { reference: PianoNote[]; attempt: PianoNote[]; perBar: number; source: string; mode?: string }[],
+        /** 説明を頼んだときの材料・作り直すか・モデル */
+        explainCalls: [] as { request: ExplainRequest; regenerate: boolean; model: string | null }[],
+        /** 説明を結び付けた鍵 */
+        linked: [] as string[],
     };
     const calls: string[] = [];
     const find = (id: number) => state.tracks.find((t) => t.id === id)!;
@@ -134,6 +148,23 @@ function makeEnv(init: {
             calls.push(`guide ${chartId} ${sectionId}`);
             return init.guide ?? { saved: false, chart_id: chartId, focus: sectionId };
         },
+        requestGuide: async (chartId, sectionId, regenerate, model) => {
+            calls.push(`makeGuide ${chartId} ${sectionId} ${regenerate} ${model}`);
+            if (init.made instanceof Error) throw init.made;
+            if (!init.made) throw new Error('このテストでは、ガイドを作りません');
+            return init.made;
+        },
+        coachPair: () => (init.coachPair === undefined ? null : init.coachPair),
+        coachDiff: (referenceId, attemptId) => (init.coachDiff && init.coachPair?.referenceId === referenceId && init.coachPair.attemptId === attemptId ? init.coachDiff : null),
+        explainChart: () => null,
+        requestExplanation: async (request, regenerate, model) => {
+            calls.push(`explain ${regenerate} ${model}`);
+            state.explainCalls.push({ request, regenerate, model });
+            if (init.explanation instanceof Error) throw init.explanation;
+            if (!init.explanation) throw new Error('このテストでは、説明を作りません');
+            return init.explanation;
+        },
+        linkExplanation: (_diff, key) => { state.linked.push(key); },
         pointAt: async (key) => { calls.push(`point ${key}`); return { shown: init.shown ?? true }; },
         job: () => state.job,
         cancelJob: async (id) => { calls.push(`cancelJob ${id}`); if (state.job) state.job = { ...state.job, cancelRequested: true }; },
@@ -1113,11 +1144,11 @@ describe('差分チェック（check_diff）', () => {
 describe('学ぶ流れのツール', () => {
     const chart = { key: { tonic: 'C', mode: 'major', confidence: 0.9 }, grid: { bpm: 120, time_signature: [4, 4] }, sections: [{ id: 's1', label: 'A', suggested_label: null, start_bar: 1, end_bar: 8, repeat_group: 'A' }], chords: [] } as unknown as SongChart;
 
-    it('get_guide: 保存済みのガイドを読む。無ければ、作り方を返す（アシスタントからは作らない）', async () => {
+    it('get_guide: 保存済みのガイドを読む。無ければ、作り方を返す（作るのは make_guide）', async () => {
         const none = makeEnv({ chart });
         const missing = await ok('get_guide', {}, none.env);
         expect(missing).toMatchObject({ saved: false, summary: '保存済みの再現ガイドは、まだありません（曲全体）' });
-        expect(missing.how_to_create).toMatch(/「学ぶ」→「ガイド」/);
+        expect(missing.how_to_create).toMatch(/make_guide/);
         expect(none.calls).toEqual(['guide chart-1 null']);
 
         const guide = { overview: '全体の流れ', steps: [{ title: 'テンポ', topic: 'grid', body: '120 に合わせます', refs: [{ section_id: 's1', bar: 1, beat: 1 }] }], cautions: ['キーの確信度が低め'], dropped_refs: 0, unverified_terms: [] };
@@ -1131,6 +1162,126 @@ describe('学ぶ流れのツール', () => {
     it('get_guide: カルテが無い・知らない区間は失敗する', async () => {
         expect(await fail('get_guide', {}, makeEnv().env)).toMatch(/まだカルテがありません/);
         expect(await fail('get_guide', { section_id: 'zz' }, makeEnv({ chart }).env)).toMatch(/get_chart の sections の id のどれか.*s1/);
+    });
+
+    /** この依頼のこと（選んだモデル・費用・カード）を控える `ToolTurn`。 */
+    function recordTurn(model: string | null = 'claude-sonnet-5-5') {
+        const spent: (number | null)[] = [], cards: ChatCard[] = [], todays: unknown[] = [];
+        const turn: ToolTurn = { model, spend: (usd) => { spent.push(usd); }, today: (t) => { todays.push(t); }, showCard: (c) => { cards.push(c); } };
+        return { turn, spent, cards, todays };
+    }
+    const GUIDE = {
+        overview: '全体の流れ', cautions: [], dropped_refs: 0, unverified_terms: ['Bm7'],
+        steps: [{ title: 'テンポ', topic: 'grid' as const, body: '120 に合わせます', refs: [{ section_id: 's1', bar: null, beat: null }, { section_id: null, bar: 3, beat: 2 }] }],
+    };
+    const made = (extra: Partial<GuideResponse> = {}): GuideResponse => ({
+        chart_id: 'chart-1', focus: null, guide: GUIDE, model: 'claude-sonnet-5-5', usage: { input_tokens: 20, output_tokens: 400 },
+        cost_usd: 0.02, created_at: '2026-11-19T10:00:00Z', cached: false, today: { date: '2026-11-19', calls: 2, cost_usd: 0.05, limit_calls: null, limit_usd: null, blocked: null }, ...extra,
+    });
+
+    it('make_guide: この依頼で選んだモデルで作り、カードを出す。Claude には中身と、カードを出したことを返す', async () => {
+        const { env, calls } = makeEnv({ chart, made: made({ focus: 's1' }) });
+        const { turn, spent, cards, todays } = recordTurn();
+        const outcome = await runTool('make_guide', { focus_section: 's1' }, env, turn);
+        if (!outcome.ok) throw new Error(outcome.message);
+        expect(calls).toEqual(['makeGuide chart-1 s1 false claude-sonnet-5-5']);
+        expect(outcome.result).toMatchObject({ summary: '再現ガイドを作りました（A（1〜8 小節）、手順 1 個）', card_shown: true, cached: false, overview: '全体の流れ', unverified_terms: ['Bm7'] });
+        expect(outcome.result.note).toMatch(/card/);
+        expect(outcome.result.steps).toEqual([{ title: 'テンポ', topic: 'grid', body: '120 に合わせます', refs: GUIDE.steps[0].refs }]);
+        // 作った費用は、この依頼の合計に足す。今日の使用量も渡す
+        expect(spent).toEqual([0.02]);
+        expect(todays).toHaveLength(1);
+        // カードは、作ったときに場所の名前を決めて持つ
+        expect(cards).toHaveLength(1);
+        expect(cards[0]).toMatchObject({ card: 'guide', chartId: 'chart-1', focus: 's1', target: 'A（1〜8 小節）', unverifiedTerms: ['Bm7'], cached: false, costUsd: 0.02 });
+        expect(cards[0].card === 'guide' && cards[0].steps[0].refs.map((r) => r.label)).toEqual(['A（1〜8 小節）', '3 小節 2 拍目']);
+    });
+
+    it('make_guide: 保存済みが返ったら、費用は 0 で、保存済みを出したと言う。作り直しは regenerate のときだけ頼む', async () => {
+        const { env, calls } = makeEnv({ chart, made: made({ cached: true }) });
+        const { turn, spent, cards } = recordTurn(null);
+        const outcome = await runTool('make_guide', {}, env, turn);
+        if (!outcome.ok) throw new Error(outcome.message);
+        expect(outcome.result.summary).toBe('保存済みの再現ガイドを出しました（曲全体、手順 1 個）');
+        expect(spent).toEqual([0]);
+        expect(cards[0]).toMatchObject({ cached: true, target: '曲全体' });
+        await runTool('make_guide', { regenerate: true }, env, turn);
+        expect(calls).toEqual(['makeGuide chart-1 null false null', 'makeGuide chart-1 null true null']);
+    });
+
+    it('make_guide: カルテが無い・知らない区間・API の失敗は、理由を返す（カードは出さない）', async () => {
+        expect(await fail('make_guide', {}, makeEnv().env)).toMatch(/まだカルテがありません。.*曲を取り込んでカルテを作ってから/);
+        expect(await fail('make_guide', { focus_section: 'zz' }, makeEnv({ chart }).env)).toMatch(/focus_section は、get_chart の sections の id のどれか.*s1/);
+        const limited = makeEnv({ chart, made: new GuideRequestError('1 日の上限（3 回）に達したので、Claude を呼びません', 'daily_limit') });
+        const { turn, cards, spent } = recordTurn();
+        const outcome = await runTool('make_guide', {}, limited.env, turn);
+        expect(outcome).toMatchObject({ ok: false, shown: '1 日の上限（3 回）に達したので、Claude を呼びません' });
+        expect(!outcome.ok && outcome.message).toMatch(/code: daily_limit/);
+        expect(cards).toEqual([]);
+        expect(spent).toEqual([]);
+    });
+
+    const explanation = (extra: Partial<ExplanationResponse> = {}): ExplanationResponse => ({
+        explanation: {
+            summary: '抜けがまとまっています', next_step: 'まず 2 小節目を見てください', next_step_bar: 2, dropped_refs: 0, dropped_points: 0, unverified_terms: [], replaced: [],
+            points: [{ title: '抜け', observation: '2 小節目が抜けています', cause: '拍の数え違い', fix: '見比べる', refs: [{ issue_id: 'i1', bar: 2, beat: 3, kind: 'missing' }] }],
+        },
+        source: 'claude', reason: null, model: 'claude-sonnet-5-5', usage: { input_tokens: 10, output_tokens: 300 }, cost_usd: 0.03,
+        cached: false, key: 'exp-1', input: { issues: 1, issues_sent: 1, chart_context: 'none' }, ...extra,
+    });
+    const coachTracks = () => [
+        track(2, 'ベース', { role: 'part', part: 'bass', referenceNotes: [note('C', 2, 0), note('E', 2, 20)], pianoNotes: [] }),
+        track(3, 'ベースの練習', { role: 'practice', practiceOf: 2, pianoNotes: [note('C', 2, 0)] }),
+    ];
+    const missingIssue: DiffIssue = { kind: 'missing', bar: 2, beat: 3, expected: note('E', 2, 20), actual: null, offset_steps: null, length_diff: null };
+
+    it('explain_diff: 省くと、差分の段の組と、そこに出ている差分（比べたときのノート）で頼む。説明はカードで出し、学習の記録に結び付ける', async () => {
+        const shownDiff = diffResult([missingIssue]);
+        rememberCompared(shownDiff, { reference: [note('C', 2, 0), note('E', 2, 20)], attempt: [note('C', 2, 0)], stepsPerBar: 16, referenceSource: 'transcription' });
+        const { env, state, calls } = makeEnv({ tracks: coachTracks(), coachPair: { referenceId: 2, attemptId: 3 }, coachDiff: shownDiff, explanation: explanation() });
+        const { turn, spent, cards } = recordTurn();
+        const outcome = await runTool('explain_diff', {}, env, turn);
+        if (!outcome.ok) throw new Error(outcome.message);
+        // 差分は取り直さない (画面の一覧と同じ指摘の ID にする)
+        expect(calls).toEqual(['explain false claude-sonnet-5-5']);
+        expect(state.explainCalls[0].request).toEqual({ reference: [note('C', 2, 0), note('E', 2, 20)], attempt: [note('C', 2, 0)], steps_per_bar: 16 });
+        expect(outcome.result).toMatchObject({ summary: '差分の説明を作りました（ベースの練習、点 1 個）', card_shown: true, track_id: 3, reference_track_id: 2, source: 'claude' });
+        expect((outcome.result.explanation as { points: unknown[] }).points).toEqual([
+            { title: '抜け', observation: '2 小節目が抜けています', cause: '拍の数え違い', fix: '見比べる', refs: [{ issue_id: 'i1', bar: 2, beat: 3, kind: 'missing' }] },
+        ]);
+        expect(spent).toEqual([0.03]);
+        expect(state.linked).toEqual(['exp-1']);
+        expect(cards).toHaveLength(1);
+        const card = cards[0];
+        expect(card).toMatchObject({ card: 'explanation', source: 'claude', attemptId: 3, referenceId: 2, trackName: 'ベースの練習', nextStepBar: 2 });
+        // 指摘を指す場所は、名前と、そのノートの高さを持つ
+        expect(card.card === 'explanation' && card.points[0].refs[0]).toEqual({ issueId: 'i1', bar: 2, beat: 3, kind: 'missing', label: '2 小節 3 拍目（抜け）', pitch: { note: 'E', octave: 2 } });
+    });
+
+    it('explain_diff: トラックを指定したら、そのお手本と比べ直して頼む。決まった文の説明も、費用 0 のカードで出す', async () => {
+        const { env, state, calls } = makeEnv({ tracks: coachTracks(), diff: diffResult([missingIssue]), explanation: explanation({ source: 'rule', reason: 'few_issues', key: null, model: null, cost_usd: 0 }) });
+        const { turn, spent, cards } = recordTurn();
+        const outcome = await runTool('explain_diff', { track_id: 3 }, env, turn);
+        if (!outcome.ok) throw new Error(outcome.message);
+        expect(calls).toEqual(['diff', 'explain false claude-sonnet-5-5']);
+        expect(state.diffCalls[0]).toMatchObject({ reference: [note('C', 2, 0), note('E', 2, 20)], attempt: [note('C', 2, 0)], perBar: 16, source: 'transcription' });
+        expect(outcome.result.summary).toBe('差分の説明を出しました（ベースの練習。Claude に頼むまでもないので、決まった文です）');
+        expect(spent).toEqual([0]);
+        expect(state.linked).toEqual([]);
+        expect(cards[0]).toMatchObject({ card: 'explanation', source: 'rule', reason: 'few_issues', points: [] });
+    });
+
+    it('explain_diff: ドラムでは説明を頼まず、決まった文を返す。お手本が無ければ失敗する', async () => {
+        const drums = [track(4, 'ドラム', { role: 'part', part: 'drums', referenceNotes: [note('C', 2, 0)], pianoNotes: [note('C', 2, 0)] })];
+        const { env, calls } = makeEnv({ tracks: drums, coachPair: { referenceId: 4, attemptId: 4 } });
+        const { turn, cards } = recordTurn();
+        const outcome = await runTool('explain_diff', {}, env, turn);
+        if (!outcome.ok) throw new Error(outcome.message);
+        expect(outcome.result).toMatchObject({ drums: true, card_shown: false });
+        expect(outcome.result.explanation).toMatch(/ドラムの差分は、Claude の説明には対応していません/);
+        expect(calls).toEqual([]);
+        expect(cards).toEqual([]);
+        expect(await fail('explain_diff', {}, makeEnv().env)).toMatch(/比べるお手本がありません/);
     });
 
     it('set_practice: 区間・速度・聴くを変える。範囲を渡すと、区間ループが入る', async () => {
@@ -1463,7 +1614,7 @@ describe('台帳（backend/assistant_tools.json）との一致', () => {
     });
 
     it('ツールの名前が、過不足なく一致する', () => {
-        expect(ledger.tools).toHaveLength(42);
+        expect(ledger.tools).toHaveLength(44);
         expect(Object.keys(TOOLS).sort()).toEqual(ledger.tools.map((t) => t.name).sort());
     });
 

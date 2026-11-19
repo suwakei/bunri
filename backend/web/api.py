@@ -1395,6 +1395,20 @@ def _guide_http_error(e):
     return HTTPException(_GUIDE_ERROR_STATUS.get(e.code, 502), {"message": str(e), "code": e.code})
 
 
+def _requested_model(value):
+    """本文の ``model``（モデル ID）を確かめる（内部用）。指定が無ければ None。
+
+    Raises:
+        HTTPException: 知らないモデル（400。``detail`` は ``{"message", "code": "invalid"}``）。
+    """
+    import llm_settings
+
+    try:
+        return llm_settings.validate_model(value)
+    except ValueError as e:
+        raise HTTPException(400, {"message": str(e), "code": "invalid"})
+
+
 @app.get("/api/chart/{chart_id}/guide")
 def api_chart_guide_saved(chart_id: str, focus: str = ""):
     """保存済みの再現ガイドを返す。Claude は呼ばない（費用はかからない）。
@@ -1405,9 +1419,12 @@ def api_chart_guide_saved(chart_id: str, focus: str = ""):
         chart_id: カルテの ID。
         focus: 絞り込むセクションの ID。空なら曲全体。
 
+    どのモデルで作ったガイドでも返す（いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。
+
     Returns:
         ``{"chart_id", "focus", "saved": bool, "today": 今日の使用量}``。``saved`` が True のときは、
         ``POST`` と同じ ``guide`` ``model`` ``usage`` ``cost_usd`` ``created_at`` ``cached`` も持つ。
+        ``model`` は、そのガイドを作ったモデル。
 
     Raises:
         HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）。
@@ -1425,11 +1442,12 @@ def api_chart_guide_saved(chart_id: str, focus: str = ""):
 
 
 @app.post("/api/chart/{chart_id}/guide")
-def api_chart_guide(chart_id: str, focus: str = Form(""), regenerate: bool = Form(False)):
+def api_chart_guide(chart_id: str, focus: str = Form(""), regenerate: bool = Form(False), model: str = Form("")):
     """保存済みのカルテから、再現ガイド（第2層）を作る。
 
-    同じ条件のガイドが保存済みなら、Claude を呼ばずにそれを返す。無いとき（か、``regenerate`` が
-    真のとき）だけ、カルテを Claude に渡して「こう作れば再現できる」という手順の説明を受け取る。
+    同じカルテ・同じ対象のガイドが保存済みなら、どのモデルで作ったものでも、Claude を呼ばずにそれを返す
+    （いくつか在れば、強いモデルのもの: opus → sonnet → haiku）。無いとき（か、``regenerate`` が
+    真のとき）だけ、カルテを ``model`` のモデルの Claude に渡して「こう作れば再現できる」という手順の説明を受け取る。
     Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある
     （FastAPI がスレッドプールで実行する）。
 
@@ -1437,13 +1455,16 @@ def api_chart_guide(chart_id: str, focus: str = Form(""), regenerate: bool = For
         chart_id: カルテの ID。
         focus: 絞り込むセクションの ID。空なら曲全体。
         regenerate: 真なら、保存済みが在っても作り直す（費用がかかる）。
+        model: 作るときのモデル ID（``claude-haiku-5-5`` ``claude-sonnet-5-5`` ``claude-opus-5-5``）。
+            空なら既定のモデル（Haiku）。アシスタントの依頼の中で作るときは、その依頼で選んだモデル。
+            ``BUNRI_GUIDE_MODEL`` で固定されていれば、いつもそのモデル。
 
     Returns:
-        ``{"chart_id", "focus", "guide", "model", "usage", "cost_usd", "duration_sec",
-        "created_at", "cached": bool, "today": 今日の使用量}``。``cost_usd`` は概算。
+        ``{"chart_id", "focus", "key", "guide", "model", "usage", "cost_usd", "duration_sec",
+        "created_at", "cached": bool, "today": 今日の使用量}``。``model`` は実際に作ったモデル。``cost_usd`` は概算。
 
     Raises:
-        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` が不正（400）、
+        HTTPException: カルテが見つからない（404）、形式が読めない・``focus`` や ``model`` が不正（400）、
             API キーが無い・正しくない（401）、利用制限・1 日の上限（429）、カルテが長すぎる（413）、
             材料が足りない（422）、Claude 側の失敗（502）。
             本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``。
@@ -1452,8 +1473,9 @@ def api_chart_guide(chart_id: str, focus: str = Form(""), regenerate: bool = For
     import reproduction_guide
 
     chart, focus_id = _guide_chart(chart_id, focus)
+    model_id = _requested_model(model)
     try:
-        result = reproduction_guide.guide_for(chart, focus=focus_id, regenerate=regenerate)
+        result = reproduction_guide.guide_for(chart, focus=focus_id, regenerate=regenerate, model=model_id)
     except reproduction_guide.GuideError as e:
         raise _guide_http_error(e)
     return {"chart_id": chart_id, "focus": focus_id, **result, "today": guide_usage.today()}
@@ -1608,10 +1630,11 @@ def api_coach_explain_saved(payload: dict = Body(...)):
     """Claude を呼ばずに返せる差分の説明を返す（費用はかからない）。
 
     画面は、お手本と比べた直後にこれを呼び、返せる説明が在れば最初から表示する。返せるのは、
-    同じ事実で作った保存済みの説明か、LLM に頼むまでもないとき（違いが無い・少ない、など）の決まった文。
+    同じ事実で作った保存済みの説明（どのモデルで作ったものでもよい。いくつか在れば、強いモデルのもの:
+    opus → sonnet → haiku）か、LLM に頼むまでもないとき（違いが無い・少ない、など）の決まった文。
 
     Args:
-        payload: ``POST /api/coach/explain`` と同じ本文（``regenerate`` は見ない）。
+        payload: ``POST /api/coach/explain`` と同じ本文（``regenerate`` と ``model`` は見ない）。
 
     Returns:
         ``{"saved": bool, "today": 今日の使用量}``。``saved`` が True のときは、
@@ -1635,7 +1658,8 @@ def api_coach_explain(payload: dict = Body(...)):
     考えられるか、まず何を見直すか」を受け取る。Claude は言葉にするだけで、音符は出さない。
     出力は、事実と突き合わせてから返す。
 
-    同じ事実の説明が保存済みなら、Claude を呼ばずにそれを返す。違いが無い・ごく少ない、打ち込みが無い、
+    同じ事実の説明が保存済みなら、どのモデルで作ったものでも、Claude を呼ばずにそれを返す（いくつか在れば、
+    強いモデルのもの: opus → sonnet → haiku）。違いが無い・ごく少ない、打ち込みが無い、
     お手本が少ないときも、Claude を呼ばずに決まった文を返す（``source`` が ``"rule"``）。
     使用量の記録と 1 日の上限は、再現ガイドと共通。Claude の応答を待つ間ほかのリクエストを
     止めないよう、同期関数にしてある。
@@ -1650,13 +1674,15 @@ def api_coach_explain(payload: dict = Body(...)):
             付けると、ステップを秒に直すときに足す（無ければ 0）。
             ``reference_source`` が ``"midi"`` のときだけ、強さの違いも事実に足す（``/api/coach/diff`` と同じ）。
             ``regenerate`` が真なら、保存済みが在っても作り直す（費用がかかる）。
+            ``model`` は作るときのモデル ID（``POST /api/chart/{chart_id}/guide`` と同じ。省くと既定のモデル）。
 
     Returns:
-        ``{"explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
-        "created_at", "cached": bool, "input", "today": 今日の使用量}``。``cost_usd`` は概算。
+        ``{"key", "explanation", "source", "reason", "model", "usage", "cost_usd", "duration_sec",
+        "created_at", "cached": bool, "input", "today": 今日の使用量}``。``model`` は実際に作ったモデル
+        （決まった文なら null）。``cost_usd`` は概算。
 
     Raises:
-        HTTPException: 入力の形が正しくない・お手本が空・Claude の出力を事実と結び付けられなかった（400）、
+        HTTPException: 入力の形が正しくない・``model`` が不正・お手本が空・Claude の出力を事実と結び付けられなかった（400）、
             カルテが見つからない（404）、API キーが無い・正しくない（401）、利用制限・1 日の上限（429）、
             入力が長すぎる（413）、Claude 側の失敗（502）。
             本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``（再現ガイドと同じ）。
@@ -1665,9 +1691,10 @@ def api_coach_explain(payload: dict = Body(...)):
     import guide_usage
     import reproduction_guide
 
+    model_id = _requested_model(payload.get("model"))
     facts = _coach_facts(payload)
     try:
-        result = coach_explain.explain_for(facts, regenerate=payload.get("regenerate") is True)
+        result = coach_explain.explain_for(facts, regenerate=payload.get("regenerate") is True, model=model_id)
     except reproduction_guide.GuideError as e:
         raise _guide_http_error(e)
     return {**result, "today": guide_usage.today()}
@@ -1683,13 +1710,19 @@ def api_assistant_step(payload: dict = Body(...)):
     持たない（docs/assistant-design.md）。画面は、応答の ``content`` を変えずに assistant のメッセージ
     として会話に足し、``stop_reason`` が ``tool_use`` なら、ツールの結果を足して ``step`` を 1 つ進め、
     もう一度呼ぶ。使用量の記録と 1 日の上限は、再現ガイド・差分コーチと共通（回数は依頼の数で数える）。
+
+    答えるモデルは、依頼ごとに 1 回だけ選ぶ。``step`` が 0 で ``model`` が無ければ、1 日の上限を確かめた後に
+    ルーター（Haiku。``model_router``）が選び、応答の ``route`` で知らせる。``step`` が 1 以上のときは、画面が
+    ``route.model`` を ``model`` に入れて送る（無ければ既定のモデル）。ルーターの費用は記録に残り、今日の費用に
+    足されるが、回数には数えない。
     Claude の応答を待つ間ほかのリクエストを止めないよう、同期関数にしてある。ジョブにはしない。
 
     本文に ``"stream": true`` が在るときだけ、応答を少しずつ返す（``application/x-ndjson``。1 行に JSON 1 つ）。
 
+    - ``{"type": "route", "model", "tier", "reason", "cost_usd"}`` — 選んだモデル（``step`` が 0 のときだけ。最初の行）
     - ``{"type": "text", "text": 差分}`` — 見える文の差分
     - ``{"type": "tool", "name": ツール名}`` — Claude がツールの呼び出しを書き始めた（1 つにつき 1 回）
-    - ``{"type": "done", …}`` — 最後の行。``stream`` が無いときの応答と同じ項目を持つ
+    - ``{"type": "done", …}`` — 最後の行。``stream`` が無いときの応答と同じ項目を持つ（``step`` が 0 なら ``route`` も）
     - ``{"type": "error", "detail": {"message", "code"}, "today"}`` — 途中の失敗（最後の行）
 
     呼び出しの前に分かる失敗と、Claude への接続を開いた時点で分かる失敗（キー・利用制限・接続）は、
@@ -1702,15 +1735,18 @@ def api_assistant_step(payload: dict = Body(...)):
         payload: JSON の本文。``messages``（Messages API の ``messages`` そのまま。1〜200 件）、
             ``turn_id``（この依頼の識別子。英数字とハイフン、64 文字まで）、
             ``step``（この依頼の何回目の呼び出しか。0 から、12 未満）、
+            ``model``（答えるモデルの ID。``claude-haiku-5-5`` ``claude-sonnet-5-5`` ``claude-opus-5-5``。省略可）、
             ``stream``（true なら、応答を少しずつ返す。省略可）。
 
     Returns:
-        ``{"content", "stop_reason", "model", "usage", "cost_usd", "today": 今日の使用量}``。
-        ``stop_reason`` は ``end_turn`` ``tool_use`` ``max_tokens``。``cost_usd`` は概算。
+        ``{"content", "stop_reason", "model", "usage", "cost_usd", "today": 今日の使用量}``、``step`` が 0 なら
+        ``route``（``{"model": 選んだモデル, "tier": "haiku" | "sonnet" | "opus", "reason": 選んだ理由,
+        "cost_usd": 選ぶのにかかった概算の費用}``）も。``model`` は実際に答えたモデル。
+        ``stop_reason`` は ``end_turn`` ``tool_use`` ``max_tokens``。``cost_usd`` は概算（ルーターのぶんは ``route`` に）。
         ``stream`` が true のときは、上の行を流す ``StreamingResponse``。
 
     Raises:
-        HTTPException: 引数・会話の形が正しくない（400）、会話が大きすぎる（413）、API キーが無い・
+        HTTPException: 引数・会話の形・``model`` が正しくない（400）、会話が大きすぎる（413）、API キーが無い・
             正しくない（401）、利用制限・1 日の上限（429）、モデルが応答を断った・Claude 側の失敗（502）。
             本文の ``detail`` は ``{"message": 利用者向けの文, "code": 種類}``（再現ガイドと同じ）。
     """
@@ -1719,9 +1755,10 @@ def api_assistant_step(payload: dict = Body(...)):
     import reproduction_guide
 
     args = (payload.get("messages"), payload.get("turn_id"), payload.get("step"))
+    model_id = _requested_model(payload.get("model"))
     if payload.get("stream") is not True:
         try:
-            result = assistant.step(*args)
+            result = assistant.step(*args, model=model_id)
         except reproduction_guide.GuideError as e:
             raise _guide_http_error(e)
         return {**result, "today": guide_usage.today()}
@@ -1730,7 +1767,7 @@ def api_assistant_step(payload: dict = Body(...)):
 
     try:
         # ここで Claude への接続まで開く。開けなければ、まだ何も返していないので HTTP エラーにできる
-        events = assistant.stream_step(*args)
+        events = assistant.stream_step(*args, model=model_id)
     except reproduction_guide.GuideError as e:
         raise _guide_http_error(e)
 

@@ -12,7 +12,12 @@
  *   POST /v1/messages/count_tokens  トークン数を返す (費用のかからない呼び出し。回数には数えない)
  *   GET  /__calls                   {"messages": 呼ばれた回数 (ガイドと説明の合計), "explain": そのうち説明の回数,
  *                                    "assistant": アシスタントの呼び出しの回数 (messages には数えない),
- *                                    "count_tokens": 数えた回数}
+ *                                    "router": モデルを選ぶ呼び出しの回数 (messages にも assistant にも数えない),
+ *                                    "count_tokens": 数えた回数,
+ *                                    "models": {"assistant", "guide", "explain"} 送られてきたモデルの ID (新しいものが後ろ。各 50 件まで)}
+ *
+ * 出力の形 (output_config.format.schema) が `tier` を持てば、ルーター (アシスタントの依頼ごとにモデルを選ぶ呼び出し。
+ * backend/model_router.py)。<request> の文に「ガイド」か「説明」が在れば sonnet、ほかは haiku を選ぶ (`routeFor`)。
  *
  * ガイドか説明かは、出力の形 (output_config.format.schema) で見分ける。説明の形は `points` を持つ
  * (ガイドは `steps`)。説明は、送られてきた事実 (<facts> の JSON) の指摘の ID と小節を指して返す
@@ -30,7 +35,27 @@ import { createServer } from 'node:http';
 const portIndex = process.argv.indexOf('--port');
 const port = Number(portIndex >= 0 ? process.argv[portIndex + 1] : 5198);
 
-const calls = { messages: 0, explain: 0, assistant: 0, count_tokens: 0 };
+const calls = { messages: 0, explain: 0, assistant: 0, router: 0, count_tokens: 0, models: { assistant: [], guide: [], explain: [] } };
+
+/** 送られてきたモデルを控える (各 50 件まで)。 */
+function noteModel(kind, model) {
+    const list = calls.models[kind];
+    list.push(model ?? null);
+    if (list.length > 50) list.shift();
+}
+
+/**
+ * ルーターの答え (backend/model_router.py の ROUTER_SCHEMA の形) を、送られてきた依頼の文から決める。
+ * 依頼は、user の文の <request> … </request> の中。
+ */
+function routeFor(body) {
+    const content = String(body.messages?.[0]?.content ?? '');
+    const start = content.indexOf('<request>');
+    const request = start >= 0 ? content.slice(start, content.indexOf('</request>')) : content;
+    return request.includes('ガイド') || request.includes('説明')
+        ? { tier: 'sonnet', reason: 'テスト用: 説明を書くので' }
+        : { tier: 'haiku', reason: 'テスト用: アプリの操作なので' };
+}
 
 /** どのカルテにも当てはまる、決まったガイド (1 小節 1 拍目は、解析できた曲なら必ず在る)。 */
 const GUIDE = {
@@ -105,8 +130,11 @@ function blocksOf(message) {
  * アシスタントの応答を、送られてきた会話から決める (筋書き)。
  *
  * いまの依頼は、最後の「文を持つ user のメッセージ」。その後ろに在る tool_result の数で、筋書きのどこまで進んだかが分かる。
- * 依頼の文に含まれることばで、筋書きを選ぶ:
+ * 依頼の文に含まれることばで、筋書きを選ぶ (上から順に見る):
  *
+ * - 「ガイド」: 依頼に区間の小節の範囲 (「（5〜8 小節）」) が在れば、get_chart → その範囲の区間で make_guide (focus_section)。
+ *   無ければ make_guide (曲全体)。「作り直」が在れば regenerate: true → 短い文で終わる (中身はカードに出ているので繰り返さない)
+ * - 「説明」: explain_diff (差分の段の組。「作り直」が在れば regenerate: true) → 短い文で終わる
  * - 「クリップ」: get_project → クリップの在る最初のトラックの、最初のクリップを trim_clip で 1.5 秒までに縮める
  *   → split_clip で 1 秒の位置で分ける → 左のクリップに fade_clip でフェードイン 0.25 秒 → 文で終わる
  * - 「オクターブ」: get_project → 開いているトラックのノートを transpose_notes で 12 半音上げる → 文で終わる
@@ -154,6 +182,25 @@ function assistantReply(body) {
 
     /** 練習のトラック (練習画面を開いていれば)、無ければ開いているトラック、それも無ければ最初のトラック。 */
     const workTrack = (project) => project.practice?.track_id ?? project.open_track_id ?? project.tracks?.[0]?.id;
+    const regenerate = request.includes('作り直') ? { regenerate: true } : {};
+    if (request.includes('ガイド')) {
+        const range = request.match(/（(\d+)〜(\d+) 小節）/);
+        if (range) {
+            if (stepNo === 0) return call('', ['get_chart', {}]);
+            if (stepNo === 1) {
+                const sections = parsed(results[0]).sections ?? [];
+                const section = sections.find((s) => s.start_bar === Number(range[1]) && s.end_bar === Number(range[2]));
+                return call('', ['make_guide', { ...(section ? { focus_section: section.id } : {}), ...regenerate }]);
+            }
+        } else if (stepNo === 0) {
+            return call('', ['make_guide', regenerate]);
+        }
+        return say(failed ? 'すみません、ガイドを作れませんでした。' : 'ガイドをカードに出しました。まず 1 つ目の手順から見てください。');
+    }
+    if (request.includes('説明')) {
+        if (stepNo === 0) return call('', ['explain_diff', regenerate]);
+        return say(failed ? 'すみません、説明を作れませんでした。' : '説明をカードに出しました。まず最初の点から見直してください。');
+    }
     if (request.includes('クリップ')) {
         if (stepNo === 0) return call('', ['get_project', {}]);
         const tracks = parsed(results[0]).tracks;
@@ -317,9 +364,24 @@ const server = createServer((req, res) => {
             calls.count_tokens += 1;
             return send(res, 200, { input_tokens: 1000 });
         }
+        if (req.method === 'POST' && path === '/v1/messages' && body.output_config?.format?.schema?.properties?.tier) {
+            // ルーター (アシスタントの依頼ごとにモデルを選ぶ)。ガイド・説明・アシスタントの回数には数えない
+            calls.router += 1;
+            return send(res, 200, {
+                id: `msg_fake_router_${calls.router}`,
+                type: 'message',
+                role: 'assistant',
+                model: body.model ?? 'claude-haiku-5-5',
+                content: [{ type: 'text', text: JSON.stringify(routeFor(body)) }],
+                stop_reason: 'end_turn',
+                stop_sequence: null,
+                usage: { input_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 1200, output_tokens: 30 },
+            });
+        }
         if (req.method === 'POST' && path === '/v1/messages' && Array.isArray(body.tools) && body.tools.length > 0) {
             // アシスタント。ガイドと説明の回数 (messages) には数えない (それらのテストが、回数の増え方を見ているため)
             calls.assistant += 1;
+            noteModel('assistant', body.model);
             const message = {
                 id: `msg_fake_assistant_${calls.assistant}`,
                 type: 'message',
@@ -336,6 +398,7 @@ const server = createServer((req, res) => {
             calls.messages += 1;
             const explain = Boolean(body.output_config?.format?.schema?.properties?.points);
             if (explain) calls.explain += 1;
+            noteModel(explain ? 'explain' : 'guide', body.model);
             return send(res, 200, {
                 id: `msg_fake_${calls.messages}`,
                 type: 'message',

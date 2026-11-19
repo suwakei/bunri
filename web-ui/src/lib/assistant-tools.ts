@@ -24,7 +24,7 @@ import {
     ArgError, BPM_MAX, BPM_MIN, MAX_NOTES_READ, ToolError, addNotes, barsLabel, barsOfNotes, byPosition, choice, describeNote, fields, flag,
     formatPitch, integer, meterLabel, number, parsePitch, readNotes, readRange, readTrackName, removeNotes, replaceNotes, roleOf,
     round, settle, stepOut, trackOf,
-    type ToolEnv, type ToolOutcome, type ToolSpec,
+    NO_TURN, type ToolEnv, type ToolOutcome, type ToolSpec, type ToolTurn,
 } from './assistant-tool-kit';
 
 import { NOTE_TOOLS, pickNotes } from './assistant-tools-notes';
@@ -517,14 +517,15 @@ export function isWriteTool(name: string): boolean {
  * @param name - ツールの名前（台帳の `name`）
  * @param input - Claude が渡した引数（確かめていない値）
  * @param env - 画面の入口
+ * @param turn - いまの依頼（選んだモデル・費用の合計・カード）。省くと、何もしない入口
  */
-export async function runTool(name: string, input: unknown, env: ToolEnv): Promise<ToolOutcome> {
+export async function runTool(name: string, input: unknown, env: ToolEnv, turn: ToolTurn = NO_TURN): Promise<ToolOutcome> {
     if (!has(name)) {
         return { ok: false, message: `「${name}」というツールはありません。使えるツール: ${Object.keys(TOOLS).join(', ')}`, shown: 'アシスタントが、このアプリに無い操作を頼みました' };
     }
     const spec = TOOLS[name];
     try {
-        return { ok: true, result: await spec.run(fields(input, spec.keys), env) };
+        return { ok: true, result: await spec.run(fields(input, spec.keys), env, turn) };
     } catch (e) {
         if (e instanceof ToolError) return { ok: false, message: e.message, shown: e.shown };
         // ここに来るのは、画面の側の不具合。理由を添えて返す (Claude は別の手を選べる。利用者には操作ログに出る)

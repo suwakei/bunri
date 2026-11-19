@@ -150,12 +150,14 @@ export async function toError(resp: Response, what = '再現ガイドを作れ�
  * @param chartId - カルテの ID
  * @param focus - 絞り込むセクションの ID。null なら曲全体
  * @param regenerate - true なら、保存済みが在っても作り直す（Claude を呼ぶので費用がかかる）
+ * @param model - 作るモデルの ID（アシスタントの依頼で選んだモデル）。省くと既定のモデル。保存済みは、モデルを問わず返る
  * @throws {GuideRequestError} 作れなかった場合
  */
-export async function requestGuide(chartId: string, focus: string | null, regenerate = false): Promise<GuideResponse> {
+export async function requestGuide(chartId: string, focus: string | null, regenerate = false, model: string | null = null): Promise<GuideResponse> {
     const body = new FormData();
     body.append('focus', focus ?? '');
     if (regenerate) body.append('regenerate', 'true');
+    if (model) body.append('model', model);
     const resp = await apiFetch(`/api/chart/${encodeURIComponent(chartId)}/guide`, { method: 'POST', body });
     if (!resp.ok) throw await toError(resp);
     return (await resp.json()) as GuideResponse;
@@ -250,9 +252,7 @@ export function refLabel(ref: GuideRef, chart: SongChart): string {
     if (ref.section_id !== null) {
         const section = chart.sections.find((s) => s.id === ref.section_id);
         if (section) {
-            const raw = section.label ?? section.suggested_label;
-            const name = raw ? (SECTION_LABEL_JA[raw] ?? raw) : `区間 ${section.id}`;
-            parts.push(`${name}（${section.start_bar}〜${section.end_bar} 小節）`);
+            parts.push(`${sectionName(section)}（${section.start_bar}〜${section.end_bar} 小節）`);
         } else {
             parts.push(`区間 ${ref.section_id}`);
         }
@@ -261,4 +261,22 @@ export function refLabel(ref: GuideRef, chart: SongChart): string {
         parts.push(ref.beat !== null ? `${ref.bar} 小節 ${ref.beat} 拍目` : `${ref.bar} 小節`);
     }
     return parts.join(' / ');
+}
+
+/** 区間の名前（「サビ」。名前が無ければ「区間 s2」）。 */
+export function sectionName(section: SongChart['sections'][number]): string {
+    const raw = section.label ?? section.suggested_label;
+    return raw ? (SECTION_LABEL_JA[raw] ?? raw) : `区間 ${section.id}`;
+}
+
+/**
+ * アシスタントに送る、再現ガイドの依頼の文（「学ぶ」→「ガイド」のボタン）。区間を選んでいれば、その名前と小節の範囲を入れる
+ * （アシスタントが、カルテの区間を見分けられるように）。
+ *
+ * @param focus - 選んでいる区間の ID。曲全体なら空
+ */
+export function guideRequestText(chart: SongChart, focus: string): string {
+    const section = focus ? chart.sections.find((s) => s.id === focus) : undefined;
+    if (!section) return '再現ガイドを作って';
+    return `「${sectionName(section)}」（${section.start_bar}〜${section.end_bar} 小節）の再現ガイドを作って`;
 }

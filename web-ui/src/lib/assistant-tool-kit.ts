@@ -16,9 +16,10 @@ import type { PianoNote } from './engine';
 import type { SongChart } from './chart';
 import { inStepRange, normLength, normStep, stepUnits, toTicks, type ProjectGrid } from './grid';
 import type { RecordMode } from './midi-input';
-import type { DiffResult, ReferenceSource } from './coach';
+import type { DiffResult, ExplainChartContext, ExplainRequest, ExplanationResponse, ReferenceSource } from './coach';
 import type { DiffMode } from './drums';
-import type { SavedGuideResponse } from './guide';
+import type { GuideResponse, GuideToday, SavedGuideResponse } from './guide';
+import type { ChatCard } from './assistant-cards';
 import type { ProgressFacts } from './learn';
 import type { ListenMode, PracticeLoop } from './practice';
 
@@ -514,6 +515,27 @@ export interface ToolEnv {
     practiceCompare: () => Promise<DiffResult | null>;
     /** 保存済みの再現ガイドを読む（Claude は呼ばない） */
     savedGuide: (chartId: string, sectionId: string | null) => Promise<SavedGuideResponse>;
+    /**
+     * 再現ガイドを作る（`POST /api/chart/{id}/guide`。保存済みが在れば、Claude を呼ばずにそれが返る）。
+     * `model` は、この依頼で選んだモデル（`ToolTurn.model`）。失敗は `GuideRequestError`
+     */
+    requestGuide: (chartId: string, sectionId: string | null, regenerate: boolean, model: string | null) => Promise<GuideResponse>;
+    /**
+     * 差分の段で比べる組（選んでいる組。無ければ、差分の段と同じ既定の組。lib/coach.ts の `resolveCoachPair`）。
+     * お手本を持つトラックが無ければ null
+     */
+    coachPair: () => { referenceId: number; attemptId: number } | null;
+    /**
+     * 差分の段にいま出ている、その組の差分（比べたときのノートが分かるものだけ）。無ければ null。
+     * 説明は、画面の一覧と同じ差分で頼む（説明の指摘の ID が、一覧とずれないように）
+     */
+    coachDiff: (referenceId: number, attemptId: number) => DiffResult | null;
+    /** 説明の材料に添える、カルテ（お手本が、いまのカルテのグリッドで採譜したパートのときだけ。lib/coach.ts の `explainChartContext`） */
+    explainChart: (referenceId: number) => ExplainChartContext | null;
+    /** 差分の説明を作る（`POST /api/coach/explain`。保存済み・決まった文なら、Claude を呼ばずに返る）。失敗は `GuideRequestError` */
+    requestExplanation: (request: ExplainRequest, regenerate: boolean, model: string | null) => Promise<ExplanationResponse>;
+    /** Claude の説明を、その差分の学習の記録に結び付ける（差分の段で比べた差分のときだけ。ほかは何もしない） */
+    linkExplanation: (diff: DiffResult, key: string) => void;
     /** 画面の場所を示す（そのタブを開き、その部品を短いあいだ光らせる）。`key` は lib/assistant-landmarks.ts の名前 */
     pointAt: (key: string) => Promise<PointResult>;
     /** 動いている、時間のかかる処理。無ければ null */
@@ -596,6 +618,27 @@ export function roleOf(track: ToolTrack): string {
     return track.role ?? 'free';
 }
 
+/**
+ * いまの依頼（アシスタントへの頼み 1 回）について、ツールが読み書きするもの。繰り返し（lib/assistant.ts）が
+ * 依頼ごとに作って渡す。画面の状態ではないので、`ToolEnv` とは分けてある。
+ */
+export interface ToolTurn {
+    /** この依頼で選んだモデルの ID（ルーターが選んだもの）。まだ分からなければ null（既定のモデルになる） */
+    model: string | null;
+    /**
+     * ツールの中で Claude を呼んだ費用を、この依頼の費用の合計に足す（再現ガイド・差分の説明）。
+     * 保存済みを出しただけなら 0。単価が分からなければ null（合計を出さなくなる）
+     */
+    spend: (costUsd: number | null) => void;
+    /** 応答に付いてきた、今日の使用量（ドックの見出しに出す） */
+    today: (today: GuideToday) => void;
+    /** チャットに、カードを出す（ツールの行の後ろに並ぶ） */
+    showCard: (card: ChatCard) => void;
+}
+
+/** 依頼の外で呼ばれたとき（テストなど）の、何もしない `ToolTurn`。 */
+export const NO_TURN: ToolTurn = { model: null, spend: () => {}, today: () => {}, showCard: () => {} };
+
 /** ツール 1 つの定義。 */
 export interface ToolSpec {
     /** 画面での名前（台帳の `label` と同じ） */
@@ -606,7 +649,7 @@ export interface ToolSpec {
     access: 'read' | 'write';
     /** 引数の項目の名前（台帳の `input_schema.properties` と同じ） */
     keys: readonly string[];
-    run: (args: Record<string, unknown>, env: ToolEnv) => ToolResult | Promise<ToolResult>;
+    run: (args: Record<string, unknown>, env: ToolEnv, turn: ToolTurn) => ToolResult | Promise<ToolResult>;
 }
 
 /** 小数を、決まった桁で丸める。 */

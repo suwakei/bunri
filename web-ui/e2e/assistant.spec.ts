@@ -606,3 +606,28 @@ test('示せる場所のセレクタは、実際の画面に在る（いつも�
         await expect(page.locator(landmark.selector).first(), key).toBeVisible();
     }
 });
+
+test('依頼ごとに、答えるモデルを 1 回だけ選ぶ。待っている 1 行と依頼の終わりの行にモデルの名前、選んだ理由は説明の吹き出しに出る', async ({ page }) => {
+    await openDaw(page);
+    await startFree(page);
+    await openDock(page);
+    const before = (await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()) as { router: number; models: { assistant: string[] } };
+
+    // アプリの操作だけの依頼 (偽のルーターは Haiku を選ぶ)。ツールを 2 回使うので、Claude を 3 回呼ぶ
+    await ask(page, 'トラックを足して、ノートを置いて', 1);
+    const after = (await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()) as { router: number; models: { assistant: string[] } };
+    // ルーターは依頼の最初の 1 回だけ。続きの呼び出しも、選んだモデルで呼ぶ
+    expect(after.router).toBe(before.router + 1);
+    expect(after.models.assistant.slice(-3)).toEqual(['claude-haiku-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5']);
+    const model = chat(page).locator('.assistant-turn-model');
+    await expect(model).toHaveText('Haiku');
+    await expect(chat(page).locator('.assistant-turn')).toContainText(/HaikuClaude を 3 回呼びました（概算 \$/);
+    // 選んだ理由は、名前の説明の吹き出し (キーボードでも選べるよう、フォーカスできる)
+    await expect(model).toHaveAttribute('tabindex', '0');
+    await model.hover();
+    await expect(page.getByRole('tooltip')).toContainText('Haiku で答えました。選んだ理由: テスト用: アプリの操作なので');
+
+    // 次の依頼では、また選び直す
+    await ask(page, '2 小節目から再生して', 2);
+    expect((await (await page.request.get(`${FAKE_LLM_URL}/__calls`)).json()).router).toBe(before.router + 2);
+});

@@ -818,6 +818,20 @@ button.link-btn:hover {
     background: rgba(255, 255, 255, 0.02);
 }
 
+/* 再現ガイド・差分の説明の場所の札 (アシスタントのチャットのカード)。押すとその場所へ移動する */
+.guide-ref {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-elevated);
+    color: var(--text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.guide-ref:hover { color: var(--text); }
+
 /* カルテのコードの升目と構成の行は、押すとその小節へ移動する */
 .chord-cell:hover,
 .section-row:hover {
@@ -3522,6 +3536,84 @@ body:has(#health-banner) #notice-region {
 }
 
 #assistant-panel .assistant-turn-usage { margin-left: auto; }
+
+/* 答えたモデルの名前。選んだ理由は、説明の吹き出しに出す */
+#assistant-panel .assistant-turn-model {
+    margin-right: 6px;
+    padding: 0 5px;
+    border: 1px solid var(--secondary);
+    border-radius: 3px;
+    color: var(--secondary);
+    font-family: var(--font-mono);
+    cursor: help;
+}
+
+#assistant-panel .assistant-turn-model:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* 再現ガイド・差分の説明のカード (components/AssistantCards.tsx) */
+#assistant-panel .assistant-card {
+    padding: 8px 10px;
+    border: 1px solid var(--border-light);
+    border-left: 2px solid var(--secondary);
+    border-radius: var(--radius-md);
+    background: var(--bg-panel);
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+
+#assistant-panel .assistant-card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+#assistant-panel .assistant-card-kind {
+    color: var(--secondary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+#assistant-panel .assistant-card-target {
+    min-width: 0;
+    color: var(--text-mid);
+    font-size: 11px;
+}
+
+#assistant-panel .assistant-card-text { margin: 4px 0; white-space: pre-wrap; }
+#assistant-panel .assistant-card-note { margin: 4px 0; color: var(--text-dim); font-size: 11px; }
+
+#assistant-panel .assistant-card-steps,
+#assistant-panel .assistant-card-cautions ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}
+
+#assistant-panel .assistant-card-steps > li { margin-bottom: 8px; }
+
+#assistant-panel .assistant-card-title { font-weight: 600; }
+
+#assistant-panel .assistant-card-topic {
+    margin-left: 6px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 400;
+}
+
+#assistant-panel .assistant-card-cautions { margin-top: 6px; }
+
+#assistant-panel .assistant-card-foot {
+    display: flex;
+    flex-direction: column;
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+}
 
 #assistant-panel .assistant-undo,
 #assistant-panel .assistant-cancel,

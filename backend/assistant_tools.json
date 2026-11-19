@@ -417,11 +417,39 @@
       "name": "get_guide",
       "access": "read",
       "label": "再現ガイドを読む",
-      "description": "Read the saved reproduction guide (再現ガイド): bunri's explanation of how to recreate the imported song, written from the song chart. It costs nothing to read. If none has been saved yet, the result says so; only the user can create one (学ぶ → ガイド), and you cannot. Use it when the user asks how to build or approach the song or a section.",
+      "description": "Read the saved reproduction guide (再現ガイド): bunri's explanation of how to recreate the imported song, written from the song chart. It costs nothing to read and shows nothing new to the user. If none has been saved yet, the result says so; create one with make_guide when the user asks for a guide. Use it when the user asks how to build or approach the song or a section and a guide may already exist.",
       "input_schema": {
         "type": "object",
         "properties": {
           "section_id": { "type": "string", "description": "Section id from get_chart, for a guide focused on that section. Omit for the whole-song guide." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "make_guide",
+      "access": "read",
+      "label": "再現ガイドを作る",
+      "description": "Make the reproduction guide (再現ガイド) for the imported song: bunri sends the song chart (key, chords, sections, tempo, mix) to Claude, which writes steps for recreating the song, and checks every step against the chart. Use this when the user asks for a guide, for how to recreate the song or a section, or where to start. The guide is shown to the user as a card in the chat, with buttons that jump to the places each step refers to; the result gives you the same steps (topic, text and place) and says that the card is shown. Do not repeat the steps in your reply; add one or two short sentences at most. A guide that was already made is returned at no cost; set regenerate to true only when the user asks for a new one, because making a guide costs money. It needs a song chart: if there is none, the result says so, and the user has to import the song first.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "focus_section": { "type": "string", "description": "Section id from get_chart, for a guide focused on that section. Omit for the whole song." },
+          "regenerate": { "type": "boolean", "description": "true to make a new guide even if one was already made (costs money). Omit otherwise." }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "explain_diff",
+      "access": "read",
+      "label": "差分を説明する",
+      "description": "Explain how the user's notes differ from the reference notes (お手本): bunri computes the differences (the same facts as check_diff) and Claude turns them into an explanation of the overall tendency, the likely musical reasons, and what to look at first, each tied to bars. Use this when the user asks for an explanation of the comparison, why their part sounds different, or what to fix first. The explanation is shown to the user as a card in the chat, with buttons that jump to the bars; the result gives you the same contents and says that the card is shown. Do not repeat it in your reply; add one or two short sentences at most. track_id is the track with the user's notes; omit it to use the pair currently selected in the compare panel (学ぶ → 差分). For drum tracks no explanation is written, and the result gives a fixed note instead; when there are no or very few differences, a fixed short explanation is returned at no cost. An explanation that was already made for the same notes is returned at no cost; set regenerate to true only when the user asks for a new one.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "track_id": { "type": "integer", "description": "Track with the user's notes. Omit to use the pair selected in the compare panel." },
+          "regenerate": { "type": "boolean", "description": "true to write a new explanation even if one was already made (costs money). Omit otherwise." }
         },
         "additionalProperties": false
       }
