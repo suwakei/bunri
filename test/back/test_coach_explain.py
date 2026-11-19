@@ -817,7 +817,8 @@ class TestSharedBudget:
             ce.explain_for(ce.build_facts(REFERENCE, ATTEMPT[:-1]), client=client)
         assert e.value.code == "daily_limit"
         assert "1 日の上限（1 回）に達したので、Claude を呼びません" in str(e.value)
-        assert "再現ガイドと差分コーチの合計" in str(e.value)
+        # 数えているのは、3 つの機能の合計（差分の説明だけの回数ではない）
+        assert "今日は Claude を 1 回使いました（再現ガイド・差分の説明・アシスタントの合計" in str(e.value)
         assert len(client.calls) == 1 and client.count_calls == []
         # 上限に達していても、保存済みは見られる。作り直しはできない
         assert ce.explain_for(facts, client=client)["cached"] is True
@@ -834,7 +835,7 @@ class TestSharedBudget:
         # 再現ガイド 1 回 + 差分コーチ 1 回で上限。どちらも、もう呼べない
         with pytest.raises(rg.GuideError) as e:
             ce.explain_for(ce.build_facts(REFERENCE, ATTEMPT[:-1]), client=coach)
-        assert e.value.code == "daily_limit" and "Claude を 2 回呼びました" in str(e.value)
+        assert e.value.code == "daily_limit" and "Claude を 2 回使いました" in str(e.value)
         blocked = FakeClient(payload=self.GUIDE)
         with pytest.raises(rg.GuideError) as e:
             rg.guide_for(chart, focus="S1", client=blocked)

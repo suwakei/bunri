@@ -320,11 +320,14 @@ def today():
     limit_calls, limit_usd = current["daily_limit_calls"], current["daily_limit_usd"]
     blocked = None
     if limit_calls is not None and calls >= limit_calls:
-        blocked = (f"今日は再現ガイドを {calls} 回作りました。1 日の上限（{limit_calls} 回）に達したので、"
-                   "Claude を呼びません。明日になるとまた作れます。上限は設定で変えられます")
+        # 上限は、再現ガイド・差分の説明・アシスタントで 1 つの枠。どの機能で数えた回数かを、文でも言う
+        blocked = (f"今日は Claude を {calls} 回使いました（再現ガイド・差分の説明・アシスタントの合計。"
+                   f"アシスタントは、依頼 1 つを 1 回と数えます）。1 日の上限（{limit_calls} 回）に達したので、"
+                   "Claude を呼びません。明日になるとまた使えます。上限は設定で変えられます")
     elif limit_usd is not None and cost >= limit_usd:
-        blocked = (f"今日の再現ガイドの費用が概算で ${cost:.2f} になりました。1 日の上限（${limit_usd:.2f}）に"
-                   "達したので、Claude を呼びません。明日になるとまた作れます。上限は設定で変えられます")
+        blocked = (f"今日の Claude の費用が概算で ${cost:.2f} になりました"
+                   f"（再現ガイド・差分の説明・アシスタントの合計）。1 日の上限（${limit_usd:.2f}）に"
+                   "達したので、Claude を呼びません。明日になるとまた使えます。上限は設定で変えられます")
     return {
         "date": now.isoformat(),
         "calls": calls,

@@ -608,6 +608,8 @@ class TestDailyLimit:
         with pytest.raises(rg.GuideError) as e:
             rg.guide_for(chart, focus="S1", client=client)
         assert e.value.code == "daily_limit" and "概算" in str(e.value)
+        # 数えているのは、3 つの機能の合計（再現ガイドだけの費用ではない）
+        assert "再現ガイド・差分の説明・アシスタントの合計" in str(e.value)
         assert len(client.calls) == 1
 
     def test_上限なしにできる(self, chart):

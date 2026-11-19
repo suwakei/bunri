@@ -34,8 +34,8 @@ export function todayLine(today: GuideToday): string {
 
 /**
  * 1 日の上限に達しているときの、アシスタントのドックに出す文（達していなければ null）。
- * 上限は、再現ガイド・差分の説明・アシスタントで 1 つの枠。処理を担当する部分の `blocked` の文は再現ガイドの言い方
- * （「再現ガイドを N 回作りました」）なので、ドックでは、数字からこの文を作る。
+ * 上限は、再現ガイド・差分の説明・アシスタントで 1 つの枠。処理を担当する部分の `blocked` の文は「Claude を呼びません」で
+ * 終わるが、ドックでは「いまは頼めません」と、設定の場所（すぐ下）まで言いたいので、数字からこの文を作る。
  */
 export function assistantBlockedLine(today: GuideToday): string | null {
     if (!today.blocked) return null;

@@ -116,6 +116,7 @@ Python のコードはすべて `backend/` に在る（フラットな構成の�
 | `scripts/dev-web.mjs` | 開発用のブラウザ起動（Vite + API サーバ）。画面をブラウザで開いて直すときと、自動操作のテストに使う |
 | `scripts/webaudio-reference.mjs` | Web Audio の書き出し（本物の `engine.ts` の `mixdown`）で決まった曲を WebKit と Chromium で WAV にし、Rust の engine と突き合わせる基準（`src-tauri/audio-engine/tests/fixtures/webaudio/`）を作る。サーバは立てない |
 | `scripts/guide_probe.py` | 再現ガイドの API 呼び出しを実際に送って確かめる（キャッシュが効いているか、トークン数、モデルと思考の深さの比較）。費用がかかるものは `--yes` を付けたときだけ送る |
+| `scripts/assistant_probe.py` | アシスタントの API 呼び出しを実際に送って確かめる（台帳の形が通るか、ツールの引数が台帳に合うか、思考のブロックごと送り返せるか、キャッシュが効いているか、少しずつ返す版が読めるか）。`--yes` を付けたときだけ送る |
 | `web-ui/e2e/` | ブラウザを自動操作するテスト（Playwright） |
 | `web-ui/e2e-desktop/` | 本物の窓を自動操作するテスト（WebDriver + vitest）。テスト用のビルドとアプリの起動・後片付けも。エージェントが頼まれた操作を行うコマンド（`drive.ts`）と、押せるものを画面のことばで探す部品（`controls.ts`）も |
 | `web-ui/src/lib/assistant.ts` / `assistant-tools.ts` | アシスタントの会話と繰り返し、ツールの実行（引数の確かめ、元に戻す履歴へのまとめ、操作ログ）。画面は `components/AssistantPanel.tsx`（右側のドック）。ツールは種類ごとに `assistant-tools-notes.ts`（ノートの変形）・`assistant-tools-learn.ts`（差分・ガイド・練習の設定・場所を示す）・`assistant-tools-app.ts`（パート分離・書き出し・保存・クリップ・エフェクト）、共通の部品と画面の入口の形は `assistant-tool-kit.ts`、本物の入口は `assistant-env.ts` |
@@ -190,13 +191,14 @@ Claude を呼ぶコードは公式の `anthropic` SDK を使い、キーは `llm
 Claude の呼び出しは費用がかかる。再現ガイドには、無駄に呼ばないための仕組みが入っている
 （[docs/reproduction-guide-design.md](../docs/reproduction-guide-design.md) の「費用」）。手を入れるときの決まり:
 
-- 通常のテスト（`make test`、`make e2e`）は Claude を呼ばない。e2e は偽の Claude サーバ（`web-ui/e2e/fake-anthropic.mjs`）を相手にする。本物を呼ぶのは `BUNRI_E2E_LLM=1` を付けたときと、`scripts/guide_probe.py` に `--yes` を付けたときだけ。**どちらも、実行の前に利用者の了承を取る**
+- 通常のテスト（`make test`、`make e2e`）は Claude を呼ばない。e2e は偽の Claude サーバ（`web-ui/e2e/fake-anthropic.mjs`）を相手にする。本物を呼ぶのは `BUNRI_E2E_LLM=1` を付けたときと、`scripts/guide_probe.py`・`scripts/assistant_probe.py` に `--yes` を付けたときだけ。**どれも、実行の前に利用者の了承を取る**
 - 指示文（`SYSTEM_PROMPT`）・出力の形（`GUIDE_SCHEMA`）・カルテの渡し方（`prompt_chart`）・検証を変えたら、`GUIDE_VERSION` を上げる（保存済みのガイドを使わせないため）
 - リクエストの組み立てを変えたら、プロンプトキャッシュが効いているかを、コードを読んで判断せず `scripts/guide_probe.py cache --yes` で確かめる
 - キャッシュの区切りより前（指示文とカルテ）に、時刻・乱数・呼び出しごとに変わる値を入れない。モデル・思考の深さ・出力の形を、呼び出しごとに変えない
 - `max_tokens` は切れたときの歯止めで、節約の手段ではない。出力を短くしたいときは指示文で行う
 - アシスタントの指示文（`assistant.SYSTEM_PROMPT`）・ツールの台帳（`assistant_tools.json`）を変えたら、`ASSISTANT_VERSION` を上げる。
   台帳のツールを足す・外す・名前を変えるときは、画面側の実行する関数（`assistant-tools.ts`）も一緒に変える
+  台帳の形が本物の Claude に通るか・キャッシュが効いているかは、コードを読んで判断せず `scripts/assistant_probe.py --yes` で確かめる
 - アシスタントの会話は、足すだけにする（前のメッセージを書き換えない・間引かない）。応答の `content` は、思考のブロックごと
   変えずに送り返す。縮めるのは依頼の境目だけで、そのときは送る会話を丸ごと「これまでの記録」1 つに置き換える
   （`assistant-history.ts`。途中のメッセージだけを抜かない。記録を作るのに Claude を呼ばない）

@@ -936,17 +936,11 @@ def _public_rule(reason, explanation, facts):
 
 
 def _blocked_message(today):
-    """1 日の上限に達しているときの理由を返す（達していなければ None）。上限は第2層と同じ 1 つの枠。"""
-    if not today["blocked"]:
-        return None
-    calls, limit_calls = today["calls"], today["limit_calls"]
-    if limit_calls is not None and calls >= limit_calls:
-        return (f"今日は Claude を {calls} 回呼びました（再現ガイドと差分コーチの合計）。"
-                f"1 日の上限（{limit_calls} 回）に達したので、Claude を呼びません。"
-                "明日になるとまた使えます。上限は設定で変えられます")
-    return (f"今日の Claude の費用が概算で ${today['cost_usd']:.2f} になりました（再現ガイドと差分コーチの合計）。"
-            f"1 日の上限（${today['limit_usd']:.2f}）に達したので、Claude を呼びません。"
-            "明日になるとまた使えます。上限は設定で変えられます")
+    """1 日の上限に達しているときの理由を返す（達していなければ None）。
+
+    上限は、再現ガイド・差分の説明・アシスタントで 1 つの枠。文も 1 つ（``guide_usage.today``）を使う。
+    """
+    return today["blocked"]
 
 
 def saved_explanation(facts):
